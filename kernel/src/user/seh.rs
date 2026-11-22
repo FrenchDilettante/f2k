@@ -385,11 +385,21 @@ mod target {
                 .is_ok_and(|head| head != END_OF_CHAIN)
     }
 
-    /// Dispatch a user fault: true when the frame now returns into ntdll's dispatcher with the
-    /// exception's records, false when there is nobody to dispatch to (see the module notes) and
-    /// the fault ends the process as an unhandled exception. A single-step trap's context has the
-    /// trap flag clear, as Windows 2000's trap handler clears it before the dispatch.
+    /// Dispatch a user fault: true when the frame resumes the interrupted context — a page fault
+    /// the address space resolved on the entry alone (a committed page's first touch, a page back
+    /// from a backing list: [`crate::mem::demand::apply`]) maps its frame and the access retries, or
+    /// the frame now returns into ntdll's dispatcher with the exception's records — false when
+    /// there is nobody to dispatch to (see the module notes) and the fault ends the process as an
+    /// unhandled exception. A single-step trap's context has the trap flag clear, as Windows
+    /// 2000's trap handler clears it before the dispatch.
     pub fn dispatch_fault(frame: &mut TrapFrame, vector: u32, code: u32, cr2: u32) -> bool {
+        if vector == 14 {
+            // A page fault the entry resolves: apply it (map the page) and resume the access.
+            let write = frame.error_code & 0b10 != 0;
+            if crate::mem::demand::apply(&mut crate::mem::vm::CurrentPages, cr2, write, true) {
+                return true;
+            }
+        }
         if !has_handlers() {
             return false;
         }

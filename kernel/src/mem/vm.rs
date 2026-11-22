@@ -5,12 +5,14 @@
 //! A process's address space is a table of regions — each a reservation `[base, base + size)` with
 //! the protection it was allocated with and a kind (private memory, a mapped view, an image) — and
 //! the page tables,
-//! which hold each page's state: a page is committed when its entry names a frame. A committed page
-//! the program may touch is a present entry; its exact protection rides in the entry's three
+//! which hold each page's state, as [`pte`] classifies it. A committed page the program may touch
+//! is usually a present entry naming its frame; its exact protection rides in the entry's three
 //! software bits (zero meaning "read-write if writable, else read-only", for entries written before
-//! the protection was recorded). A committed page it may not touch — PAGE_NOACCESS, or a guard page
-//! — is a non-present entry that still names its frame, marked as committed, its protection (the
-//! guard flag apart) in the same bits. An uncommitted page has no entry.
+//! the protection was recorded). A committed page not mapped yet is a demand-zero entry: the
+//! committed marker, no frame — the first touch faults a zeroed frame in. A committed page the
+//! program may not touch — PAGE_NOACCESS, or a guard page — is a non-present entry that still names
+//! its frame, marked as committed, its protection (the guard flag apart) in the same bits. An
+//! uncommitted page has no entry.
 //!
 //! Every user page lies in a region: the loader seeds the image and the system areas before it maps
 //! anything, and every mapping, commit, guard and release goes through [`AddressSpace`], so a
@@ -18,10 +20,12 @@
 //! reached through the [`Pages`] seam ([`CurrentPages`] on target, an in-memory fake in the tests).
 //!
 //! Reservations start on the 64 KiB allocation granularity and cover whole pages; a reservation
-//! without an address takes the lowest free range that fits. Commits zero their pages; committing a
-//! committed page keeps its contents and takes the new protection. A query reports the page's
-//! region and the run of pages after it in the same state and protection, within the region;
-//! outside every region it reports free memory up to the next region.
+//! without an address takes the lowest free range that fits. An eager commit ([`AddressSpace::commit`],
+//! the kernel's own pages: stacks) maps and zeroes its pages; a demand commit
+//! ([`AddressSpace::commit_demand`], the services' MEM_COMMIT) only writes demand-zero entries —
+//! committing a committed page keeps its contents and takes the new protection either way. A query
+//! reports the page's region and the run of pages after it in the same state and protection,
+//! within the region; outside every region it reports free memory up to the next region.
 //!
 //! Region kinds are what a query reports as the type; the services (`nt::memory`, `nt::section`)
 //! decide what each kind refuses. A view's kind carries its maximum ([`Maximum`], NT's VAD holds
@@ -39,6 +43,9 @@
 //! copy-on-write in fact, unless the page is a view's that may write its section
 //! ([`Maximum::Write`]): the system DLLs' pages, an image's, the shared data page and a
 //! copy-on-write or read-only view's section stay as their holders made them.
+
+use super::pte::{self, PteKind};
+use super::quota::CommitQuota;
 
 /// The page size and the allocation granularity.
 pub const PAGE: u32 = 0x1000;
@@ -172,9 +179,10 @@ pub fn decode(entry: u32) -> Option<(u32, u32)> {
 }
 
 /// Whether an entry names a frame the process owns (the teardown's question): a present page, or a
-/// committed one it may not touch.
+/// committed one it may not touch — a demand-zero page is committed but names no frame until its
+/// first touch.
 pub fn names_frame(entry: u32) -> bool {
-    entry & PRESENT != 0 || entry & COMMITTED != 0
+    (entry & PRESENT != 0 || entry & COMMITTED != 0) && entry & FRAME_MASK != 0
 }
 
 /// Resolve a write fault on the present page at `va`, if it is a copy-on-write page: its frame made
@@ -207,9 +215,38 @@ pub fn copy_on_write(pages: &mut impl Pages, va: u32) -> bool {
     true
 }
 
-/// Fire the guard page at `va`, if the page there is one: it keeps its protection, without the
-/// guard flag (the access that touched it then raises STATUS_GUARD_PAGE_VIOLATION, once, unless it
-/// grows a stack).
+/// The entry a committed page that holds no frame of its own yet (a demand page) takes under
+/// `protect`: still committed, still without a frame — guarded when `protect` asks — so its
+/// first touch faults a zeroed frame in (or fires the guard).
+fn demand_entry(protect: u32) -> u32 {
+    if protect & PAGE_GUARD != 0 {
+        pte::encode(PteKind::Guard, 0, protect)
+    } else {
+        pte::encode(PteKind::DemandZero, 0, protect)
+    }
+}
+
+/// Map the demand-zero page at `page` to a fresh zeroed frame, present with `protect`: the first
+/// touch of a committed page, resolved on the entry alone. False when no frame is left, the entry
+/// as it was.
+pub fn map_demand_zero(pages: &mut impl Pages, page: u32, protect: u32) -> bool {
+    let Some(frame) = pages.zeroed_frame() else {
+        return false;
+    };
+    pages.set_entry(page, encode(frame, protect));
+    true
+}
+
+/// Map the page at `page` present to the `frame` its entry names, with `protect`: a page back
+/// from a backing list, no I/O.
+pub fn map_named_frame(pages: &mut impl Pages, page: u32, frame: u32, protect: u32) {
+    pages.set_entry(page, encode(frame, protect));
+}
+
+/// Fire the guard page at `va`, if the page there is one: it keeps its protection and frame,
+/// without the guard flag (the access that touched it then raises STATUS_GUARD_PAGE_VIOLATION,
+/// once, unless it grows a stack). A guard page committed without a frame yet stays committed
+/// and unmapped: the retried access faults its zeroed frame in.
 pub fn fire_guard(pages: &mut impl Pages, va: u32) -> bool {
     if va >= USER_HIGH {
         return false;
@@ -217,7 +254,13 @@ pub fn fire_guard(pages: &mut impl Pages, va: u32) -> bool {
     let page = page_down(va);
     match decode(pages.entry(page)) {
         Some((frame, protect)) if protect & PAGE_GUARD != 0 => {
-            pages.set_entry(page, encode(frame, protect & !PAGE_GUARD));
+            let protect = protect & !PAGE_GUARD;
+            let entry = if frame != 0 {
+                encode(frame, protect)
+            } else {
+                demand_entry(protect)
+            };
+            pages.set_entry(page, entry);
             true
         }
         _ => false,
@@ -393,11 +436,16 @@ pub struct View {
     pub mapping: crate::ob::Mapping,
 }
 
-/// A process's regions, and its mapped views (on NT, the VADs a view's section hangs off). All
-/// `None` is the empty space.
+/// A process's regions, its mapped views (on NT, the VADs a view's section hangs off), and its
+/// commit quota. All `None` is the empty space, with nothing charged.
 pub struct AddressSpace {
     regions: [Option<Region>; REGIONS],
     views: [Option<View>; VIEWS],
+    /// The process's commit charge against the system's commit limit (see [`super::quota`]),
+    /// taken from the limit when the space is made for a process ([`Self::reset`]): a commit
+    /// charges it, a decommit or release discharges it. Guarded by the space's own lock, like the
+    /// regions and views.
+    pub quota: CommitQuota,
 }
 
 impl AddressSpace {
@@ -407,6 +455,7 @@ impl AddressSpace {
         AddressSpace {
             regions: [None; REGIONS],
             views: [None; VIEWS],
+            quota: CommitQuota::new(0),
         }
     }
 
@@ -429,6 +478,7 @@ impl AddressSpace {
             for index in 0..VIEWS {
                 views.add(index).write(None);
             }
+            addr_of_mut!((*space).quota).write(CommitQuota::new(0));
         }
     }
 
@@ -503,10 +553,12 @@ impl AddressSpace {
     }
 
     /// Empty the space in place, whatever it held (by value it would pass the caller's stack): a
-    /// process record taken for a new process.
+    /// process record taken for a new process. The commit quota starts over at the system's
+    /// commit limit ([`super::system_commit_limit`]).
     pub fn reset(&mut self) {
         self.regions.fill(None);
         self.views.fill(None);
+        self.quota = CommitQuota::new(super::system_commit_limit());
     }
 
     /// The region containing `va`.
@@ -694,14 +746,71 @@ impl AddressSpace {
         Ok(start)
     }
 
+    /// How many pages of `[address, address + size)` are not committed yet (the charge a commit
+    /// of the range takes). They must lie in one region.
+    pub fn uncommitted_pages(
+        &self,
+        pages: &impl Pages,
+        address: u32,
+        size: u32,
+    ) -> Result<u32, VmError> {
+        let (_, start, end) = self.span(address, size)?;
+        let mut fresh = 0;
+        let mut va = start;
+        while va < end {
+            if pte::decode(pages.entry(va)).is_none() {
+                fresh += 1;
+            }
+            va += PAGE;
+        }
+        Ok(fresh)
+    }
+
+    /// Commit the pages `[address, address + size)` covers with `protect` as demand: charged, not
+    /// mapped — each fresh page's entry is a demand-zero one (a guarded protection a guard one),
+    /// and the first touch faults a zeroed frame in. A page already committed keeps its contents
+    /// and frame and takes the new protection. They must lie in one region. Returns the first page
+    /// and how many pages were freshly committed (the commit's charge); no frame is taken, so
+    /// nothing can run out halfway.
+    pub fn commit_demand(
+        &mut self,
+        pages: &mut impl Pages,
+        address: u32,
+        size: u32,
+        protect: u32,
+    ) -> Result<(u32, u32), VmError> {
+        let (region, start, end) = self.span(address, size)?;
+        let mut fresh = 0;
+        let mut va = start;
+        while va < end {
+            match pte::decode(pages.entry(va)) {
+                None => {
+                    fresh += 1;
+                    pages.set_entry(va, demand_entry(protect));
+                }
+                // Already committed but still without a frame: re-protect the entry itself.
+                Some((_, 0, _)) => {
+                    pages.set_entry(va, demand_entry(protect));
+                }
+                Some((_, frame, _)) => {
+                    let protect = settle(region.kind, pages, frame, protect);
+                    pages.set_entry(va, encode(frame, protect));
+                }
+            }
+            va += PAGE;
+        }
+        Ok((start, fresh))
+    }
+
     /// Decommit the pages `[address, address + size)` covers (size zero: the whole region, from its
-    /// base). They must lie in one region.
+    /// base). They must lie in one region. Returns how many of them were committed (the charge
+    /// the decommit discharges).
     pub fn decommit(
         &mut self,
         pages: &mut impl Pages,
         address: u32,
         size: u32,
-    ) -> Result<(), VmError> {
+    ) -> Result<u32, VmError> {
         let (start, end) = if size == 0 {
             let region = self.region_at(address).ok_or(VmError::InvalidAddress)?;
             if region.base != address {
@@ -712,39 +821,51 @@ impl AddressSpace {
             let (_, start, end) = self.span(address, size)?;
             (start, end)
         };
-        self.drop_pages(pages, start, end);
-        Ok(())
+        Ok(self.drop_pages(pages, start, end))
     }
 
-    /// Clear the entries of `[start, end)`, each page dropping its hold on its frame — an
-    /// inaccessible or guarded page's too: it still names its frame (a frame other holders still
-    /// map stays with them).
-    fn drop_pages(&self, pages: &mut impl Pages, start: u32, end: u32) {
+    /// Clear the entries of `[start, end)`, each committed page dropping its hold on its frame —
+    /// an inaccessible or guarded page's too: it still names its frame when it has one (a frame
+    /// other holders still map stays with them); a demand page — demand-zero, or a guard
+    /// committed without a frame — names none. Returns how many pages were committed (the charge
+    /// the drop discharges).
+    fn drop_pages(&self, pages: &mut impl Pages, start: u32, end: u32) -> u32 {
+        let mut charged = 0;
         let mut va = start;
         while va < end {
-            if let Some((frame, _)) = decode(pages.entry(va)) {
+            if let Some((_, frame, _)) = pte::decode(pages.entry(va)) {
                 pages.set_entry(va, 0);
-                pages.free_frame(frame);
+                if frame != 0 {
+                    pages.free_frame(frame);
+                }
+                charged += 1;
             }
             va += PAGE;
         }
+        charged
     }
 
     /// Release the region based at `address`: its pages decommitted (a view's frames stay with
-    /// their section) and the reservation gone.
-    pub fn release(&mut self, pages: &mut impl Pages, address: u32) -> Result<Region, VmError> {
+    /// their section) and the reservation gone. Returns the region and how many of its pages were
+    /// committed (the charge the release discharges).
+    pub fn release(
+        &mut self,
+        pages: &mut impl Pages,
+        address: u32,
+    ) -> Result<(Region, u32), VmError> {
         let slot = self
             .regions
             .iter_mut()
             .find(|r| r.is_some_and(|r| r.base == address))
             .ok_or(VmError::InvalidAddress)?;
         let region = slot.take().unwrap();
-        self.drop_pages(pages, region.base, region.base + region.size);
-        Ok(region)
+        let charged = self.drop_pages(pages, region.base, region.base + region.size);
+        Ok((region, charged))
     }
 
     /// Give every committed page of the pages `[address, address + size)` covers `protect`. They
-    /// must lie in one region and all be committed. Returns the first page's old protection.
+    /// must lie in one region and all be committed — a demand-zero page among them takes the new
+    /// protection without being mapped. Returns the first page's old protection.
     pub fn protect(
         &mut self,
         pages: &mut impl Pages,
@@ -756,15 +877,25 @@ impl AddressSpace {
         let mut old = None;
         let mut va = start;
         while va < end {
-            let (_, was) = decode(pages.entry(va)).ok_or(VmError::InvalidAddress)?;
+            let Some((_, _, was)) = pte::decode(pages.entry(va)) else {
+                return Err(VmError::InvalidAddress);
+            };
             old.get_or_insert(was);
             va += PAGE;
         }
         let mut va = start;
         while va < end {
-            let (frame, _) = decode(pages.entry(va)).unwrap();
-            let protect = settle(region.kind, pages, frame, protect);
-            pages.set_entry(va, encode(frame, protect));
+            match pte::decode(pages.entry(va)) {
+                // Committed but still without a frame: re-protect the entry itself.
+                Some((_, 0, _)) => {
+                    pages.set_entry(va, demand_entry(protect));
+                }
+                Some((_, frame, _)) => {
+                    let protect = settle(region.kind, pages, frame, protect);
+                    pages.set_entry(va, encode(frame, protect));
+                }
+                None => unreachable!("checked above"),
+            }
             va += PAGE;
         }
         Ok(old.unwrap())
@@ -859,8 +990,8 @@ impl AddressSpace {
                 mem_type: 0,
             };
         };
-        let state_of = |va: u32| match decode(pages.entry(va)) {
-            Some((_, protect)) => (MEM_COMMIT, protect),
+        let state_of = |va: u32| match pte::decode(pages.entry(va)) {
+            Some((_, _, protect)) => (MEM_COMMIT, protect),
             None => (MEM_RESERVE, 0),
         };
         let first = state_of(start);
@@ -1186,6 +1317,23 @@ mod tests {
         );
         assert!(!fire_guard(&mut pages, 0x1_0000));
         assert!(!fire_guard(&mut pages, 0x2_0000));
+    }
+
+    /// A guard page committed without a frame of its own (a demand commit's guard entry) fires
+    /// too: the guard flag goes, the page stays committed and unmapped — its retried access
+    /// faults a zeroed frame in — and it does not fire again.
+    #[test]
+    fn a_frameless_guard_page_fires_once_into_a_demand_page() {
+        let mut pages = Fake::default();
+        pages.set_entry(
+            0x1_0000,
+            pte::encode(PteKind::Guard, 0, PAGE_READWRITE | PAGE_GUARD),
+        );
+        assert!(fire_guard(&mut pages, 0x1_0123));
+        let entry = pages.entry(0x1_0000);
+        assert_eq!(pte::classify(entry), PteKind::DemandZero);
+        assert_eq!(pte::decode(entry).unwrap().2, PAGE_READWRITE);
+        assert!(!fire_guard(&mut pages, 0x1_0000));
     }
 
     /// A section's frames are made once, as first needed, and held by the section and by each view
@@ -1779,5 +1927,183 @@ mod tests {
             .unwrap();
         assert!(vm.record_view(&mut pages, view, section));
         assert_eq!(vm.view_at(view), Some(section));
+    }
+
+    /// A demand commit charges instead of mapping: fresh pages get demand-zero entries, no frame
+    /// is taken (the commit goes with none to spare), and the fresh count is the commit's charge;
+    /// recommitting over committed pages keeps them and charges nothing; a mapped page a demand
+    /// commit covers keeps its frame and contents.
+    #[test]
+    fn a_demand_commit_charges_and_writes_demand_zero_entries() {
+        let mut vm = space();
+        let mut pages = Fake::default();
+        let base = vm
+            .reserve(None, 0x8000, PAGE_READWRITE, Kind::Private)
+            .unwrap();
+        assert_eq!(vm.uncommitted_pages(&pages, base, 0x8000), Ok(8));
+        assert_eq!(
+            vm.uncommitted_pages(&pages, base + 0x9000, PAGE),
+            Err(VmError::InvalidAddress),
+            "past the region"
+        );
+        pages.budget = Some(0);
+        let (start, fresh) = vm
+            .commit_demand(&mut pages, base + 0x2000, 0x4000, PAGE_READWRITE)
+            .unwrap();
+        assert_eq!((start, fresh), (base + 0x2000, 4));
+        assert_eq!(pages.budget, Some(0), "no frame was taken");
+        for page in 2..6 {
+            let entry = pages.entry(base + page * PAGE);
+            assert_eq!(pte::classify(entry), PteKind::DemandZero, "page {page}");
+            assert_eq!(pte::decode(entry).unwrap().2, PAGE_READWRITE);
+        }
+        assert_eq!(pages.entry(base), 0, "outside the range stays reserved");
+        // Recommit over the committed pages: nothing fresh, the entries take the new protection.
+        let (start, fresh) = vm
+            .commit_demand(&mut pages, base + 0x2000, 0x4000, PAGE_READONLY)
+            .unwrap();
+        assert_eq!((start, fresh), (base + 0x2000, 0));
+        for page in 2..6 {
+            let entry = pages.entry(base + page * PAGE);
+            assert_eq!(pte::classify(entry), PteKind::DemandZero);
+            assert_eq!(pte::decode(entry).unwrap().2, PAGE_READONLY);
+        }
+        // A mapped page a demand commit covers keeps its frame and contents.
+        pages.budget = None;
+        vm.commit(&mut pages, base, 0x2000, PAGE_READWRITE).unwrap();
+        let frame = vm.frame_at(&pages, base).unwrap();
+        pages.set_frame_word(frame, 0, 42);
+        let (_, fresh) = vm
+            .commit_demand(&mut pages, base, 0x1000, PAGE_READONLY)
+            .unwrap();
+        assert_eq!(fresh, 0);
+        assert_eq!(vm.frame_at(&pages, base), Some(frame));
+        assert_eq!(pages.frame_word(frame, 0), 42);
+        let info = vm.query(&pages, base);
+        assert_eq!((info.state, info.protect, info.size), (MEM_COMMIT, PAGE_READONLY, PAGE));
+        // A guarded protection commits as a guard entry.
+        vm.commit_demand(&mut pages, base + 0x6000, PAGE, PAGE_READWRITE | PAGE_GUARD)
+            .unwrap();
+        assert_eq!(
+            pte::classify(pages.entry(base + 0x6000)),
+            PteKind::Guard
+        );
+    }
+
+    /// A query over the demand entries: the committed run reports MEM_COMMIT with the recorded
+    /// protection, the reserved run past it MEM_RESERVE with none, and an entry of every other
+    /// committed kind (a transition one naming its frame) reports committed too.
+    #[test]
+    fn a_query_reports_over_the_new_entry_kinds() {
+        let mut vm = space();
+        let mut pages = Fake::default();
+        let base = vm
+            .reserve(None, 0x1_0000, PAGE_READWRITE, Kind::Private)
+            .unwrap();
+        vm.commit_demand(&mut pages, base, 0x4000, PAGE_READWRITE)
+            .unwrap();
+        let head = vm.query(&pages, base);
+        assert_eq!(
+            (head.state, head.protect, head.size, head.mem_type),
+            (MEM_COMMIT, PAGE_READWRITE, 0x4000, MEM_PRIVATE)
+        );
+        let middle = vm.query(&pages, base + 0x4000);
+        assert_eq!(
+            (middle.state, middle.protect, middle.size),
+            (MEM_RESERVE, 0, 0xC000)
+        );
+        // A transition-kind entry (committed, its frame named, not present) is committed.
+        pages.set_entry(
+            base + 0x8000,
+            pte::encode(PteKind::Transition, 0x0070_0000, PAGE_READONLY),
+        );
+        let at = vm.query(&pages, base + 0x8000);
+        assert_eq!((at.state, at.protect, at.size), (MEM_COMMIT, PAGE_READONLY, PAGE));
+        // A guard entry reports its protection with the guard flag.
+        pages.set_entry(
+            base + 0x9000,
+            pte::encode(PteKind::Guard, 0x0071_0000, PAGE_READWRITE | PAGE_GUARD),
+        );
+        let guard = vm.query(&pages, base + 0x9000);
+        assert_eq!(
+            (guard.state, guard.protect),
+            (MEM_COMMIT, PAGE_READWRITE | PAGE_GUARD)
+        );
+    }
+
+    /// A decommit and a release return how many pages were committed (the charge they discharge)
+    /// and free only the frames the entries name: a demand-zero page's decommit frees nothing, a
+    /// mapped page's does.
+    #[test]
+    fn a_decommit_and_release_discharge_and_free_only_named_frames() {
+        let mut vm = space();
+        let mut pages = Fake::default();
+        let base = vm
+            .reserve(None, 0x8000, PAGE_READWRITE, Kind::Private)
+            .unwrap();
+        vm.commit_demand(&mut pages, base, 0x4000, PAGE_READWRITE)
+            .unwrap();
+        vm.commit(&mut pages, base + 0x4000, 0x2000, PAGE_READWRITE)
+            .unwrap();
+        let mapped = vm.frame_at(&pages, base + 0x4000).unwrap();
+        assert_eq!(vm.decommit(&mut pages, base, 0x4000).unwrap(), 4);
+        assert_eq!(pages.entry(base), 0, "the demand-zero entries went");
+        assert!(pages.freed.is_empty(), "no frame was named");
+        assert_eq!(vm.decommit(&mut pages, base + 0x4000, 0x2000).unwrap(), 2);
+        assert_eq!(pages.freed.len(), 2, "the mapped pages' frames went back");
+        assert!(pages.freed.contains(&mapped));
+        assert_eq!(
+            vm.decommit(&mut pages, base, 0x8000).unwrap(),
+            0,
+            "nothing left committed"
+        );
+        vm.commit_demand(&mut pages, base, 0x8000, PAGE_READWRITE)
+            .unwrap();
+        let (region, charged) = vm.release(&mut pages, base).unwrap();
+        assert_eq!((region.base, charged), (base, 8));
+        assert_eq!(vm.query(&pages, base).state, MEM_FREE);
+        assert_eq!(pages.freed.len(), 2, "the demand-zero pages freed nothing");
+        // A release of a region with mapped pages frees them and counts them.
+        let base = vm
+            .reserve(None, 0x2000, PAGE_READWRITE, Kind::Private)
+            .unwrap();
+        vm.commit(&mut pages, base, 0x2000, PAGE_READWRITE).unwrap();
+        let frames: Vec<u32> = (0..2)
+            .map(|page| vm.frame_at(&pages, base + page * PAGE).unwrap())
+            .collect();
+        let (_, charged) = vm.release(&mut pages, base).unwrap();
+        assert_eq!(charged, 2);
+        for frame in frames {
+            assert!(pages.freed.contains(&frame));
+        }
+    }
+
+    /// A protect over demand-zero pages rewrites their entries with the new protection without
+    /// mapping them, and reports the old one; a protect over an uncommitted page still fails.
+    #[test]
+    fn a_protect_over_demand_zero_pages_rewrites_the_entries() {
+        let mut vm = space();
+        let mut pages = Fake::default();
+        let base = vm
+            .reserve(None, 0x4000, PAGE_READWRITE, Kind::Private)
+            .unwrap();
+        vm.commit_demand(&mut pages, base, 0x2000, PAGE_READWRITE)
+            .unwrap();
+        assert_eq!(
+            vm.protect(&mut pages, base, 0x2000, PAGE_READONLY),
+            Ok(PAGE_READWRITE)
+        );
+        for page in 0..2 {
+            let entry = pages.entry(base + page * PAGE);
+            assert_eq!(pte::classify(entry), PteKind::DemandZero);
+            assert_eq!(pte::decode(entry).unwrap().2, PAGE_READONLY);
+        }
+        assert_eq!(vm.query(&pages, base).protect, PAGE_READONLY);
+        assert_eq!(vm.query(&pages, base).size, 0x2000);
+        assert_eq!(
+            vm.protect(&mut pages, base + 0x2000, PAGE, PAGE_NOACCESS),
+            Err(VmError::InvalidAddress),
+            "the reserved page is not committed"
+        );
     }
 }

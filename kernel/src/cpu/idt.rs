@@ -289,6 +289,20 @@ fn resolve_or_end(frame: &mut ExceptionFrame) {
         {
             return;
         }
+        // The kernel's copy on a user page's behalf: a committed page not mapped yet (its first
+        // touch) or one back from a backing list resolves on the entry alone as well — map it
+        // and the copy resumes. A fault raised by user code reaches the same resolution through
+        // the exception dispatch (`user::seh::dispatch_fault`).
+        if in_copy
+            && crate::mem::demand::map(
+                &mut crate::mem::vm::CurrentPages,
+                cr2,
+                frame.error_code & 0b10 != 0,
+                false,
+            )
+        {
+            return;
+        }
         // A guard page fires, once. Inside the running thread's stack it grows the stack and the
         // access resumes; any other guard's access raises the guard violation — the program's, or,
         // for the kernel's copy, a failed copy (as the platform's probe of one fails), the guard

@@ -5,6 +5,13 @@
 //! VirtualFree(Ex), VirtualProtect(Ex), VirtualQuery(Ex), ReadProcessMemory and WriteProcessMemory
 //! are Win32 code over these, as on Windows 2000.
 //!
+//! A MEM_COMMIT is a charge against the process's commit quota ([`crate::mem::quota`], taken from
+//! the system's commit limit at the process's creation), not a mapping: the charge is taken before
+//! any page is touched — past the limit the call is refused with the commitment-limit status — and
+//! the committed pages are written as demand-zero entries, their zeroed frames faulted in on first
+//! touch by the page-fault path ([`crate::mem::demand`]). A MEM_DECOMMIT or MEM_RELEASE discharges
+//! what its pages were charged.
+//!
 //! The process is any the caller holds a handle to (see [`super::object::reference_process`]),
 //! with the access MSDN's Win32 calls name: PROCESS_VM_OPERATION to change its memory,
 //! PROCESS_QUERY_INFORMATION to query it, PROCESS_VM_READ and PROCESS_VM_WRITE to copy from and
@@ -120,11 +127,11 @@ pub struct ViewCommit {
     pub mapping: Option<crate::ob::Mapping>,
 }
 
-/// Whether an NtAllocateVirtualMemory call is a commit inside a mapped view (MEM_COMMIT at an
-/// address a view or an image holds, no reservation asked), which Windows 2000 takes rather than
-/// refuses as conflicting: the view's pages it names, which must stay inside the view
-/// (STATUS_CONFLICTING_ADDRESSES otherwise). None for every other call ([`allocate`]'s). The
-/// argument checks come first, as for any call.
+/// Whether an NtAllocateVirtualMemory call is a commit or a reset inside a mapped view (MEM_COMMIT
+/// or MEM_RESET at an address a view or an image holds, no reservation asked), which Windows 2000
+/// takes rather than refuses as conflicting: the view's pages it names, which must stay inside
+/// the view (STATUS_CONFLICTING_ADDRESSES otherwise). None for every other call ([`allocate`]'s).
+/// The argument checks come first, as for any call.
 pub fn view_commit(
     space: &AddressSpace,
     address: u32,
@@ -134,7 +141,7 @@ pub fn view_commit(
     protect: u32,
 ) -> Result<Option<ViewCommit>, NtStatus> {
     check_allocation(address, zero_bits, size, kind, protect)?;
-    if kind & MEM_RESERVE != 0 || kind == MEM_RESET || address == 0 {
+    if kind & MEM_RESERVE != 0 || address == 0 {
         return Ok(None);
     }
     let Some(region) = space
@@ -166,15 +173,53 @@ pub fn settle_view_commit(commit: ViewCommit, paging_file: bool) -> Result<(u32,
     }
 }
 
+/// The status a [`VmError`] refuses a call with.
+fn refused(error: VmError) -> NtStatus {
+    match error {
+        VmError::InvalidAddress => STATUS_CONFLICTING_ADDRESSES,
+        VmError::InvalidParameter => STATUS_INVALID_PARAMETER_2,
+        VmError::NoMemory => STATUS_NO_MEMORY,
+    }
+}
+
+/// Charge a commit of the pages `[address, address + size)` covers: one page per page of the
+/// range not already committed, against the process's quota and noted against the system's
+/// total committed pages. Past the quota's limit the charge is refused with the commitment-limit
+/// status and nothing is charged. Returns the freshly committed pages (the charge taken).
+fn charge_commit(
+    space: &mut AddressSpace,
+    pages: &impl Pages,
+    address: u32,
+    size: u32,
+) -> Result<u32, NtStatus> {
+    let fresh = space.uncommitted_pages(pages, address, size).map_err(refused)?;
+    if fresh > 0 {
+        space.quota.charge(fresh as u64 * PAGE as u64)?;
+        crate::mem::note_commit_charge_pages(fresh as i32);
+    }
+    Ok(fresh)
+}
+
+/// Give a charge back: `pages` pages of commit undone (a commit that failed after charging, or
+/// a decommit or release of committed pages), out of the quota and the system's total.
+fn discharge_pages(space: &mut AddressSpace, pages: u32) {
+    if pages > 0 {
+        space.quota.discharge(pages as u64 * PAGE as u64);
+        crate::mem::note_commit_charge_pages(-(pages as i32));
+    }
+}
+
 /// NtAllocateVirtualMemory's rules: a reservation (committed whole when MEM_COMMIT rides along),
 /// or a commit inside a private one (a commit without an address reserves too), or a reset. The
 /// base and the size the call settled on: the reservation's, or the committed or reset pages'. A
 /// reservation without an address takes the lowest free range below the zero bits' limit, the
-/// highest with MEM_TOP_DOWN. A commit is all or nothing: one that runs out of memory
-/// (STATUS_NO_MEMORY) leaves every page as it was, and a reservation it came with goes. A commit
-/// inside a view is [`view_commit`]'s. A commit anywhere else — the kernel's own regions included,
-/// where a TEB the kernel has yet to map for a thread lies — is STATUS_CONFLICTING_ADDRESSES, and
-/// so is a reset ([`reset`]).
+/// highest with MEM_TOP_DOWN. A commit is a charge, not a mapping: it is taken against the
+/// process's quota before any page is touched — one that would carry the charge past the limit is
+/// refused with the commitment-limit status and leaves every page as it was, and a reservation it
+/// came with goes — and the committed pages are written as demand-zero entries, their frames
+/// faulted in on first touch. A commit inside a view is [`view_commit`]'s. A commit anywhere else —
+/// the kernel's own regions included, where a TEB the kernel has yet to map for a thread lies — is
+/// STATUS_CONFLICTING_ADDRESSES, and so is a reset ([`reset`]).
 pub fn allocate(
     space: &mut AddressSpace,
     pages: &mut impl Pages,
@@ -188,11 +233,6 @@ pub fn allocate(
     if kind == MEM_RESET {
         return reset(space, address, size);
     }
-    let refused = |error| match error {
-        VmError::InvalidAddress => STATUS_CONFLICTING_ADDRESSES,
-        VmError::InvalidParameter => STATUS_INVALID_PARAMETER_2,
-        VmError::NoMemory => STATUS_NO_MEMORY,
-    };
     if kind & MEM_RESERVE != 0 || address == 0 {
         let base = space
             .reserve_placed(
@@ -205,7 +245,17 @@ pub fn allocate(
             .map_err(refused)?;
         let region = space.region_at(base).expect("just reserved");
         if kind & MEM_COMMIT != 0 {
-            if let Err(error) = space.commit(pages, base, region.size, protect) {
+            // The charge first, all or nothing: refused past the limit, the reservation it came
+            // with goes too.
+            let fresh = match charge_commit(space, pages, base, region.size) {
+                Ok(fresh) => fresh,
+                Err(status) => {
+                    let _ = space.release(pages, base);
+                    return Err(status);
+                }
+            };
+            if let Err(error) = space.commit_demand(pages, base, region.size, protect) {
+                discharge_pages(space, fresh);
                 let _ = space.release(pages, base);
                 return Err(refused(error));
             }
@@ -216,9 +266,14 @@ pub fn allocate(
         Some(region) if region.kind == Kind::Private => {}
         _ => return Err(STATUS_CONFLICTING_ADDRESSES),
     }
-    let start = space
-        .commit(pages, address, size, protect)
-        .map_err(refused)?;
+    let fresh = charge_commit(space, pages, address, size)?;
+    let start = match space.commit_demand(pages, address, size, protect) {
+        Ok((start, _)) => start,
+        Err(error) => {
+            discharge_pages(space, fresh);
+            return Err(refused(error));
+        }
+    };
     let (_, end) = page_span(address, size);
     Ok((start, (end - start as u64) as u32))
 }
@@ -242,9 +297,10 @@ pub fn reset(space: &AddressSpace, address: u32, size: u32) -> Result<(u32, u32)
 
 /// NtFreeVirtualMemory's rules: a release names a private region's base with no size; a decommit
 /// any pages of one (no size: the whole region, from its base). The base and the size released or
-/// decommitted. A view or an image is not private memory: as an address no allocation holds, it is
-/// STATUS_MEMORY_NOT_ALLOCATED. The kernel's own regions (the TEBs, the PEB, the shared data page)
-/// are secured, as Windows 2000's PEB and TEB are (MiCheckSecuredVad):
+/// decommitted. The committed pages released or decommitted are discharged from the process's
+/// commit quota (and the system's total). A view or an image is not private memory: as an address
+/// no allocation holds, it is STATUS_MEMORY_NOT_ALLOCATED. The kernel's own regions (the TEBs, the
+/// PEB, the shared data page) are secured, as Windows 2000's PEB and TEB are (MiCheckSecuredVad):
 /// STATUS_INVALID_PAGE_PROTECTION for any of their pages.
 pub fn free(
     space: &mut AddressSpace,
@@ -274,19 +330,22 @@ pub fn free(
             return Err(STATUS_FREE_VM_NOT_AT_BASE);
         }
         if kind == MEM_RELEASE {
-            space
+            let (_, charged) = space
                 .release(pages, address)
                 .map_err(|_| STATUS_MEMORY_NOT_ALLOCATED)?;
+            discharge_pages(space, charged);
         } else {
-            space
+            let charged = space
                 .decommit(pages, address, 0)
                 .map_err(|_| STATUS_MEMORY_NOT_ALLOCATED)?;
+            discharge_pages(space, charged);
         }
         return Ok((region.base, region.size));
     }
-    space
+    let charged = space
         .decommit(pages, address, size)
         .map_err(|_| STATUS_MEMORY_NOT_ALLOCATED)?;
+    discharge_pages(space, charged);
     let (start, end) = page_span(address, size);
     Ok((start, (end - start as u64) as u32))
 }
@@ -669,9 +728,9 @@ fn check_process(_call: &mut NtCall, process: Handle, _access: u32) -> Result<()
     Err(STATUS_INVALID_HANDLE)
 }
 
-/// NtAllocateVirtualMemory (see [`allocate`], and [`view_commit`] for a commit inside a view,
-/// whose section is consulted once the address space is released: its lock is never held across
-/// the object directory's).
+/// NtAllocateVirtualMemory (see [`allocate`], and [`view_commit`] for a commit or a reset inside a
+/// view, whose section is consulted once the address space is released: its lock is never held
+/// across the object directory's).
 pub fn allocate_virtual_memory(
     call: &mut NtCall,
     process: Handle,
@@ -690,7 +749,18 @@ pub fn allocate_virtual_memory(
     })?;
     let (start, extent) = match allocated {
         Ok(range) => range,
-        Err(commit) => settle_view_commit(commit, paging_file(commit.mapping))?,
+        Err(commit) => {
+            if kind == MEM_RESET {
+                // A reset over a view: only the paging file's own pages take it.
+                if paging_file(commit.mapping) {
+                    (commit.base, commit.size)
+                } else {
+                    return Err(STATUS_CONFLICTING_ADDRESSES);
+                }
+            } else {
+                settle_view_commit(commit, paging_file(commit.mapping))?
+            }
+        }
     };
     base.write(start)?;
     size.write(extent)?;
@@ -786,6 +856,8 @@ mod tests {
     use rtl::pod::Pod;
 
     use super::*;
+    use crate::mem::pte::{self, PteKind};
+    use crate::mem::quota::{CommitQuota, STATUS_COMMITMENT_LIMIT};
 
     /// A query's answer is MEMORY_BASIC_INFORMATION's dwords in order.
     #[test]
@@ -1070,6 +1142,7 @@ mod tests {
     #[test]
     fn the_captured_refusals() {
         let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
+        space.quota = CommitQuota::new(1 << 40);
         let rw = vm::PAGE_READWRITE;
         assert_eq!(
             allocate(&mut space, &mut pages, 0, 0, 0, MEM_RESERVE, rw),
@@ -1088,9 +1161,7 @@ mod tests {
             87
         );
         assert_eq!(
-            error(allocate(
-                &mut space,
-                &mut pages,
+            error(allocate(&mut space, &mut pages,
                 0x8000_0000,
                 0,
                 4096,
@@ -1100,9 +1171,7 @@ mod tests {
             87
         );
         assert_eq!(
-            error(allocate(
-                &mut space,
-                &mut pages,
+            error(allocate(&mut space, &mut pages,
                 0x4000_0000,
                 0,
                 4096,
@@ -1125,9 +1194,7 @@ mod tests {
             Ok((big, 0x10_0000))
         );
         assert_eq!(
-            allocate(
-                &mut space,
-                &mut pages,
+            allocate(&mut space, &mut pages,
                 0x2000_0000,
                 0,
                 0x1_0000,
@@ -1137,9 +1204,7 @@ mod tests {
             Ok((0x2000_0000, 0x1_0000))
         );
         assert_eq!(
-            error(allocate(
-                &mut space,
-                &mut pages,
+            error(allocate(&mut space, &mut pages,
                 0x2000_0000,
                 0,
                 0x1_0000,
@@ -1151,9 +1216,7 @@ mod tests {
         // A reservation with a commit at an unaligned address: the granularity's base, the region
         // to the last page the request touches.
         assert_eq!(
-            allocate(
-                &mut space,
-                &mut pages,
+            allocate(&mut space, &mut pages,
                 0x3000_1234,
                 0,
                 0x1000,
@@ -1168,12 +1231,11 @@ mod tests {
     #[test]
     fn commits_and_decommits_report_their_pages() {
         let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
+        space.quota = CommitQuota::new(1 << 40);
         let rw = vm::PAGE_READWRITE;
         let (base, _) = allocate(&mut space, &mut pages, 0, 0, 0x10_0000, MEM_RESERVE, rw).unwrap();
         assert_eq!(
-            allocate(
-                &mut space,
-                &mut pages,
+            allocate(&mut space, &mut pages,
                 base + 0x1_0010,
                 0,
                 0x1000,
@@ -1187,9 +1249,7 @@ mod tests {
             Ok((MEM_COMMIT, 0x2000))
         );
         assert_eq!(
-            free(
-                &mut space,
-                &mut pages,
+            free(&mut space, &mut pages,
                 base + 0x1_0000,
                 0x2000,
                 MEM_DECOMMIT
@@ -1291,6 +1351,7 @@ mod tests {
     fn the_kernels_regions_are_secured() {
         use crate::user::{thread_teb_va, PEB_PAGE, TEB_PAGE, THREAD_TEB_REGION};
         let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
+        space.quota = CommitQuota::new(1 << 40);
         crate::exec::loader::seed_process_regions(&mut space);
         let rw = vm::PAGE_READWRITE;
         let teb = thread_teb_va(1);
@@ -1311,9 +1372,7 @@ mod tests {
                 Err(STATUS_CONFLICTING_ADDRESSES)
             );
             assert_eq!(
-                allocate(
-                    &mut space,
-                    &mut pages,
+                allocate(&mut space, &mut pages,
                     address,
                     0,
                     PAGE,
@@ -1350,9 +1409,8 @@ mod tests {
     #[test]
     fn protections_report_the_old_one() {
         let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
-        let (p, _) = allocate(
-            &mut space,
-            &mut pages,
+        space.quota = CommitQuota::new(1 << 40);
+        let (p, _) = allocate(&mut space, &mut pages,
             0,
             0,
             0x3000,
@@ -1382,9 +1440,7 @@ mod tests {
             protect(&mut space, &mut pages, p, 0x1_0000, vm::PAGE_READWRITE),
             Err(STATUS_CONFLICTING_ADDRESSES)
         );
-        let (q, _) = allocate(
-            &mut space,
-            &mut pages,
+        let (q, _) = allocate(&mut space, &mut pages,
             0,
             0,
             0x2000,
@@ -1430,6 +1486,7 @@ mod tests {
     #[test]
     fn a_read_only_view_never_writes_its_section() {
         let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
+        space.quota = CommitQuota::new(1 << 40);
         let ro = vm::PAGE_READONLY;
         let view = space
             .reserve(None, 0x2000, ro, Kind::Mapped(vm::Maximum::Read))
@@ -1497,6 +1554,7 @@ mod tests {
     #[test]
     fn a_copy_on_write_view_made_writable_stays_copy_on_write() {
         let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
+        space.quota = CommitQuota::new(1 << 40);
         let wc = vm::PAGE_WRITECOPY;
         let view = space
             .reserve(None, PAGE, wc, Kind::Mapped(vm::Maximum::CopyOnWrite))
@@ -1544,6 +1602,7 @@ mod tests {
     #[test]
     fn an_image_views_sections_write_their_own_copies() {
         let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
+        space.quota = CommitQuota::new(1 << 40);
         let image = space
             .reserve(None, 0x4000, vm::PAGE_EXECUTE_WRITECOPY, Kind::Image)
             .unwrap();
@@ -1600,10 +1659,9 @@ mod tests {
     #[test]
     fn a_reset_is_alone_and_keeps_the_pages() {
         let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
+        space.quota = CommitQuota::new(1 << 40);
         let rw = vm::PAGE_READWRITE;
-        let (p, _) = allocate(
-            &mut space,
-            &mut pages,
+        let (p, _) = allocate(&mut space, &mut pages,
             0,
             0,
             0x4000,
@@ -1618,9 +1676,7 @@ mod tests {
             Ok((p + 0x1000, 0x2000))
         );
         assert_eq!(
-            allocate(
-                &mut space,
-                &mut pages,
+            allocate(&mut space, &mut pages,
                 p,
                 0,
                 0x4000,
@@ -1649,9 +1705,7 @@ mod tests {
             );
         }
         assert_eq!(
-            error(allocate(
-                &mut space,
-                &mut pages,
+            error(allocate(&mut space, &mut pages,
                 p,
                 0,
                 0x1000,
@@ -1670,9 +1724,7 @@ mod tests {
             "past the region"
         );
         assert_eq!(
-            allocate(
-                &mut space,
-                &mut pages,
+            allocate(&mut space, &mut pages,
                 0x6000_0000,
                 0,
                 0x1000,
@@ -1695,8 +1747,9 @@ mod tests {
             .reserve(None, 0x1_0000, rw, Kind::Mapped(vm::Maximum::Write))
             .unwrap();
         assert_eq!(
-            view_commit(&space, view, 0, 0x1000, MEM_RESET, rw),
-            Ok(None)
+            view_commit(&space, view, 0, 0x1000, MEM_RESET, rw).map(|commit| commit.is_some()),
+            Ok(true),
+            "a reset over a view is the view's to settle"
         );
         assert_eq!(
             allocate(&mut space, &mut pages, view, 0, 0x1000, MEM_RESET, rw),
@@ -1710,10 +1763,9 @@ mod tests {
     #[test]
     fn zero_bits_and_top_down_place_a_reservation() {
         let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
+        space.quota = CommitQuota::new(1 << 40);
         let rw = vm::PAGE_READWRITE;
-        let (high, size) = allocate(
-            &mut space,
-            &mut pages,
+        let (high, size) = allocate(&mut space, &mut pages,
             0,
             0,
             0x1000,
@@ -1724,9 +1776,7 @@ mod tests {
         assert_eq!((high, size), (USER_HIGH - vm::GRANULARITY, 0x1000));
         let (low, _) = allocate(&mut space, &mut pages, 0, 0, 0x1000, MEM_RESERVE, rw).unwrap();
         assert_eq!(low, vm::USER_LOW);
-        let (bounded, _) = allocate(
-            &mut space,
-            &mut pages,
+        let (bounded, _) = allocate(&mut space, &mut pages,
             0,
             4,
             0x1000,
@@ -1754,9 +1804,7 @@ mod tests {
             "nothing fits below 2 KiB"
         );
         assert_eq!(
-            allocate(
-                &mut space,
-                &mut pages,
+            allocate(&mut space, &mut pages,
                 0x5000_0000,
                 4,
                 0x1000,
@@ -1771,50 +1819,109 @@ mod tests {
         );
     }
 
-    /// A commit that runs out of memory (the frames a commit draws on spent midway) is
-    /// STATUS_NO_MEMORY (ERROR_NOT_ENOUGH_MEMORY) and commits nothing: inside a reservation the
-    /// pages stay reserved, and a reservation made with it goes. With the frames it commits whole.
+    /// A commit is a charge, not a mapping: it takes one page of the quota per fresh page of the
+    /// range (noting the system's total), writes demand-zero entries and takes no frame — it goes
+    /// with none to spare. A charge past the quota's limit is refused with the commitment-limit
+    /// status and leaves every page as it was, a reservation it came with included. A decommit or
+    /// a release discharges what its pages were charged, and a recommit of a decommitted range
+    /// charges again and reads back zeroed.
     #[test]
-    fn a_commit_out_of_memory_leaves_nothing_behind() {
+    fn a_commit_charges_the_quota_and_writes_demand_zero_entries() {
         let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
+        space.quota = CommitQuota::new(1 << 40);
+        space.quota = CommitQuota::new(0x4000);
         let rw = vm::PAGE_READWRITE;
         let (p, _) = allocate(&mut space, &mut pages, 0, 0, 0x10_0000, MEM_RESERVE, rw).unwrap();
-        pages.budget = Some(5);
+        assert_eq!(space.quota.charged(), 0, "a reservation alone charges nothing");
         assert_eq!(
-            allocate(&mut space, &mut pages, p, 0, 0x8000, MEM_COMMIT, rw),
-            Err(STATUS_NO_MEMORY)
+            query(&space, &pages, p).map(|info| info.state),
+            Ok(MEM_RESERVE)
         );
+        // Two pages commit with no frame to spare: charged, demand-zero entries.
+        pages.budget = Some(0);
         assert_eq!(
-            error(allocate(
-                &mut space, &mut pages, p, 0, 0x8000, MEM_COMMIT, rw
-            )),
-            8
+            allocate(&mut space, &mut pages, p, 0, 0x2000, MEM_COMMIT, rw),
+            Ok((p, 0x2000))
         );
+        assert_eq!(space.quota.charged(), 0x2000);
+        assert_eq!(pages.budget, Some(0), "no frame was taken");
+        for page in 0..2 {
+            assert_eq!(
+                pte::classify(pages.entry(p + page * PAGE)),
+                PteKind::DemandZero,
+                "page {page}"
+            );
+        }
+        assert_eq!(
+            query(&space, &pages, p).map(|info| (info.state, info.protect, info.size)),
+            Ok((MEM_COMMIT, rw, 0x2000))
+        );
+        // A third page fits; a charge past the limit is refused and changes nothing.
+        assert_eq!(
+            allocate(&mut space, &mut pages, p + 0x2000, 0, PAGE, MEM_COMMIT, rw),
+            Ok((p + 0x2000, PAGE))
+        );
+        assert_eq!(space.quota.charged(), 0x3000);
+        assert_eq!(
+            allocate(&mut space, &mut pages, p + 0x3000, 0, 0x2000, MEM_COMMIT, rw),
+            Err(STATUS_COMMITMENT_LIMIT)
+        );
+        assert_eq!(STATUS_COMMITMENT_LIMIT.0, 0xC000_012D);
+        assert_eq!(space.quota.charged(), 0x3000);
+        assert_eq!(
+            pte::classify(pages.entry(p + 0x3000)),
+            PteKind::Uncommitted,
+            "the refused commit wrote nothing"
+        );
+        // Recommitting committed pages charges nothing and keeps their entries.
+        assert_eq!(
+            allocate(&mut space, &mut pages, p, 0, 0x3000, MEM_COMMIT, rw),
+            Ok((p, 0x3000))
+        );
+        assert_eq!(space.quota.charged(), 0x3000);
+        // A decommit discharges its pages; a release discharges the rest.
+        assert_eq!(
+            free(&mut space, &mut pages, p, 0x2000, MEM_DECOMMIT),
+            Ok((p, 0x2000))
+        );
+        assert_eq!(space.quota.charged(), 0x1000);
         assert_eq!(
             query(&space, &pages, p).map(|info| (info.state, info.size)),
-            Ok((MEM_RESERVE, 0x10_0000))
+            Ok((MEM_RESERVE, 0x2000)),
+            "the decommitted half is reserved; the third page is still committed"
         );
-        assert_eq!(pages.budget, Some(5), "every frame taken went back");
+        // The recommitted range charges again and its first touch reads zeroed.
         assert_eq!(
-            allocate(
-                &mut space,
-                &mut pages,
-                0,
-                0,
-                0x8000,
-                MEM_RESERVE | MEM_COMMIT,
-                rw
-            ),
-            Err(STATUS_NO_MEMORY)
+            allocate(&mut space, &mut pages, p, 0, 0x2000, MEM_COMMIT, rw),
+            Ok((p, 0x2000))
         );
+        assert_eq!(space.quota.charged(), 0x3000);
         assert_eq!(
-            query(&space, &pages, p + 0x10_0000).map(|info| info.state),
-            Ok(vm::MEM_FREE)
+            pte::classify(pages.entry(p)),
+            PteKind::DemandZero,
+            "the recommitted page is demand-zero again"
         );
+        pages.budget = None;
+        assert!(crate::mem::demand::apply(&mut pages, p, false, true));
+        let (_, frame, _) = pte::decode(pages.entry(p)).unwrap();
+        assert_eq!(pages.frame_word(frame, 0), 0, "the faulted-in frame is zeroed");
         assert_eq!(
-            allocate(&mut space, &mut pages, p, 0, 0x5000, MEM_COMMIT, rw),
-            Ok((p, 0x5000))
+            free(&mut space, &mut pages, p, 0, MEM_RELEASE),
+            Ok((p, 0x10_0000))
         );
-        assert_eq!(pages.budget, Some(0));
+        assert_eq!(space.quota.charged(), 0);
+        assert_eq!(query(&space, &pages, p).map(|info| info.state), Ok(vm::MEM_FREE));
+        // A reservation with a commit past the limit goes with its charge.
+        space.quota = CommitQuota::new(PAGE as u64);
+        assert_eq!(
+            allocate(&mut space, &mut pages, 0, 0, 0x2000, MEM_RESERVE | MEM_COMMIT, rw),
+            Err(STATUS_COMMITMENT_LIMIT)
+        );
+        assert_eq!(space.quota.charged(), 0);
+        assert_eq!(
+            query(&space, &pages, p).map(|info| info.state),
+            Ok(vm::MEM_FREE),
+            "the refused reservation went"
+        );
     }
 }

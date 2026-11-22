@@ -98,6 +98,7 @@ use core::cell::UnsafeCell;
 
 #[cfg(target_arch = "x86")]
 use crate::mem::paging;
+use crate::mem::quota::CommitQuota;
 use crate::mem::vm::AddressSpace;
 use crate::sched::object::{HandleTable, HANDLE_SHIFT, HANDLE_SLOTS};
 use crate::sched::process::{PinnedProcess, SchedProcess};
@@ -123,8 +124,8 @@ pub struct Process {
     /// The handle table: the process's handles-to-objects (its open files' among them: a file
     /// object each, see `crate::fs::file`).
     handles: ShortLock<HandleTable>,
-    /// The address space's regions and views: every user page the process holds lies in one, and
-    /// every mapping, commit and release of its pages goes through it.
+    /// The address space's regions and views, and its commit quota: every user page the process
+    /// holds lies in one, and every mapping, commit and release of its pages goes through it.
     space: ShortLock<AddressSpace>,
     /// What else changes over the process's life (see [`ProcessState`]).
     state: ShortLock<ProcessState>,
@@ -449,6 +450,7 @@ impl Process {
         self.with_handles(|table| {
             table.drain(|_| unreachable!("a free process record holds no handle"))
         });
+        // The address space's reset starts the commit quota over at the system's commit limit too.
         self.with_space(AddressSpace::reset);
         locked(&self.state, |state| {
             *state = ProcessState::fresh();
@@ -537,7 +539,9 @@ impl Process {
     }
 
     /// Run `f` on the address space, locked: never across a wait, a hold of the directory or a
-    /// copy of user memory (the page-fault path takes this lock).
+    /// copy of user memory (the page-fault path takes this lock). The space's commit quota
+    /// ([`AddressSpace::quota`]) is taken and discharged under the same lock, by the services
+    /// whose calls charge or discharge it.
     pub fn with_space<R>(&self, f: impl FnOnce(&mut AddressSpace) -> R) -> R {
         locked(&self.space, f)
     }
@@ -1031,6 +1035,15 @@ impl Process {
         // left at its end).
         #[cfg(target_arch = "x86")]
         crate::csr::disconnect(self.object());
+        // The charge the process still held goes with its address space, out of the system's
+        // total committed pages.
+        let charged = self.with_space(|space| {
+            let limit = space.quota.limit();
+            core::mem::replace(&mut space.quota, CommitQuota::new(limit)).charged()
+        });
+        if charged > 0 {
+            crate::mem::note_commit_charge_pages(-((charged / paging::PAGE_SIZE as u64) as i32));
+        }
         release_address_space_of(self);
         locked(&self.state, |state| state.torn_down = true);
         true
