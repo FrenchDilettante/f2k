@@ -12,6 +12,12 @@
 //! The volume keeps its free-cluster count once it has one ([`Volume::free_clusters`]): FSInfo's
 //! on a volume marked clean, else a FAT scan's, then kept in step with every FAT change.
 //!
+//! A FAT change is written through to every copy at once, except inside a batch
+//! ([`Volume::hold_fat`] to [`Volume::release_fat`]), where the last two FAT sectors changed are
+//! held and each written once per copy when the changes move on, and at the release: a growth that
+//! takes many clusters writes each FAT sector once, not once per entry (two are held, as a chain
+//! crossing a sector boundary changes both sides of it).
+//!
 //! The shutdown closes the volume to changes ([`Volume::close`]): every change after it is refused
 //! with STATUS_TOO_LATE, the status NT documents for a write to a volume after its dismount, before
 //! anything is written (the dirty mark included), so the volume stays as the flush left it. Its
@@ -26,6 +32,7 @@ use super::fat::{
     entry_position,
     FatCache,
     FatEntry,
+    FatSector,
     ENTRIES_PER_SECTOR,
     ENTRY_MASK,
 };
@@ -34,6 +41,9 @@ use super::layout::Layout;
 use super::raw::to_block;
 use crate::block::BlockDevice;
 use crate::status::{NtStatus, STATUS_TOO_LATE, STATUS_UNRECOGNIZED_VOLUME};
+
+/// How many changed FAT sectors a batch holds.
+const PENDING: usize = 2;
 
 /// FAT[1]'s clean-shutdown bit: set while the volume on disk is consistent, clear (dirty) from a
 /// writer's first change until it marks the volume clean again — a volume found dirty gets a check
@@ -67,6 +77,10 @@ pub struct Volume {
     device: &'static dyn BlockDevice,
     layout: Layout,
     cache: FatCache,
+    /// Whether a batch holds FAT changes back.
+    holding: bool,
+    /// The FAT sectors a batch changed and has not written yet, oldest first: LBA and contents.
+    pending: [Option<(u64, FatSector)>; PENDING],
     /// Where the next free-cluster search starts (an allocation's hint).
     next_free: u32,
     /// Whether this mount has marked the volume dirty since it was mounted or last marked clean.
@@ -113,6 +127,8 @@ impl Volume {
             device,
             layout,
             cache: FatCache::new(),
+            holding: false,
+            pending: [None; PENDING],
             next_free: 2,
             dirty: false,
             free: None,
@@ -141,10 +157,17 @@ impl Volume {
             cluster
         );
         let (sector, index) = entry_position(cluster);
-        let data = self
-            .cache
-            .sector(self.device, self.layout.fat_start + sector)?;
-        Ok(decode_entry(data[index].get(), self.layout.max_cluster()))
+        let max = self.layout.max_cluster();
+        let data = self.fat_sector(self.layout.fat_start + sector)?;
+        Ok(decode_entry(data[index].get(), max))
+    }
+
+    /// The FAT sector at `lba`: the batch's unwritten copy, else through the cache.
+    fn fat_sector(&mut self, lba: u64) -> Result<&FatSector, NtStatus> {
+        match self.pending.iter().flatten().find(|(at, _)| *at == lba) {
+            Some((_, data)) => Ok(data),
+            None => self.cache.sector(self.device, lba),
+        }
     }
 
     /// How many FAT copies the volume keeps (every one is written).
@@ -163,7 +186,10 @@ impl Volume {
         );
         self.changing()?;
         let (sector, index) = entry_position(cluster);
-        let old = self.patch_fat(sector, index, |old| old & !ENTRY_MASK | value & ENTRY_MASK)?;
+        let hold = self.holding;
+        let old = self.patch_fat(sector, index, hold, |old| {
+            old & !ENTRY_MASK | value & ENTRY_MASK
+        })?;
         if let Some(free) = self.free.as_mut() {
             match (old & ENTRY_MASK == 0, value & ENTRY_MASK == 0) {
                 (true, false) => *free = free.saturating_sub(1),
@@ -176,26 +202,83 @@ impl Volume {
 
     /// Rewrite the raw 32-bit FAT entry `index` of FAT sector `sector` through `update`, in every
     /// FAT copy and the cache (nothing is written when it stays the same): the entry as it was.
+    /// With `hold`, the sector is kept as the batch's pending one instead of written.
     fn patch_fat(
         &mut self,
         sector: u64,
         index: usize,
+        hold: bool,
         update: impl FnOnce(u32) -> u32,
     ) -> Result<u32, NtStatus> {
         let lba = self.layout.fat_start + sector;
-        let mut data = *self.cache.sector(self.device, lba)?;
+        let mut data = *self.fat_sector(lba)?;
         let old = data[index].get();
         let raw = update(old);
         if raw == old {
             return Ok(old);
         }
         data[index].set(raw);
-        let bytes = to_block(&data);
-        for copy in 0..self.fat_copies() as u64 {
-            self.write_raw(lba + copy * self.layout.sectors_per_fat as u64, &bytes)?;
+        let held = self
+            .pending
+            .iter()
+            .position(|pending| matches!(pending, Some((at, _)) if *at == lba));
+        if let Some(slot) = held {
+            self.pending[slot] = Some((lba, data));
+            if !hold {
+                self.write_pending()?;
+            }
+        } else if hold {
+            if self.pending[PENDING - 1].is_some() {
+                self.write_oldest()?;
+            }
+            let free = self.pending.iter().position(Option::is_none).unwrap();
+            self.pending[free] = Some((lba, data));
+        } else {
+            self.write_pending()?;
+            self.write_fat(lba, &data)?;
         }
         self.cache.store(lba, &data);
         Ok(old)
+    }
+
+    /// Write FAT sector `lba`'s `data` to every FAT copy.
+    fn write_fat(&self, lba: u64, data: &FatSector) -> Result<(), NtStatus> {
+        let bytes = to_block(data);
+        for copy in 0..self.fat_copies() as u64 {
+            self.write_raw(lba + copy * self.layout.sectors_per_fat as u64, &bytes)?;
+        }
+        Ok(())
+    }
+
+    /// Write the oldest pending FAT sector; a failed write keeps it pending.
+    fn write_oldest(&mut self) -> Result<(), NtStatus> {
+        if let Some((lba, data)) = self.pending[0] {
+            self.write_fat(lba, &data)?;
+        }
+        self.pending.rotate_left(1);
+        self.pending[PENDING - 1] = None;
+        Ok(())
+    }
+
+    /// Write every pending FAT sector, oldest first.
+    fn write_pending(&mut self) -> Result<(), NtStatus> {
+        while self.pending[0].is_some() {
+            self.write_oldest()?;
+        }
+        Ok(())
+    }
+
+    /// Start a batch: FAT changes are held until they move to another FAT sector, or until
+    /// [`Volume::release_fat`].
+    pub fn hold_fat(&mut self) {
+        assert!(!self.holding, "FAT batches do not nest");
+        self.holding = true;
+    }
+
+    /// End the batch, writing its pending FAT sector.
+    pub fn release_fat(&mut self) -> Result<(), NtStatus> {
+        self.holding = false;
+        self.write_pending()
     }
 
     /// Before a change: refused once the volume is closed; else the dirty mark, when this mount
@@ -205,7 +288,7 @@ impl Volume {
             return Err(STATUS_TOO_LATE);
         }
         if !self.dirty {
-            self.patch_fat(0, 1, |old| old & !CLEAN_SHUTDOWN)?;
+            self.patch_fat(0, 1, false, |old| old & !CLEAN_SHUTDOWN)?;
             self.dirty = true;
             self.write_fsinfo(UNKNOWN, UNKNOWN)?;
         }
@@ -216,7 +299,7 @@ impl Volume {
     /// on disk; the next change marks it dirty first.
     pub fn mark_clean(&mut self) -> Result<(), NtStatus> {
         if self.dirty {
-            self.patch_fat(0, 1, |old| old | CLEAN_SHUTDOWN)?;
+            self.patch_fat(0, 1, false, |old| old | CLEAN_SHUTDOWN)?;
             self.dirty = false;
         }
         Ok(())
@@ -236,6 +319,7 @@ impl Volume {
         if !self.dirty {
             return Ok(Flushed::Unchanged);
         }
+        self.write_pending()?;
         let free = self.scan_free()?;
         self.free = Some(free.count);
         self.write_fsinfo(free.count, free.next_free.unwrap_or(UNKNOWN))?;
@@ -250,9 +334,7 @@ impl Volume {
         let hint = self.next_free.clamp(2, max);
         let (mut count, mut first, mut after_hint) = (0u32, None, None);
         for sector in 0..=max / ENTRIES_PER_SECTOR {
-            let data = self
-                .cache
-                .sector(self.device, self.layout.fat_start + sector as u64)?;
+            let data = self.fat_sector(self.layout.fat_start + sector as u64)?;
             let base = sector * ENTRIES_PER_SECTOR;
             for (index, entry) in data.iter().enumerate() {
                 let cluster = base + index as u32;
@@ -279,7 +361,7 @@ impl Volume {
         if let Some(free) = self.free {
             return Ok(free);
         }
-        let fat1 = self.cache.sector(self.device, self.layout.fat_start)?[1].get();
+        let fat1 = self.fat_sector(self.layout.fat_start)?[1].get();
         let mut free = None;
         if let (true, Some(lba)) = (fat1 & CLEAN_SHUTDOWN != 0, self.layout.fsinfo_sector) {
             self.device.read(lba, self.fsinfo.as_bytes_mut())?;
@@ -321,6 +403,20 @@ impl Volume {
     pub fn write_sector(&mut self, lba: u64, data: &[u8; 512]) -> Result<(), NtStatus> {
         self.changing()?;
         self.write_raw(lba, data)
+    }
+
+    /// Read sectors from `lba` straight off the device.
+    pub fn read_sectors(&self, lba: u64, data: &mut [u8]) -> Result<(), NtStatus> {
+        self.device.read(lba, data)
+    }
+
+    /// Overwrite sectors inside a file's clusters straight on the device. Refused once the volume
+    /// is closed, but no dirty mark: neither the FAT nor a directory changes.
+    pub fn write_in_place(&self, lba: u64, data: &[u8]) -> Result<(), NtStatus> {
+        if self.closed {
+            return Err(STATUS_TOO_LATE);
+        }
+        self.device.write(lba, data)
     }
 
     fn write_raw(&self, lba: u64, data: &[u8; 512]) -> Result<(), NtStatus> {

@@ -77,14 +77,18 @@ pub trait PageStore {
     /// can move them in a single run (a file layer does): the default writes page by page
     /// through [`Self::write_at`].
     fn write_at_many(&mut self, offset: u64, data: &[u8]) -> Result<(), StoreError> {
-        assert!(!data.is_empty() && data.len() % PAGE_BYTES == 0, "whole pages");
+        assert!(
+            !data.is_empty() && data.len() % PAGE_BYTES == 0,
+            "whole pages"
+        );
         for (index, page) in data.chunks_exact(PAGE_BYTES).enumerate() {
             let page: &Page = page.try_into().expect("a whole page");
             self.write_at(offset + index as u64 * PAGE_BYTES as u64, page)?;
         }
         Ok(())
     }
-    /// Set the file's length to `len` bytes, zero-filling any growth.
+    /// Set the file's length to `len` bytes; a growth's contents are undefined (no slot is read
+    /// before it is written).
     fn set_len(&mut self, len: u64) -> Result<(), StoreError>;
 }
 
@@ -227,7 +231,11 @@ impl<S: PageStore> PagingFile<S> {
             "a multi-page write moves whole pages"
         );
         for index in 0..(data.len() / PAGE_BYTES) as u64 {
-            assert!(self.is_allocated(first + index), "slot {} of the run is not allocated", first + index);
+            assert!(
+                self.is_allocated(first + index),
+                "slot {} of the run is not allocated",
+                first + index
+            );
         }
         self.store.write_at_many(first * PAGE_BYTES as u64, data)
     }
@@ -350,18 +358,22 @@ impl<S: PageStore> PagingIo for FileIo<'_, S> {
 // The kernel wires the paging file to a file on the boot volume: [`BootVolumeStore`] adapts the
 // volume's file layer to [`PageStore`] — whole-page reads and writes at byte offsets and setting
 // the file's length, each operation inside the volume's own locked section — and [`boot_create`]
-// makes the file fresh at boot and sets the commit limit from it.
+// makes the file fresh at boot and sets the commit limit from it. Page I/O goes straight to the
+// device along the file's runs ([`Extents`], made again whenever the length changes), with no chain
+// walk and no directory-entry update, as Windows 2000's paging I/O does; a file in too many pieces
+// for the map goes through the file layer.
 
 #[cfg(target_arch = "x86")]
 mod target {
     use super::{boot_sizing, FileIo, Page, PageStore, PagingFile, StoreError};
-    use crate::mem::pageout::{PageIoError, PagingIo, SlotId, INVALID_SLOT};
     use crate::block::lock::DeviceLock;
     use crate::fs::fat32::dirent::{ATTR_HIDDEN, ATTR_SYSTEM};
+    use crate::fs::fat32::extent::Extents;
     use crate::fs::fat32::lookup::{self, File};
     use crate::fs::fat32::read;
     use crate::fs::fat32::volume::with_boot_volume;
-    use crate::fs::fat32::write;
+    use crate::fs::fat32::write::{self, Fill};
+    use crate::mem::pageout::{PageIoError, PagingIo, SlotId, INVALID_SLOT};
     use crate::status::{NtStatus, STATUS_DISK_FULL};
 
     /// The paging file's name in the boot volume's root directory.
@@ -379,13 +391,48 @@ mod target {
 
     /// The paging file on the boot volume: the store over its directory entry, kept by the boot
     /// ([`boot_create`]). Every operation runs inside the volume's locked section, so the store
-    /// itself holds nothing but the entry.
+    /// itself holds nothing but the entry and the map of its runs.
     pub struct BootVolumeStore {
         file: File,
+        /// The file's runs as of its last length change; none when it has too many.
+        extents: Option<Extents>,
+    }
+
+    impl BootVolumeStore {
+        /// The map, when it covers `len` bytes at `offset`.
+        fn mapped(&self, offset: u64, len: usize) -> Option<&Extents> {
+            self.extents
+                .as_ref()
+                .filter(|extents| extents.covers(offset, len))
+        }
+
+        /// Write `data` at `offset` straight to the device along the map; none when unmapped.
+        fn write_direct(&self, offset: u64, data: &[u8]) -> Option<Result<(), StoreError>> {
+            let extents = self.mapped(offset, data.len())?;
+            let written = with_boot_volume(|volume| {
+                extents.split(offset, data.len(), |lba, range| {
+                    volume.write_in_place(lba, &data[range])
+                })
+            });
+            Some(
+                written
+                    .ok_or(StoreError::Io)
+                    .and_then(|w| w.map_err(store_error)),
+            )
+        }
     }
 
     impl PageStore for BootVolumeStore {
         fn read_at(&mut self, offset: u64, page: &mut Page) -> Result<(), StoreError> {
+            if let Some(extents) = self.mapped(offset, page.len()) {
+                return with_boot_volume(|volume| {
+                    extents.split(offset, page.len(), |lba, range| {
+                        volume.read_sectors(lba, &mut page[range])
+                    })
+                })
+                .ok_or(StoreError::Io)?
+                .map_err(store_error);
+            }
             let offset = u32::try_from(offset).map_err(|_| StoreError::Io)?;
             let count = with_boot_volume(|volume| read::read_at(volume, &self.file, offset, page))
                 .ok_or(StoreError::Io)?
@@ -397,6 +444,9 @@ mod target {
         }
 
         fn write_at(&mut self, offset: u64, page: &Page) -> Result<(), StoreError> {
+            if let Some(written) = self.write_direct(offset, page) {
+                return written;
+            }
             let offset = u32::try_from(offset).map_err(|_| StoreError::Io)?;
             with_boot_volume(|volume| write::write_at(volume, &mut self.file, offset, page))
                 .ok_or(StoreError::Io)?
@@ -404,6 +454,9 @@ mod target {
         }
 
         fn write_at_many(&mut self, offset: u64, data: &[u8]) -> Result<(), StoreError> {
+            if let Some(written) = self.write_direct(offset, data) {
+                return written;
+            }
             let offset = u32::try_from(offset).map_err(|_| StoreError::Io)?;
             with_boot_volume(|volume| write::write_at(volume, &mut self.file, offset, data))
                 .ok_or(StoreError::Io)?
@@ -412,9 +465,14 @@ mod target {
 
         fn set_len(&mut self, len: u64) -> Result<(), StoreError> {
             let len = u32::try_from(len).map_err(|_| StoreError::NoSpace)?;
-            with_boot_volume(|volume| write::set_size(volume, &mut self.file, len))
-                .ok_or(StoreError::Io)?
-                .map_err(store_error)
+            let file = &mut self.file;
+            let (set, extents) = with_boot_volume(|volume| {
+                let set = write::set_size_with(volume, file, len, Fill::Unwritten);
+                (set, Extents::of(volume, file).ok().flatten())
+            })
+            .ok_or(StoreError::Io)?;
+            self.extents = extents;
+            set.map_err(store_error)
         }
     }
 
@@ -457,12 +515,16 @@ mod target {
 
         fn write(&mut self, slot: SlotId, page: &[u8]) -> Result<(), PageIoError> {
             let page: &Page = page.try_into().map_err(|_| PageIoError::Io)?;
-            io_result(with_paging_file(|file| file.write_page(u64::from(slot), page)))
+            io_result(with_paging_file(|file| {
+                file.write_page(u64::from(slot), page)
+            }))
         }
 
         fn read(&mut self, slot: SlotId, page: &mut [u8]) -> Result<(), PageIoError> {
             let page: &mut Page = page.try_into().map_err(|_| PageIoError::Io)?;
-            io_result(with_paging_file(|file| file.read_page(u64::from(slot), page)))
+            io_result(with_paging_file(|file| {
+                file.read_page(u64::from(slot), page)
+            }))
         }
 
         fn free_slot(&mut self, slot: SlotId) {
@@ -520,7 +582,10 @@ mod target {
                 PAGING_FILE_NAME,
                 &mut file,
             )?;
-            Ok(BootVolumeStore { file })
+            Ok(BootVolumeStore {
+                file,
+                extents: None,
+            })
         }) {
             Some(Ok(store)) => store,
             _ => return,
@@ -553,8 +618,9 @@ pub use target::{boot_create, with_paging_file, PagingFileIo};
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::vec::Vec;
+
+    use super::*;
 
     /// The boot sizes the file from the volume's free space — the reserve stays free, the rest
     /// goes in whole pages up to the boot's cap — and sets the commit limit to physical memory
@@ -563,7 +629,11 @@ mod tests {
     fn the_boot_sizes_the_file_from_the_free_space_and_sets_the_limit() {
         let mib = 1024 * 1024;
         let (size, limit) = boot_sizing(44 * mib + 123, 32 * mib);
-        assert_eq!(size, BOOT_MAX_PAGES * PAGE_BYTES as u64, "the boot's cap binds on a roomy volume");
+        assert_eq!(
+            size,
+            BOOT_MAX_PAGES * PAGE_BYTES as u64,
+            "the boot's cap binds on a roomy volume"
+        );
         assert_eq!(size % PAGE_BYTES as u64, 0);
         assert_eq!(limit, 32 * mib + size, "RAM plus the paging file");
         assert_eq!(limit - 32 * mib, size);
@@ -590,9 +660,15 @@ mod tests {
         assert_eq!(size, BOOT_MAX_PAGES * PAGE_BYTES as u64);
         assert_eq!(limit, 32 * mib + BOOT_MAX_PAGES * PAGE_BYTES as u64);
 
-        let (size, _) =
-            boot_sizing(FREE_SPACE_RESERVE_BYTES + (MAX_PAGES + 5) * PAGE_BYTES as u64, 0);
-        assert_eq!(size, BOOT_MAX_PAGES * PAGE_BYTES as u64, "the boot's cap binds before the bitmap's");
+        let (size, _) = boot_sizing(
+            FREE_SPACE_RESERVE_BYTES + (MAX_PAGES + 5) * PAGE_BYTES as u64,
+            0,
+        );
+        assert_eq!(
+            size,
+            BOOT_MAX_PAGES * PAGE_BYTES as u64,
+            "the boot's cap binds before the bitmap's"
+        );
     }
 
     /// A RAM disk as the store: a byte buffer that grows on `set_len` (zero-filling), refuses
@@ -670,7 +746,11 @@ mod tests {
         let file = PagingFile::create(RamDisk::new(u64::MAX), 10_000).unwrap();
         assert_eq!(file.pages(), 3);
         assert_eq!(file.size_bytes(), 3 * PAGE_BYTES as u64);
-        assert_eq!(file.store().data.len(), 3 * PAGE_BYTES, "the store was asked for the length");
+        assert_eq!(
+            file.store().data.len(),
+            3 * PAGE_BYTES,
+            "the store was asked for the length"
+        );
         assert_eq!(file.capacity(), 2, "slot 0 is reserved");
         assert_eq!(file.used(), 0);
         assert_eq!(file.free_slots(), 2);
@@ -689,7 +769,9 @@ mod tests {
     fn create_can_be_refused_by_the_store() {
         let disk = RamDisk::new(2 * PAGE_BYTES as u64);
         assert_eq!(
-            PagingFile::create(disk, 3 * PAGE_BYTES as u64).err().unwrap(),
+            PagingFile::create(disk, 3 * PAGE_BYTES as u64)
+                .err()
+                .unwrap(),
             StoreError::NoSpace
         );
         let mut disk = RamDisk::new(u64::MAX);
@@ -703,8 +785,8 @@ mod tests {
     /// Sizes past the bitmap's capacity are capped.
     #[test]
     fn the_size_is_capped_at_the_bitmap() {
-        let file =
-            PagingFile::create(RamDisk::new(u64::MAX), (MAX_PAGES + 8) * PAGE_BYTES as u64).unwrap();
+        let file = PagingFile::create(RamDisk::new(u64::MAX), (MAX_PAGES + 8) * PAGE_BYTES as u64)
+            .unwrap();
         assert_eq!(file.pages(), MAX_PAGES);
         assert_eq!(file.capacity(), MAX_PAGES - 1);
         assert_eq!(file.size_bytes(), MAX_PAGES * PAGE_BYTES as u64);
@@ -719,7 +801,11 @@ mod tests {
         assert_eq!(file.allocate_slot(), None);
         assert_eq!(file.extend().unwrap(), EXTEND_PAGES);
         assert_eq!(file.capacity(), EXTEND_PAGES - 1);
-        assert_eq!(file.allocate_slot(), Some(1), "slot 0 stays reserved after a growth from empty");
+        assert_eq!(
+            file.allocate_slot(),
+            Some(1),
+            "slot 0 stays reserved after a growth from empty"
+        );
     }
 
     /// Allocation takes the lowest free slot, never slot 0, and a freed slot is reused first.
@@ -733,11 +819,19 @@ mod tests {
         assert!(file.is_allocated(1) && file.is_allocated(2) && file.is_allocated(3));
         assert!(!file.is_allocated(4));
         file.free_slot(2);
-        assert_eq!(file.allocate_slot(), Some(2), "the freed slot is the lowest free one");
+        assert_eq!(
+            file.allocate_slot(),
+            Some(2),
+            "the freed slot is the lowest free one"
+        );
         assert_eq!(file.used(), 3);
 
         let mut tiny = PagingFile::create(RamDisk::new(u64::MAX), PAGE_BYTES as u64).unwrap();
-        assert_eq!(tiny.capacity(), 0, "a one-page file holds only the reserved slot");
+        assert_eq!(
+            tiny.capacity(),
+            0,
+            "a one-page file holds only the reserved slot"
+        );
         assert_eq!(tiny.allocate_slot(), None);
     }
 
@@ -745,7 +839,8 @@ mod tests {
     #[test]
     fn exhaustion_hands_out_every_slot_once_then_none() {
         let pages = 130; // past the first bitmap word
-        let mut file = PagingFile::create(RamDisk::new(u64::MAX), pages * PAGE_BYTES as u64).unwrap();
+        let mut file =
+            PagingFile::create(RamDisk::new(u64::MAX), pages * PAGE_BYTES as u64).unwrap();
         assert_eq!(file.capacity(), pages - 1);
         let mut slots = Vec::new();
         while let Some(slot) = file.allocate_slot() {
@@ -772,15 +867,28 @@ mod tests {
     #[test]
     fn a_run_of_slots_is_allocated_contiguously() {
         let pages = 70; // past the first bitmap word, so runs cross it
-        let mut file = PagingFile::create(RamDisk::new(u64::MAX), pages * PAGE_BYTES as u64).unwrap();
-        assert_eq!(file.allocate_slots(3), Some(1), "the first run starts at slot 1");
+        let mut file =
+            PagingFile::create(RamDisk::new(u64::MAX), pages * PAGE_BYTES as u64).unwrap();
+        assert_eq!(
+            file.allocate_slots(3),
+            Some(1),
+            "the first run starts at slot 1"
+        );
         assert!(file.is_allocated(1) && file.is_allocated(3) && !file.is_allocated(4));
         assert_eq!(file.used(), 3);
         while file.allocate_slot() != Some(64) {}
         file.free_slot(64);
         assert_eq!(file.allocate_slot(), Some(64));
-        assert_eq!(file.allocate_slots(4), Some(65), "slots 65-68 are the lowest free run");
-        assert_eq!(file.allocate_slots(pages), None, "no run spans the taken slots");
+        assert_eq!(
+            file.allocate_slots(4),
+            Some(65),
+            "slots 65-68 are the lowest free run"
+        );
+        assert_eq!(
+            file.allocate_slots(pages),
+            None,
+            "no run spans the taken slots"
+        );
         for slot in [1, 2, 3] {
             file.free_slot(slot);
         }
@@ -800,7 +908,11 @@ mod tests {
         file.write_pages(first, &data).unwrap();
         assert_eq!(
             file.store().writes,
-            vec![PAGE_BYTES as u64, 2 * PAGE_BYTES as u64, 3 * PAGE_BYTES as u64]
+            vec![
+                PAGE_BYTES as u64,
+                2 * PAGE_BYTES as u64,
+                3 * PAGE_BYTES as u64
+            ]
         );
         let mut page = [0u8; PAGE_BYTES];
         file.read_page(2, &mut page).unwrap();
@@ -818,8 +930,7 @@ mod tests {
             assert!(refused.is_err(), "free of slot {bad} is refused");
         }
         file.free_slot(1);
-        let refused =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| file.free_slot(1)));
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| file.free_slot(1)));
         assert!(refused.is_err(), "a double free is refused");
     }
 
@@ -840,10 +951,18 @@ mod tests {
         assert_eq!(file.capacity(), pages - 1);
         assert_eq!(file.used(), 3, "the taken slots stay taken");
         assert_eq!(file.free_slots(), pages - 1 - 3);
-        assert_eq!(file.allocate_slot(), Some(4), "allocation continues past the old end");
+        assert_eq!(
+            file.allocate_slot(),
+            Some(4),
+            "allocation continues past the old end"
+        );
 
         file.store_mut().fail = true;
-        assert_eq!(file.extend(), Err(StoreError::Io), "a failing store refuses the growth");
+        assert_eq!(
+            file.extend(),
+            Err(StoreError::Io),
+            "a failing store refuses the growth"
+        );
         assert_eq!(file.pages(), pages, "the file is unchanged");
         assert_eq!(file.used(), 4);
         assert_eq!(file.allocate_slot(), Some(5), "the bitmap is unchanged");
@@ -852,15 +971,19 @@ mod tests {
     /// An extension at the bitmap's cap has no room; one near it grows only to the cap.
     #[test]
     fn extend_at_the_bitmap_cap_has_no_room() {
-        let mut file = PagingFile::create(RamDisk::new(u64::MAX), MAX_PAGES * PAGE_BYTES as u64)
-            .unwrap();
+        let mut file =
+            PagingFile::create(RamDisk::new(u64::MAX), MAX_PAGES * PAGE_BYTES as u64).unwrap();
         assert_eq!(file.extend(), Err(StoreError::NoSpace));
         assert_eq!(file.pages(), MAX_PAGES);
 
         let mut file =
             PagingFile::create(RamDisk::new(u64::MAX), (MAX_PAGES - 10) * PAGE_BYTES as u64)
                 .unwrap();
-        assert_eq!(file.extend().unwrap(), MAX_PAGES, "the growth stops at the cap");
+        assert_eq!(
+            file.extend().unwrap(),
+            MAX_PAGES,
+            "the growth stops at the cap"
+        );
     }
 
     /// A page round-trips byte for byte, at its slot's offset in the store.
@@ -873,13 +996,21 @@ mod tests {
             *b = (i as u32).wrapping_mul(7) as u8;
         }
         file.write_page(slot, &pattern).unwrap();
-        assert_eq!(file.store().writes, [slot * PAGE_BYTES as u64], "written at the slot's offset");
+        assert_eq!(
+            file.store().writes,
+            [slot * PAGE_BYTES as u64],
+            "written at the slot's offset"
+        );
         let start = slot as usize * PAGE_BYTES;
         assert_eq!(&file.store().data[start..start + PAGE_BYTES], &pattern);
         let mut back = [0u8; PAGE_BYTES];
         file.read_page(slot, &mut back).unwrap();
         assert_eq!(back, pattern);
-        assert_eq!(file.store().reads, [slot * PAGE_BYTES as u64], "read at the slot's offset");
+        assert_eq!(
+            file.store().reads,
+            [slot * PAGE_BYTES as u64],
+            "read at the slot's offset"
+        );
     }
 
     /// Writes and reads land at their own slots' offsets; a never-written slot reads as the
@@ -893,7 +1024,10 @@ mod tests {
         file.write_page(1, &page(0x11)).unwrap();
         file.write_page(5, &page(0x55)).unwrap();
         file.write_page(7, &page(0x77)).unwrap();
-        assert_eq!(file.store().writes, [1, 5, 7].map(|s| s * PAGE_BYTES as u64));
+        assert_eq!(
+            file.store().writes,
+            [1, 5, 7].map(|s| s * PAGE_BYTES as u64)
+        );
 
         let mut buf = page(0);
         file.read_page(1, &mut buf).unwrap();

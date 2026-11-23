@@ -1,10 +1,12 @@
 //! Writes: cluster allocation, file data and sizes, and directory entries — creating (with long
 //! names), updating, removing and renaming them, and directories themselves.
 //!
-//! Every FAT change goes to all the FAT copies (see [`Volume::set_fat_entry`]). A cluster is zeroed
-//! when it is allocated, so a file's growth reads as zeros, and so does a new directory's tail (its
-//! records are end markers). A file that grows past its old end has the bytes between zeroed too:
-//! the old last cluster may still hold what a truncation left there.
+//! Every FAT change goes to all the FAT copies (see [`Volume::set_fat_entry`]); a growth batches
+//! its changes, each FAT sector written once. A cluster is zeroed when it is allocated, so a file's
+//! growth reads as zeros, and so does a new directory's tail (its records are end markers). A file
+//! that grows past its old end has the bytes between zeroed too: the old last cluster may still
+//! hold what a truncation left there. The paging file alone grows with [`Fill::Unwritten`]: its
+//! contents never matter, so nothing is zeroed.
 //!
 //! An entry is named as Windows 2000 names it on FAT: a name that is a valid 8.3 name is its own
 //! 8.3 name, upper-cased — with no long name when its base and its extension are each in one case
@@ -113,15 +115,30 @@ fn zero_cluster(volume: &mut Volume, cluster: u32) -> Result<(), NtStatus> {
     Ok(())
 }
 
+/// What a growth's new clusters hold.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Fill {
+    /// Zeros, as every file's growth reads.
+    Zeros,
+    /// Whatever the disk held: for the paging file, whose contents never matter.
+    Unwritten,
+}
+
 /// Allocate a free cluster, zeroed, ending its chain — linked after `previous` when there is one.
 /// A link that fails gives the cluster back (best effort), so it is not lost.
 pub fn allocate(volume: &mut Volume, previous: Option<u32>) -> Result<u32, NtStatus> {
+    allocate_with(volume, previous, Fill::Zeros)
+}
+
+fn allocate_with(volume: &mut Volume, previous: Option<u32>, fill: Fill) -> Result<u32, NtStatus> {
     let count = volume.layout().cluster_count;
     let start = volume.next_free().clamp(2, count + 1);
     for step in 0..count {
         let cluster = 2 + (start - 2 + step) % count;
         if volume.fat_entry(cluster)? == FatEntry::Free {
-            zero_cluster(volume, cluster)?;
+            if fill == Fill::Zeros {
+                zero_cluster(volume, cluster)?;
+            }
             volume.set_fat_entry(cluster, END_OF_CHAIN)?;
             if let Some(previous) = previous {
                 if let Err(status) = volume.set_fat_entry(previous, cluster) {
@@ -174,8 +191,35 @@ impl Growth {
 
 /// Grow `file`'s chain to cover `bytes`: all of it or, when the volume runs out (or a device write
 /// fails), none — the clusters taken so far are given back and the chain ends where it did. The
-/// clusters added, when it needed any.
-fn reserve(volume: &mut Volume, file: &mut File, bytes: u32) -> Result<Option<Growth>, NtStatus> {
+/// clusters added, when it needed any. The FAT changes are one batch.
+fn reserve(
+    volume: &mut Volume,
+    file: &mut File,
+    bytes: u32,
+    fill: Fill,
+) -> Result<Option<Growth>, NtStatus> {
+    let first = file.first_cluster;
+    volume.hold_fat();
+    let reserved = extend_chain(volume, file, bytes, fill);
+    match (reserved, volume.release_fat()) {
+        (Ok(growth), Ok(())) => Ok(growth),
+        (Ok(growth), Err(status)) => {
+            if let Some(growth) = growth {
+                let _ = growth.give_back(volume);
+            }
+            file.first_cluster = first;
+            Err(status)
+        }
+        (Err(status), _) => Err(status),
+    }
+}
+
+fn extend_chain(
+    volume: &mut Volume,
+    file: &mut File,
+    bytes: u32,
+    fill: Fill,
+) -> Result<Option<Growth>, NtStatus> {
     let size = cluster_bytes(volume);
     let needed = bytes.div_ceil(size);
     let (tail, mut have) = if file.first_cluster == 0 {
@@ -187,11 +231,11 @@ fn reserve(volume: &mut Volume, file: &mut File, bytes: u32) -> Result<Option<Gr
     if have >= needed {
         return Ok(None);
     }
-    let added = allocate(volume, tail)?;
+    let added = allocate_with(volume, tail, fill)?;
     let growth = Growth { tail, added };
     let mut end = added;
     while have + 1 < needed {
-        match allocate(volume, Some(end)) {
+        match allocate_with(volume, Some(end), fill) {
             Ok(cluster) => end = cluster,
             Err(status) => {
                 growth.give_back(volume)?;
@@ -247,8 +291,14 @@ fn zero_span(volume: &mut Volume, file: &File, from: u32, to: u32) -> Result<(),
 
 /// Grow `file` to `size`: its chain extended (fresh clusters are zeros), and the bytes past the old
 /// end in its old last cluster zeroed. All of it or, on a failure, none: the clusters added are
-/// given back. The clusters added, for a caller whose later step fails to give back.
-fn grow(volume: &mut Volume, file: &mut File, size: u32) -> Result<Option<Growth>, NtStatus> {
+/// given back. The clusters added, for a caller whose later step fails to give back. With
+/// [`Fill::Unwritten`] nothing is zeroed.
+fn grow(
+    volume: &mut Volume,
+    file: &mut File,
+    size: u32,
+    fill: Fill,
+) -> Result<Option<Growth>, NtStatus> {
     // What the old chain covers, in u64: a size near 4 GiB rounds up past u32.
     let had = if file.first_cluster == 0 {
         0
@@ -257,8 +307,11 @@ fn grow(volume: &mut Volume, file: &mut File, size: u32) -> Result<Option<Growth
         u64::from(file.size).div_ceil(cluster) * cluster
     };
     let before = file.first_cluster;
-    let growth = reserve(volume, file, size)?;
-    let zero_to = u64::from(size).min(had) as u32;
+    let growth = reserve(volume, file, size, fill)?;
+    let zero_to = match fill {
+        Fill::Zeros => u64::from(size).min(had) as u32,
+        Fill::Unwritten => file.size,
+    };
     if let Err(status) = zero_span(volume, file, file.size, zero_to) {
         if let Some(growth) = growth {
             let _ = growth.give_back(volume);
@@ -288,7 +341,7 @@ pub fn write_at(
         .ok_or(STATUS_DISK_FULL)?;
     let before = *file;
     let growth = if end > file.size {
-        grow(volume, file, end)?
+        grow(volume, file, end, Fill::Zeros)?
     } else {
         None
     };
@@ -308,10 +361,20 @@ pub fn write_at(
 /// size (lost to chkdsk), never a size past the chain's end. A growth whose entry cannot be
 /// recorded gives its clusters back and leaves `file` as it was.
 pub fn set_size(volume: &mut Volume, file: &mut File, size: u32) -> Result<(), NtStatus> {
+    set_size_with(volume, file, size, Fill::Zeros)
+}
+
+/// [`set_size`], a growth's new bytes holding what `fill` says.
+pub fn set_size_with(
+    volume: &mut Volume,
+    file: &mut File,
+    size: u32,
+    fill: Fill,
+) -> Result<(), NtStatus> {
     if size >= file.size {
         let before = *file;
         let growth = if size > file.size {
-            grow(volume, file, size)?
+            grow(volume, file, size, fill)?
         } else {
             None
         };
@@ -1013,6 +1076,30 @@ mod tests {
                     break;
                 }
             }
+        }
+    }
+
+    /// A growth writes each FAT sector it changes once, not once per entry; an unwritten growth
+    /// (the paging file's) leaves its clusters as the disk held them, a zeroed one clears them.
+    #[test]
+    fn a_growth_batches_its_fat_writes_and_may_leave_clusters_unwritten() {
+        for fill in [Fill::Unwritten, Fill::Zeros] {
+            let mut crafted = Crafted::full(300);
+            crafted.cluster(200, &[0xAA; 512]);
+            let crashing = Crashing::over(crafted.writable());
+            let mut v = Volume::mount(crashing).unwrap();
+            let mut file = new_file(&mut v, b"PAGE.SYS");
+            let before = crashing.written();
+            set_size_with(&mut v, &mut file, 250 * 512, fill).unwrap();
+            // Clusters 3..=252 span FAT sectors 0 and 1; then the directory entry.
+            let zeros = if fill == Fill::Zeros { 250 } else { 0 };
+            assert_eq!(crashing.written() - before, 2 + 1 + zeros, "{fill:?}");
+            let data = contents(&mut v, b"PAGE.SYS");
+            let expected = if fill == Fill::Zeros { 0 } else { 0xAA };
+            assert!(data[197 * 512..198 * 512].iter().all(|&b| b == expected));
+            let mut after = Volume::mount(crashing.image()).unwrap();
+            let entry = lookup(&mut after, b"PAGE.SYS").unwrap();
+            assert_eq!(last(&mut after, entry.first_cluster).unwrap(), (252, 250));
         }
     }
 
