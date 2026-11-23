@@ -1,21 +1,23 @@
 //! The block write: a run of contiguous sectors, range-checked against the disk and split into
-//! WRITE SECTORS commands of at most 256.
+//! commands of at most 256: WRITE MULTIPLE where bring-up set a multiple block, else WRITE SECTORS.
 
 use super::channel::Channel;
 use super::latch::{Completion, Latch};
-use super::regs::{MAX_SECTORS_PER_COMMAND, SECTOR_SIZE, WRITE_SECTORS};
+use super::regs::{MAX_SECTORS_PER_COMMAND, SECTOR_SIZE, WRITE_MULTIPLE, WRITE_SECTORS};
 use super::taskfile::pack_lba28;
 use crate::hal::Io;
 use crate::status::{NtStatus, STATUS_INVALID_PARAMETER, STATUS_NO_SUCH_DEVICE, STATUS_SUCCESS};
 
 /// Write `buffer.len() / 512` contiguous sectors starting at `lba` to a disk of `capacity` sectors
-/// (0: no disk), one WRITE SECTORS command per 256. Returns an NT status.
+/// (0: no disk), one command per 256, moving `block` sectors per interrupt (1: WRITE SECTORS).
+/// Returns an NT status.
 #[must_use]
 pub fn write<IoT: Io, C: Completion<IoT>>(
     channel: &mut Channel<IoT>,
     latch: &Latch,
     completion: &mut C,
     capacity: u32,
+    block: u8,
     lba: u32,
     buffer: &[u8],
 ) -> NtStatus {
@@ -30,6 +32,11 @@ pub fn write<IoT: Io, C: Completion<IoT>>(
     if lba as u64 + sectors > capacity as u64 {
         return STATUS_INVALID_PARAMETER;
     }
+    let command = if block > 1 {
+        WRITE_MULTIPLE
+    } else {
+        WRITE_SECTORS
+    };
     let mut next = lba;
     for run in buffer.chunks(MAX_SECTORS_PER_COMMAND as usize * SECTOR_SIZE) {
         let count = (run.len() / SECTOR_SIZE) as u32;
@@ -37,7 +44,8 @@ pub fn write<IoT: Io, C: Completion<IoT>>(
             latch,
             completion,
             pack_lba28(next, count),
-            WRITE_SECTORS,
+            command,
+            block.max(1) as usize,
             run,
         );
         if !status.is_success() {
@@ -50,7 +58,7 @@ pub fn write<IoT: Io, C: Completion<IoT>>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::sim::{ready, Deliver, DISK};
+    use super::super::sim::{ready, ready_multiple, Deliver, DISK};
     use super::*;
     use crate::status::STATUS_IO_DEVICE_ERROR;
 
@@ -71,12 +79,31 @@ mod tests {
         let mut deliver = Deliver { delivered: 0 };
         let buffer = data(300);
         assert_eq!(
-            write(&mut channel, &latch, &mut deliver, DISK, 11, &buffer),
+            write(&mut channel, &latch, &mut deliver, DISK, 1, 11, &buffer),
             STATUS_SUCCESS
         );
         assert_eq!(channel.io().sectors_at(11, 300), &buffer[..]);
         assert_eq!(channel.io().commands(), [WRITE_SECTORS, WRITE_SECTORS]);
         assert_eq!(deliver.delivered, 300, "one interrupt per sector taken");
+        assert!(!channel.io().line());
+    }
+
+    /// WRITE MULTIPLE: per 8-sector block the device asks with DRQ, takes the block and
+    /// interrupts, the last block short; the disk holds the data and the line ends low.
+    #[test]
+    fn write_multiple_moves_a_block_per_interrupt() {
+        let mut channel = ready_multiple(8);
+        channel.io().busy_reads = 3;
+        let latch = Latch::new();
+        let mut deliver = Deliver { delivered: 0 };
+        let buffer = data(21);
+        assert_eq!(
+            write(&mut channel, &latch, &mut deliver, DISK, 8, 500, &buffer),
+            STATUS_SUCCESS
+        );
+        assert_eq!(channel.io().sectors_at(500, 21), &buffer[..]);
+        assert_eq!(channel.io().commands(), [WRITE_MULTIPLE]);
+        assert_eq!(deliver.delivered, 3, "8 + 8 + 5");
         assert!(!channel.io().line());
     }
 
@@ -96,6 +123,7 @@ mod tests {
             &latch,
             &mut Deliver { delivered: 0 },
             DISK,
+            1,
             40,
             &buffer,
         );
@@ -116,6 +144,7 @@ mod tests {
                 &latch,
                 &mut Deliver { delivered: 0 },
                 DISK,
+                1,
                 DISK - 1,
                 &buffer
             ),
@@ -127,6 +156,7 @@ mod tests {
             &mut Deliver { delivered: 0 },
             pack_lba28(DISK, 1),
             WRITE_SECTORS,
+            1,
             &buffer[..SECTOR_SIZE],
         );
         assert_eq!(status, STATUS_IO_DEVICE_ERROR);

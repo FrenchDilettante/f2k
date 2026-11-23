@@ -3,13 +3,16 @@
 //! describes them.
 //!
 //! INTRQ: a command write deasserts it, a status-register read acknowledges it, an alternate-status
-//! read leaves it alone, and `nIEN` keeps a completion from asserting it. A data-in command
-//! asserts it when each sector's data is ready; draining a sector's last word starts the next
-//! sector, and the final drain asserts nothing. A data-out command asks for its first sector with
-//! DRQ and no interrupt; filling a sector's last word makes the device busy writing it, and it
-//! asserts INTRQ when the sector is taken (DRQ set again while sectors remain). A non-data command
-//! (FLUSH CACHE, FLUSH CACHE EXT) is BUSY for the configured reads, then asserts INTRQ with its
-//! completion, ERR set when `flush_fails` says so. A data-port read
+//! read leaves it alone, and `nIEN` keeps a completion from asserting it. Data moves in DRQ blocks:
+//! one sector under READ/WRITE SECTORS, the SET MULTIPLE count under READ/WRITE MULTIPLE (the last
+//! block short when the count runs out; aborted while no multiple mode is set). A data-in command
+//! asserts it when each block's data is ready; draining a block's last word starts the next block,
+//! and the final drain asserts nothing. A data-out command asks for its first block with DRQ and
+//! no interrupt; filling a block's last word makes the device busy writing it, and it asserts
+//! INTRQ when the block is taken (DRQ set again while sectors remain). A non-data command (FLUSH
+//! CACHE, FLUSH CACHE EXT) is BUSY for the configured reads, then asserts INTRQ with its
+//! completion, ERR set when `flush_fails` says so; SET MULTIPLE MODE completes at once, aborted for
+//! a count that is not a power of two up to 16, or when `refuse_multiple` says so. A data-port read
 //! with DRQ clear returns 0, a data-port write is dropped. While BUSY or DRQ is set, register and
 //! command writes are ignored. A real device may take up to 400 ns after a command write to show
 //! BUSY: `command_latency` models it as status reads that still return the status from before the
@@ -56,11 +59,17 @@ pub struct SimChannel {
     pub flushes: u32,
     /// Fail every cache flush with ERR|ABRT (a drive that cannot write its cache out).
     pub flush_fails: bool,
+    /// The SET MULTIPLE block in sectors; 0 while no multiple mode is set.
+    pub multiple: u32,
+    /// Abort every SET MULTIPLE MODE (a drive without multiple mode).
+    pub refuse_multiple: bool,
     pub log: Vec<Access>,
     buffer: Vec<u8>,
     position: usize,
     next_lba: u64,
     remaining: u32,
+    /// The command in progress's sectors per DRQ block.
+    block: u32,
     busy_left: u32,
     /// Whether the command in progress is a data-out one (its BUSY phases end in a sector taken).
     data_out: bool,
@@ -104,11 +113,14 @@ impl SimChannel {
             interrupt_after_last: false,
             flushes: 0,
             flush_fails: false,
+            multiple: 0,
+            refuse_multiple: false,
             log: Vec::new(),
             buffer: Vec::new(),
             position: 0,
             next_lba: 0,
             remaining: 0,
+            block: 1,
             busy_left: 0,
             data_out: false,
             non_data: false,
@@ -165,7 +177,7 @@ impl SimChannel {
         self.error = 0;
         self.stale = self.status;
         self.latency_left = self.command_latency;
-        self.data_out = command == WRITE_SECTORS;
+        self.data_out = matches!(command, WRITE_SECTORS | WRITE_MULTIPLE);
         self.non_data = matches!(command, FLUSH_CACHE | FLUSH_CACHE_EXT);
         match command {
             IDENTIFY_DEVICE => {
@@ -175,7 +187,10 @@ impl SimChannel {
                 self.status = DRDY | SEEK | DRQ;
                 self.raise();
             }
-            READ_SECTORS | WRITE_SECTORS if self.device & 0x40 != 0 => {
+            READ_MULTIPLE | WRITE_MULTIPLE if self.multiple == 0 => self.abort(),
+            READ_SECTORS | WRITE_SECTORS | READ_MULTIPLE | WRITE_MULTIPLE
+                if self.device & 0x40 != 0 =>
+            {
                 let lba = (self.lba[0] as u64)
                     | (self.lba[1] as u64) << 8
                     | (self.lba[2] as u64) << 16
@@ -187,10 +202,25 @@ impl SimChannel {
                 }
                 self.next_lba = lba;
                 self.remaining = count;
-                if command == READ_SECTORS {
+                self.block = if matches!(command, READ_MULTIPLE | WRITE_MULTIPLE) {
+                    self.multiple
+                } else {
+                    1
+                };
+                if !self.data_out {
                     self.start_sector();
                 } else {
                     self.request_sector();
+                }
+            }
+            SET_MULTIPLE_MODE => {
+                let count = self.count as u32;
+                if self.refuse_multiple || !count.is_power_of_two() || count > 16 {
+                    self.abort();
+                } else {
+                    self.multiple = count;
+                    self.status = DRDY | SEEK;
+                    self.raise();
                 }
             }
             FLUSH_CACHE | FLUSH_CACHE_EXT if self.flush_fails => self.abort(),
@@ -213,14 +243,19 @@ impl SimChannel {
         self.raise();
     }
 
-    /// Ask for the next data-out sector.
+    /// The sectors in the next DRQ block.
+    fn next_block(&self) -> u32 {
+        self.block.min(self.remaining)
+    }
+
+    /// Ask for the next data-out block.
     fn request_sector(&mut self) {
         self.buffer.clear();
         self.position = 0;
         self.status = DRDY | SEEK | DRQ;
     }
 
-    /// A data-out sector's last word: BUSY writing it for the configured reads, then taken.
+    /// A data-out block's last word: BUSY writing it for the configured reads, then taken.
     fn filled(&mut self) {
         self.status = DRDY | SEEK | BUSY;
         self.busy_left = self.busy_reads;
@@ -229,12 +264,13 @@ impl SimChannel {
         }
     }
 
-    fn sector_taken(&mut self) {
+    fn block_taken(&mut self) {
         let start = self.next_lba as usize * SECTOR_SIZE;
-        let sector = core::mem::take(&mut self.buffer);
-        self.disk.as_mut().unwrap()[start..start + SECTOR_SIZE].copy_from_slice(&sector);
-        self.next_lba += 1;
-        self.remaining -= 1;
+        let block = core::mem::take(&mut self.buffer);
+        self.disk.as_mut().unwrap()[start..start + block.len()].copy_from_slice(&block);
+        let sectors = (block.len() / SECTOR_SIZE) as u32;
+        self.next_lba += sectors as u64;
+        self.remaining -= sectors;
         if self.remaining > 0 {
             self.request_sector();
         } else {
@@ -247,7 +283,7 @@ impl SimChannel {
         if self.non_data {
             self.flushed();
         } else if self.data_out {
-            self.sector_taken();
+            self.block_taken();
         } else {
             self.data_ready();
         }
@@ -259,7 +295,7 @@ impl SimChannel {
         self.raise();
     }
 
-    /// Fetch the next sector: BUSY for the configured reads, then data ready.
+    /// Fetch the next block: BUSY for the configured reads, then data ready.
     fn start_sector(&mut self) {
         self.status = DRDY | SEEK | BUSY;
         self.busy_left = self.busy_reads;
@@ -269,11 +305,13 @@ impl SimChannel {
     }
 
     fn data_ready(&mut self) {
+        let sectors = self.next_block();
         let start = self.next_lba as usize * SECTOR_SIZE;
-        self.buffer = self.disk.as_ref().unwrap()[start..start + SECTOR_SIZE].to_vec();
+        let end = start + sectors as usize * SECTOR_SIZE;
+        self.buffer = self.disk.as_ref().unwrap()[start..end].to_vec();
         self.position = 0;
-        self.next_lba += 1;
-        self.remaining -= 1;
+        self.next_lba += sectors as u64;
+        self.remaining -= sectors;
         self.status = DRDY | SEEK | DRQ;
         self.raise();
     }
@@ -353,7 +391,7 @@ impl Io for SimChannel {
         }
         let word = u16::from_le_bytes([self.buffer[self.position], self.buffer[self.position + 1]]);
         self.position += 2;
-        if self.position == SECTOR_SIZE {
+        if self.position == self.buffer.len() {
             self.drained();
         }
         word
@@ -365,7 +403,7 @@ impl Io for SimChannel {
             return;
         }
         self.buffer.extend_from_slice(&word.to_le_bytes());
-        if self.buffer.len() == SECTOR_SIZE {
+        if self.buffer.len() == self.next_block() as usize * SECTOR_SIZE {
             self.filled();
         }
     }
@@ -426,6 +464,13 @@ pub fn sim_channel(sim: SimChannel) -> Channel<SimChannel> {
 pub fn ready() -> Channel<SimChannel> {
     let mut channel = sim_channel(SimChannel::with_disk(DISK));
     channel.enable_interrupt();
+    channel
+}
+
+/// A [`ready`] channel whose drive has SET MULTIPLE MODE at `block` sectors.
+pub fn ready_multiple(block: u8) -> Channel<SimChannel> {
+    let mut channel = ready();
+    channel.io().multiple = block as u32;
     channel
 }
 

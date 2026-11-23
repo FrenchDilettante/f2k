@@ -10,10 +10,10 @@
 //! The interrupt discipline: writing the command register deasserts INTRQ, reading the status
 //! register acknowledges it, and reading the alternate status does not. The driver therefore polls
 //! only the alternate status, so a poll can never swallow an interrupt; the service routine's one
-//! status read is the acknowledgment. A data-in command interrupts once per sector, when that
-//! sector's data is ready: draining a sector's last word starts the next. The last drain raises
-//! nothing, so the caller ends a command with one status read of its own, which also clears an
-//! interrupt a device might still hold.
+//! status read is the acknowledgment. A data-in command interrupts once per DRQ block (a sector,
+//! or the SET MULTIPLE count under READ MULTIPLE), when that block's data is ready: draining a
+//! block's last word starts the next. The last drain raises nothing, so the caller ends a command
+//! with one status read of its own, which also clears an interrupt a device might still hold.
 //!
 //! [`Io`]: crate::hal::Io
 

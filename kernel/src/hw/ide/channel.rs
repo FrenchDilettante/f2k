@@ -1,8 +1,10 @@
-//! One channel's registers and the PIO protocols. Data in, per sector: wait for the interrupt,
-//! check the status the service routine acknowledged, confirm the data on the alternate status,
-//! drain it; end the command with one status-register read. Data out: settle after the command,
-//! then per sector poll for the device's request, fill it, and wait for the interrupt that reports
-//! it taken. No data: wait for the interrupt that reports the command done, then check the status.
+//! One channel's registers and the PIO protocols. Data moves in DRQ blocks: one sector, or up to
+//! the SET MULTIPLE count under READ/WRITE MULTIPLE, the last block of a command possibly short.
+//! Data in, per block: wait for the interrupt, check the status the service routine acknowledged,
+//! confirm the data on the alternate status, drain it; end the command with one status-register
+//! read. Data out: settle after the command, then per block poll for the device's request, fill
+//! it, and wait for the interrupt that reports it taken. No data: wait for the interrupt that
+//! reports the command done, then check the status.
 
 use super::latch::{Completion, Latch};
 use super::regs::{
@@ -69,7 +71,8 @@ impl<IoT: Io> Channel<IoT> {
     }
 
     /// Run one PIO data-in command that fills `buffer` with its `buffer.len() / 512` sectors, one
-    /// interrupt per sector. Returns an NT status: success, timeout, or device error.
+    /// interrupt per block of `block` sectors. Returns an NT status: success, timeout, or device
+    /// error.
     #[must_use]
     pub fn pio_in<C: Completion<IoT>>(
         &mut self,
@@ -77,12 +80,14 @@ impl<IoT: Io> Channel<IoT> {
         completion: &mut C,
         task_file: TaskFile,
         command: u8,
+        block: usize,
         buffer: &mut [u8],
     ) -> NtStatus {
         assert!(
             !buffer.is_empty() && buffer.len() % SECTOR_SIZE == 0,
             "a PIO transfer moves whole sectors"
         );
+        assert!(block >= 1, "a DRQ block holds at least one sector");
 
         // The device ignores register writes while it is busy or holding data.
         if self.poll(|status| status & (BUSY | DRQ) == 0).is_none() {
@@ -95,8 +100,8 @@ impl<IoT: Io> Channel<IoT> {
         latch.arm();
         self.io.out(self.base + COMMAND, command);
 
-        let sectors = buffer.len() / SECTOR_SIZE;
-        for (index, sector) in buffer.chunks_exact_mut(SECTOR_SIZE).enumerate() {
+        let blocks = buffer.len().div_ceil(block * SECTOR_SIZE);
+        for (index, chunk) in buffer.chunks_mut(block * SECTOR_SIZE).enumerate() {
             if !completion.wait(&mut self.io, latch) {
                 latch.disarm();
                 return STATUS_IO_TIMEOUT;
@@ -111,11 +116,11 @@ impl<IoT: Io> Channel<IoT> {
                 Some(status) if status & DRQ == 0 => return STATUS_IO_DEVICE_ERROR,
                 Some(_) => {}
             }
-            // The drain's last word starts the next sector, whose interrupt can follow at once.
-            if index + 1 < sectors {
+            // The drain's last word starts the next block, whose interrupt can follow at once.
+            if index + 1 < blocks {
                 latch.arm();
             }
-            self.drain(sector);
+            self.drain(chunk);
         }
 
         // The command is over: no data left, no error. The status register read ends it.
@@ -132,9 +137,10 @@ impl<IoT: Io> Channel<IoT> {
         STATUS_SUCCESS
     }
 
-    /// Run one PIO data-out command that writes `buffer`'s `buffer.len() / 512` sectors: per
-    /// sector, wait for the device to ask for the data (DRQ), fill it, and wait for the interrupt
-    /// that reports the sector taken. Returns an NT status: success, timeout, or device error.
+    /// Run one PIO data-out command that writes `buffer`'s `buffer.len() / 512` sectors: per block
+    /// of `block` sectors, wait for the device to ask for the data (DRQ), fill it, and wait for the
+    /// interrupt that reports the block taken. Returns an NT status: success, timeout, or device
+    /// error.
     #[must_use]
     pub fn pio_out<C: Completion<IoT>>(
         &mut self,
@@ -142,33 +148,35 @@ impl<IoT: Io> Channel<IoT> {
         completion: &mut C,
         task_file: TaskFile,
         command: u8,
+        block: usize,
         buffer: &[u8],
     ) -> NtStatus {
         assert!(
             !buffer.is_empty() && buffer.len() % SECTOR_SIZE == 0,
             "a PIO transfer moves whole sectors"
         );
+        assert!(block >= 1, "a DRQ block holds at least one sector");
         if self.poll(|status| status & (BUSY | DRQ) == 0).is_none() {
             return STATUS_IO_TIMEOUT;
         }
         self.write_task_file(task_file);
         self.settle();
         self.io.out(self.base + COMMAND, command);
-        // No interrupt announces the first sector's request, and the device may take 400 ns to
+        // No interrupt announces the first block's request, and the device may take 400 ns to
         // post BUSY: a poll at once could read the status from before the command.
         self.settle();
 
-        for sector in buffer.chunks_exact(SECTOR_SIZE) {
-            // The device asks for the sector without an interrupt: poll for its request.
+        for chunk in buffer.chunks(block * SECTOR_SIZE) {
+            // The device asks for the block without an interrupt: poll for its request.
             match self.poll(|status| status & BUSY == 0) {
                 None => return STATUS_IO_TIMEOUT,
                 Some(status) if status & ERR != 0 => return self.device_error(),
                 Some(status) if status & DRQ == 0 => return STATUS_IO_DEVICE_ERROR,
                 Some(_) => {}
             }
-            // The interrupt follows the sector's last word.
+            // The interrupt follows the block's last word.
             latch.arm();
-            self.fill(sector);
+            self.fill(chunk);
             if !completion.wait(&mut self.io, latch) {
                 latch.disarm();
                 return STATUS_IO_TIMEOUT;
@@ -228,9 +236,9 @@ impl<IoT: Io> Channel<IoT> {
         }
     }
 
-    /// Fill one sector into the data port, 256 words.
-    fn fill(&mut self, sector: &[u8]) {
-        for pair in sector.chunks_exact(2) {
+    /// Fill one block into the data port, 256 words per sector.
+    fn fill(&mut self, block: &[u8]) {
+        for pair in block.chunks_exact(2) {
             self.io
                 .out_word(self.base + DATA, u16::from_le_bytes([pair[0], pair[1]]));
         }
@@ -244,9 +252,9 @@ impl<IoT: Io> Channel<IoT> {
         self.io.out(self.base + DEVICE, task_file.device);
     }
 
-    /// Drain one sector from the data port, 256 words.
-    fn drain(&mut self, sector: &mut [u8]) {
-        for pair in sector.chunks_exact_mut(2) {
+    /// Drain one block from the data port, 256 words per sector.
+    fn drain(&mut self, block: &mut [u8]) {
+        for pair in block.chunks_exact_mut(2) {
             let word = self.io.read_word(self.base + DATA);
             pair.copy_from_slice(&word.to_le_bytes());
         }
@@ -329,7 +337,7 @@ mod tests {
         let mut deliver = Deliver { delivered: 0 };
         let mut buffer = vec![0u8; 5 * SECTOR_SIZE];
         assert_eq!(
-            read(&mut channel, &latch, &mut deliver, DISK, 7, &mut buffer),
+            read(&mut channel, &latch, &mut deliver, DISK, 1, 7, &mut buffer),
             STATUS_SUCCESS
         );
         assert_eq!(deliver.delivered, 5);
@@ -359,6 +367,7 @@ mod tests {
                 &latch,
                 &mut Deliver { delivered: 0 },
                 DISK,
+                1,
                 0,
                 &mut buffer
             ),
@@ -383,6 +392,7 @@ mod tests {
                 &latch,
                 &mut Deliver { delivered: 0 },
                 DISK,
+                1,
                 9,
                 &mut buffer
             ),
@@ -412,6 +422,7 @@ mod tests {
                 &latch,
                 &mut Deliver { delivered: 0 },
                 DISK,
+                1,
                 0,
                 &mut buffer
             ),
@@ -440,6 +451,7 @@ mod tests {
             &mut Deliver { delivered: 0 },
             pack_lba28(DISK, 1),
             READ_SECTORS,
+            1,
             &mut buffer,
         );
         assert_eq!(status, STATUS_IO_DEVICE_ERROR);
@@ -458,6 +470,7 @@ mod tests {
                 &latch,
                 &mut Deliver { delivered: 0 },
                 DISK,
+                1,
                 1,
                 &mut buffer
             ),

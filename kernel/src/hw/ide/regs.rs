@@ -37,6 +37,12 @@ pub const IDENTIFY_DEVICE: u8 = 0xEC;
 pub const READ_SECTORS: u8 = 0x20;
 /// WRITE SECTORS (PIO data-out, LBA28).
 pub const WRITE_SECTORS: u8 = 0x30;
+/// READ MULTIPLE and WRITE MULTIPLE: READ/WRITE SECTORS moving a SET MULTIPLE block per DRQ
+/// and interrupt.
+pub const READ_MULTIPLE: u8 = 0xC4;
+pub const WRITE_MULTIPLE: u8 = 0xC5;
+/// SET MULTIPLE MODE (non-data): the sector count register names the block size.
+pub const SET_MULTIPLE_MODE: u8 = 0xC6;
 /// FLUSH CACHE (non-data): the drive writes its write cache to the medium.
 pub const FLUSH_CACHE: u8 = 0xE7;
 /// FLUSH CACHE EXT (non-data): FLUSH CACHE for a drive of the 48-bit address feature set.
@@ -58,6 +64,10 @@ pub const LBA28_LIMIT: u64 = 1 << 28;
 
 /// The most sectors one LBA28 command moves (a count register of 0).
 pub const MAX_SECTORS_PER_COMMAND: u32 = 256;
+
+/// The DRQ block bring-up asks for, in sectors, when the drive allows it (Windows 2000's atapi
+/// asks for 16).
+pub const PREFERRED_MULTIPLE: u8 = 16;
 
 /// Alternate-status reads before a poll gives up: far beyond any settle time, short enough that a
 /// wedged device fails the request instead of hanging the caller.

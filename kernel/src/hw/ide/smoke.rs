@@ -282,7 +282,7 @@ pub fn run() {
     );
 
     // 4. The first file's first sector, read through the partition (reported at its disk LBA), then
-    //    an 8-sector run from the same place (one interrupt per sector).
+    //    an 8-sector run from the same place (one READ MULTIPLE block, one interrupt).
     let file_sector = bpb.cluster_lba(0, FIRST_FILE_CLUSTER) as u64;
     let file_lba = entry.start + file_sector;
     read(volume, file_sector, &mut sector);
@@ -305,9 +305,9 @@ pub fn run() {
         crc32(run)
     );
 
-    // The interrupt accounting: one per sector moved — IDENTIFY's, the boot scan's MBR read, the
-    // boot mount's boot-sector read, and the file's directory and cluster reads included — and
-    // none unasked for.
+    // The interrupt accounting: one per DRQ block moved — IDENTIFY's, SET MULTIPLE's completion,
+    // the boot scan's MBR read, the boot mount's boot-sector read, and the file's directory and
+    // cluster reads included — and none unasked for.
     let verdict = crate::interrupt::audit();
     serial_println!(
         "F2K: disk-smoke: IRQ14 serviced {} interrupts ({} unsolicited), interrupt audit: {}",

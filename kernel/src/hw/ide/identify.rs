@@ -1,9 +1,16 @@
-//! Device identification: the IDENTIFY DEVICE decode, and the bring-up that detects the master and
-//! identifies it.
+//! Device identification: the IDENTIFY DEVICE decode, and the bring-up that detects the master,
+//! identifies it, and sets its multiple block.
 
 use super::channel::Channel;
 use super::latch::{Completion, Latch};
-use super::regs::{FLUSH_CACHE, FLUSH_CACHE_EXT, IDENTIFY_DEVICE, SECTOR_SIZE};
+use super::regs::{
+    FLUSH_CACHE,
+    FLUSH_CACHE_EXT,
+    IDENTIFY_DEVICE,
+    PREFERRED_MULTIPLE,
+    SECTOR_SIZE,
+    SET_MULTIPLE_MODE,
+};
 use super::taskfile::TaskFile;
 use crate::hal::Io;
 use crate::status::NtStatus;
@@ -21,6 +28,9 @@ pub struct Identity {
     /// that supports it (bit 13, a drive of the 48-bit address feature set), else FLUSH CACHE
     /// (bit 12); none when the word advertises neither, or is not valid.
     pub flush: Option<u8>,
+    /// The sectors the driver moves per DRQ block: the count SET MULTIPLE MODE took at bring-up,
+    /// or 1 (READ/WRITE SECTORS) before it or when the drive has none or refused it.
+    pub block: u8,
 }
 
 /// Word 83's validity mark: bit 14 set and bit 15 clear (a word of all ones or all zeros is no
@@ -45,7 +55,15 @@ pub fn decode_identify(block: &[u8; SECTOR_SIZE]) -> Identity {
         sectors: word(60) as u32 | (word(61) as u32) << 16,
         max_multiple: word(47) as u8,
         flush,
+        block: 1,
     }
+}
+
+/// The SET MULTIPLE count for a drive whose largest block is `max`: the largest power of two (the
+/// counts ATA allows) up to [`PREFERRED_MULTIPLE`] and `max`; none below 2.
+pub fn multiple_count(max: u8) -> Option<u8> {
+    let limit = max.min(PREFERRED_MULTIPLE);
+    (limit >= 2).then(|| 1 << (7 - limit.leading_zeros()))
 }
 
 /// Why bring-up found no usable disk.
@@ -59,8 +77,9 @@ pub enum Absent {
     NoLba,
 }
 
-/// Bring the master up: let the device interrupt, detect it, and IDENTIFY it. Returns the identity
-/// of a disk the driver can address with LBA28.
+/// Bring the master up: let the device interrupt, detect it, IDENTIFY it, and set its multiple
+/// block (left at 1 if SET MULTIPLE MODE fails). Returns the identity of a disk the driver can
+/// address with LBA28.
 pub fn bring_up<IoT: Io, C: Completion<IoT>>(
     channel: &mut Channel<IoT>,
     latch: &Latch,
@@ -76,14 +95,27 @@ pub fn bring_up<IoT: Io, C: Completion<IoT>>(
         completion,
         TaskFile::master(),
         IDENTIFY_DEVICE,
+        1,
         &mut block,
     );
     if !status.is_success() {
         return Err(Absent::NotAta(status));
     }
-    let identity = decode_identify(&block);
+    let mut identity = decode_identify(&block);
     if !identity.lba || identity.sectors == 0 {
         return Err(Absent::NoLba);
+    }
+    if let Some(count) = multiple_count(identity.max_multiple) {
+        let task_file = TaskFile {
+            count,
+            ..TaskFile::master()
+        };
+        if channel
+            .non_data(latch, completion, task_file, SET_MULTIPLE_MODE, 1)
+            .is_success()
+        {
+            identity.block = count;
+        }
     }
     Ok(identity)
 }
@@ -115,6 +147,7 @@ mod tests {
                 sectors: 131_072,
                 max_multiple: 16,
                 flush: Some(FLUSH_CACHE),
+                block: 1,
             }
         );
 
@@ -151,8 +184,32 @@ mod tests {
         assert_eq!(with_word_83(1 << 12), None, "bit 14 clear: not valid");
     }
 
+    /// The SET MULTIPLE count: the largest power of two up to 16 and the drive's maximum.
+    #[test]
+    fn the_multiple_count_is_a_power_of_two_up_to_16() {
+        let counts: Vec<_> = [0, 1, 2, 3, 8, 12, 16, 128, 255]
+            .into_iter()
+            .map(multiple_count)
+            .collect();
+        assert_eq!(
+            counts,
+            [
+                None,
+                None,
+                Some(2),
+                Some(2),
+                Some(8),
+                Some(8),
+                Some(16),
+                Some(16),
+                Some(16)
+            ]
+        );
+    }
+
     /// IDENTIFY bring-up: clear nIEN, select the master, then the task file and the command —
-    /// one interrupt, one block, the identity decoded.
+    /// one interrupt, one block, the identity decoded — then SET MULTIPLE MODE at 16 sectors,
+    /// one more interrupt.
     #[test]
     fn bring_up_clears_nien_selects_and_identifies() {
         let mut channel = sim_channel(SimChannel::with_disk(DISK));
@@ -166,8 +223,10 @@ mod tests {
                 sectors: DISK,
                 max_multiple: 16,
                 flush: Some(FLUSH_CACHE),
+                block: 16,
             }
         );
+        assert_eq!(channel.io().multiple, 16);
 
         assert_eq!(
             writes(&mut channel),
@@ -180,11 +239,40 @@ mod tests {
                 (PRIMARY_BASE + LBA_HIGH, 0),
                 (PRIMARY_BASE + DEVICE, 0xE0),
                 (PRIMARY_BASE + COMMAND, IDENTIFY_DEVICE),
+                (PRIMARY_BASE + SECTOR_COUNT, 16),
+                (PRIMARY_BASE + LBA_LOW, 0),
+                (PRIMARY_BASE + LBA_MID, 0),
+                (PRIMARY_BASE + LBA_HIGH, 0),
+                (PRIMARY_BASE + DEVICE, 0xE0),
+                (PRIMARY_BASE + COMMAND, SET_MULTIPLE_MODE),
             ]
         );
-        assert_eq!(deliver.delivered, 1);
-        assert_eq!(latch.serviced(), 1);
+        assert_eq!(deliver.delivered, 2);
+        assert_eq!(latch.serviced(), 2);
         assert_eq!(latch.unsolicited(), 0);
+    }
+
+    /// A drive that refuses SET MULTIPLE MODE stays at one sector per block, and one whose
+    /// IDENTIFY names no multiple block is not asked.
+    #[test]
+    fn without_multiple_mode_the_block_stays_one_sector() {
+        let mut refusing = SimChannel::with_disk(DISK);
+        refusing.refuse_multiple = true;
+        let mut channel = sim_channel(refusing);
+        let latch = Latch::new();
+        let identity = bring_up(&mut channel, &latch, &mut Deliver { delivered: 0 }).unwrap();
+        assert_eq!(identity.block, 1);
+        assert_eq!(
+            channel.io().commands(),
+            [IDENTIFY_DEVICE, SET_MULTIPLE_MODE]
+        );
+        assert!(!channel.io().line());
+
+        let mut block = identify_block(DISK);
+        block[2 * 47] = 0;
+        let identity = decode_identify(&block);
+        assert_eq!((identity.max_multiple, identity.block), (0, 1));
+        assert_eq!(multiple_count(identity.max_multiple), None);
     }
 
     /// An empty master position floats to zero: bring-up reports no device without issuing a

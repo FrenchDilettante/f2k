@@ -69,7 +69,7 @@ mod tests {
         assert_eq!(latch.unsolicited(), 0);
         let buffer = vec![0u8; SECTOR_SIZE];
         assert_eq!(
-            write(&mut channel, &latch, &mut deliver, DISK, 3, &buffer),
+            write(&mut channel, &latch, &mut deliver, DISK, 1, 3, &buffer),
             STATUS_SUCCESS
         );
     }

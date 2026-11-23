@@ -1,21 +1,23 @@
 //! The block read: a run of contiguous sectors, range-checked against the disk and split into
-//! READ SECTORS commands of at most 256.
+//! commands of at most 256: READ MULTIPLE where bring-up set a multiple block, else READ SECTORS.
 
 use super::channel::Channel;
 use super::latch::{Completion, Latch};
-use super::regs::{MAX_SECTORS_PER_COMMAND, READ_SECTORS, SECTOR_SIZE};
+use super::regs::{MAX_SECTORS_PER_COMMAND, READ_MULTIPLE, READ_SECTORS, SECTOR_SIZE};
 use super::taskfile::pack_lba28;
 use crate::hal::Io;
 use crate::status::{NtStatus, STATUS_INVALID_PARAMETER, STATUS_NO_SUCH_DEVICE, STATUS_SUCCESS};
 
 /// Read `buffer.len() / 512` contiguous sectors starting at `lba` from a disk of `capacity`
-/// sectors (0: no disk), one READ SECTORS command per 256. Returns an NT status.
+/// sectors (0: no disk), one command per 256, moving `block` sectors per interrupt (1: READ
+/// SECTORS). Returns an NT status.
 #[must_use]
 pub fn read<IoT: Io, C: Completion<IoT>>(
     channel: &mut Channel<IoT>,
     latch: &Latch,
     completion: &mut C,
     capacity: u32,
+    block: u8,
     lba: u32,
     buffer: &mut [u8],
 ) -> NtStatus {
@@ -31,6 +33,11 @@ pub fn read<IoT: Io, C: Completion<IoT>>(
         return STATUS_INVALID_PARAMETER;
     }
 
+    let command = if block > 1 {
+        READ_MULTIPLE
+    } else {
+        READ_SECTORS
+    };
     let mut next = lba;
     for run in buffer.chunks_mut(MAX_SECTORS_PER_COMMAND as usize * SECTOR_SIZE) {
         let count = (run.len() / SECTOR_SIZE) as u32;
@@ -38,7 +45,8 @@ pub fn read<IoT: Io, C: Completion<IoT>>(
             latch,
             completion,
             pack_lba28(next, count),
-            READ_SECTORS,
+            command,
+            block.max(1) as usize,
             run,
         );
         if !status.is_success() {
@@ -60,9 +68,9 @@ mod tests {
         PRIMARY_BASE,
         SECTOR_COUNT,
     };
-    use super::super::sim::{expected, ready, writes, Deliver, DISK};
+    use super::super::sim::{expected, ready, ready_multiple, status_reads, writes, Deliver, DISK};
     use super::*;
-    use crate::status::STATUS_IO_TIMEOUT;
+    use crate::status::{STATUS_IO_DEVICE_ERROR, STATUS_IO_TIMEOUT};
 
     /// READ SECTORS: count, LBA low/mid/high, device, then the command — and nothing written while
     /// the device was busy or holding data.
@@ -77,6 +85,7 @@ mod tests {
             &latch,
             &mut Deliver { delivered: 0 },
             DISK,
+            1,
             0x0A0B,
             &mut buffer,
         );
@@ -105,7 +114,15 @@ mod tests {
         let mut deliver = Deliver { delivered: 0 };
         let mut buffer = vec![0u8; 300 * SECTOR_SIZE];
         assert_eq!(
-            read(&mut channel, &latch, &mut deliver, DISK, 100, &mut buffer),
+            read(
+                &mut channel,
+                &latch,
+                &mut deliver,
+                DISK,
+                1,
+                100,
+                &mut buffer
+            ),
             STATUS_SUCCESS
         );
         assert_eq!(buffer, expected(100, 300));
@@ -125,6 +142,54 @@ mod tests {
         assert_eq!(deliver.delivered, 300, "one interrupt per sector");
     }
 
+    /// READ MULTIPLE: one interrupt per 16-sector block, the last block short; a run past 256
+    /// sectors still splits into two commands.
+    #[test]
+    fn read_multiple_moves_a_block_per_interrupt() {
+        let mut channel = ready_multiple(16);
+        let latch = Latch::new();
+        let mut deliver = Deliver { delivered: 0 };
+        let mut buffer = vec![0u8; 300 * SECTOR_SIZE];
+        assert_eq!(
+            read(
+                &mut channel,
+                &latch,
+                &mut deliver,
+                DISK,
+                16,
+                21,
+                &mut buffer
+            ),
+            STATUS_SUCCESS
+        );
+        assert_eq!(buffer, expected(21, 300));
+        assert_eq!(channel.io().commands(), [READ_MULTIPLE, READ_MULTIPLE]);
+        // 256 = 16 blocks of 16; 44 = 2 of 16 and one of 12.
+        assert_eq!(deliver.delivered, 16 + 3);
+        assert_eq!(status_reads(&mut channel), 19 + 2);
+        assert!(!channel.io().line());
+    }
+
+    /// A drive not in multiple mode aborts READ MULTIPLE: a device error.
+    #[test]
+    fn read_multiple_without_the_mode_is_a_device_error() {
+        let mut channel = ready();
+        let latch = Latch::new();
+        let mut buffer = vec![0u8; 4 * SECTOR_SIZE];
+        assert_eq!(
+            read(
+                &mut channel,
+                &latch,
+                &mut Deliver { delivered: 0 },
+                DISK,
+                16,
+                0,
+                &mut buffer
+            ),
+            STATUS_IO_DEVICE_ERROR
+        );
+    }
+
     /// The block API's refusals: a run leaving the disk, and a missing disk — before any port is
     /// touched.
     #[test]
@@ -140,13 +205,14 @@ mod tests {
                 &latch,
                 &mut deliver,
                 DISK,
+                1,
                 DISK - 1,
                 &mut buffer
             ),
             STATUS_INVALID_PARAMETER
         );
         assert_eq!(
-            read(&mut channel, &latch, &mut deliver, 0, 0, &mut buffer),
+            read(&mut channel, &latch, &mut deliver, 0, 1, 0, &mut buffer),
             STATUS_NO_SUCH_DEVICE
         );
         assert!(channel.io().log.is_empty());
@@ -163,6 +229,7 @@ mod tests {
             &Latch::new(),
             &mut Deliver { delivered: 0 },
             DISK,
+            1,
             0,
             &mut buffer,
         );

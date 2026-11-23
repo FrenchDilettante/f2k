@@ -150,6 +150,11 @@ mod target {
         fn capacity(&self) -> u32 {
             self.identity().map_or(0, |identity| identity.sectors)
         }
+
+        /// The sectors moved per interrupt: the multiple block bring-up set, else 1.
+        fn block(&self) -> u8 {
+            self.identity().map_or(1, |identity| identity.block)
+        }
     }
 
     /// A transfer's status as a result: success, or the failure status itself.
@@ -184,6 +189,7 @@ mod target {
                     &self.latch,
                     &mut EventWait(&self.event),
                     self.capacity(),
+                    self.block(),
                     lba as u32,
                     buffer,
                 )
@@ -199,6 +205,7 @@ mod target {
                     &self.latch,
                     &mut EventWait(&self.event),
                     self.capacity(),
+                    self.block(),
                     lba as u32,
                     buffer,
                 )
