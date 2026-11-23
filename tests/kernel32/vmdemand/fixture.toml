@@ -14,12 +14,8 @@ memory = "32M"
 [pending]
 # Every block waits for the behavior it pins; tests/capture.bat vmdemand fills output.txt on the VM
 # trip, and each block un-xfails when that behavior lands.
-reservelarge = "F2K charges the commits now, but the block also fills both 16 MiB slices, and 32 MiB of touched pages exceeds the 32 MiB boot's free frames: the tail fill faults with no frame left, which working-set trimming and page-out (later slices) answer"
 prottrans = "F2K's protection transition on a reserved region, its old-protection answers and NtProtectVirtualMemory's status were chosen from memory"
 sysinfo = "F2K reports the commit limit as physical memory with no paging file, so the performance class's commit limit, total and available and GlobalMemoryStatus's page file differ"
-pageroundtrip = "F2K has no backing store and commits eagerly, so at the small-RAM boot the second 16 MiB's commit fails where Windows 2000 charges and faults pages in"
-filepagein = "F2K reads a file-backed view's pages eagerly at map time and never writes them back, so the write view's file change after unmap differs"
-trimpressure = "F2K has no working set to trim and no backing store, so at the small-RAM boot the eager commits fail where Windows 2000 trims and pages the first region back in"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

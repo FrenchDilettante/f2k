@@ -15,6 +15,7 @@
 // nothing calls yet on the target build see only the host tests' calls.
 #![cfg_attr(not(test), allow(dead_code))]
 
+use super::pageout::{PageIoError, PagingIo, SlotId, INVALID_SLOT};
 use super::paging::PAGE_SIZE;
 
 /// One page of the paging file, and of its slot index space: 4 KiB.
@@ -25,7 +26,7 @@ pub type Page = [u8; PAGE_BYTES];
 /// The largest paging file the bitmap covers: 65536 pages (256 MiB). Larger sizes are capped.
 pub const MAX_PAGES: u64 = 1 << 16;
 /// The bitmap's words.
-const MAX_WORDS: usize = (MAX_PAGES as usize + 63) / 64;
+pub const MAX_WORDS: usize = (MAX_PAGES as usize + 63) / 64;
 /// How many pages one [`PagingFile::extend`] adds: 1024 (4 MiB).
 pub const EXTEND_PAGES: u64 = 1024;
 
@@ -72,6 +73,17 @@ pub trait PageStore {
     fn read_at(&mut self, offset: u64, page: &mut Page) -> Result<(), StoreError>;
     /// Write `page` at byte `offset`.
     fn write_at(&mut self, offset: u64, page: &Page) -> Result<(), StoreError>;
+    /// Write `data` — whole pages, starting at byte `offset` — as one operation when the store
+    /// can move them in a single run (a file layer does): the default writes page by page
+    /// through [`Self::write_at`].
+    fn write_at_many(&mut self, offset: u64, data: &[u8]) -> Result<(), StoreError> {
+        assert!(!data.is_empty() && data.len() % PAGE_BYTES == 0, "whole pages");
+        for (index, page) in data.chunks_exact(PAGE_BYTES).enumerate() {
+            let page: &Page = page.try_into().expect("a whole page");
+            self.write_at(offset + index as u64 * PAGE_BYTES as u64, page)?;
+        }
+        Ok(())
+    }
     /// Set the file's length to `len` bytes, zero-filling any growth.
     fn set_len(&mut self, len: u64) -> Result<(), StoreError>;
 }
@@ -176,6 +188,50 @@ impl<S: PageStore> PagingFile<S> {
         None
     }
 
+    /// Take a run of `count` contiguous free slots, for one multi-page transfer: the run's
+    /// first slot, or none when the file holds no run that long (grow it first with
+    /// [`Self::extend`], whose fresh chunk is one long run).
+    pub fn allocate_slots(&mut self, count: u64) -> Option<u64> {
+        assert!(count >= 1, "a run of slots is at least one");
+        let mut run_start = 0u64;
+        let mut run = 0u64;
+        for slot in 1..self.pages {
+            if self.is_allocated(slot) {
+                run = 0;
+                continue;
+            }
+            if run == 0 {
+                run_start = slot;
+            }
+            run += 1;
+            if run == count {
+                for taken in run_start..run_start + count {
+                    self.bitmap[(taken / 64) as usize] |= 1 << (taken % 64);
+                }
+                self.used += count;
+                self.next = run_start + count;
+                return Some(run_start);
+            }
+        }
+        None
+    }
+
+    /// Write `data` — whole pages — into the run of allocated slots starting at `first`, as one
+    /// store operation at the run's first offset.
+    ///
+    /// # Panics
+    /// `data` is empty or not whole pages, or one of the run's slots is not allocated.
+    pub fn write_pages(&mut self, first: u64, data: &[u8]) -> Result<(), StoreError> {
+        assert!(
+            !data.is_empty() && data.len() % PAGE_BYTES == 0,
+            "a multi-page write moves whole pages"
+        );
+        for index in 0..(data.len() / PAGE_BYTES) as u64 {
+            assert!(self.is_allocated(first + index), "slot {} of the run is not allocated", first + index);
+        }
+        self.store.write_at_many(first * PAGE_BYTES as u64, data)
+    }
+
     /// Give slot `slot` back.
     ///
     /// # Panics
@@ -248,6 +304,47 @@ impl<S: PageStore> PagingFile<S> {
     }
 }
 
+/// The paging file as a [`PagingIo`] — the page-out/page-in store's page-level I/O over a file the
+/// caller holds: slot allocation, reads and writes (each page at its slot's byte offset,
+/// `slot * PAGE_BYTES`), and slot release. The boot's paging file runs this over the boot volume's
+/// file layer through [`target::PagingFileIo`]; the host tests drive it over a RAM disk.
+pub struct FileIo<'a, S: PageStore> {
+    file: &'a mut PagingFile<S>,
+}
+
+impl<'a, S: PageStore> FileIo<'a, S> {
+    /// The adapter over `file`.
+    pub fn new(file: &'a mut PagingFile<S>) -> Self {
+        FileIo { file }
+    }
+}
+
+impl<S: PageStore> PagingIo for FileIo<'_, S> {
+    fn allocate_slot(&mut self) -> Option<SlotId> {
+        self.file.allocate_slot().map(|slot| slot as SlotId)
+    }
+
+    fn write(&mut self, slot: SlotId, page: &[u8]) -> Result<(), PageIoError> {
+        let page: &Page = page.try_into().map_err(|_| PageIoError::Io)?;
+        self.file
+            .write_page(u64::from(slot), page)
+            .map_err(|_| PageIoError::Io)
+    }
+
+    fn read(&mut self, slot: SlotId, page: &mut [u8]) -> Result<(), PageIoError> {
+        let page: &mut Page = page.try_into().map_err(|_| PageIoError::Io)?;
+        self.file
+            .read_page(u64::from(slot), page)
+            .map_err(|_| PageIoError::Io)
+    }
+
+    fn free_slot(&mut self, slot: SlotId) {
+        if slot != INVALID_SLOT {
+            self.file.free_slot(u64::from(slot));
+        }
+    }
+}
+
 // --- The boot volume's file layer (target) ------------------------------------------------------
 //
 // The kernel wires the paging file to a file on the boot volume: [`BootVolumeStore`] adapts the
@@ -257,7 +354,8 @@ impl<S: PageStore> PagingFile<S> {
 
 #[cfg(target_arch = "x86")]
 mod target {
-    use super::{boot_sizing, Page, PageStore, PagingFile, StoreError};
+    use super::{boot_sizing, FileIo, Page, PageStore, PagingFile, StoreError};
+    use crate::mem::pageout::{PageIoError, PagingIo, SlotId, INVALID_SLOT};
     use crate::block::lock::DeviceLock;
     use crate::fs::fat32::dirent::{ATTR_HIDDEN, ATTR_SYSTEM};
     use crate::fs::fat32::lookup::{self, File};
@@ -305,6 +403,13 @@ mod target {
                 .map_err(store_error)
         }
 
+        fn write_at_many(&mut self, offset: u64, data: &[u8]) -> Result<(), StoreError> {
+            let offset = u32::try_from(offset).map_err(|_| StoreError::Io)?;
+            with_boot_volume(|volume| write::write_at(volume, &mut self.file, offset, data))
+                .ok_or(StoreError::Io)?
+                .map_err(store_error)
+        }
+
         fn set_len(&mut self, len: u64) -> Result<(), StoreError> {
             let len = u32::try_from(len).map_err(|_| StoreError::NoSpace)?;
             with_boot_volume(|volume| write::set_size(volume, &mut self.file, len))
@@ -325,6 +430,57 @@ mod target {
         crate::process::threads::critical_region(|| {
             PAGING_FILE.with(|file| file.as_mut().map(body))
         })
+    }
+
+    /// One store operation's outcome as the page-out slice's I/O error: no file, or the store's
+    /// refusal, is an I/O failure.
+    fn io_result(outcome: Option<Result<(), StoreError>>) -> Result<(), PageIoError> {
+        match outcome {
+            Some(Ok(())) => Ok(()),
+            _ => Err(PageIoError::Io),
+        }
+    }
+
+    /// The system's one paging file as a [`PagingIo`]: each operation runs through
+    /// [`with_paging_file`], so the store is reached serialized — and never while the caller
+    /// borrows the memory manager's database (the level rules: the file's disk I/O waits, the
+    /// database is borrowed at the high level). The page-out slice's relief and page-in stage
+    /// their transfers around this adapter.
+    pub struct PagingFileIo;
+
+    impl PagingIo for PagingFileIo {
+        fn allocate_slot(&mut self) -> Option<SlotId> {
+            with_paging_file(|file| file.allocate_slot())
+                .flatten()
+                .map(|slot| slot as SlotId)
+        }
+
+        fn write(&mut self, slot: SlotId, page: &[u8]) -> Result<(), PageIoError> {
+            let page: &Page = page.try_into().map_err(|_| PageIoError::Io)?;
+            io_result(with_paging_file(|file| file.write_page(u64::from(slot), page)))
+        }
+
+        fn read(&mut self, slot: SlotId, page: &mut [u8]) -> Result<(), PageIoError> {
+            let page: &mut Page = page.try_into().map_err(|_| PageIoError::Io)?;
+            io_result(with_paging_file(|file| file.read_page(u64::from(slot), page)))
+        }
+
+        fn free_slot(&mut self, slot: SlotId) {
+            if slot != INVALID_SLOT {
+                let _ = with_paging_file(|file| {
+                    let slot = u64::from(slot);
+                    if file.is_allocated(slot) {
+                        file.free_slot(slot);
+                    }
+                });
+            }
+        }
+    }
+
+    /// The same store through a file the caller already holds: [`FileIo`] over it, for the paths
+    /// that run inside one [`with_paging_file`] hold.
+    pub fn io_of(file: &mut PagingFile<BootVolumeStore>) -> FileIo<'_, BootVolumeStore> {
+        FileIo::new(file)
     }
 
     /// Take the entry named [`PAGING_FILE_NAME`] off the volume, when it is a file: the paging
@@ -393,7 +549,7 @@ mod target {
 }
 
 #[cfg(target_arch = "x86")]
-pub use target::boot_create;
+pub use target::{boot_create, with_paging_file, PagingFileIo};
 
 #[cfg(test)]
 mod tests {
@@ -611,6 +767,46 @@ mod tests {
         assert_eq!(file.allocate_slot(), None);
     }
 
+    /// A run of contiguous slots comes out whole, lowest first, across the bitmap's word
+    /// boundary; a fragmented bitmap hands out none that long, and freed slots join runs again.
+    #[test]
+    fn a_run_of_slots_is_allocated_contiguously() {
+        let pages = 70; // past the first bitmap word, so runs cross it
+        let mut file = PagingFile::create(RamDisk::new(u64::MAX), pages * PAGE_BYTES as u64).unwrap();
+        assert_eq!(file.allocate_slots(3), Some(1), "the first run starts at slot 1");
+        assert!(file.is_allocated(1) && file.is_allocated(3) && !file.is_allocated(4));
+        assert_eq!(file.used(), 3);
+        while file.allocate_slot() != Some(64) {}
+        file.free_slot(64);
+        assert_eq!(file.allocate_slot(), Some(64));
+        assert_eq!(file.allocate_slots(4), Some(65), "slots 65-68 are the lowest free run");
+        assert_eq!(file.allocate_slots(pages), None, "no run spans the taken slots");
+        for slot in [1, 2, 3] {
+            file.free_slot(slot);
+        }
+        assert_eq!(file.allocate_slots(3), Some(1));
+    }
+
+    /// A multi-page write lands at the run's first offset, whole pages through the store (the
+    /// default moves them one page per call, at the slots' offsets).
+    #[test]
+    fn a_multi_page_write_lands_at_the_runs_first_offset() {
+        let mut file = PagingFile::create(RamDisk::new(u64::MAX), 8 * PAGE_BYTES as u64).unwrap();
+        let first = file.allocate_slots(3).unwrap();
+        let mut data = vec![0u8; 3 * PAGE_BYTES];
+        for (index, byte) in data.iter_mut().enumerate() {
+            *byte = (index % 251) as u8;
+        }
+        file.write_pages(first, &data).unwrap();
+        assert_eq!(
+            file.store().writes,
+            vec![PAGE_BYTES as u64, 2 * PAGE_BYTES as u64, 3 * PAGE_BYTES as u64]
+        );
+        let mut page = [0u8; PAGE_BYTES];
+        file.read_page(2, &mut page).unwrap();
+        assert_eq!(&page[..], &data[PAGE_BYTES..2 * PAGE_BYTES]);
+    }
+
     /// Freeing a slot that is not allocated is refused.
     #[test]
     fn freeing_a_slot_that_is_not_allocated_panics() {
@@ -720,6 +916,60 @@ mod tests {
         file.write_page(5, &page(0xAA)).unwrap();
         file.read_page(5, &mut buf).unwrap();
         assert_eq!(buf, page(0xAA));
+    }
+
+    /// The [`FileIo`] adapter over the file: slots come out one at a time past the reserved one,
+    /// each page is written and read at its slot's byte offset (`slot * PAGE_BYTES`), a freed slot
+    /// is reused, the invalid slot is a no-op, and a failing store comes back as an I/O error.
+    #[test]
+    fn the_paging_io_adapter_moves_pages_at_their_slots_offsets() {
+        let mut file = PagingFile::create(RamDisk::new(u64::MAX), 8 * PAGE_BYTES as u64).unwrap();
+
+        let first = FileIo::new(&mut file).allocate_slot().unwrap();
+        assert_eq!(first, 1, "slot 0 stays reserved");
+        FileIo::new(&mut file).write(first, &page(0x42)).unwrap();
+        assert_eq!(
+            file.store().writes,
+            [u64::from(first) * PAGE_BYTES as u64],
+            "the page went to its slot's offset"
+        );
+
+        let mut back = page(0);
+        FileIo::new(&mut file).read(first, &mut back).unwrap();
+        assert_eq!(back, page(0x42), "the page came back byte for byte");
+        assert_eq!(
+            file.store().reads,
+            [u64::from(first) * PAGE_BYTES as u64],
+            "read at the slot's offset"
+        );
+
+        // A second slot lands at its own offset.
+        let second = FileIo::new(&mut file).allocate_slot().unwrap();
+        assert_eq!(second, 2);
+        FileIo::new(&mut file).write(second, &page(0x77)).unwrap();
+        assert_eq!(
+            file.store().writes[1],
+            u64::from(second) * PAGE_BYTES as u64
+        );
+
+        // A freed slot is handed out again, lowest first; the invalid slot frees nothing.
+        FileIo::new(&mut file).free_slot(first);
+        assert_eq!(FileIo::new(&mut file).allocate_slot(), Some(first));
+        FileIo::new(&mut file).free_slot(INVALID_SLOT);
+        assert_eq!(file.used(), 2);
+
+        // A failing store comes back as an I/O error, from the read and the write alike.
+        file.store_mut().fail = true;
+        let mut back = page(0);
+        assert_eq!(
+            FileIo::new(&mut file).read(second, &mut back),
+            Err(PageIoError::Io)
+        );
+        assert_eq!(
+            FileIo::new(&mut file).write(second, &back),
+            Err(PageIoError::Io)
+        );
+        assert_eq!(file.used(), 2, "both slots still held");
     }
 
     /// Reading or writing a slot that is not allocated is refused; a failing store comes back

@@ -84,7 +84,59 @@ const COMMITTED: u32 = 1 << 1;
 const GUARD: u32 = 1 << 2;
 /// The protection index's place: the software bits.
 const INDEX_SHIFT: u32 = 9;
+/// The frame/payload field's shift: bits 12-31.
+const FRAME_SHIFT: u32 = 12;
 const FRAME_MASK: u32 = 0xFFFF_F000;
+
+/// The present bit, as the soft-entry helpers read it.
+pub const PTE_PRESENT: u32 = PRESENT;
+/// The frame/payload field's mask (bits 12-31), as the soft-entry helpers read it.
+pub const PTE_FRAME_MASK: u32 = FRAME_MASK;
+
+/// A non-present entry's backing tags (bits 3-5, as [`super::fault`] marks them): the page is off
+/// its mapping and its backing is named — a frame on a backing list ([`TAG_TRANSITION`]), a slot
+/// in the paging file ([`TAG_PAGE_FILE`]), or a section's page ([`TAG_PROTOTYPE`]).
+pub const TAG_TRANSITION: u32 = super::fault::TRANSITION;
+pub const TAG_PROTOTYPE: u32 = super::fault::PROTOTYPE;
+pub const TAG_PAGE_FILE: u32 = super::fault::PAGE_FILE;
+/// All the backing tags.
+const SOFT_TAGS: u32 = TAG_TRANSITION | TAG_PROTOTYPE | TAG_PAGE_FILE;
+
+/// The entry's backing tag: one of the `TAG_` bits, or zero for a hard (present, committed or
+/// uncommitted) entry. On a present entry bits 3-5 are the hardware's cache and accessed bits,
+/// not a tag, so the tags read only on a non-present one — a soft entry is never present.
+pub fn backing_tag(entry: u32) -> u32 {
+    if entry & PTE_PRESENT != 0 {
+        0
+    } else {
+        entry & SOFT_TAGS
+    }
+}
+
+/// A soft entry's payload (bits 12-31): the named frame, or the paging-file slot / section page
+/// index shifted up into the field.
+pub fn backing_payload(entry: u32) -> u32 {
+    entry & FRAME_MASK
+}
+
+/// The base protection a soft entry records in its protection index bits.
+pub fn soft_protect(entry: u32) -> u32 {
+    base_of((entry >> INDEX_SHIFT) & 7)
+}
+
+/// The soft entry for a page backed by `tag` with `payload` (a frame, or a slot/index shifted up)
+/// and `protect`: the CPU ignores a non-present entry's bits, so they carry the page's state.
+pub fn encode_backing(tag: u32, payload: u32, protect: u32) -> u32 {
+    debug_assert!(tag != 0 && tag & !SOFT_TAGS == 0, "one backing tag");
+    debug_assert!(payload & !FRAME_MASK == 0, "the payload is page-aligned");
+    tag | payload | (index_of(protect & 0xFF) << INDEX_SHIFT)
+}
+
+/// Whether the entry says the page is committed: a hard committed entry, or a soft backing one (a
+/// view's page is committed with its view; a paged-out private page keeps its commit charge).
+pub fn committed_entry(entry: u32) -> bool {
+    pte::committed(entry) || backing_tag(entry) != 0
+}
 
 /// Whether a protection is one a program may pass: one base protection, optionally guarded or
 /// uncached (a guarded no-access page is not one).
@@ -238,9 +290,26 @@ pub fn map_demand_zero(pages: &mut impl Pages, page: u32, protect: u32) -> bool 
 }
 
 /// Map the page at `page` present to the `frame` its entry names, with `protect`: a page back
-/// from a backing list, no I/O.
+/// from a backing list, no I/O — or a page just filled from its backing (a page-in's last step).
 pub fn map_named_frame(pages: &mut impl Pages, page: u32, frame: u32, protect: u32) {
     pages.set_entry(page, encode(frame, protect));
+}
+
+/// Soften the entry at `va` to a transition one: the page's frame named in the payload, its
+/// protection in the index bits. The page is evicted from its mapping while its frame sits on a
+/// backing list, and a fault on it maps the named frame back ([`map_named_frame`], no I/O).
+pub fn soften_to_transition(pages: &mut impl Pages, va: u32, frame: u32, protect: u32) {
+    pages.set_entry(page_down(va), encode_backing(TAG_TRANSITION, frame, protect));
+}
+
+/// Rewrite the entry at `va` to a paging-file one: the page's bytes sit in the slot `slot`
+/// (counted from one) and its frame is free — the page-out's last step; a fault on the page
+/// reads the slot back.
+pub fn name_page_file(pages: &mut impl Pages, va: u32, slot: u32, protect: u32) {
+    pages.set_entry(
+        page_down(va),
+        encode_backing(TAG_PAGE_FILE, slot << FRAME_SHIFT, protect),
+    );
 }
 
 /// Fire the guard page at `va`, if the page there is one: it keeps its protection and frame,
@@ -407,6 +476,26 @@ pub trait Pages {
     fn frame_word(&self, frame: u32, index: u32) -> u32;
     /// Write word `index` of such a frame.
     fn set_frame_word(&mut self, frame: u32, index: u32, value: u32);
+    /// Take the frame a transition entry names back into use: off its backing list, when it is on
+    /// one. No-op when the frame is not listed.
+    fn activate_frame(&mut self, frame: u32) {
+        let _ = frame;
+    }
+    /// Fill a fresh frame's whole page from `bytes` (a page-in's read): word by word through the
+    /// frame-word seam by default.
+    fn fill_frame(&mut self, frame: u32, bytes: &[u8]) {
+        for (index, word) in bytes.chunks_exact(4).enumerate() {
+            self.set_frame_word(
+                frame,
+                index as u32,
+                u32::from_le_bytes(word.try_into().expect("four bytes")),
+            );
+        }
+    }
+    /// Release the backing-store slot a dropped paging-file entry named.
+    fn discard_backing(&mut self, slot: u32) {
+        let _ = slot;
+    }
 }
 
 /// How many regions a process can hold: the kernel's own areas (about a dozen), and every
@@ -428,11 +517,13 @@ fn page_up(va: u64) -> u64 {
 /// it takes nothing from another.
 pub const VIEWS: usize = 128;
 
-/// One mapped view: its region's base, and what it maps — a data section, or an image's segment —
-/// whose frames it maps (the view holds a reference on it for as long as it is mapped).
+/// One mapped view: its region's base, the section offset it maps from (zero for an image), and
+/// what it maps — a data section, or an image's segment — whose frames it maps (the view holds a
+/// reference on it for as long as it is mapped).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct View {
     pub base: u32,
+    pub offset: u32,
     pub mapping: crate::ob::Mapping,
 }
 
@@ -487,28 +578,41 @@ impl AddressSpace {
         self.views.iter().any(Option::is_none)
     }
 
-    /// Record the view just mapped at `base` of `mapping`, in the same hold of the space as the
-    /// check for room: false when the table is full — another thread of the process took its last
-    /// record since the mapper looked — and the view's region is released then, its pages' holds
-    /// with it, so the mapper is left nothing to undo but the reference it took for the view.
+    /// Record the view just mapped at `base` from `offset` of `mapping`, in the same hold of the
+    /// space as the check for room: false when the table is full — another thread of the process
+    /// took its last record since the mapper looked — and the view's region is released then, its
+    /// pages' holds with it, so the mapper is left nothing to undo but the reference it took for
+    /// the view.
     pub fn record_view(
         &mut self,
         pages: &mut impl Pages,
         base: u32,
+        offset: u32,
         mapping: crate::ob::Mapping,
     ) -> bool {
-        if self.add_view(base, mapping) {
+        if self.add_view_at(base, offset, mapping) {
             return true;
         }
         let _ = self.release(pages, base);
         false
     }
 
-    /// Record a view mapped at `base` of `mapping`; false when the view table is full.
+    /// Record a view mapped at `base` of `mapping` (from offset zero); false when the view table
+    /// is full.
     pub fn add_view(&mut self, base: u32, mapping: crate::ob::Mapping) -> bool {
+        self.add_view_at(base, 0, mapping)
+    }
+
+    /// Record a view mapped at `base` from `offset` of `mapping`; false when the view table is
+    /// full.
+    pub fn add_view_at(&mut self, base: u32, offset: u32, mapping: crate::ob::Mapping) -> bool {
         match self.views.iter_mut().find(|view| view.is_none()) {
             Some(slot) => {
-                *slot = Some(View { base, mapping });
+                *slot = Some(View {
+                    base,
+                    offset,
+                    mapping,
+                });
                 true
             }
             None => false,
@@ -524,13 +628,12 @@ impl AddressSpace {
             .map(|view| view.mapping)
     }
 
-    /// Forget the view at `base`, returning what it mapped; none when no view starts there.
-    pub fn take_view(&mut self, base: u32) -> Option<crate::ob::Mapping> {
-        let slot = self
-            .views
+    /// Forget the view at `base`, returning it whole; none when no view starts there.
+    pub fn take_view(&mut self, base: u32) -> Option<View> {
+        self.views
             .iter_mut()
-            .find(|view| view.is_some_and(|view| view.base == base))?;
-        slot.take().map(|view| view.mapping)
+            .find(|view| view.is_some_and(|view| view.base == base))?
+            .take()
     }
 
     /// Forget every view, handing each to `release` — its base, for its pages to go, and what it
@@ -758,7 +861,7 @@ impl AddressSpace {
         let mut fresh = 0;
         let mut va = start;
         while va < end {
-            if pte::decode(pages.entry(va)).is_none() {
+            if !committed_entry(pages.entry(va)) {
                 fresh += 1;
             }
             va += PAGE;
@@ -783,18 +886,27 @@ impl AddressSpace {
         let mut fresh = 0;
         let mut va = start;
         while va < end {
-            match pte::decode(pages.entry(va)) {
-                None => {
-                    fresh += 1;
-                    pages.set_entry(va, demand_entry(protect));
-                }
-                // Already committed but still without a frame: re-protect the entry itself.
-                Some((_, 0, _)) => {
-                    pages.set_entry(va, demand_entry(protect));
-                }
-                Some((_, frame, _)) => {
-                    let protect = settle(region.kind, pages, frame, protect);
-                    pages.set_entry(va, encode(frame, protect));
+            let entry = pages.entry(va);
+            if !committed_entry(entry) {
+                fresh += 1;
+                pages.set_entry(va, demand_entry(protect));
+            } else if backing_tag(entry) != 0 {
+                // A paged-out or view page keeps its backing; it takes the new protection.
+                pages.set_entry(
+                    va,
+                    encode_backing(backing_tag(entry), backing_payload(entry), protect),
+                );
+            } else {
+                match pte::decode(entry) {
+                    // Already committed but still without a frame: re-protect the entry itself.
+                    Some((_, 0, _)) => {
+                        pages.set_entry(va, demand_entry(protect));
+                    }
+                    Some((_, frame, _)) => {
+                        let protect = settle(region.kind, pages, frame, protect);
+                        pages.set_entry(va, encode(frame, protect));
+                    }
+                    None => unreachable!("committed above"),
                 }
             }
             va += PAGE;
@@ -827,18 +939,37 @@ impl AddressSpace {
     /// Clear the entries of `[start, end)`, each committed page dropping its hold on its frame —
     /// an inaccessible or guarded page's too: it still names its frame when it has one (a frame
     /// other holders still map stays with them); a demand page — demand-zero, or a guard
-    /// committed without a frame — names none. Returns how many pages were committed (the charge
-    /// the drop discharges).
+    /// committed without a frame — names none. A soft entry goes with its backing: a transition
+    /// entry's frame (off its list, then freed), a paging-file entry's slot released, a
+    /// prototype entry's nothing (a view's page holds no frame until it is faulted in). Returns
+    /// how many pages were committed (the charge the drop discharges; a view's prototype pages
+    /// were never charged).
     fn drop_pages(&self, pages: &mut impl Pages, start: u32, end: u32) -> u32 {
         let mut charged = 0;
         let mut va = start;
         while va < end {
-            if let Some((_, frame, _)) = pte::decode(pages.entry(va)) {
+            let entry = pages.entry(va);
+            if committed_entry(entry) {
                 pages.set_entry(va, 0);
-                if frame != 0 {
-                    pages.free_frame(frame);
+                match backing_tag(entry) {
+                    TAG_PAGE_FILE => {
+                        pages.discard_backing(backing_payload(entry) >> FRAME_SHIFT);
+                        charged += 1;
+                    }
+                    TAG_TRANSITION => {
+                        pages.free_frame(backing_payload(entry));
+                        charged += 1;
+                    }
+                    TAG_PROTOTYPE => {}
+                    _ => {
+                        if let Some((_, frame, _)) = pte::decode(entry) {
+                            if frame != 0 {
+                                pages.free_frame(frame);
+                            }
+                        }
+                        charged += 1;
+                    }
                 }
-                charged += 1;
             }
             va += PAGE;
         }
@@ -877,24 +1008,39 @@ impl AddressSpace {
         let mut old = None;
         let mut va = start;
         while va < end {
-            let Some((_, _, was)) = pte::decode(pages.entry(va)) else {
+            let entry = pages.entry(va);
+            if !committed_entry(entry) {
                 return Err(VmError::InvalidAddress);
+            }
+            let was = if backing_tag(entry) != 0 {
+                soft_protect(entry)
+            } else {
+                pte::decode(entry).expect("committed above").2
             };
             old.get_or_insert(was);
             va += PAGE;
         }
         let mut va = start;
         while va < end {
-            match pte::decode(pages.entry(va)) {
-                // Committed but still without a frame: re-protect the entry itself.
-                Some((_, 0, _)) => {
-                    pages.set_entry(va, demand_entry(protect));
+            let entry = pages.entry(va);
+            if backing_tag(entry) != 0 {
+                // A paged-out or view page keeps its backing; it takes the new protection.
+                pages.set_entry(
+                    va,
+                    encode_backing(backing_tag(entry), backing_payload(entry), protect),
+                );
+            } else {
+                match pte::decode(entry) {
+                    // Committed but still without a frame: re-protect the entry itself.
+                    Some((_, 0, _)) => {
+                        pages.set_entry(va, demand_entry(protect));
+                    }
+                    Some((_, frame, _)) => {
+                        let protect = settle(region.kind, pages, frame, protect);
+                        pages.set_entry(va, encode(frame, protect));
+                    }
+                    None => unreachable!("checked above"),
                 }
-                Some((_, frame, _)) => {
-                    let protect = settle(region.kind, pages, frame, protect);
-                    pages.set_entry(va, encode(frame, protect));
-                }
-                None => unreachable!("checked above"),
             }
             va += PAGE;
         }
@@ -912,10 +1058,22 @@ impl AddressSpace {
         protect: u32,
     ) -> Result<(), VmError> {
         let page = page_down(va);
-        if self.region_at(page).is_none() || decode(pages.entry(page)).is_some() {
+        if self.region_at(page).is_none() || committed_entry(pages.entry(page)) {
             return Err(VmError::InvalidAddress);
         }
         pages.set_entry(page, encode(frame, protect));
+        Ok(())
+    }
+
+    /// Map a not-yet-backed page at `va` with the soft entry `entry` — a view's page before its
+    /// first touch, whose backing (the section's file, the paging file's store) the fault path
+    /// reads it in from. The page must lie in a region and hold no entry yet.
+    pub fn map_soft(&mut self, pages: &mut impl Pages, va: u32, entry: u32) -> Result<(), VmError> {
+        let page = page_down(va);
+        if self.region_at(page).is_none() || committed_entry(pages.entry(page)) {
+            return Err(VmError::InvalidAddress);
+        }
+        pages.set_entry(page, entry);
         Ok(())
     }
 
@@ -990,9 +1148,15 @@ impl AddressSpace {
                 mem_type: 0,
             };
         };
-        let state_of = |va: u32| match pte::decode(pages.entry(va)) {
-            Some((_, _, protect)) => (MEM_COMMIT, protect),
-            None => (MEM_RESERVE, 0),
+        let state_of = |va: u32| {
+            let entry = pages.entry(va);
+            match pte::decode(entry) {
+                Some((_, _, protect)) => (MEM_COMMIT, protect),
+                // A soft backing entry (a view's untouched page, a paged-out page) is committed,
+                // with the protection its index bits record.
+                None if backing_tag(entry) != 0 => (MEM_COMMIT, soft_protect(entry)),
+                None => (MEM_RESERVE, 0),
+            }
         };
         let first = state_of(start);
         let end = region.base + region.size;
@@ -1140,6 +1304,7 @@ impl Pages for CurrentPages {
         crate::mem::paging::set_user_pte(va, entry);
     }
 
+
     fn zeroed_frame(&mut self) -> Option<u32> {
         // A reserve stays with the kernel: a program that exhausts memory gets an error, never the
         // kernel a panic.
@@ -1157,8 +1322,19 @@ impl Pages for CurrentPages {
 
     fn free_frame(&mut self, frame: u32) {
         crate::mem::bootmem::with_frame_db(|db| {
-            if db.unshare(frame / PAGE) {
-                db.release(frame / PAGE, crate::mem::frame::FrameState::Free);
+            let fid = frame / PAGE;
+            // A frame on a backing list (a transition entry's, dropped without being read back)
+            // comes off it first.
+            if matches!(
+                db.entry(fid).state,
+                crate::mem::frame::FrameState::Standby
+                    | crate::mem::frame::FrameState::Modified
+                    | crate::mem::frame::FrameState::ModifiedNoWrite
+            ) {
+                db.unlink(fid);
+            }
+            if db.unshare(fid) {
+                db.release(fid, crate::mem::frame::FrameState::Free);
             }
         });
     }
@@ -1182,6 +1358,33 @@ impl Pages for CurrentPages {
     fn set_frame_word(&mut self, frame: u32, index: u32, value: u32) {
         crate::mem::paging::write_frame(frame, index as usize * 4, &value.to_le_bytes());
     }
+
+    fn activate_frame(&mut self, frame: u32) {
+        crate::mem::bootmem::with_frame_db(|db| {
+            let fid = frame / PAGE;
+            if matches!(
+                db.entry(fid).state,
+                crate::mem::frame::FrameState::Standby
+                    | crate::mem::frame::FrameState::Modified
+                    | crate::mem::frame::FrameState::ModifiedNoWrite
+            ) {
+                db.unlink(fid);
+            }
+        });
+    }
+
+    fn fill_frame(&mut self, frame: u32, bytes: &[u8]) {
+        crate::mem::paging::write_frame(frame, 0, bytes);
+    }
+
+    fn discard_backing(&mut self, slot: u32) {
+        let _ = crate::mem::pagingfile::with_paging_file(|file| {
+            let slot = u64::from(slot);
+            if file.is_allocated(slot) {
+                file.free_slot(slot);
+            }
+        });
+    }
 }
 
 #[cfg(test)]
@@ -1191,13 +1394,16 @@ mod tests {
     use super::*;
 
     /// Page tables as a map, frames numbered from 1 MiB: their extra holders, their words and their
-    /// contents (a frame's first word stands for its contents), the frames given back, and how many
-    /// more frames there are to give (none: no end).
+    /// contents (a frame's first word stands for its contents), the frames given back, the backing
+    /// slots released, the frames activated off a list, and how many more frames there are to give
+    /// (none: no end).
     #[derive(Default)]
     struct Fake {
         entries: HashMap<u32, u32>,
         next: u32,
         freed: Vec<u32>,
+        discarded: Vec<u32>,
+        activated: Vec<u32>,
         holders: HashMap<u32, u32>,
         words: HashMap<(u32, u32), u32>,
         budget: Option<u32>,
@@ -1247,6 +1453,14 @@ mod tests {
         fn set_frame_word(&mut self, frame: u32, index: u32, value: u32) {
             self.words.insert((frame, index), value);
         }
+
+        fn activate_frame(&mut self, frame: u32) {
+            self.activated.push(frame);
+        }
+
+        fn discard_backing(&mut self, slot: u32) {
+            self.discarded.push(slot);
+        }
     }
 
     /// The views a space records: one per base, found by its base, the table's capacity enforced,
@@ -1262,30 +1476,31 @@ mod tests {
             })
         };
         let mut space = Box::new(AddressSpace::new());
-        assert!(space.add_view(0x30_0000, section(1)));
-        assert!(space.add_view(0x31_0000, section(2)));
+        assert!(space.add_view_at(0x30_0000, 0, section(1)));
+        assert!(space.add_view_at(0x31_0000, 0x10000, section(2)));
         assert_eq!(
             space.take_view(0x30_1000),
             None,
             "a view is named by its base"
         );
-        assert_eq!(space.take_view(0x30_0000), Some(section(1)));
+        let taken = space.take_view(0x30_0000).unwrap();
+        assert_eq!((taken.offset, taken.mapping), (0, section(1)));
         assert_eq!(space.take_view(0x30_0000), None, "a view goes once");
         for index in 1..VIEWS as u16 {
-            assert!(space.add_view(0x40_0000 + index as u32 * 0x1_0000, section(3)));
+            assert!(space.add_view_at(0x40_0000 + index as u32 * 0x1_0000, 0, section(3)));
         }
         assert!(!space.has_view_room());
         assert!(
-            !space.add_view(0x7000_0000, section(4)),
+            !space.add_view_at(0x7000_0000, 0, section(4)),
             "the table is full"
         );
         let image = Mapping::Image(SegmentId {
             index: 5,
             generation: 1,
         });
-        assert_eq!(space.take_view(0x41_0000), Some(section(3)));
+        assert_eq!(space.take_view(0x41_0000).map(|v| v.mapping), Some(section(3)));
         assert!(
-            space.add_view(0x41_0000, image),
+            space.add_view_at(0x41_0000, 0, image),
             "an image's view maps its segment"
         );
         let mut released = Vec::new();
@@ -1917,7 +2132,7 @@ mod tests {
         pages.holders.insert(0x0070_0000, 0);
         vm.map_shared(&mut pages, view, 0x0070_0000, PAGE_READWRITE)
             .unwrap();
-        assert!(!vm.record_view(&mut pages, view, section));
+        assert!(!vm.record_view(&mut pages, view, 0, section));
         assert_eq!(vm.query(&pages, view).state, MEM_FREE);
         assert!(!pages.frame_shared(0x0070_0000), "the view's hold went");
         assert!(!pages.freed.contains(&0x0070_0000), "the section keeps it");
@@ -1925,8 +2140,9 @@ mod tests {
         let view = vm
             .reserve(None, PAGE, PAGE_READWRITE, Kind::Mapped(Maximum::Write))
             .unwrap();
-        assert!(vm.record_view(&mut pages, view, section));
+        assert!(vm.record_view(&mut pages, view, 0x20000, section));
         assert_eq!(vm.view_at(view), Some(section));
+        assert_eq!(vm.take_view(view).map(|v| (v.offset, v.mapping)), Some((0x20000, section)));
     }
 
     /// A demand commit charges instead of mapping: fresh pages get demand-zero entries, no frame
@@ -2104,6 +2320,143 @@ mod tests {
             vm.protect(&mut pages, base + 0x2000, PAGE, PAGE_NOACCESS),
             Err(VmError::InvalidAddress),
             "the reserved page is not committed"
+        );
+    }
+
+    /// A soft backing entry round trips: its tag, its payload and its protection, and it counts as
+    /// committed — a query over a view's untouched page reports MEM_COMMIT with the recorded
+    /// protection, a commit charge does not count it again, and a decommit of a paging-file page
+    /// releases its slot while a transition page's frame goes back.
+    #[test]
+    fn soft_entries_round_trip_and_count_as_committed() {
+        for (tag, payload) in [
+            (TAG_TRANSITION, 0x0070_0000u32),
+            (TAG_PAGE_FILE, 5u32 << 12),
+            (TAG_PROTOTYPE, 0x10u32 << 12),
+        ] {
+            let entry = encode_backing(tag, payload, PAGE_READONLY);
+            assert_eq!(backing_tag(entry), tag);
+            assert_eq!(backing_payload(entry), payload);
+            assert_eq!(soft_protect(entry), PAGE_READONLY);
+            assert!(committed_entry(entry));
+            assert!(!pte::committed(entry), "a soft entry carries no commit bit");
+            assert_eq!(encode_backing(tag, payload, PAGE_WRITECOPY) >> INDEX_SHIFT & 7, 3);
+        }
+
+        let mut vm = space();
+        let mut pages = Fake::default();
+        let base = vm
+            .reserve(None, 0x4000, PAGE_READWRITE, Kind::Mapped(Maximum::Write))
+            .unwrap();
+        // A view's untouched pages: prototype entries naming their section page indices.
+        vm.map_soft(&mut pages, base, encode_backing(TAG_PROTOTYPE, 0x10 << 12, PAGE_READONLY))
+            .unwrap();
+        vm.map_soft(&mut pages, base + PAGE, encode_backing(TAG_PROTOTYPE, 0x11 << 12, PAGE_READONLY))
+            .unwrap();
+        assert_eq!(vm.uncommitted_pages(&pages, base, 0x2000), Ok(0), "already committed");
+        let info = vm.query(&pages, base);
+        assert_eq!(
+            (info.state, info.protect, info.size, info.mem_type),
+            (MEM_COMMIT, PAGE_READONLY, 0x2000, MEM_MAPPED)
+        );
+        // A protect over them rewrites the protection, keeping the tag and payload.
+        assert_eq!(
+            vm.protect(&mut pages, base, 0x2000, PAGE_READWRITE),
+            Ok(PAGE_READONLY)
+        );
+        assert_eq!(
+            pages.entry(base),
+            encode_backing(TAG_PROTOTYPE, 0x10 << 12, PAGE_READWRITE)
+        );
+        // A decommit clears them and charges nothing (a view's pages were never charged).
+        assert_eq!(vm.decommit(&mut pages, base, 0x2000).unwrap(), 0);
+        assert_eq!(pages.entry(base), 0);
+
+        // A paged-out private page: its decommit releases the slot and discharges the charge.
+        let base = vm
+            .reserve(None, 0x2000, PAGE_READWRITE, Kind::Private)
+            .unwrap();
+        vm.commit_demand(&mut pages, base, 0x2000, PAGE_READWRITE)
+            .unwrap();
+        pages.set_entry(base, encode_backing(TAG_PAGE_FILE, 7 << 12, PAGE_READWRITE));
+        pages.set_entry(base + PAGE, encode_backing(TAG_TRANSITION, 0x0070_0000, PAGE_READWRITE));
+        assert_eq!(vm.uncommitted_pages(&pages, base, 0x2000), Ok(0));
+        assert_eq!(vm.decommit(&mut pages, base, 0x2000).unwrap(), 2);
+        assert_eq!(pages.entry(base), 0);
+        assert_eq!(pages.discarded, vec![7], "the paging-file slot was released");
+        assert_eq!(pages.freed, vec![0x0070_0000], "the transition frame went back");
+        // A recommit over a paged-out page keeps its backing and charges nothing fresh.
+        pages.set_entry(base, encode_backing(TAG_PAGE_FILE, 7 << 12, PAGE_READWRITE));
+        let (_, fresh) = vm
+            .commit_demand(&mut pages, base, PAGE, PAGE_READONLY)
+            .unwrap();
+        assert_eq!(fresh, 0);
+        assert_eq!(
+            pages.entry(base),
+            encode_backing(TAG_PAGE_FILE, 7 << 12, PAGE_READONLY),
+            "the slot rides along, re-protected"
+        );
+        // map_soft refuses a page outside every region or one already holding an entry.
+        assert_eq!(
+            vm.map_soft(&mut pages, 0x6000_0000, encode_backing(TAG_PROTOTYPE, 0, PAGE_READONLY)),
+            Err(VmError::InvalidAddress)
+        );
+        assert_eq!(
+            vm.map_soft(&mut pages, base, encode_backing(TAG_PROTOTYPE, 0, PAGE_READONLY)),
+            Err(VmError::InvalidAddress)
+        );
+    }
+
+    /// The hardware's accessed and dirty bits (bits 5-6) on a present entry are not backing
+    /// tags: a present page the CPU has touched still reads as present with no tag, and stays
+    /// committed — only a non-present entry carries a tag.
+    #[test]
+    fn a_present_entry_with_the_hardware_bits_set_reads_as_present() {
+        use crate::mem::pte::{self, PteKind};
+        for hardware_bits in [0x20, 0x40, 0x60] {
+            let entry = encode(0x0070_0000, PAGE_READWRITE) | hardware_bits;
+            assert_ne!(entry & PTE_PRESENT, 0);
+            assert_eq!(backing_tag(entry), 0, "no tag on a present entry");
+            assert!(committed_entry(entry));
+            assert_eq!(pte::classify(entry), PteKind::Present);
+            assert_eq!(
+                pte::decode(entry),
+                Some((PteKind::Present, 0x0070_0000, PAGE_READWRITE))
+            );
+        }
+    }
+
+    /// The page-out's entry steps: softening a present page to a transition one names its frame
+    /// and keeps its protection (a fault on it resolves to a transition page), and naming a
+    /// paging-file slot rewrites it to a PageFile one (a fault resolves to the slot) — both on
+    /// the page holding the address, and both still committed.
+    #[test]
+    fn the_page_out_entry_steps_write_soft_entries() {
+        use crate::mem::fault::{self, Resolution};
+        let mut pages = Fake::default();
+        let page = 0x0040_0000;
+        pages.set_entry(page, encode(0x0070_0000, PAGE_READWRITE));
+        soften_to_transition(&mut pages, page + 0x10, 0x0070_0000, PAGE_READWRITE);
+        let entry = pages.entry(page);
+        assert_eq!(backing_tag(entry), TAG_TRANSITION);
+        assert_eq!(backing_payload(entry), 0x0070_0000);
+        assert_eq!(soft_protect(entry), PAGE_READWRITE);
+        assert!(committed_entry(entry));
+        assert_eq!(
+            fault::resolve(entry, false, true),
+            Resolution::Transition,
+            "a read fault resolves the named frame back in"
+        );
+        name_page_file(&mut pages, page + 0x20, 9, PAGE_READONLY);
+        let entry = pages.entry(page);
+        assert_eq!(entry, encode_backing(TAG_PAGE_FILE, 9 << 12, PAGE_READONLY));
+        assert_eq!(fault::resolve(entry, false, true), Resolution::PageFile);
+        assert_eq!(fault::resolve(entry, true, true), Resolution::Raise, "a write to a read-only slot stands");
+        // A write to a read-write slot resolves the slot too.
+        name_page_file(&mut pages, page, 3, PAGE_READWRITE);
+        assert_eq!(
+            fault::resolve(pages.entry(page), true, true),
+            Resolution::PageFile
         );
     }
 }

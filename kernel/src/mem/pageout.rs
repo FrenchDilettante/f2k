@@ -314,6 +314,18 @@ impl PageWriter {
         self.push(frame);
     }
 
+    /// Queue a frame already on the Modified list for the next pass, without moving it again (a
+    /// page already marked modified whose eviction a relief pass found).
+    pub fn requeue(&mut self, frame: FrameId) {
+        self.push(frame);
+    }
+
+    /// Take the oldest queued frame off the queue, for a pass driven step by step (the target's
+    /// staged page-out runs between database borrows, so it cannot call [`run_planned`] whole).
+    pub fn pop_queued(&mut self) -> Option<FrameId> {
+        self.pop()
+    }
+
     /// Evict a dirty page whose write-back is suppressed; it is not queued.
     pub fn evict_no_write<H: FrameHooks>(&mut self, db: &mut FrameDb<H>, frame: FrameId) {
         to_modified_no_write(db, frame);
@@ -347,6 +359,22 @@ impl PageWriter {
         buf: &mut [u8; PAGE_SIZE],
         plan: WriterPlan,
     ) -> PassReport {
+        self.run_planned_report(db, io, mem, buf, plan, &mut |_, _| true)
+    }
+
+    /// Run a decided pass, oldest first, reporting each frame written out — with the slot its page
+    /// now holds — to `done`, called with the frame already back on Standby. When `done` returns
+    /// false the page was re-faulted meanwhile and the frame holds its contents: the slot is
+    /// released here instead.
+    pub fn run_planned_report<H: FrameHooks, Io: PagingIo, Mem: FrameMemory>(
+        &mut self,
+        db: &mut FrameDb<H>,
+        io: &mut Io,
+        mem: &mut Mem,
+        buf: &mut [u8; PAGE_SIZE],
+        plan: WriterPlan,
+        done: &mut impl FnMut(FrameId, SlotId) -> bool,
+    ) -> PassReport {
         let mut report = PassReport::default();
         let mut remaining = if plan.run { plan.count } else { 0 };
         while remaining > 0 {
@@ -357,7 +385,12 @@ impl PageWriter {
                 continue;
             }
             match page_out(db, io, mem, buf, frame) {
-                Ok(_slot) => report.written += 1,
+                Ok(slot) => {
+                    report.written += 1;
+                    if !done(frame, slot) {
+                        free_backing(io, slot);
+                    }
+                }
                 Err(_) => {
                     // page_out left the frame back on the Modified list; retry it later.
                     report.failed += 1;

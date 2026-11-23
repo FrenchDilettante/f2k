@@ -387,6 +387,92 @@ pub fn view_arguments(
     Ok(placement)
 }
 
+// --- A file-backed view's pages -----------------------------------------------------------------
+//
+// A file-backed data view faults its pages in from the file: mapping writes a prototype entry per
+// page (its section page index in the payload bits, the view's protection in the index bits), and
+// the fault path ([`crate::mem::backing`]'s Section arm) reads the page from the file at that
+// index's offset. A paging-file-backed view's pages are made zeroed as the view maps, as they
+// have no file to read. A write-maximum view of a file-backed section writes its touched pages back
+// to the file when the view unmaps.
+
+/// The file byte offset of a section's page `index`.
+pub fn page_file_offset(index: u32) -> u32 {
+    index * crate::mem::vm::PAGE
+}
+
+/// How many bytes of a section of `size` bytes its page `index` holds: a page, or less at the
+/// section's end.
+pub fn page_span_len(size: u32, index: u32) -> usize {
+    size.saturating_sub(page_file_offset(index))
+        .min(crate::mem::vm::PAGE) as usize
+}
+
+/// A view's page at `va`, mapped from `offset` at `base`: its section page index and the file byte
+/// offset it reads from. None for an address outside the view or off a page.
+pub fn view_page(view_offset: u32, base: u32, va: u32) -> Option<(u32, u32)> {
+    let at = va.checked_sub(base)?.checked_add(view_offset)?;
+    if at % crate::mem::vm::PAGE != 0 {
+        return None;
+    }
+    Some((at / crate::mem::vm::PAGE, at))
+}
+
+/// The write-back of one of a view's pages at unmap: the file offset to write at and how many bytes
+/// (clamped to the section's size). None for a page past the section's end.
+pub fn write_back_span(view_offset: u32, base: u32, va: u32, section_size: u32) -> Option<(u32, usize)> {
+    let (index, offset) = view_page(view_offset, base, va)?;
+    if offset >= section_size {
+        return None;
+    }
+    Some((offset, page_span_len(section_size, index)))
+}
+
+/// Read a section's page `index` from `file`'s bytes into `buf`: the bytes the file holds at the
+/// page's offset, zero past its end. (Host tests; the target reads through the file system.)
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn read_section_page(file: &[u8], index: u32, buf: &mut [u8]) {
+    buf.fill(0);
+    let offset = page_file_offset(index) as usize;
+    let len = file.len().saturating_sub(offset).min(buf.len());
+    if len > 0 {
+        buf[..len].copy_from_slice(&file[offset..offset + len]);
+    }
+}
+
+/// Write a view's present pages back to its backing: for each page of `[base, end)` whose entry is
+/// present, the frame's page is read (`read_frame`) and written at the page's file offset
+/// (`write_file`, clamped to `section_size`). False when a read or a write failed.
+pub fn write_back_pages(
+    pages: &impl crate::mem::vm::Pages,
+    base: u32,
+    end: u32,
+    view_offset: u32,
+    section_size: u32,
+    read_frame: &mut impl FnMut(u32, &mut [u8]) -> bool,
+    write_file: &mut impl FnMut(u32, &[u8]) -> bool,
+) -> bool {
+    use crate::mem::vm::{PAGE, PTE_FRAME_MASK, PTE_PRESENT};
+    let mut buf = [0u8; PAGE as usize];
+    let mut va = base;
+    while va < end {
+        let entry = pages.entry(va);
+        if entry & PTE_PRESENT != 0 {
+            let frame = entry & PTE_FRAME_MASK;
+            if !read_frame(frame, &mut buf) {
+                return false;
+            }
+            if let Some((offset, len)) = write_back_span(view_offset, base, va, section_size) {
+                if !write_file(offset, &buf[..len]) {
+                    return false;
+                }
+            }
+        }
+        va += PAGE;
+    }
+    true
+}
+
 // --- NtQuerySection
 // -------------------------------------------------------------------------------
 
@@ -965,10 +1051,12 @@ mod target {
 
     /// Map `bytes` of the section `object` names from `offset` as a reservation of its own (at
     /// `requested`, or where `placement` puts it) in `process`'s address space, the live one, its
-    /// pages the section's frames with `protect`, its allocation protection `protect` too and its
-    /// maximum `maximum` (see [`view_maximum`]). The address space is locked a step at a time: the
-    /// reservation, each page's mapping, the view's record; the section's frames are reached in the
-    /// directory's holds and the file read between them, with neither lock held.
+    /// allocation protection `protect` and its maximum `maximum` (see [`view_maximum`]). A
+    /// file-backed section's pages are not read now: each page gets a prototype entry naming its
+    /// section page index, and the fault path reads it from the file (see
+    /// [`crate::mem::backing`]'s Section arm). A paging-file section's pages are made zeroed now,
+    /// as the view maps, and shared through the section's frames. The address space is locked a
+    /// step at a time: the reservation, each page's entry, the view's record.
     #[allow(clippy::too_many_arguments)]
     fn map_view(
         process: &crate::process::Process,
@@ -984,23 +1072,11 @@ mod target {
         if !process.with_space(|space| space.has_view_room()) {
             return Err(STATUS_NO_MEMORY);
         }
-        // A file's pages are made from the file as its record holds it now (the section keeps it
-        // open).
-        let (section, record) = ob::locked(|directory| {
-            let section = *directory
+        let section = ob::locked(|directory| {
+            *directory
                 .section(object)
-                .expect("the caller holds the section");
-            let record = section.file_object.and_then(|file_object| {
-                directory
-                    .file(file_object)
-                    .map(|object| mapped_record(object))
-            });
-            (section, record)
+                .expect("the caller holds the section")
         });
-        let file = match record {
-            Some(record) => crate::fs::io::file_at(record),
-            None => section.file,
-        };
         let pages = bytes.div_ceil(PAGE);
         let base = process
             .with_space(|space| {
@@ -1017,60 +1093,61 @@ mod target {
                 crate::mem::vm::VmError::InvalidParameter => STATUS_INVALID_PARAMETER_2,
                 crate::mem::vm::VmError::NoMemory => STATUS_NO_MEMORY,
             })?;
-        let mut buffer = [0u8; PAGE as usize];
-        for page in 0..pages {
-            let at = offset + page * PAGE;
-            // The section's frames are reached inside the directory's hold, a step at a time; the
-            // file's bytes are read with it released. A frame another view made meanwhile is the
-            // one the second step finds (its fill is not run).
-            let made =
-                ob::locked(|directory| section_frames(directory, object).made(table, at / PAGE));
-            // A file's page not yet made is read first: a read that fails maps nothing.
-            let take = if made.is_none() && !section.paging_file {
-                file.size.saturating_sub(at).min(PAGE) as usize
-            } else {
-                0
-            };
-            if take != 0 && crate::fs::io::read_file_at(&file, at, &mut buffer[..take]).is_none() {
-                let _ = process.with_space(|space| space.release(table, base));
-                return Err(STATUS_IO_DEVICE_ERROR);
-            }
-            let frame = match made {
-                Some(frame) => Ok(frame),
-                None => ob::locked(|directory| {
-                    section_frames(directory, object).frame(table, at / PAGE, |frame| {
-                        crate::mem::paging::write_frame(frame, 0, &buffer[..take]);
+        if section.paging_file {
+            // The paging file's pages start zeroed: made now, shared through the section's frames
+            // (a write through one view shows in the others).
+            for page in 0..pages {
+                let made = ob::locked(|directory| {
+                    section_frames(directory, object).frame(table, offset / PAGE + page, |_| ())
+                });
+                let mapped = made.and_then(|frame| {
+                    process.with_space(|space| {
+                        space.map_shared(table, base + page * PAGE, frame, protect)
                     })
-                }),
-            };
-            let mapped = frame.and_then(|frame| {
-                process
-                    .with_space(|space| space.map_shared(table, base + page * PAGE, frame, protect))
-            });
-            if mapped.is_err() {
-                let _ = process.with_space(|space| space.release(table, base));
-                return Err(STATUS_NO_MEMORY);
+                });
+                if mapped.is_err() {
+                    let _ = process.with_space(|space| space.release(table, base));
+                    return Err(STATUS_NO_MEMORY);
+                }
+            }
+        } else {
+            // A file's view: prototype entries, the pages faulted in from the file on first touch.
+            for page in 0..pages {
+                let index = offset / PAGE + page;
+                let entry = crate::mem::vm::encode_backing(
+                    crate::mem::fault::PROTOTYPE,
+                    index << 12,
+                    protect,
+                );
+                let mapped = process.with_space(|space| {
+                    space.map_soft(table, base + page * PAGE, entry)
+                });
+                if mapped.is_err() {
+                    let _ = process.with_space(|space| space.release(table, base));
+                    return Err(STATUS_NO_MEMORY);
+                }
             }
         }
         // The view holds its section for as long as it is mapped: the reference is taken before
         // the view is recorded, as from then on another thread may unmap it and drop it.
         let held = ob::locked(|directory| directory.reference(object));
         debug_assert!(held, "a section being mapped lives");
-        keep_view(process, table, base, ob::Mapping::Section(object))?;
+        keep_view(process, table, base, offset, ob::Mapping::Section(object))?;
         Ok(base)
     }
 
-    /// Record the view just mapped at `base` of `mapping`, whose reference the caller took for it
-    /// (see [`crate::mem::vm::AddressSpace::record_view`]). The room checked before the mapping
-    /// may have gone since, to another thread of the process: the view is released then, its
-    /// reference dropped, STATUS_NO_MEMORY.
+    /// Record the view just mapped at `base` from `offset` of `mapping`, whose reference the
+    /// caller took for it (see [`crate::mem::vm::AddressSpace::record_view`]). The room checked
+    /// before the mapping may have gone since, to another thread of the process: the view is
+    /// released then, its reference dropped, STATUS_NO_MEMORY.
     fn keep_view(
         process: &crate::process::Process,
         table: &mut CurrentPages,
         base: u32,
+        offset: u32,
         mapping: ob::Mapping,
     ) -> Result<(), NtStatus> {
-        if process.with_space(|space| space.record_view(table, base, mapping)) {
+        if process.with_space(|space| space.record_view(table, base, offset, mapping)) {
             return Ok(());
         }
         ob::release_mapping(mapping);
@@ -1208,7 +1285,7 @@ mod target {
         // recorded: see `map_view`).
         let held = ob::locked(|directory| directory.reference_segment(segment));
         debug_assert!(held, "a segment being mapped lives");
-        keep_view(process, table, base, ob::Mapping::Image(segment))?;
+        keep_view(process, table, base, 0, ob::Mapping::Image(segment))?;
         Ok(ImageView {
             base,
             at_base: base == image.image_base(),
@@ -1231,28 +1308,108 @@ mod target {
 
     /// NtUnmapViewOfSection: unmap the view holding the address — any address inside it names it,
     /// as on Windows 2000 — (a section, or an image segment, nothing names any more goes with its
-    /// last view);
-    /// STATUS_NOT_MAPPED_VIEW for an address no view holds.
+    /// last view). A write-maximum view of a file-backed section writes its touched pages back to
+    /// the file first (see [`write_back_pages`]). STATUS_NOT_MAPPED_VIEW for an address no view
+    /// holds.
     pub fn unmap_view_of_section(
         call: &mut NtCall,
         process: Handle,
         address: UserAddr,
     ) -> NtResult {
-        let mapping = with_space(call, process, |space, pages| {
+        let (view, region) = with_space(call, process, |space, _pages| {
             // A data view, or an image section's (the image and the system DLLs, mapped by the
             // kernel itself, are no views).
-            let base = space
+            let region = space
                 .region_at(address.raw())
                 .filter(|region| matches!(region.kind, Kind::Mapped(_) | Kind::Image))
-                .ok_or(STATUS_NOT_MAPPED_VIEW)?
-                .base;
-            let mapping = space.take_view(base).ok_or(STATUS_NOT_MAPPED_VIEW)?;
-            let _ = space.release(pages, base);
-            Ok(mapping)
+                .ok_or(STATUS_NOT_MAPPED_VIEW)?;
+            let view = space.take_view(region.base).ok_or(STATUS_NOT_MAPPED_VIEW)?;
+            Ok((view, region))
+        })?;
+        // The view's pages go back to the file before its frames are dropped (a write-maximum
+        // view of a file-backed section); the address space's lock is not held across the file's
+        // I/O.
+        write_back_view(&view, &region)?;
+        with_space(call, process, |space, pages| {
+            let _ = space.release(pages, view.base);
+            Ok(())
         })?;
         // The view's reference goes; a section or segment nothing else references goes with it.
-        ob::release_mapping(mapping);
+        ob::release_mapping(view.mapping);
         Ok(STATUS_SUCCESS)
+    }
+
+    /// Write a view's present pages back to its section's file, when the view may write its
+    /// section (a [`crate::mem::vm::Maximum::Write`] view of a file-backed data section): each
+    /// present page of the view's region is read from its frame and written at the page's file
+    /// offset. Nothing for a paging-file section (its pages live in the store), a read or
+    /// copy-on-write view (their writes never reached the section's frames), or an image.
+    fn write_back_view(
+        view: &crate::mem::vm::View,
+        region: &crate::mem::vm::Region,
+    ) -> Result<(), NtStatus> {
+        use crate::mem::vm::Maximum;
+        if !matches!(region.kind, Kind::Mapped(Maximum::Write)) {
+            return Ok(());
+        }
+        let crate::ob::Mapping::Section(object) = view.mapping else {
+            return Ok(());
+        };
+        let (paging_file, file, size, file_object) = ob::locked(|directory| {
+            let section = directory
+                .section(object)
+                .expect("the caller holds the section");
+            (
+                section.paging_file,
+                section.file,
+                section.size,
+                section.file_object,
+            )
+        });
+        if paging_file {
+            return Ok(());
+        }
+        let record = file_object.and_then(|object| {
+            ob::locked(|directory| directory.file(object).and_then(|file| file.disk()))
+        });
+        let mut file = match record {
+            Some(record) => crate::fs::io::file_at(record),
+            None => file,
+        };
+        let ok = write_back_pages(
+            &CurrentPages,
+            region.base,
+            region.base + region.size,
+            view.offset,
+            size,
+            &mut |frame, out| {
+                if out.len() != PAGE as usize {
+                    return false;
+                }
+                crate::mem::paging::read_frame(frame, 0, out);
+                true
+            },
+            &mut |offset, bytes| {
+                crate::fs::fat32::volume::with_boot_volume(|volume| {
+                    crate::fs::fat32::write::write_at(volume, &mut file, offset, bytes)
+                })
+                .map(|result| result.is_ok())
+                .unwrap_or(false)
+            },
+        );
+        if !ok {
+            return Err(STATUS_IO_DEVICE_ERROR);
+        }
+        // The file as the writes left it goes back to its record and the section's copy.
+        if let Some(record) = record {
+            crate::fs::io::store_file(record, file);
+        }
+        ob::locked(|directory| {
+            if let Some(section) = directory.section(object) {
+                section.file = file;
+            }
+        });
+        Ok(())
     }
 
     /// NtQuerySection(SectionHandle, Class, Information, Length, ResultLength): a section's basic
@@ -1954,5 +2111,187 @@ mod tests {
         assert!(Maximum::CopyOnWrite.allows(PAGE_READWRITE));
         assert!(!Maximum::Write.allows(PAGE_EXECUTE_READ));
         assert!(!Maximum::Write.allows(PAGE_EXECUTE_WRITECOPY));
+    }
+
+    /// Page tables as a map, for the write-back pass's reads: the entries only.
+    #[derive(Default)]
+    struct FakePages {
+        entries: std::collections::HashMap<u32, u32>,
+    }
+
+    impl crate::mem::vm::Pages for FakePages {
+        fn entry(&self, va: u32) -> u32 {
+            *self.entries.get(&va).unwrap_or(&0)
+        }
+        fn set_entry(&mut self, va: u32, entry: u32) {
+            self.entries.insert(va, entry);
+        }
+        fn zeroed_frame(&mut self) -> Option<u32> {
+            None
+        }
+        fn free_frame(&mut self, _frame: u32) {}
+        fn share_frame(&mut self, _frame: u32) {}
+        fn frame_shared(&self, _frame: u32) -> bool {
+            false
+        }
+        fn copy_frame(&mut self, _from: u32, _to: u32) {}
+        fn frame_word(&self, _frame: u32, _index: u32) -> u32 {
+            0
+        }
+        fn set_frame_word(&mut self, _frame: u32, _index: u32, _value: u32) {}
+    }
+
+    /// A section page's file offset, and how many bytes of a section's size its page holds: a
+    /// whole page inside the section, a partial one at its end, none past it.
+    #[test]
+    fn section_page_offsets_and_spans() {
+        use crate::mem::vm::PAGE;
+        assert_eq!(page_file_offset(0), 0);
+        assert_eq!(page_file_offset(3), 3 * PAGE);
+        assert_eq!(page_span_len(0x10_0000, 0), PAGE as usize);
+        assert_eq!(page_span_len(0x10_0000, 15), PAGE as usize);
+        assert_eq!(page_span_len(0x10_800, 16), 0x800, "the section's last partial page");
+        assert_eq!(page_span_len(0x10_800, 17), 0, "past the section's end");
+        assert_eq!(page_span_len(0, 0), 0);
+    }
+
+    /// A view's page at an address: its section page index and file offset, with the view's own
+    /// offset added; none for an address outside the view or off a page boundary of the section.
+    #[test]
+    fn a_views_page_offset_arithmetic() {
+        use crate::mem::vm::PAGE;
+        let base = 0x40_0000;
+        let view_offset = 0x2000;
+        assert_eq!(view_page(view_offset, base, base), Some((2, 0x2000)));
+        assert_eq!(view_page(view_offset, base, base + PAGE), Some((3, 0x3000)));
+        assert_eq!(view_page(0, base, base + 0x10), None, "not page-aligned in the section");
+        assert_eq!(view_page(view_offset, base, base - PAGE), None, "below the view");
+        assert_eq!(view_page(0x1001, base, base), None, "the view's offset is off-page");
+    }
+
+    /// The write-back of one page at unmap: the file offset and the byte count, clamped to the
+    /// section's size; none past its end.
+    #[test]
+    fn the_write_back_span_is_clamped_to_the_section() {
+        use crate::mem::vm::PAGE;
+        let base = 0x40_0000;
+        assert_eq!(
+            write_back_span(0, base, base + 2 * PAGE, 0x10_0000),
+            Some((2 * PAGE, PAGE as usize))
+        );
+        assert_eq!(
+            write_back_span(0, base, base + 16 * PAGE, 0x10_800),
+            Some((0x10_000, 0x800)),
+            "the section's last partial page"
+        );
+        assert_eq!(
+            write_back_span(0, base, base + 17 * PAGE, 0x10_800),
+            None,
+            "past the section's end"
+        );
+        // With a view offset, the page at the view's base writes at the offset's page.
+        assert_eq!(
+            write_back_span(0x4000, base, base, 0x10_0000),
+            Some((0x4000, PAGE as usize))
+        );
+    }
+
+    /// A section page read from the file's bytes: the file's bytes at the page's offset, zero past
+    /// its end, a whole zero page past the file entirely.
+    #[test]
+    fn a_section_page_reads_from_the_files_bytes() {
+        let mut file = vec![0u8; 0x1800];
+        for (index, byte) in file.iter_mut().enumerate() {
+            *byte = (index % 251) as u8;
+        }
+        let mut buf = [0xFFu8; 0x1000];
+        read_section_page(&file, 1, &mut buf);
+        assert_eq!(&buf[..0x800], &file[0x1000..0x1800], "the page's bytes");
+        assert!(buf[0x800..].iter().all(|&byte| byte == 0), "zero past the file's end");
+        read_section_page(&file, 5, &mut buf);
+        assert!(buf.iter().all(|&byte| byte == 0), "a page past the file entirely");
+    }
+
+    /// The write-back pass over a view: every present page of the region is read from its frame
+    /// and written at its file offset (clamped to the section's size), pages without a present
+    /// entry are skipped, and a failed read or write fails the pass.
+    #[test]
+    fn the_write_back_pass_writes_each_present_page_at_its_offset() {
+        use crate::mem::vm::{encode, PAGE, PAGE_READWRITE};
+        let base = 0x40_0000;
+        let section_size = 0x2800; // two pages and a half
+        let mut pages = FakePages::default();
+        // Page 0 present on frame 0x10_0000, page 1 not present, page 2 present on 0x12_0000.
+        pages.entries.insert(base, encode(0x10_0000, PAGE_READWRITE));
+        pages.entries.insert(base + 2 * PAGE, encode(0x12_0000, PAGE_READWRITE));
+
+        // Each frame's page holds its frame number as the first byte; the writes record the
+        // offset, the length and the first byte.
+        let mut reads = Vec::new();
+        let mut writes: Vec<(u32, usize, u8)> = Vec::new();
+        let ok = write_back_pages(
+            &pages,
+            base,
+            base + 3 * PAGE,
+            0,
+            section_size,
+            &mut |frame, out| {
+                reads.push(frame);
+                out.fill(0);
+                out[0] = (frame >> 16) as u8;
+                true
+            },
+            &mut |offset, bytes| {
+                writes.push((offset, bytes.len(), bytes[0]));
+                true
+            },
+        );
+        assert!(ok);
+        assert_eq!(reads, vec![0x10_0000, 0x12_0000], "only the present pages, in order");
+        assert_eq!(
+            writes,
+            vec![(0, PAGE as usize, 0x10), (2 * PAGE, 0x800, 0x12)],
+            "page 2 writes only the section's remaining 0x800 bytes"
+        );
+
+        // A view offset shifts the file offsets; a read or write failure fails the pass.
+        let mut writes = Vec::new();
+        assert!(write_back_pages(
+            &pages,
+            base,
+            base + PAGE,
+            0x4000,
+            0x10_0000,
+            &mut |_, out| {
+                out.fill(7);
+                true
+            },
+            &mut |offset, bytes| {
+                writes.push((offset, bytes.len()));
+                true
+            },
+        ));
+        assert_eq!(writes, vec![(0x4000, PAGE as usize)]);
+        assert!(!write_back_pages(
+            &pages,
+            base,
+            base + PAGE,
+            0,
+            0x10_0000,
+            &mut |_, _| false,
+            &mut |_, _| true,
+        ));
+        assert!(!write_back_pages(
+            &pages,
+            base,
+            base + PAGE,
+            0,
+            0x10_0000,
+            &mut |_, out| {
+                out.fill(0);
+                true
+            },
+            &mut |_, _| false,
+        ));
     }
 }
