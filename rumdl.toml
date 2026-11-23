@@ -1,3 +1,6 @@
+[global]
+exclude = ["boot/limine", "target"]
+
 [MD013]
 line-length = 0
 reflow = true
