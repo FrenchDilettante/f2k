@@ -23,6 +23,14 @@ pub const CAPACITY: usize = 1024;
 /// The aging counter's ceiling: the counter saturates here.
 pub const MAX_AGE: u8 = 7;
 
+/// The default minimum of a new process's working set, in pages: the floor a trim never evicts
+/// below.
+pub const DEFAULT_MIN: usize = 16;
+
+/// The default maximum of a new process's working set, in pages: what a fault brings the set
+/// past before a trim brings it back.
+pub const DEFAULT_MAX: usize = 256;
+
 /// An entry's state.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WsState {
@@ -83,6 +91,56 @@ impl WorkingSet {
         let mut ws = Self::new();
         ws.set_limits(min, max)?;
         Ok(ws)
+    }
+
+    /// The empty set with the default limits ([`DEFAULT_MIN`], [`DEFAULT_MAX`]): what a new
+    /// process's working set starts with.
+    pub const fn with_default_limits() -> Self {
+        WorkingSet {
+            entries: [None; CAPACITY],
+            count: 0,
+            min: DEFAULT_MIN,
+            max: DEFAULT_MAX,
+        }
+    }
+
+    /// Write the empty set with the default limits at `ws`, element by element: the in-place form
+    /// of [`Self::with_default_limits`], for a set inside a process record built at its final
+    /// address (by value the table would pass through the caller's stack, which is smaller than
+    /// it).
+    ///
+    /// # Safety
+    ///
+    /// `ws` is valid for writes and aligned; its previous contents are overwritten, not dropped.
+    pub unsafe fn write_empty(ws: *mut Self) {
+        use core::ptr::addr_of_mut;
+        // SAFETY: the caller's contract; the table is written element by element.
+        unsafe {
+            let entries = addr_of_mut!((*ws).entries) as *mut Option<WsEntry>;
+            for index in 0..CAPACITY {
+                entries.add(index).write(None);
+            }
+            addr_of_mut!((*ws).count).write(0);
+            addr_of_mut!((*ws).min).write(DEFAULT_MIN);
+            addr_of_mut!((*ws).max).write(DEFAULT_MAX);
+        }
+    }
+
+    /// Make the set the empty one with the default limits again, in place: the form for a
+    /// process record taken over for a new process (by value the table would pass through the
+    /// caller's stack, which is smaller than it).
+    pub fn reset(&mut self) {
+        self.entries.fill(None);
+        self.count = 0;
+        self.min = DEFAULT_MIN;
+        self.max = DEFAULT_MAX;
+    }
+
+    /// Empty the set, keeping its limits: every entry goes, as when the process's pages are
+    /// released at its teardown.
+    pub fn clear(&mut self) {
+        self.entries.fill(None);
+        self.count = 0;
     }
 
     /// Set the limits. Refuses a minimum above the maximum, or a maximum above the table's
@@ -564,5 +622,45 @@ mod tests {
         let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ws.insert(0x123)));
         assert!(refused.is_err(), "an unaligned insert is refused");
         assert!(ws.is_empty());
+    }
+
+    /// The default limits a new process's working set starts with are valid, and
+    /// `with_default_limits` gives them; `clear` empties a used set keeping its limits, and
+    /// `reset` brings it back to the empty default one, in place.
+    #[test]
+    fn the_default_limits_are_valid_and_clear_and_reset_restore_them() {
+        assert!(DEFAULT_MIN <= DEFAULT_MAX && DEFAULT_MAX <= CAPACITY);
+        let fresh = WorkingSet::with_default_limits();
+        assert!(fresh.is_empty());
+        assert_eq!((fresh.min(), fresh.max()), (DEFAULT_MIN, DEFAULT_MAX));
+
+        let mut ws = WorkingSet::with_limits(4, 40).unwrap();
+        for n in 1..=6 {
+            assert!(ws.insert(page(n)));
+        }
+        ws.clear();
+        assert!(ws.is_empty());
+        assert_eq!((ws.min(), ws.max()), (4, 40), "clear keeps the limits");
+        assert!(ws.insert(page(9)), "the table is reusable after a clear");
+        assert_eq!(ws.len(), 1);
+
+        ws.reset();
+        assert!(ws.is_empty());
+        assert_eq!((ws.min(), ws.max()), (DEFAULT_MIN, DEFAULT_MAX));
+    }
+
+    /// The in-place `write_empty` builds the empty set at its final address, field by field.
+    #[test]
+    fn write_empty_builds_the_empty_set_in_place() {
+        let mut set: Box<WorkingSet> = Box::new(WorkingSet::with_limits(4, 40).unwrap());
+        for n in 1..=6 {
+            assert!(set.insert(page(n)));
+        }
+        // SAFETY: the box's set is valid for writes and aligned; its contents are overwritten.
+        unsafe { WorkingSet::write_empty(Box::as_mut_ptr(&mut set)) };
+        assert!(set.is_empty());
+        assert_eq!((set.min(), set.max()), (DEFAULT_MIN, DEFAULT_MAX));
+        assert!(set.insert(page(3)));
+        assert_eq!(set.len(), 1);
     }
 }

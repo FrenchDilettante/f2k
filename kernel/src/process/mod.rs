@@ -100,6 +100,7 @@ use core::cell::UnsafeCell;
 use crate::mem::paging;
 use crate::mem::quota::CommitQuota;
 use crate::mem::vm::AddressSpace;
+use crate::mem::ws::WorkingSet;
 use crate::sched::object::{HandleTable, HANDLE_SHIFT, HANDLE_SLOTS};
 use crate::sched::process::{PinnedProcess, SchedProcess};
 use crate::sync::ShortLock;
@@ -127,6 +128,11 @@ pub struct Process {
     /// The address space's regions and views, and its commit quota: every user page the process
     /// holds lies in one, and every mapping, commit and release of its pages goes through it.
     space: ShortLock<AddressSpace>,
+    /// The process's working set: the resident user pages of its address space, in
+    /// least-recently-used order (see [`crate::mem::ws`]); the trim policy
+    /// ([`crate::mem::wstrim`]) relieves free-frame pressure by trimming it. Behind its own
+    /// short lock like the other parts that change.
+    working_set: ShortLock<WorkingSet>,
     /// What else changes over the process's life (see [`ProcessState`]).
     state: ShortLock<ProcessState>,
 }
@@ -388,14 +394,15 @@ impl Process {
             identity: IdentityCell::new(Identity::NONE),
             handles: ShortLock::new(HandleTable::empty()),
             space: ShortLock::new(AddressSpace::new()),
+            working_set: ShortLock::new(WorkingSet::with_default_limits()),
             state: ShortLock::new(ProcessState::fresh()),
         }
     }
 
     /// Write a record no process holds at `record`, part by part: the in-place form of
     /// [`Process::empty`], for a record made at its final address (by value it would pass through
-    /// the caller's stack, which is smaller than it). The handle table and the address space are
-    /// built in place at their locks' first acquisitions.
+    /// the caller's stack, which is smaller than it). The handle table, the address space and the
+    /// working set are built in place at their locks' first acquisitions.
     ///
     /// # Safety
     ///
@@ -404,13 +411,17 @@ impl Process {
     #[cfg(target_arch = "x86")]
     pub(super) unsafe fn write_empty(record: *mut Process) {
         use core::ptr::addr_of_mut;
-        // SAFETY: the caller's contract; every field is written, the two large ones in place.
+        // SAFETY: the caller's contract; every field is written, the three large ones in place.
         unsafe {
             addr_of_mut!((*record).sched).write(PinnedProcess::new(0, crate::sched::NORMAL_BASE));
             addr_of_mut!((*record).identity).write(IdentityCell::new(Identity::NONE));
             addr_of_mut!((*record).state).write(ShortLock::new(ProcessState::fresh()));
             ShortLock::write_in_place(addr_of_mut!((*record).handles), HandleTable::write_empty);
             ShortLock::write_in_place(addr_of_mut!((*record).space), AddressSpace::write_empty);
+            ShortLock::write_in_place(
+                addr_of_mut!((*record).working_set),
+                WorkingSet::write_empty,
+            );
         }
     }
 
@@ -452,6 +463,8 @@ impl Process {
         });
         // The address space's reset starts the commit quota over at the system's commit limit too.
         self.with_space(AddressSpace::reset);
+        // The working set starts over too, at the default limits.
+        self.with_working_set(WorkingSet::reset);
         locked(&self.state, |state| {
             *state = ProcessState::fresh();
             state.process_group = identity.id;
@@ -544,6 +557,20 @@ impl Process {
     /// whose calls charge or discharge it.
     pub fn with_space<R>(&self, f: impl FnOnce(&mut AddressSpace) -> R) -> R {
         locked(&self.space, f)
+    }
+
+    /// Run `f` on the process's working set, locked: its resident pages and its limits (see
+    /// [`crate::mem::ws`]). Never across a wait, a hold of the directory or a copy of user
+    /// memory, like the other parts' holds.
+    pub fn with_working_set<R>(&self, f: impl FnOnce(&mut WorkingSet) -> R) -> R {
+        locked(&self.working_set, f)
+    }
+
+    /// Drop the working set with the process's pages at its deletion (see
+    /// `release_contents`): every resident page goes with the address space's walk, so the set
+    /// holds nothing. The record is reused: the next process's creation resets the set over.
+    pub fn clear_working_set(&self) {
+        self.with_working_set(WorkingSet::clear)
     }
 
     /// The entry a handle names in the table; none when it names nothing.
@@ -1044,6 +1071,9 @@ impl Process {
         if charged > 0 {
             crate::mem::note_commit_charge_pages(-((charged / paging::PAGE_SIZE as u64) as i32));
         }
+        // The working set goes with the address space's pages: every entry names a page the walk
+        // below releases.
+        self.clear_working_set();
         release_address_space_of(self);
         locked(&self.state, |state| state.torn_down = true);
         true
@@ -1581,6 +1611,51 @@ mod tests {
         let handle = process.with_handles(|table| table.insert(event_entry()));
         assert!(process.with_space(|space| space.region_at(0x0040_0000).is_none()));
         assert_eq!(process.lookup_handle(handle), Some(event_entry()));
+    }
+
+    /// A fresh record carries an empty working set with the default limits, as its own part
+    /// locked apart from the rest; the deletion drops the set with the process's pages, keeping
+    /// the limits, and a record taken over for a new process starts over at the defaults.
+    #[test]
+    fn a_process_carries_its_working_set_from_creation_to_teardown() {
+        let process = fresh_process();
+        process.with_working_set(|ws| {
+            assert!(ws.is_empty());
+            assert_eq!(
+                (ws.min(), ws.max()),
+                (crate::mem::ws::DEFAULT_MIN, crate::mem::ws::DEFAULT_MAX)
+            );
+        });
+        process.with_working_set(|ws| {
+            assert!(ws.insert(0x0040_0000));
+            assert!(ws.insert(0x0040_1000));
+            assert!(ws.contains(0x0040_0000));
+            assert_eq!(ws.len(), 2);
+        });
+        // Its lock is its own, like the other parts': taken and released apart.
+        assert!(process.with_space(|space| space.region_at(0x0040_0000).is_none()));
+        process.with_working_set(|ws| assert_eq!(ws.len(), 2));
+
+        // The deletion drops the set with the process's pages...
+        process.clear_working_set();
+        process.with_working_set(|ws| {
+            assert!(ws.is_empty());
+            assert_eq!(
+                (ws.min(), ws.max()),
+                (crate::mem::ws::DEFAULT_MIN, crate::mem::ws::DEFAULT_MAX),
+                "the limits survive the drop"
+            );
+        });
+        // ...and a record taken over for a new process starts over at the defaults.
+        process.with_working_set(|ws| {
+            assert!(ws.insert(0x0050_0000));
+            ws.reset();
+            assert!(ws.is_empty());
+            assert_eq!(
+                (ws.min(), ws.max()),
+                (crate::mem::ws::DEFAULT_MIN, crate::mem::ws::DEFAULT_MAX)
+            );
+        });
     }
 
     /// A part's lock is never taken inside another's: a hold is the change itself, nothing more.

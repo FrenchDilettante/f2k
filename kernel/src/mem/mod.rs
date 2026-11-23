@@ -5,6 +5,7 @@ pub mod backing;
 pub mod demand;
 pub mod dma;
 pub mod fault;
+pub mod faultstats;
 pub mod frame;
 pub mod heap;
 pub mod kstacks;
@@ -18,6 +19,7 @@ pub mod pte;
 pub mod quota;
 pub mod vm;
 pub mod ws;
+pub mod wstrim;
 
 /// Boot-time frame database, built from the Multiboot memory map. Host builds run the modules' unit
 /// tests instead; there is no boot loader to ask for memory there.
