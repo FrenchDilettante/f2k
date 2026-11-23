@@ -11,11 +11,14 @@ gate = true
 storage = "ide"
 memory = "32M"
 
+[masks]
+# The load percentage differs at the 32 MiB boot; the <= 100 verdict is what the sysinfo block pins.
+sysinfo = ["memory load * <= 100: yes"]
+
 [pending]
 # Every block waits for the behavior it pins; tests/capture.bat vmdemand fills output.txt on the VM
 # trip, and each block un-xfails when that behavior lands.
-prottrans = "F2K's protection transition on a reserved region, its old-protection answers and NtProtectVirtualMemory's status were chosen from memory"
-sysinfo = "F2K reports the commit limit as physical memory with no paging file, so the performance class's commit limit, total and available and GlobalMemoryStatus's page file differ"
+sysinfo = "F2K's page-out writes every evicted page out to the paging file, so no fault is ever resolved from a backing list and the performance class's transition count stays zero (the fault counts' page-fault, demand-zero and copy-on-write words are live)"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

@@ -263,6 +263,11 @@ pub fn copy_on_write(pages: &mut impl Pages, va: u32) -> bool {
     } else {
         frame
     };
+    // The page-fault handler's fast path resolves a write to a copy-on-write page here, without
+    // the dispatch (user/seh.rs) that notes the fault, so the sever notes itself: the total, and
+    // the copy-on-write kind (the counts are read for nonzero, not exact).
+    #[cfg(target_arch = "x86")]
+    crate::mem::faultstats::note_fault(entry, true, true);
     pages.set_entry(page, encode(frame, now | protect & !0xFF));
     true
 }
@@ -2321,6 +2326,86 @@ mod tests {
             Err(VmError::InvalidAddress),
             "the reserved page is not committed"
         );
+    }
+
+    /// The capture's transition chain at the region table: each protect over committed pages
+    /// reports the first page's old protection and rewrites every entry — a frameless demand page
+    /// re-protected in place, a mapped page keeping its frame and contents through a no-access —
+    /// and a protect whose range touches an uncommitted page fails whole, changing nothing.
+    #[test]
+    fn a_protect_transition_chain_reports_each_old_protection() {
+        let mut vm = space();
+        let mut pages = Fake::default();
+        let base = vm
+            .reserve(None, 0x4000, PAGE_READWRITE, Kind::Private)
+            .unwrap();
+        vm.commit_demand(&mut pages, base, 0x4000, PAGE_READONLY)
+            .unwrap();
+        assert_eq!(
+            vm.protect(&mut pages, base, 0x4000, PAGE_READWRITE),
+            Ok(PAGE_READONLY)
+        );
+        assert_eq!(
+            vm.protect(&mut pages, base, 0x4000, PAGE_NOACCESS),
+            Ok(PAGE_READWRITE)
+        );
+        assert_eq!(vm.query(&pages, base).protect, PAGE_NOACCESS);
+        assert_eq!(
+            vm.protect(&mut pages, base, 0x4000, PAGE_EXECUTE_READ),
+            Ok(PAGE_NOACCESS)
+        );
+        assert_eq!(
+            vm.protect(&mut pages, base, 0x4000, 0x40),
+            Ok(PAGE_EXECUTE_READ)
+        );
+        assert_eq!(vm.query(&pages, base).protect, PAGE_EXECUTE_READWRITE);
+        assert_eq!(
+            vm.protect(&mut pages, base, 0x4000, PAGE_READWRITE),
+            Ok(0x40)
+        );
+        assert_eq!(vm.query(&pages, base).protect, PAGE_READWRITE);
+        // The entries were rewritten each time, still demand-zero (no frame taken).
+        for page in 0..4 {
+            let entry = pages.entry(base + page * PAGE);
+            assert_eq!(pte::classify(entry), PteKind::DemandZero, "page {page}");
+            assert_eq!(pte::decode(entry).unwrap().2, PAGE_READWRITE);
+        }
+
+        // A mapped page keeps its frame and contents through the transitions.
+        let mapped = vm
+            .reserve(None, 0x2000, PAGE_READWRITE, Kind::Private)
+            .unwrap();
+        vm.commit(&mut pages, mapped, 0x2000, PAGE_READWRITE)
+            .unwrap();
+        let frame = vm.frame_at(&pages, mapped).unwrap();
+        pages.set_frame_word(frame, 0, 9);
+        assert_eq!(
+            vm.protect(&mut pages, mapped, 0x2000, PAGE_NOACCESS),
+            Ok(PAGE_READWRITE)
+        );
+        assert_eq!(vm.frame_at(&pages, mapped), Some(frame), "still its frame");
+        assert_eq!(pages.frame_word(frame, 0), 9, "contents kept");
+        assert_eq!(vm.query(&pages, mapped).protect, PAGE_NOACCESS);
+
+        // A range touching an uncommitted page fails whole: the committed pages keep their
+        // protection and entries.
+        assert_eq!(
+            vm.protect(&mut pages, base, 0x6000, PAGE_READONLY),
+            Err(VmError::InvalidAddress),
+            "past the region"
+        );
+        let half = vm
+            .reserve(None, 0x4000, PAGE_READWRITE, Kind::Private)
+            .unwrap();
+        vm.commit_demand(&mut pages, half, 0x2000, PAGE_READWRITE)
+            .unwrap();
+        assert_eq!(
+            vm.protect(&mut pages, half, 0x4000, PAGE_READONLY),
+            Err(VmError::InvalidAddress),
+            "the reserved half is not committed"
+        );
+        assert_eq!(vm.query(&pages, half).protect, PAGE_READWRITE);
+        assert_eq!(pte::decode(pages.entry(half)).unwrap().2, PAGE_READWRITE);
     }
 
     /// A soft backing entry round trips: its tag, its payload and its protection, and it counts as

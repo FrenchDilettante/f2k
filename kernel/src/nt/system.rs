@@ -17,6 +17,7 @@ use rtl::nt::info::{
 use rtl::pod::Pod;
 
 use super::call::{NtCall, NtResult, UserAddr, UserPtr};
+use crate::mem::faultstats::FaultCounts;
 use crate::mem::vm::{GRANULARITY, PAGE, USER_HIGH, USER_LOW};
 use crate::status::*;
 
@@ -118,20 +119,31 @@ pub fn processor_information() -> SystemProcessorInformation {
 /// The peak commitment reported so far, in pages: the running max of the committed count.
 static PEAK_COMMITMENT_PAGES: AtomicU32 = AtomicU32::new(0);
 
-/// SYSTEM_PERFORMANCE_INFORMATION for the machine's memory numbers `memory`: the available pages
-/// (the frame database's free ones), the committed pages and the commit limit (the commit seam's)
-/// and the peak commitment (the running max of the committed count); the other counters zero.
-pub fn performance_information(memory: MemoryNumbers) -> SystemPerformanceInformation {
+/// SYSTEM_PERFORMANCE_INFORMATION for the machine's memory numbers `memory` and the fault counts
+/// `faults` (the fault-stats counters): the available pages (the frame database's free ones), the
+/// committed pages and the commit limit (the commit seam's) and the peak commitment (the running
+/// max of the committed count), then the fault counters after the peak — PageFaultCount,
+/// CopyOnWriteCount, TransitionCount, CacheTransitionCount (no cache-transition counter is kept,
+/// so zero) and DemandZeroCount, the first five words of the structure's counter array.
+pub fn performance_information(
+    memory: MemoryNumbers,
+    faults: FaultCounts,
+) -> SystemPerformanceInformation {
     let peak = PEAK_COMMITMENT_PAGES
         .fetch_max(memory.committed, Ordering::Relaxed)
         .max(memory.committed);
-    SystemPerformanceInformation {
+    let mut information = SystemPerformanceInformation {
         available_pages: memory.available,
         committed_pages: memory.committed,
         commit_limit: memory.limit,
         peak_commitment: peak,
         ..Pod::zeroed()
-    }
+    };
+    information.counters[0] = faults.page_faults;
+    information.counters[1] = faults.copy_on_write;
+    information.counters[2] = faults.transition;
+    information.counters[4] = faults.demand_zero;
+    information
 }
 
 /// A query's answer: the class's structure.
@@ -155,16 +167,17 @@ impl Answer {
 }
 
 /// What a query of `class` into a buffer of `length` bytes answers, for the machine's memory
-/// numbers `memory`, or the status that refuses it. The basic and processor information and the
-/// time zone (no zone configured: a zero bias, no names, no daylight-saving dates) take their
-/// structure's length exactly, the performance information at least its structure's, as Windows
-/// 2000 checks them. STATUS_INVALID_INFO_CLASS for the classes F2K does not answer. The process
-/// listing is no structure of a fixed size: [`query_system_information`] answers it apart, never
-/// through here.
+/// numbers `memory` and the fault counts `faults`, or the status that refuses it. The basic and
+/// processor information and the time zone (no zone configured: a zero bias, no names, no
+/// daylight-saving dates) take their structure's length exactly, the performance information at
+/// least its structure's, as Windows 2000 checks them. STATUS_INVALID_INFO_CLASS for the classes
+/// F2K does not answer. The process listing is no structure of a fixed size:
+/// [`query_system_information`] answers it apart, never through here.
 pub fn system_information(
     class: u32,
     length: u32,
     memory: MemoryNumbers,
+    faults: FaultCounts,
 ) -> Result<Answer, NtStatus> {
     let length = length as usize;
     let exactly = |size: usize| {
@@ -187,7 +200,7 @@ pub fn system_information(
             if length < size_of::<SystemPerformanceInformation>() {
                 return Err(STATUS_INFO_LENGTH_MISMATCH);
             }
-            Answer::Performance(performance_information(memory))
+            Answer::Performance(performance_information(memory, faults))
         }
         SystemClass::CurrentTimeZone => {
             exactly(size_of::<RtlTimeZoneInformation>())?;
@@ -213,7 +226,12 @@ pub fn query_system_information(
         #[cfg(not(target_arch = "x86"))]
         return Err(STATUS_NOT_IMPLEMENTED);
     }
-    let answer = system_information(class, length, memory_numbers())?;
+    let answer = system_information(
+        class,
+        length,
+        memory_numbers(),
+        crate::mem::faultstats::counts(),
+    )?;
     information.write(answer.bytes())?;
     return_length.write_optional(answer.bytes().len() as u32)?;
     Ok(STATUS_SUCCESS)
@@ -283,7 +301,16 @@ mod tests {
     }
 
     fn query(class: u32, length: u32, memory: MemoryNumbers) -> Result<Vec<u8>, NtStatus> {
-        let answer = system_information(class, length, memory)?;
+        query_with_counts(class, length, memory, FaultCounts::default())
+    }
+
+    fn query_with_counts(
+        class: u32,
+        length: u32,
+        memory: MemoryNumbers,
+        faults: FaultCounts,
+    ) -> Result<Vec<u8>, NtStatus> {
+        let answer = system_information(class, length, memory, faults)?;
         Ok(answer.bytes().to_vec())
     }
 
@@ -358,5 +385,131 @@ mod tests {
         let low = query_performance(numbers(0x4000, 0x1000, 0x8000, 0x100)).unwrap();
         assert_eq!(word(&low, 0x30), 0x100);
         assert_eq!(word(&low, 0x38), 0x7000, "a smaller committed count does not lower the peak");
+    }
+
+    /// The performance class fills the fault counters the memory fixture's sysinfo block reads,
+    /// in its layout: PageFaultCount at 0x3C, CopyOnWriteCount at 0x40, TransitionCount at 0x44,
+    /// CacheTransitionCount at 0x48 (no such counter is kept: zero) and DemandZeroCount at 0x4C —
+    /// the first five words of the structure's counter array, after the peak commitment.
+    #[test]
+    fn the_performance_class_fills_the_fault_counters() {
+        let _serial = SERIAL.lock().unwrap();
+        let faults = FaultCounts {
+            page_faults: 0x1111,
+            demand_zero: 0x2222,
+            transition: 0x3333,
+            copy_on_write: 0x4444,
+            section: 0x5555,
+            page_file: 0x6666,
+            guard: 0x7777,
+        };
+        let performance =
+            query_with_counts(2, 0x200, numbers(0x4000, 0x1000, 0x8000, 0x3000), faults).unwrap();
+        assert_eq!(performance.len(), 312);
+        assert_eq!(word(&performance, 0x3C), 0x1111, "PageFaultCount");
+        assert_eq!(word(&performance, 0x40), 0x4444, "CopyOnWriteCount");
+        assert_eq!(word(&performance, 0x44), 0x3333, "TransitionCount");
+        assert_eq!(
+            word(&performance, 0x48),
+            0,
+            "CacheTransitionCount: none kept"
+        );
+        assert_eq!(word(&performance, 0x4C), 0x2222, "DemandZeroCount");
+        // The counters past DemandZeroCount stay zero, and the memory numbers are as before.
+        assert!(performance[0x50..].iter().all(|&byte| byte == 0));
+        assert_eq!(
+            (
+                word(&performance, 0x2C),
+                word(&performance, 0x30),
+                word(&performance, 0x34)
+            ),
+            (0x1000, 0x3000, 0x8000)
+        );
+        // A zeroed snapshot fills them with zero.
+        let zeroed = query_performance(numbers(0x4000, 0x1000, 0x8000, 0x3000)).unwrap();
+        assert_eq!(word(&zeroed, 0x3C), 0);
+        assert_eq!(word(&zeroed, 0x4C), 0);
+    }
+
+    /// The service reports the live fault counters: a query of the performance class through
+    /// NtQuerySystemInformation's host path writes the fault-stats counts() the boot has noted.
+    #[test]
+    fn the_service_reports_the_live_fault_counts() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use crate::user::syscall::host::{install, UserMemory};
+        struct Page(std::vec::Vec<u8>);
+        impl UserMemory for Page {
+            fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
+                let at = pointer
+                    .checked_sub(0x10000)
+                    .ok_or(STATUS_ACCESS_VIOLATION)? as usize;
+                bytes.copy_from_slice(
+                    self.0
+                        .get(at..at + bytes.len())
+                        .ok_or(STATUS_ACCESS_VIOLATION)?,
+                );
+                Ok(())
+            }
+
+            fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), NtStatus> {
+                let at = pointer
+                    .checked_sub(0x10000)
+                    .ok_or(STATUS_ACCESS_VIOLATION)? as usize;
+                self.0
+                    .get_mut(at..at + bytes.len())
+                    .ok_or(STATUS_ACCESS_VIOLATION)?
+                    .copy_from_slice(bytes);
+                Ok(())
+            }
+        }
+        let memory = Rc::new(RefCell::new(Page(std::vec![0; 0x1000])));
+        let _installed = install(memory.clone());
+        let mut frame = crate::user::TrapFrame::default();
+        let mut passive = crate::level::passive_for_test();
+        let mut call = NtCall::new(&mut frame, &mut passive);
+        // The counters only rise, so the query's answer lies between the counts around it.
+        let before = crate::mem::faultstats::counts();
+        assert_eq!(
+            query_system_information(&mut call, 2, UserAddr(0x10000), 0x200, UserPtr::at(0x10800)),
+            Ok(STATUS_SUCCESS)
+        );
+        let after = crate::mem::faultstats::counts();
+        let mut answer = [0u8; 0x200];
+        memory
+            .borrow()
+            .0
+            .get(0..0x200)
+            .unwrap()
+            .iter()
+            .zip(answer.iter_mut())
+            .for_each(|(byte, slot)| *slot = *byte);
+        let faults = word(&answer, 0x3C);
+        assert!(
+            before.page_faults <= faults && faults <= after.page_faults,
+            "PageFaultCount {faults:#x} is the live count"
+        );
+        let demand_zero = word(&answer, 0x4C);
+        assert!(
+            before.demand_zero <= demand_zero && demand_zero <= after.demand_zero,
+            "DemandZeroCount {demand_zero:#x} is the live count"
+        );
+        let retlen = {
+            let mut bytes = [0u8; 4];
+            memory
+                .borrow()
+                .0
+                .get(0x800..0x804)
+                .unwrap()
+                .iter()
+                .zip(bytes.iter_mut())
+                .for_each(|(byte, slot)| *slot = *byte);
+            u32::from_le_bytes(bytes)
+        };
+        assert_eq!(
+            retlen, 312,
+            "the structure's length, at least 128 as the fixture pins"
+        );
     }
 }

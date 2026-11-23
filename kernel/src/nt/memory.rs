@@ -350,13 +350,15 @@ pub fn free(
     Ok((start, (end - start as u64) as u32))
 }
 
-/// NtProtectVirtualMemory's rules: a valid protection over committed pages of one region. The
-/// first page, the span's size, and the first page's old protection. Pages outside every region
-/// are STATUS_CONFLICTING_ADDRESSES, reserved ones STATUS_NOT_COMMITTED; the kernel's own regions'
-/// are secured (see [`free`]), STATUS_INVALID_PAGE_PROTECTION. A data view's pages take no
-/// protection beyond the view's maximum ([`vm::Maximum`]: STATUS_SECTION_PROTECTION, as Windows
-/// 2000 checks a view against its section), and a writable one given to a view or an image that may
-/// not write its section's frames stays copy-on-write: the write is the process's alone.
+/// NtProtectVirtualMemory's rules: a valid protection over committed pages of one region, a
+/// nonzero size. The first page, the span's size, and the first page's old protection. A zero size
+/// is STATUS_INVALID_PARAMETER_4 (the capture's ERROR_INVALID_PARAMETER), after the protection's
+/// own check. Pages outside every region are STATUS_CONFLICTING_ADDRESSES, reserved ones
+/// STATUS_NOT_COMMITTED (the capture's ERROR_INVALID_ADDRESS); the kernel's own regions' are
+/// secured (see [`free`]), STATUS_INVALID_PAGE_PROTECTION. A data view's pages take no protection
+/// beyond the view's maximum ([`vm::Maximum`]: STATUS_SECTION_PROTECTION, as Windows 2000 checks a
+/// view against its section), and a writable one given to a view or an image that may not write its
+/// section's frames stays copy-on-write: the write is the process's alone.
 pub fn protect(
     space: &mut AddressSpace,
     pages: &mut impl Pages,
@@ -370,7 +372,10 @@ pub fn protect(
     if address >= USER_HIGH {
         return Err(STATUS_INVALID_PARAMETER_2);
     }
-    let (start, end) = page_span(address, size.max(1));
+    if size == 0 {
+        return Err(STATUS_INVALID_PARAMETER_4);
+    }
+    let (start, end) = page_span(address, size);
     match space.region_at(start) {
         Some(region) if region.kind == Kind::System => return Err(STATUS_INVALID_PAGE_PROTECTION),
         Some(region) if end > region.base as u64 + region.size as u64 => {
@@ -1466,6 +1471,122 @@ mod tests {
             error(protect(&mut space, &mut pages, p, 0x1000, 0x3)),
             87,
             "a bad protection"
+        );
+    }
+
+    /// The vmdemand fixture's prottrans block over the region table: each transition over the
+    /// committed region reports the first page's old protection — READONLY 0x2, READWRITE 0x4,
+    /// NOACCESS 0x1, EXECUTE_READ 0x20, EXECUTE_READWRITE 0x40 (a real protection, so the
+    /// "bogus 0x40" call succeeds) — and the query after each reports the new one; a real write
+    /// goes through after READWRITE and is refused after NOACCESS; a zero size is refused with
+    /// STATUS_INVALID_PARAMETER_4 (the capture's 87); a reserved region's transition is
+    /// STATUS_NOT_COMMITTED (the capture's 487) and leaves the region reserved, protect 0.
+    #[test]
+    fn the_captured_protection_transitions() {
+        let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
+        space.quota = CommitQuota::new(1 << 40);
+        let (p, _) = allocate(
+            &mut space,
+            &mut pages,
+            0,
+            0,
+            0x10_0000,
+            MEM_RESERVE | MEM_COMMIT,
+            vm::PAGE_READONLY,
+        )
+        .unwrap();
+        let state_of = |space: &AddressSpace, pages: &Fake| {
+            query(space, pages, p).map(|info| (info.state, info.protect))
+        };
+        assert_eq!(
+            state_of(&space, &pages),
+            Ok((MEM_COMMIT, vm::PAGE_READONLY))
+        );
+        assert_eq!(
+            protect(&mut space, &mut pages, p, 0x10_0000, vm::PAGE_READWRITE),
+            Ok((p, 0x10_0000, vm::PAGE_READONLY)),
+            "old 0x2"
+        );
+        assert_eq!(
+            state_of(&space, &pages),
+            Ok((MEM_COMMIT, vm::PAGE_READWRITE))
+        );
+        // A real write through after READWRITE: the demand page faults a zeroed frame in.
+        assert!(crate::mem::demand::apply(&mut pages, p, true, true));
+        assert!(pages.write(p, 1));
+        assert_eq!(
+            pages.frame_word(space.frame_at(&pages, p).unwrap(), 0),
+            1,
+            "the write went through"
+        );
+        assert_eq!(
+            protect(&mut space, &mut pages, p, 0x10_0000, vm::PAGE_NOACCESS),
+            Ok((p, 0x10_0000, vm::PAGE_READWRITE)),
+            "old 0x4"
+        );
+        assert_eq!(
+            state_of(&space, &pages),
+            Ok((MEM_COMMIT, vm::PAGE_NOACCESS))
+        );
+        assert!(!pages.write(p, 2), "no write after NOACCESS");
+        assert_eq!(
+            protect(&mut space, &mut pages, p, 0x10_0000, vm::PAGE_EXECUTE_READ),
+            Ok((p, 0x10_0000, vm::PAGE_NOACCESS)),
+            "old 0x1"
+        );
+        assert_eq!(
+            state_of(&space, &pages),
+            Ok((MEM_COMMIT, vm::PAGE_EXECUTE_READ))
+        );
+        assert!(vm::valid_protect(0x40), "0x40 is PAGE_EXECUTE_READWRITE");
+        assert_eq!(
+            protect(&mut space, &mut pages, p, 0x10_0000, 0x40),
+            Ok((p, 0x10_0000, vm::PAGE_EXECUTE_READ)),
+            "old 0x20"
+        );
+        assert_eq!(state_of(&space, &pages), Ok((MEM_COMMIT, 0x40)));
+        assert_eq!(
+            protect(&mut space, &mut pages, p, 0, vm::PAGE_READWRITE),
+            Err(STATUS_INVALID_PARAMETER_4),
+            "a zero size"
+        );
+        assert_eq!(
+            error(protect(&mut space, &mut pages, p, 0, vm::PAGE_READWRITE)),
+            87
+        );
+        // The direct NtProtectVirtualMemory's answer: to READWRITE, old 0x40.
+        assert_eq!(
+            protect(&mut space, &mut pages, p, 0x10_0000, vm::PAGE_READWRITE),
+            Ok((p, 0x10_0000, 0x40))
+        );
+        // The reserved region: refused, and left as it was.
+        let (r, _) = allocate(
+            &mut space,
+            &mut pages,
+            0,
+            0,
+            0x10_0000,
+            MEM_RESERVE,
+            vm::PAGE_READWRITE,
+        )
+        .unwrap();
+        assert_eq!(
+            protect(&mut space, &mut pages, r, 0x10_0000, vm::PAGE_NOACCESS),
+            Err(STATUS_NOT_COMMITTED)
+        );
+        assert_eq!(
+            error(protect(
+                &mut space,
+                &mut pages,
+                r,
+                0x10_0000,
+                vm::PAGE_NOACCESS
+            )),
+            487
+        );
+        assert_eq!(
+            query(&space, &pages, r).map(|info| (info.state, info.protect)),
+            Ok((MEM_RESERVE, 0))
         );
     }
 
