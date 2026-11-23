@@ -510,11 +510,15 @@ mod target {
         if vector == 14 {
             // A page fault the entry resolves: apply it (map the page) and resume the access.
             let write = frame.error_code & 0b10 != 0;
-            let entry = crate::mem::vm::Pages::entry(
-                &crate::mem::vm::CurrentPages,
-                cr2 & !(crate::mem::vm::PAGE - 1),
-            );
-            crate::mem::faultstats::note_fault(entry, write, true);
+            // Faults in the kernel window (a probe of 0x80000000 and up) have no user entry to
+            // read — the page-table window only covers user addresses.
+            if cr2 < crate::mem::vm::USER_HIGH {
+                let entry = crate::mem::vm::Pages::entry(
+                    &crate::mem::vm::CurrentPages,
+                    cr2 & !(crate::mem::vm::PAGE - 1),
+                );
+                crate::mem::faultstats::note_fault(entry, write, true);
+            }
             let mut relieve = relieve_working_set;
             if crate::mem::demand::apply_with(
                 &mut crate::mem::vm::CurrentPages,

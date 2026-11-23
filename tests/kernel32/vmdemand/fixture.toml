@@ -10,6 +10,9 @@ gate = true
 # RAM_MEMORY (it loads the whole disk image as a module), so `memory` requires `storage = "ide"`.
 storage = "ide"
 memory = "32M"
+# The pressure blocks move tens of MiB through the paging file, and the IDE driver waits per
+# sector under emulation, so they need far more than the 20 s corpus bound on a slow host.
+timeout = 120
 
 [masks]
 # The load percentage differs at the 32 MiB boot; the <= 100 verdict is what the sysinfo block pins.
