@@ -395,12 +395,13 @@ mod target {
 
     /// The vector-14 pressure-relief hook: relieve free-frame pressure by trimming the current
     /// process's working set — [`crate::mem::wstrim::relieve_pressure`], LRU-oldest first, down
-    /// to the set's limits. Each victim's entry is decoded into its frame and backing
-    /// ([`crate::mem::wstrim::victim_of`]) and recorded; the dirty ones — on this target every
-    /// victim a present entry names — are committed to the write-out, which
-    /// [`crate::mem::demand::target::write_out_queued`] runs staged around the paging file's
-    /// lock: its disk I/O waits, and no frame-database borrow is held across a wait. True when
-    /// the relieve made at least one frame available.
+    /// to the set's limits. Each victim's entry is decoded into its frame and its clean/dirty
+    /// kind ([`crate::mem::wstrim::victim_of`]); a clean victim goes to standby with its frame held
+    /// against reallocation, its entry rewritten to a transition one naming the frame (the hold
+    /// drops when that entry is re-faulted); the dirty ones are recorded and committed to the
+    /// write-out, which [`crate::mem::demand::target::write_out_queued`] runs staged around the
+    /// paging file's lock: its disk I/O waits, and no frame-database borrow is held across a wait.
+    /// True when the relieve made at least one frame available.
     fn relieve_working_set() -> bool {
         if !crate::mem::demand::target::try_begin_relieve() {
             return false;
@@ -418,7 +419,8 @@ mod target {
         let free = bootmem::with_frame_db(|db| db.available());
         // The trim: the working set's lock outside the frame database's borrow (a process's lock
         // is taken at the passive level, the database's at the high one). No I/O runs inside it:
-        // each victim's entry is decoded and recorded, and the dirty ones are committed to the
+        // each victim's entry is decoded and recorded, the clean ones' entries are softened to
+        // transition ones naming their held frames, and the dirty ones are committed to the
         // write-out, which runs below, borrow by borrow.
         let report = process.with_working_set(|ws| {
             bootmem::with_frame_db(|frames| {
@@ -442,6 +444,16 @@ mod target {
                         }
                         victim
                     },
+                    |va, frame| {
+                        // The clean victim's entry becomes a transition one naming its frame:
+                        // the page is off its mapping while its frame sits held on the standby
+                        // list, and a fault on it maps the named frame back (a Transition).
+                        let entry = vm::Pages::entry(&vm::CurrentPages, va);
+                        let protect = vm::decode(entry)
+                            .map(|(_, protect)| protect)
+                            .unwrap_or_else(|| vm::soft_protect(entry));
+                        vm::soften_to_transition(&mut vm::CurrentPages, va, frame * vm::PAGE, protect);
+                    },
                     |frame, slot| crate::mem::demand::target::queue_dirty(frame, slot),
                 )
             })
@@ -453,7 +465,15 @@ mod target {
         // copied out under a database borrow, the run of slots allocated and written through the
         // file with no borrow held — the disk wait — the frames released to Standby and the
         // entries rewritten under a final one.
-        crate::mem::demand::target::write_out_queued()
+        let mut freed = crate::mem::demand::target::write_out_queued();
+        if freed == 0 && report.clean > 0 {
+            // The dirty victims freed nothing: the clean ones went to held standby, which does
+            // not free a frame. Write them out from standby instead — their holds drop and their
+            // entries name paging-file slots — so the pressure is actually relieved.
+            crate::mem::demand::target::queue_standby_victims();
+            freed = crate::mem::demand::target::write_out_queued();
+        }
+        freed
     }
 
     /// Note the faulted page resident in the current process's working set, so a later trim can

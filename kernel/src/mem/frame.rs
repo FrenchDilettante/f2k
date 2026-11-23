@@ -16,6 +16,8 @@
 //!   frames that were not already zeroed.
 //! - Allocating an arbitrary frame prefers Free, then Zeroed, then Standby, and never requests
 //!   zeroing.
+//! - A standby frame a transition entry holds (its [`FrameDb::share`] count above zero) is never
+//!   allocated: the allocator walks past it to the oldest unshared standby frame.
 //! - Taking a specific Free/Zeroed frame and unlinking frames from the other lists are separate
 //!   operations with separate contracts.
 //!
@@ -159,8 +161,8 @@ pub struct FrameEntry {
     /// Outstanding references (I/O or mapping).
     pub refcount: u16,
     /// The in-use frame's holders beyond its first ([`FrameDb::share`]): the views of a section
-    /// mapping its frame, besides the section. Zero for a frame with one holder, and for every
-    /// frame on a list.
+    /// mapping its frame, besides the section, or the transition entry naming a standby frame.
+    /// Zero for a frame with one holder, and for every frame on a list no entry names.
     pub share_count: u32,
 }
 
@@ -415,25 +417,27 @@ impl<H: FrameHooks> FrameDb<H> {
     // -----------------------------------------------------------------
     // Holders
 
-    /// Count one more holder of an in-use frame: a view mapping a section's frame, besides the
-    /// section. A frame starts with one holder, whoever allocated it.
+    /// Count one more holder of a frame: a view mapping a section's frame besides the section, or
+    /// a transition entry naming a standby frame — the hold that keeps the allocator from handing
+    /// the frame out while the entry names it. A frame starts with one holder, whoever allocated
+    /// it.
     pub fn share(&mut self, frame: FrameId) {
         let entry = self.entry_mut(frame);
-        assert_eq!(
-            entry.state,
-            FrameState::Active,
-            "sharing a frame that is not in use"
+        assert!(
+            matches!(entry.state, FrameState::Active | FrameState::Standby),
+            "sharing a frame that is neither in use nor on standby"
         );
         entry.share_count += 1;
     }
 
-    /// Drop one holder of an in-use frame: true when it was the last, the caller then releasing it.
+    /// Drop one holder of a frame: true when it was the last, the caller then releasing it. A
+    /// standby frame's holder is the transition entry naming it, dropped when the entry is
+    /// re-faulted or dropped.
     pub fn unshare(&mut self, frame: FrameId) -> bool {
         let entry = self.entry_mut(frame);
-        assert_eq!(
-            entry.state,
-            FrameState::Active,
-            "unsharing a frame that is not in use"
+        assert!(
+            matches!(entry.state, FrameState::Active | FrameState::Standby),
+            "unsharing a frame that is neither in use nor on standby"
         );
         if entry.share_count == 0 {
             return true;
@@ -876,11 +880,47 @@ impl<H: FrameHooks> FrameDb<H> {
     // -----------------------------------------------------------------
     // Allocation
 
+    /// Remove the oldest allocatable frame from the Standby list and return it, or none when every
+    /// standby frame is held. Like [`Self::pop`] for Standby, but skipping shared frames — the
+    /// allocator never hands out a frame a transition entry still names.
+    fn pop_standby(&mut self) -> Option<FrameId> {
+        if self.standby.total == 0 {
+            return None;
+        }
+        let mut cur = self.standby.head;
+        let mut budget = self.frames.len() as u32 + 1;
+        while let Some(frame) = cur {
+            if budget == 0 {
+                panic!("standby chain does not terminate");
+            }
+            budget -= 1;
+            if self.entry(frame).share_count != 0 {
+                cur = self.entry(frame).next;
+                continue;
+            }
+            assert!(
+                !self
+                    .entry(frame)
+                    .flags
+                    .contains(FrameFlags::REMOVAL_REQUESTED),
+                "allocating a frame flagged for removal"
+            );
+            self.stitch_around(frame, FrameState::Standby);
+            self.removal_accounting(FrameState::Standby, frame, true);
+            let entry = self.entry_mut(frame);
+            entry.state = FrameState::Active;
+            entry.flags = FrameFlags::empty();
+            entry.next_color = None;
+            return Some(frame);
+        }
+        None
+    }
+
     /// Allocate a zeroed frame, preferring color `color`.
     ///
     /// Preference order: the Zeroed list (requested color, then any), the Free list (requested
-    /// color, then any, zeroing on demand), then Standby (zeroing on demand). Panics if nothing is
-    /// available.
+    /// color, then any, zeroing on demand), then Standby (zeroing on demand, skipping the frames a
+    /// transition entry holds). Panics if nothing is available.
     pub fn allocate_zeroed(&mut self, color: u32) -> FrameId {
         assert!(self.available != 0, "no frames are available");
         assert!((color as usize) < self.colors, "color out of range");
@@ -917,11 +957,14 @@ impl<H: FrameHooks> FrameDb<H> {
             self.free.total, 0,
             "free chain is empty but the list is not"
         );
-        assert!(self.standby.total != 0, "no frames are available");
 
-        let frame = self.pop(FrameState::Standby);
-        self.zero_and_stamp(frame);
-        frame
+        match self.pop_standby() {
+            Some(frame) => {
+                self.zero_and_stamp(frame);
+                frame
+            }
+            None => panic!("no frames are available: every standby frame is held"),
+        }
     }
 
     /// Allocate any frame, as [`FrameDb::try_allocate`], for the callers that cannot run out (the
@@ -938,7 +981,7 @@ impl<H: FrameHooks> FrameDb<H> {
     /// requested); none when nothing is available.
     ///
     /// Preference order: the Free list (requested color, then any), the Zeroed list (requested
-    /// color, then any), then Standby.
+    /// color, then any), then Standby (skipping the frames a transition entry holds).
     pub fn try_allocate(&mut self, color: u32) -> Option<FrameId> {
         if self.available == 0 {
             return None;
@@ -975,9 +1018,9 @@ impl<H: FrameHooks> FrameDb<H> {
             self.zeroed.total, 0,
             "zeroed chain is empty but the list is not"
         );
-        assert!(self.standby.total != 0, "no frames are available");
 
-        Some(self.pop(FrameState::Standby))
+        // Standby, skipping the frames a transition entry holds; none when every one is held.
+        self.pop_standby()
     }
 
     /// Zero a frame on demand and mark it freshly zeroed.
@@ -1223,6 +1266,77 @@ mod tests {
         let frame = db.allocate(PRIMARY_COLOR);
         db.share(frame);
         db.release(frame, Free);
+    }
+
+    /// A standby frame a transition entry holds (shared) is never handed out: the allocator walks
+    /// past it to the oldest unshared standby frame, and answers none when every standby frame is
+    /// held — even though they all count as available.
+    #[test]
+    fn the_allocator_skips_shared_standby_frames() {
+        let mut db = new_db();
+        release_all(&mut db, Standby, &[10, 14, 18]);
+        db.share(10); // the head, held by a transition entry
+        db.share(14);
+        assert_eq!(db.available(), 3, "held frames still count as available");
+        assert_eq!(db.try_allocate(PRIMARY_COLOR), Some(18), "the oldest unshared one");
+        assert_eq!(db.try_allocate(PRIMARY_COLOR), None, "the rest are held");
+        assert_eq!(db.list_total(Standby), 2);
+        assert_eq!(db.entry(10).state, Standby);
+        assert_eq!(db.audit(), Ok(()));
+
+        // allocate_zeroed takes the same path, zeroing the standby frame it gets.
+        let mut db = new_db();
+        release_all(&mut db, Standby, &[10, 14]);
+        db.share(10);
+        assert_eq!(db.allocate_zeroed(PRIMARY_COLOR), 14);
+        assert_eq!(db.hooks.zeroed, vec![14]);
+        assert_eq!(db.audit(), Ok(()));
+    }
+
+    /// The Transition re-fault's sequence: the held standby frame is unlinked and its hold
+    /// dropped — the frame is back in use with no extra holders, the caller mapping it present.
+    #[test]
+    fn a_refaulted_transition_frame_is_unlinked_and_unshared() {
+        let mut db = new_db();
+        release_all(&mut db, Standby, &[10, 14]);
+        db.share(10);
+        assert_eq!(db.unlink(10), UnlinkOutcome::Unlinked);
+        assert_eq!(db.entry(10).state, Active);
+        assert!(!db.unshare(10), "the hold was the only one");
+        assert_eq!(db.entry(10).share_count, 0);
+        assert_eq!(db.list_total(Standby), 1);
+        assert_eq!(db.available(), 1);
+        // Back to one holder: the caller may release it as it would any in-use frame.
+        db.release(10, Free);
+        assert_eq!(db.audit(), Ok(()));
+    }
+
+    /// Unsharing a standby frame directly (its entry dropped without a re-fault) leaves it on the
+    /// list, now allocatable again; sharing a frame on a colored list is refused.
+    #[test]
+    fn unsharing_a_standby_frame_frees_it_for_allocation() {
+        let mut db = new_db();
+        release_all(&mut db, Standby, &[10]);
+        db.share(10);
+        assert!(!db.unshare(10));
+        assert_eq!(db.entry(10).state, Standby);
+        assert_eq!(db.try_allocate(PRIMARY_COLOR), Some(10));
+    }
+
+    #[test]
+    #[should_panic(expected = "neither in use nor on standby")]
+    fn sharing_a_free_frame_is_refused() {
+        let mut db = new_db();
+        release_all(&mut db, Free, &[4]);
+        db.share(4);
+    }
+
+    #[test]
+    #[should_panic(expected = "neither in use nor on standby")]
+    fn unsharing_a_modified_frame_is_refused() {
+        let mut db = new_db();
+        release_all(&mut db, Modified, &[4]);
+        db.unshare(4);
     }
 
     #[test]

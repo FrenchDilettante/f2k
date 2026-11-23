@@ -3,7 +3,8 @@
 //! [`apply`] reads the faulting page's entry, asks [`fault::resolve`] what the access resolves
 //! to, and applies it: a demand-zero page — committed, never touched — gets a zeroed frame
 //! mapped present, with the protection the entry records; a transition page — its frame named,
-//! off its working set — is taken back off its backing list and mapped present again, no I/O; a
+//! off its working set, the frame held against reallocation — is taken back off its backing list
+//! and its hold dropped ([`Pages::activate_frame`]) and mapped present again, no I/O; a
 //! copy-on-write page is severed and a guard page fired, as the address-space manager has always
 //! done ([`vm::copy_on_write`], [`vm::fire_guard`]); anything else — a section's page, a
 //! paging-file page, no entry at all — is left to the exception path ([`super::backing`]). True
@@ -66,7 +67,8 @@ pub fn map_with(
         }
         Resolution::Transition => {
             let frame = entry & FRAME_MASK;
-            // The frame is on a backing list: take it back into use before mapping it again.
+            // The frame is on a backing list and held by this entry: take it back into use — off
+            // the list, the hold dropped — before mapping it again.
             pages.activate_frame(frame);
             vm::map_named_frame(pages, page, frame, protect_of(entry));
             true
@@ -263,6 +265,18 @@ pub mod target {
         }
     }
 
+    /// Commit every recorded but uncommitted victim — the clean ones the trim evicted to held
+    /// standby — to the write-out, and rewind the batch cursor, so the next [`write_out_queued`]
+    /// writes them out from standby. For when the dirty victims' write-out freed no frame and
+    /// the pressure still needs one.
+    pub fn queue_standby_victims() {
+        let count = VICTIM_COUNT.load(Ordering::Acquire);
+        for victim in &mut victims()[..count] {
+            victim.committed = true;
+        }
+        VICTIM_CURSOR.store(0, Ordering::Release);
+    }
+
     /// The write-out's group size: pages per transfer (and per database borrow's copy-out). A
     /// group's slots are one run in the file, so one store operation writes them all.
     const GROUP: usize = 64;
@@ -316,17 +330,36 @@ pub mod target {
     /// its entry softened to a transition one naming the frame. True when evicted. The frame moves
     /// first and the entry after: until the entry is softened the page stays reachable through it,
     /// and no wait runs between the two steps.
+    ///
+    /// A victim already evicted to held standby by the trim's clean arm — its entry a transition
+    /// one naming its frame — is instead written out from there: the frame off the standby list,
+    /// its hold dropped (the entry is about to name a paging-file slot), onto the Modified list.
     fn evict(victim: Victim) -> bool {
         let fid = victim.frame / PAGE;
         let mut queued = false;
+        let mut already_soft = false;
         mem::with_database(|db| {
             let Parts { frames, .. } = db.parts();
-            if frames.entry(fid).share_count > 0 {
-                return;
-            }
             // The entry as it is now, inside the borrow: one re-faulted meanwhile names another
             // frame, and is left alone.
             let entry = CurrentPages.entry(victim.va);
+            if vm::backing_tag(entry) == vm::TAG_TRANSITION
+                && vm::backing_payload(entry) == victim.frame
+            {
+                let held = frames.entry(fid).state == FrameState::Standby
+                    && frames.entry(fid).share_count > 0;
+                if held {
+                    frames.unlink(fid);
+                    frames.unshare(fid);
+                    pageout::to_modified(frames, fid);
+                    queued = true;
+                    already_soft = true;
+                }
+                return;
+            }
+            if frames.entry(fid).share_count > 0 {
+                return;
+            }
             if entry & vm::PTE_PRESENT == 0 || vm::backing_payload(entry) != victim.frame {
                 return;
             }
@@ -339,7 +372,9 @@ pub mod target {
         if !queued {
             return false;
         }
-        vm::soften_to_transition(&mut CurrentPages, victim.va, victim.frame, victim.protect);
+        if !already_soft {
+            vm::soften_to_transition(&mut CurrentPages, victim.va, victim.frame, victim.protect);
+        }
         true
     }
 
@@ -641,6 +676,10 @@ mod tests {
 
         fn activate_frame(&mut self, frame: u32) {
             self.activated.push(frame);
+            // The transition entry's hold on the frame drops with the re-fault.
+            if let Some(extra) = self.holders.get_mut(&frame) {
+                *extra -= 1;
+            }
         }
     }
 
@@ -857,6 +896,36 @@ mod tests {
             Some((PteKind::Present, FRAME, PAGE_READWRITE))
         );
         assert!(pages.freed.is_empty());
+    }
+
+    /// A transition page whose frame the entry held against reallocation: the re-fault activates
+    /// the frame and drops the hold — the frame is not given back — and the fault is noted as a
+    /// transition, the kind the performance class's TransitionCount reads.
+    #[test]
+    fn a_held_transition_page_refaults_by_unsharing_its_frame() {
+        let mut pages = Fake::default();
+        let page = 0x0040_0000;
+        transition(&mut pages, page, FRAME, PAGE_READWRITE);
+        pages.holders.insert(FRAME, 1); // the transition entry's hold
+        let before = crate::mem::faultstats::counts();
+        crate::mem::faultstats::note_fault(pages.entry(page), false, true);
+        assert!(apply4(&mut pages, page, false, true));
+        assert_eq!(pages.activated, vec![FRAME]);
+        assert_eq!(
+            pages.holders.get(&FRAME),
+            Some(&0),
+            "the entry's hold dropped with the re-fault"
+        );
+        assert!(pages.freed.is_empty(), "the frame was not given back");
+        assert_eq!(
+            pte::decode(pages.entry(page)),
+            Some((PteKind::Present, FRAME, PAGE_READWRITE))
+        );
+        let after = crate::mem::faultstats::counts();
+        assert_eq!(after.transition, before.transition.wrapping_add(1));
+        assert_eq!(after.page_faults, before.page_faults.wrapping_add(1));
+        assert_eq!(after.demand_zero, before.demand_zero);
+        assert_eq!(after.page_file, before.page_file);
     }
 
     /// A present entry's frame and protection: what a scan reads off a page.

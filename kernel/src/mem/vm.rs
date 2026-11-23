@@ -90,6 +90,12 @@ const FRAME_MASK: u32 = 0xFFFF_F000;
 
 /// The present bit, as the soft-entry helpers read it.
 pub const PTE_PRESENT: u32 = PRESENT;
+/// The hardware write bit on a present entry (the committed marker on a non-present one).
+pub const PTE_WRITE: u32 = WRITE;
+/// The hardware dirty bit on a present entry: set by the processor on a write, clear when the
+/// manager maps the page. A writable page with it clear is clean — its frame's contents are the
+/// page's only copy, so the frame may go to standby without a page-out.
+pub const PTE_DIRTY: u32 = 1 << 6;
 /// The frame/payload field's mask (bits 12-31), as the soft-entry helpers read it.
 pub const PTE_FRAME_MASK: u32 = FRAME_MASK;
 
@@ -482,7 +488,9 @@ pub trait Pages {
     /// Write word `index` of such a frame.
     fn set_frame_word(&mut self, frame: u32, index: u32, value: u32);
     /// Take the frame a transition entry names back into use: off its backing list, when it is on
-    /// one. No-op when the frame is not listed.
+    /// one, and with the entry's hold ([`FrameDb::share`]) dropped — the frame the entry held
+    /// against reallocation is the mapping's again. No-op when the frame is not listed and
+    /// unheld.
     fn activate_frame(&mut self, frame: u32) {
         let _ = frame;
     }
@@ -1330,15 +1338,18 @@ impl Pages for CurrentPages {
             let fid = frame / PAGE;
             // A frame on a backing list (a transition entry's, dropped without being read back)
             // comes off it first.
-            if matches!(
+            let listed = matches!(
                 db.entry(fid).state,
                 crate::mem::frame::FrameState::Standby
                     | crate::mem::frame::FrameState::Modified
                     | crate::mem::frame::FrameState::ModifiedNoWrite
-            ) {
+            );
+            if listed {
                 db.unlink(fid);
             }
-            if db.unshare(fid) {
+            // A transition entry's frame came off its list still holding the entry's hold: with
+            // the hold dropped the frame has no holder left, so it goes back to the pool.
+            if db.unshare(fid) || (listed && db.entry(fid).share_count == 0) {
                 db.release(fid, crate::mem::frame::FrameState::Free);
             }
         });
@@ -1375,6 +1386,8 @@ impl Pages for CurrentPages {
             ) {
                 db.unlink(fid);
             }
+            // The transition entry the frame was held for is being re-faulted: its hold drops.
+            db.unshare(fid);
         });
     }
 

@@ -18,7 +18,6 @@ sysinfo = ["memory load * <= 100: yes"]
 [pending]
 # Every block waits for the behavior it pins; tests/capture.bat vmdemand fills output.txt on the VM
 # trip, and each block un-xfails when that behavior lands.
-sysinfo = "F2K's page-out writes every evicted page out to the paging file, so no fault is ever resolved from a backing list and the performance class's transition count stays zero (the fault counts' page-fault, demand-zero and copy-on-write words are live)"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

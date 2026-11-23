@@ -93,4 +93,24 @@ mod tests {
         assert_eq!(after.demand_zero, before.demand_zero);
         assert_eq!(after.copy_on_write, before.copy_on_write);
     }
+
+    /// A transition entry — a page back from a backing list, its frame named — notes the
+    /// transition kind, the one the performance class's TransitionCount reports.
+    #[test]
+    fn a_transition_entry_counts_the_transition_kind() {
+        let entry = crate::mem::vm::encode_backing(
+            crate::mem::vm::TAG_TRANSITION,
+            0x0050_0000,
+            PAGE_READWRITE,
+        );
+        let before = counts();
+        note_fault(entry, false, true);
+        note_fault(entry, true, true);
+        let after = counts();
+        assert_eq!(after.transition, before.transition.wrapping_add(2));
+        assert_eq!(after.page_faults, before.page_faults.wrapping_add(2));
+        assert_eq!(after.demand_zero, before.demand_zero);
+        assert_eq!(after.page_file, before.page_file);
+        assert_eq!(after.section, before.section);
+    }
 }

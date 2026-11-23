@@ -9,13 +9,14 @@
 //!
 //! [`relieve_pressure`] runs one relieve: it trims the set LRU-oldest first through
 //! [`WorkingSet::trim_to`] and evicts each victim — the caller's `resolve` maps the page's
-//! address to its frame and backing state, a clean frame goes to standby through
-//! [`pageout::to_standby`], and a dirty page is handed to the caller's `evict_dirty` callback
-//! with its frame and slot, because the page-out I/O lives in the page-out slice. The fault
-//! path calls it when a demand-zero map finds no frame; this module is the policy and the
-//! orchestration, and reaches no page tables itself.
+//! address to its frame and its clean/dirty kind ([`victim_of`]), a clean frame goes to standby
+//! through [`pageout::to_standby`] with the frame held ([`FrameDb::share`]) against reallocation
+//! while the transition entry the caller's `evict_clean` writes names it, and a dirty page is
+//! handed to the caller's `evict_dirty` callback with its frame and slot, because the page-out
+//! I/O lives in the page-out slice. The fault path calls it when a demand-zero map finds no
+//! frame; this module is the policy and the orchestration, and reaches no page tables itself.
 
-use super::frame::{FrameDb, FrameHooks, FrameId};
+use super::frame::{FrameDb, FrameHooks, FrameId, FrameState};
 use super::pageout::{self, SlotId};
 use super::paging::PAGE_SIZE;
 use super::vm;
@@ -79,11 +80,16 @@ impl TrimPolicy {
 }
 
 /// The victim a page's entry names, read off the entry alone: a present entry's frame, as a
-/// frame number, dirty, holding no slot — a resident page's frame may not be freed to Standby
-/// while its entry still names it (there is no frame-to-entry backlink), so the caller writes
-/// the page out and rewrites the entry, whatever the hardware dirty bit says (a page-in maps a
-/// page present without setting it). None for an entry that is not present — the page is
-/// already off its mapping, a soft entry or none at all — or that names no frame.
+/// frame number, whether the frame is dirty, and the backing-store slot the page already holds.
+///
+/// A page is dirty when the hardware write bit is set and the hardware dirty bit too — the
+/// processor has written it since the manager mapped it. A read-only or copy-on-write page (the
+/// write bit clear) can never have been written through its mapping, and a writable page with the
+/// dirty bit clear has not been written since it was mapped (a page-in maps a page present with
+/// the bit clear, and its frame's contents are then the page's only copy), so both are clean: a
+/// clean frame goes to standby with no page-out, its contents intact. None for an entry that is
+/// not present — the page is already off its mapping, a soft entry or none at all — or that names
+/// no frame.
 pub fn victim_of(entry: u32) -> Option<Victim> {
     if entry & vm::PTE_PRESENT == 0 {
         return None;
@@ -92,9 +98,10 @@ pub fn victim_of(entry: u32) -> Option<Victim> {
     if frame == 0 {
         return None;
     }
+    let dirty = entry & vm::PTE_WRITE != 0 && entry & vm::PTE_DIRTY != 0;
     Some(Victim {
         frame: frame / PAGE_SIZE as u32,
-        dirty: true,
+        dirty,
         slot: pageout::INVALID_SLOT,
     })
 }
@@ -106,7 +113,8 @@ pub struct TrimReport {
     pub pressured: bool,
     /// How many victims the policy selected. Locked entries mean fewer actual evictions.
     pub selected: usize,
-    /// How many clean victims went to standby.
+    /// How many clean victims went to standby, their frames held against reallocation while the
+    /// transition entry the caller wrote names them.
     pub clean: usize,
     /// How many dirty victims were handed to the eviction callback.
     pub dirty: usize,
@@ -122,15 +130,20 @@ const CHUNK: usize = 64;
 /// Relieve pressure on the free frames by trimming `ws`: when `free_frames` is at or below the
 /// policy's threshold, select [`TrimPolicy::victim_count`] victims — LRU-oldest first, through
 /// [`WorkingSet::trim_to`] — and evict each one. `resolve` maps a victim's page address to its
-/// frame and backing state; a clean frame goes to standby through [`pageout::to_standby`] in
-/// `db`, and a dirty page is handed to `evict_dirty` with its frame and slot, the page-out I/O
-/// being the caller's. Returns what the relieve did; with no pressure the set is untouched.
+/// frame and its clean/dirty kind; a clean frame goes to standby through [`pageout::to_standby`]
+/// in `db` with the frame then held ([`FrameDb::share`]) against reallocation, and `evict_clean`
+/// rewrites the page's entry to a transition one naming the frame — the hold lasts until that
+/// entry is re-faulted (the Transition resolution unshares) or dropped; a dirty page is handed to
+/// `evict_dirty` with its frame and slot, the page-out I/O being the caller's. A victim whose
+/// frame is not in use, or is shared already, is skipped. Returns what the relieve did; with no
+/// pressure the set is untouched.
 pub fn relieve_pressure<H: FrameHooks>(
     policy: &TrimPolicy,
     ws: &mut WorkingSet,
     db: &mut FrameDb<H>,
     free_frames: u32,
     mut resolve: impl FnMut(u32) -> Option<Victim>,
+    mut evict_clean: impl FnMut(u32, FrameId),
     mut evict_dirty: impl FnMut(FrameId, SlotId),
 ) -> TrimReport {
     let mut report = TrimReport {
@@ -157,8 +170,22 @@ pub fn relieve_pressure<H: FrameHooks>(
                         evict_dirty(victim.frame, victim.slot);
                         report.dirty += 1;
                     } else {
-                        pageout::to_standby(db, victim.frame);
-                        report.clean += 1;
+                        let frame = victim.frame;
+                        let evictable = {
+                            let entry = db.entry(frame);
+                            entry.state == FrameState::Active && entry.share_count == 0
+                        };
+                        if evictable {
+                            // The frame moves first, the entry after (in `evict_clean`): until
+                            // the entry is softened the page stays reachable through it, and
+                            // the hold keeps the standby frame from being reallocated meanwhile.
+                            pageout::to_standby(db, frame);
+                            db.share(frame);
+                            evict_clean(va, frame);
+                            report.clean += 1;
+                        } else {
+                            report.skipped += 1;
+                        }
                     }
                 }
                 None => report.skipped += 1,
@@ -262,7 +289,7 @@ mod tests {
         assert_eq!(wide.victim_count(20, 10, 20), 10, "at the max, down to the min");
     }
 
-    /// Above the threshold a relieve does nothing: the set, the database and the callback are
+    /// A relieve above the threshold does nothing: the set, the database and the callbacks are
     /// untouched, and the report says there was no pressure.
     #[test]
     fn a_relieve_above_the_threshold_does_nothing() {
@@ -273,6 +300,7 @@ mod tests {
         let mut db = new_db();
         let policy = TrimPolicy::new(10, 64);
         let map = victims(&[2, 5]);
+        let mut clean_calls: Vec<(u32, FrameId)> = Vec::new();
         let mut dirty_calls: Vec<(FrameId, SlotId)> = Vec::new();
         let report = relieve_pressure(
             &policy,
@@ -280,6 +308,7 @@ mod tests {
             &mut db,
             11,
             |va| map.get(&va).copied(),
+            |va, frame| clean_calls.push((va, frame)),
             |frame, slot| dirty_calls.push((frame, slot)),
         );
         assert_eq!(
@@ -295,12 +324,14 @@ mod tests {
         assert_eq!(ws.len(), 8, "the set is untouched");
         assert_eq!(order(&ws), (1..=8).map(page).collect::<Vec<_>>());
         assert_eq!(db.list_total(FrameState::Standby), 0);
+        assert!(clean_calls.is_empty());
         assert!(dirty_calls.is_empty());
     }
 
     /// A relieve under pressure trims LRU-oldest first: each victim resolves to its frame, a
-    /// clean frame goes to standby in the database, a dirty page goes to the callback with its
-    /// frame and slot — both in the trim's order.
+    /// clean frame goes to standby in the database with the frame held against reallocation and
+    /// its entry handed to the clean callback, a dirty page goes to the callback with its frame
+    /// and slot — both in the trim's order.
     #[test]
     fn a_relieve_trims_lru_oldest_first_and_splits_clean_from_dirty() {
         let mut ws = WorkingSet::with_limits(0, 100).unwrap();
@@ -317,6 +348,7 @@ mod tests {
         let mut db = new_db();
         let policy = TrimPolicy::new(10, 64);
         let map = victims(&[2, 5]);
+        let mut clean_calls: Vec<(u32, FrameId)> = Vec::new();
         let mut dirty_calls: Vec<(FrameId, SlotId)> = Vec::new();
         let report = relieve_pressure(
             &policy,
@@ -324,6 +356,7 @@ mod tests {
             &mut db,
             10, // at the threshold: pressure
             |va| map.get(&va).copied(),
+            |va, frame| clean_calls.push((va, frame)),
             |frame, slot| dirty_calls.push((frame, slot)),
         );
         assert_eq!(
@@ -343,7 +376,16 @@ mod tests {
                 FrameState::Standby,
                 "clean page {n} went to standby"
             );
+            assert_eq!(
+                db.entry(n).share_count, 1,
+                "clean page {n}'s frame is held while its transition entry names it"
+            );
         }
+        assert_eq!(
+            clean_calls,
+            [(page(1), 1), (page(3), 3), (page(4), 4), (page(6), 6), (page(7), 7), (page(8), 8)],
+            "the clean victims, LRU order, as (page, frame)"
+        );
         assert_eq!(
             dirty_calls,
             vec![(2, 102), (5, 105)],
@@ -356,7 +398,17 @@ mod tests {
                 "dirty page {n} is the callback's to evict"
             );
         }
-        assert_eq!(db.available(), 6, "the standby frames are available again");
+        assert_eq!(db.available(), 6, "the standby frames still count as available");
+        // The held standby frames are not reallocated: nothing allocatable is left.
+        assert_eq!(db.try_allocate(crate::mem::frame::PRIMARY_COLOR), None);
+        assert_eq!(db.audit(), Ok(()));
+
+        // The Transition re-fault of one of them: unlink and unshare, back in use unheld.
+        assert_eq!(db.unlink(1), crate::mem::frame::UnlinkOutcome::Unlinked);
+        assert!(!db.unshare(1));
+        assert_eq!(db.entry(1).state, FrameState::Active);
+        assert_eq!(db.entry(1).share_count, 0);
+        assert_eq!(db.try_allocate(crate::mem::frame::PRIMARY_COLOR), None, "the rest stay held");
         assert_eq!(db.audit(), Ok(()));
     }
 
@@ -372,7 +424,10 @@ mod tests {
         let mut db = new_db();
         let policy = TrimPolicy::new(0, 64);
         let map = victims(&[]);
-        let report = relieve_pressure(&policy, &mut ws, &mut db, 0, |va| map.get(&va).copied(), |_, _| {
+        let mut clean_calls: Vec<(u32, FrameId)> = Vec::new();
+        let report = relieve_pressure(&policy, &mut ws, &mut db, 0, |va| map.get(&va).copied(), |va, frame| {
+            clean_calls.push((va, frame))
+        }, |_, _| {
             panic!("no dirty pages in this set")
         });
         assert_eq!(
@@ -387,6 +442,9 @@ mod tests {
         );
         assert_eq!(order(&ws), [page(3), page(4), page(5), page(6)]);
         assert!(!ws.over_max());
+        assert_eq!(clean_calls, [(page(1), 1), (page(2), 2)]);
+        assert_eq!(db.entry(1).share_count, 1);
+        assert_eq!(db.entry(2).share_count, 1);
     }
 
     /// A relieve never evicts below the set's minimum, and locked entries are never selected: the
@@ -401,7 +459,10 @@ mod tests {
         let mut db = new_db();
         let policy = TrimPolicy::new(0, 64);
         let map = victims(&[]);
-        let report = relieve_pressure(&policy, &mut ws, &mut db, 0, |va| map.get(&va).copied(), |_, _| {});
+        let mut clean_calls: Vec<(u32, FrameId)> = Vec::new();
+        let report = relieve_pressure(&policy, &mut ws, &mut db, 0, |va| map.get(&va).copied(), |va, frame| {
+            clean_calls.push((va, frame))
+        }, |_, _| {});
         assert_eq!(
             report,
             TrimReport {
@@ -417,6 +478,7 @@ mod tests {
         assert_eq!(db.entry(1).state, FrameState::Active);
         assert_eq!(db.entry(2).state, FrameState::Standby);
         assert_eq!(db.entry(3).state, FrameState::Standby);
+        assert_eq!(clean_calls, [(page(2), 2), (page(3), 3)]);
 
         // A fully locked set evicts nothing at all.
         let mut locked = WorkingSet::with_limits(0, 10).unwrap();
@@ -425,7 +487,7 @@ mod tests {
             assert!(locked.lock(page(n)));
         }
         let mut db = new_db();
-        let report = relieve_pressure(&policy, &mut locked, &mut db, 0, |va| map.get(&va).copied(), |_, _| {});
+        let report = relieve_pressure(&policy, &mut locked, &mut db, 0, |va| map.get(&va).copied(), |_, _| {}, |_, _| {});
         assert_eq!(report.selected, 3);
         assert_eq!(report.clean, 0, "nothing evictable");
         assert_eq!(locked.len(), 3);
@@ -443,6 +505,7 @@ mod tests {
         let policy = TrimPolicy::new(5, 3);
         let map = victims(&[]);
         let mut seen: Vec<u32> = Vec::new();
+        let mut clean_calls: Vec<(u32, FrameId)> = Vec::new();
         let report = relieve_pressure(
             &policy,
             &mut ws,
@@ -452,17 +515,20 @@ mod tests {
                 seen.push(va);
                 map.get(&va).copied()
             },
+            |va, frame| clean_calls.push((va, frame)),
             |_, _| {},
         );
         assert_eq!(report.selected, 3);
         assert_eq!(report.clean, 3);
         assert_eq!(seen, vec![page(1), page(2), page(3)]);
+        assert_eq!(clean_calls, [(page(1), 1), (page(2), 2), (page(3), 3)]);
         assert_eq!(ws.len(), 7);
         assert_eq!(db.list_total(FrameState::Standby), 3);
     }
 
     /// A victim the resolver cannot resolve is skipped: its entry left the set all the same, but
-    /// no frame moved and the callback heard nothing.
+    /// no frame moved and no callback heard. So is a clean victim whose frame is not in use or is
+    /// shared already: it stays put, unheld.
     #[test]
     fn a_relieve_skips_a_victim_it_cannot_resolve() {
         let mut ws = WorkingSet::with_limits(0, 100).unwrap();
@@ -472,6 +538,10 @@ mod tests {
         let mut db = new_db();
         let policy = TrimPolicy::new(0, 64);
         let map = victims(&[]);
+        // Page 3's frame is already on a list (re-faulted meanwhile); page 4's is shared.
+        pageout::to_standby(&mut db, 3);
+        db.share(4);
+        let mut clean_calls: Vec<(u32, FrameId)> = Vec::new();
         let mut dirty_calls: Vec<(FrameId, SlotId)> = Vec::new();
         let report = relieve_pressure(
             &policy,
@@ -485,6 +555,7 @@ mod tests {
                     map.get(&va).copied()
                 }
             },
+            |va, frame| clean_calls.push((va, frame)),
             |frame, slot| dirty_calls.push((frame, slot)),
         );
         assert_eq!(
@@ -492,15 +563,22 @@ mod tests {
             TrimReport {
                 pressured: true,
                 selected: 4,
-                clean: 3,
+                clean: 1,
                 dirty: 0,
-                skipped: 1
+                skipped: 3
             }
         );
         assert!(ws.is_empty());
         assert_eq!(db.entry(2).state, FrameState::Active, "page 2's frame stayed put");
-        assert_eq!(db.list_total(FrameState::Standby), 3);
+        assert_eq!(db.entry(1).state, FrameState::Standby);
+        assert_eq!(db.entry(1).share_count, 1, "page 1 went to standby held");
+        assert_eq!(db.entry(3).state, FrameState::Standby, "already listed: untouched, unheld");
+        assert_eq!(db.entry(3).share_count, 0);
+        assert_eq!(db.entry(4).state, FrameState::Active, "shared: untouched, its hold kept");
+        assert_eq!(db.entry(4).share_count, 1);
+        assert_eq!(clean_calls, [(page(1), 1)]);
         assert!(dirty_calls.is_empty());
+        assert_eq!(db.audit(), Ok(()));
     }
 
     /// A relieve larger than the selection chunk still takes its victims LRU-oldest first, in
@@ -515,6 +593,7 @@ mod tests {
         let policy = TrimPolicy::new(0, 200); // more than one chunk
         let map = victims(&[]);
         let mut seen: Vec<u32> = Vec::new();
+        let mut clean_count = 0usize;
         let report = relieve_pressure(
             &policy,
             &mut ws,
@@ -524,13 +603,18 @@ mod tests {
                 seen.push(va);
                 map.get(&va).copied()
             },
+            |_, _| clean_count += 1,
             |_, _| {},
         );
         assert_eq!(report.selected, 150);
         assert_eq!(report.clean, 150);
+        assert_eq!(clean_count, 150);
         assert_eq!(seen, (1..=150).map(page).collect::<Vec<_>>());
         assert!(ws.is_empty());
         assert_eq!(db.list_total(FrameState::Standby), 150);
+        for n in 1..=150u32 {
+            assert_eq!(db.entry(n).share_count, 1, "frame {n} held");
+        }
         assert_eq!(db.audit(), Ok(()));
     }
 
@@ -541,6 +625,8 @@ mod tests {
         let mut db = new_db();
         let policy = TrimPolicy::new(4, 8);
         let report = relieve_pressure(&policy, &mut ws, &mut db, 0, |_| None, |_, _| {
+            panic!("no clean victims")
+        }, |_, _| {
             panic!("no victims to evict")
         });
         assert_eq!(
@@ -557,27 +643,36 @@ mod tests {
         assert_eq!(db.list_total(FrameState::Standby), 0);
     }
 
-    /// The victim a page's entry names: a present entry's frame, as a frame number, dirty — the
-    /// frame may not go to Standby while its entry names it — and no slot; whatever the
-    /// hardware dirty bit says, since a page-in maps a page present without setting it.
+    /// The victim a page's entry names, classified from the entry's bits: a present writable page
+    /// with the hardware dirty bit set is dirty; a writable page never written since it was mapped
+    /// (the bit clear) is clean, as is a read-only or copy-on-write page whatever the bit says —
+    /// the hardware cannot have written it. All hold no slot: a resident page has none.
     #[test]
-    fn victim_of_decodes_a_present_entry_to_a_dirty_victim_with_no_slot() {
+    fn victim_of_classifies_a_present_entry_clean_or_dirty_from_its_bits() {
         let frame = 0x0050_0000u32;
-        // A written page (the hardware dirty bit set) and a merely read one both read dirty.
-        for extra in [0, 1 << 5, 1 << 6, (1 << 5) | (1 << 6)] {
-            let entry = vm::encode(frame, vm::PAGE_READWRITE) | extra;
-            assert_eq!(
-                victim_of(entry),
-                Some(Victim {
-                    frame: frame / PAGE_SIZE as u32,
-                    dirty: true,
-                    slot: pageout::INVALID_SLOT,
-                })
-            );
+        // A written page: writable, the dirty bit set.
+        let written = vm::encode(frame, vm::PAGE_READWRITE) | vm::PTE_DIRTY;
+        assert_eq!(
+            victim_of(written),
+            Some(Victim {
+                frame: frame / PAGE_SIZE as u32,
+                dirty: true,
+                slot: pageout::INVALID_SLOT,
+            })
+        );
+        // A merely read page: writable, the dirty bit clear (the accessed bit may be set).
+        for extra in [0, 1 << 5] {
+            let read = vm::encode(frame, vm::PAGE_READWRITE) | extra;
+            assert_eq!(victim_of(read).map(|v| v.dirty), Some(false));
         }
-        // A copy-on-write page's present entry names its frame the same way.
-        let entry = vm::encode(frame, vm::PAGE_WRITECOPY);
-        assert_eq!(victim_of(entry).map(|v| v.frame), Some(frame / PAGE_SIZE as u32));
+        // A read-only page: the write bit is clear, so it is clean even with the dirty bit set.
+        let read_only = vm::encode(frame, vm::PAGE_READONLY) | vm::PTE_DIRTY;
+        assert_eq!(victim_of(read_only).map(|v| v.dirty), Some(false));
+        // A copy-on-write page's present entry is held read-only by the hardware: clean.
+        let cow = vm::encode(frame, vm::PAGE_WRITECOPY);
+        assert_eq!(victim_of(cow).map(|v| v.dirty), Some(false));
+        // A copy-on-write page's frame is named the same way.
+        assert_eq!(victim_of(cow).map(|v| v.frame), Some(frame / PAGE_SIZE as u32));
     }
 
     /// An entry that is not present names no victim: a transition one, a paging-file one, a
