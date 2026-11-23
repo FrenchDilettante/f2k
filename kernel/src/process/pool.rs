@@ -25,8 +25,9 @@
 //! for a process there — the loader, attached to the process it builds; the reap, on the boot
 //! address space — takes it explicitly.
 
+use core::sync::atomic::{AtomicBool, Ordering};
 #[cfg(target_arch = "x86")]
-use core::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicPtr, AtomicU32};
 
 #[cfg(target_arch = "x86")]
 use super::Process;
@@ -202,21 +203,62 @@ pub fn quiescent_after(reaped: &Process) -> bool {
     !live().any(|(process, id)| id != reaped.object() && !process.torn_down())
 }
 
-/// Whether the idle thread has a process to reap (see [`ended`]). The idle thread cannot wait for
-/// the directory or a process's lock, and need not: it runs on its own only when no other thread
-/// is ready — so none holds a short lock — and a last thread hands it the processor only while
-/// none is held (see `crate::sync`'s notes). Checked first all the same: a held lock holds the
-/// reap off until the idle thread's next pass.
+/// A look for a process to reap, queued where one may have become reapable: its last thread's
+/// retire, or the end of the last attach to it. Windows 2000 queues the dead thread to the
+/// reaper's list (PspReaper) rather than polling for it; the idle thread scans only when queued.
+pub struct ReapTrigger(AtomicBool);
+
+impl ReapTrigger {
+    pub const fn new() -> Self {
+        Self(AtomicBool::new(false))
+    }
+
+    /// Queue a look.
+    pub fn queue(&self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
+
+    /// Whether `scan` finds a process to reap, run only when a look is queued; `scan` answers
+    /// none when it cannot look yet. The look is taken before the scan, so one queued during it is
+    /// kept; it is kept too after a find (a reap takes one process) or no look.
+    pub fn due(&self, scan: impl FnOnce() -> Option<bool>) -> bool {
+        if !self.0.swap(false, Ordering::SeqCst) {
+            return false;
+        }
+        let found = scan();
+        if found != Some(false) {
+            self.queue();
+        }
+        found == Some(true)
+    }
+}
+
+#[cfg(target_arch = "x86")]
+static REAP: ReapTrigger = ReapTrigger::new();
+
+/// Queue a look for a process to reap (see [`ReapTrigger`]).
+#[cfg(target_arch = "x86")]
+pub fn queue_reap() {
+    REAP.queue();
+}
+
+/// Whether the idle thread has a process to reap (see [`ended`]), scanned for only when a look is
+/// queued ([`queue_reap`]). The idle thread cannot wait for the directory or a process's lock, and
+/// need not: it runs on its own only when no other thread is ready — so none holds a short lock —
+/// and a last thread hands it the processor only while none is held (see `crate::sync`'s notes).
+/// Checked first all the same: a held lock holds the look off until the idle thread's next pass.
 #[cfg(target_arch = "x86")]
 pub fn reap_pending() -> bool {
-    if !crate::sync::short_locks_free() {
-        return false;
-    }
-    debug_assert!(
-        crate::ob::is_free(),
-        "the idle thread finds the directory free"
-    );
-    live().any(|(process, _)| awaits_reap(process))
+    REAP.due(|| {
+        if !crate::sync::short_locks_free() {
+            return None;
+        }
+        debug_assert!(
+            crate::ob::is_free(),
+            "the idle thread finds the directory free"
+        );
+        Some(live().any(|(process, _)| awaits_reap(process)))
+    })
 }
 
 /// How many processes have ended, or are ending, and are not torn down yet: the teardowns the
@@ -268,4 +310,43 @@ pub fn by_client_id(id: u32) -> Option<crate::ob::ObjectId> {
     live().find_map(|(process, object)| {
         (process.id() == id && process.end().is_none() && !process.deleting()).then_some(object)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ReapTrigger;
+
+    #[test]
+    fn nothing_queued_scans_nothing() {
+        let trigger = ReapTrigger::new();
+        assert!(!trigger.due(|| panic!("scanned with nothing queued")));
+    }
+
+    #[test]
+    fn a_find_keeps_the_look_and_a_miss_takes_it() {
+        let trigger = ReapTrigger::new();
+        trigger.queue();
+        assert!(trigger.due(|| Some(true)));
+        assert!(!trigger.due(|| Some(false)), "the next pass looks again");
+        assert!(!trigger.due(|| panic!("the miss took the look")));
+    }
+
+    #[test]
+    fn a_look_held_off_stays_queued() {
+        let trigger = ReapTrigger::new();
+        trigger.queue();
+        assert!(!trigger.due(|| None));
+        assert!(trigger.due(|| Some(true)));
+    }
+
+    #[test]
+    fn a_look_queued_during_the_scan_is_kept() {
+        let trigger = ReapTrigger::new();
+        trigger.queue();
+        assert!(!trigger.due(|| {
+            trigger.queue();
+            Some(false)
+        }));
+        assert!(trigger.due(|| Some(true)));
+    }
 }

@@ -443,6 +443,8 @@ fn end_thread(end: ThreadEnd) -> ! {
             process.signal_end(end);
             directory.end_thread_references(current);
         });
+        // Retired and ended: the process is queued for its reap.
+        crate::process::queue_reap();
         end
     });
 

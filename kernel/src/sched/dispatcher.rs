@@ -216,12 +216,12 @@ impl Dispatcher {
     /// bookkeeping, and the count of threads attached to that one. Kernel APCs the scope held off
     /// have their delivery armed again, for the thread's next window (Windows 2000's
     /// KeUnstackDetachProcess requests the APC interrupt for them). Returns the owner's directory,
-    /// to load.
+    /// to load, and whether that was the last thread attached to the process.
     ///
     /// # Panics
     ///
     /// The thread is not attached.
-    pub(crate) fn detach_space(&mut self, thread: ThreadId) -> u32 {
+    pub(crate) fn detach_space(&mut self, thread: ThreadId) -> (u32, bool) {
         let space = ProcessRef::of(self.thread(thread).space.cast_mut());
         let record = self.thread_mut(thread);
         let dir_phys = record.detach_space();
@@ -232,7 +232,7 @@ impl Dispatcher {
         // borrow of the dispatcher serializes every use of it.
         let space = unsafe { space.get_mut() };
         space.attach_count -= 1;
-        dir_phys
+        (dir_phys, space.attach_count == 0)
     }
 
     /// The first attached thread of `process` other than `except` that is not terminating already,

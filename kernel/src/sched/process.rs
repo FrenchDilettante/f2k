@@ -352,6 +352,19 @@ mod tests {
         assert_eq!(d.first_thread_except(process, Some(next)), Some(main));
     }
 
+    /// The detach answers whether it ended the last attach to the process: the reap's trigger.
+    #[test]
+    fn the_last_detach_is_answered() {
+        let (d, target) = rig();
+        let home = Box::leak(Box::new(SchedProcess::new(0x00B0_0000, 8)));
+        let (first, second) = (attach(home), attach(home));
+        assert!(d.attach_space(first, target).is_some());
+        assert!(d.attach_space(second, target).is_some());
+        assert_eq!(d.detach_space(first), (0x00B0_0000, false));
+        assert_eq!(d.detach_space(second), (0x00B0_0000, true));
+        assert_eq!(target.attach_count(), 0);
+    }
+
     /// The quantum-end exemption flag is a plain store returning the previous value.
     #[test]
     fn disable_quantum_flag() {

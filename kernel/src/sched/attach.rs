@@ -88,13 +88,18 @@ impl Drop for Attached {
             Some(self.thread),
             "a scope ends on the thread that attached"
         );
-        masked(|dispatcher| {
+        let last = masked(|dispatcher| {
             // The attached thread is the running one (checked above in debug builds).
-            let dir_phys = dispatcher.detach_space(self.thread);
+            let (dir_phys, last) = dispatcher.detach_space(self.thread);
             let (process, space) = dispatcher.thread(self.thread).process_indices();
             crate::pcr::pcr().threads.set_processes(process, space);
             crate::mem::paging::activate_address_space(dir_phys);
+            last
         });
+        // An ended process's reap waits for the last attach to it to end.
+        if last {
+            crate::process::queue_reap();
+        }
     }
 }
 
