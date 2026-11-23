@@ -1278,7 +1278,11 @@ mod tests {
         db.share(10); // the head, held by a transition entry
         db.share(14);
         assert_eq!(db.available(), 3, "held frames still count as available");
-        assert_eq!(db.try_allocate(PRIMARY_COLOR), Some(18), "the oldest unshared one");
+        assert_eq!(
+            db.try_allocate(PRIMARY_COLOR),
+            Some(18),
+            "the oldest unshared one"
+        );
         assert_eq!(db.try_allocate(PRIMARY_COLOR), None, "the rest are held");
         assert_eq!(db.list_total(Standby), 2);
         assert_eq!(db.entry(10).state, Standby);

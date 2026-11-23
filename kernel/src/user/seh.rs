@@ -452,7 +452,12 @@ mod target {
                         let protect = vm::decode(entry)
                             .map(|(_, protect)| protect)
                             .unwrap_or_else(|| vm::soft_protect(entry));
-                        vm::soften_to_transition(&mut vm::CurrentPages, va, frame * vm::PAGE, protect);
+                        vm::soften_to_transition(
+                            &mut vm::CurrentPages,
+                            va,
+                            frame * vm::PAGE,
+                            protect,
+                        );
                     },
                     |frame, slot| crate::mem::demand::target::queue_dirty(frame, slot),
                 )

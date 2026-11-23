@@ -12,16 +12,16 @@ cmd [/Q] [/S] [/A | /U] [/D] [/E:ON | /E:OFF] [/F:ON | /F:OFF] [/V:ON | /V:OFF] 
 
 ## Switches
 
-| Switch                                   | Effect                                                                           |
-| ---------------------------------------- | -------------------------------------------------------------------------------- |
-| `/C string`                              | Runs `string`, then ends, with its last command's return code (see below).       |
-| `/K string`                              | Runs `string`, then goes on interactively.                                       |
-| `/Q`                                     | Starts with echo off: no prompt, and batch files' lines are not echoed.          |
-| `/S`                                     | Removes the first and the last quote of `string`, whatever it holds (see below). |
-| `/U`                                     | Writes to a file or a pipe in UTF-16LE (see below).                              |
-| `/A`                                     | Writes to a file or a pipe in the OEM code page, the default (see below).        |
-| `/D`, `/E`, `/F`, `/V`, `/T`             | Accepted and ignored, with their `:` values (`/E:ON`, `/T:1F`).                  |
-| `/?`                                     | Prints the shell's help and ends with 1, running nothing else, `/C` or `/K` too. |
+| Switch                       | Effect                                                                           |
+| ---------------------------- | -------------------------------------------------------------------------------- |
+| `/C string`                  | Runs `string`, then ends, with its last command's return code (see below).       |
+| `/K string`                  | Runs `string`, then goes on interactively.                                       |
+| `/Q`                         | Starts with echo off: no prompt, and batch files' lines are not echoed.          |
+| `/S`                         | Removes the first and the last quote of `string`, whatever it holds (see below). |
+| `/U`                         | Writes to a file or a pipe in UTF-16LE (see below).                              |
+| `/A`                         | Writes to a file or a pipe in the OEM code page, the default (see below).        |
+| `/D`, `/E`, `/F`, `/V`, `/T` | Accepted and ignored, with their `:` values (`/E:ON`, `/T:1F`).                  |
+| `/?`                         | Prints the shell's help and ends with 1, running nothing else, `/C` or `/K` too. |
 
 A switch is `/` and a letter, in either case, and switches may run together (`/q/c`); the program's name ends at a blank or at a `/` (`cmd/c x`).
 Any other letter is ignored too.
@@ -132,13 +132,13 @@ An operator or a redirection inside quotes, or after `^`, is part of the command
 
 A command's handles may be redirected, anywhere among its words (`> out.txt echo x` writes `x`):
 
-| Redirection | Handle `n` (1 without one, 0 for `<`)                                    |
-| ----------- | ------------------------------------------------------------------------ |
-| `n> file`   | Written to `file`, made, or emptied when it exists.                      |
-| `n>> file`  | Written after `file`'s end, made when it is missing.                     |
-| `n< file`   | Read from `file`, which must exist.                                      |
-| `n>&m`      | A duplicate of handle `m`, as it is at that point (`2>&1`, `1>&2`).      |
-| `n<&m`      | The same, for input.                                                     |
+| Redirection | Handle `n` (1 without one, 0 for `<`)                               |
+| ----------- | ------------------------------------------------------------------- |
+| `n> file`   | Written to `file`, made, or emptied when it exists.                 |
+| `n>> file`  | Written after `file`'s end, made when it is missing.                |
+| `n< file`   | Read from `file`, which must exist.                                 |
+| `n>&m`      | A duplicate of handle `m`, as it is at that point (`2>&1`, `1>&2`). |
+| `n<&m`      | The same, for input.                                                |
 
 Handle 0 is the standard input, 1 the standard output, 2 the standard error; 3 to 9 may be opened and duplicated within the command, and are gone after it.
 A digit right before `>` or `<` is the handle only where a word starts, after a blank, `,`, `;`, `=` or an operator: `echo 1> f` writes `ECHO is on.` (the `1` is the handle), and `echo x=2> f` writes `x=` (its error goes to `f`), while `echo a1> f` writes `a1`.
@@ -894,14 +894,14 @@ Any other code ends the prompt: what follows it is not shown (`[a$xb]` shows `[a
 
 ## Exit status
 
-| Code                           | When                                                    |
-| ------------------------------ | ------------------------------------------------------- |
-| `code`                         | `exit code`, or `exit /b code` outside a batch file.    |
-| 0                              | The standard input ended.                               |
-| The last command's return code | `/C`, once the string has run.                          |
-| The ERRORLEVEL                 | `exit` alone, or `exit /b` alone outside a batch file.  |
-| 1                              | `cmd /?`.                                               |
-| 1                              | The standard input could not be read.                   |
+| Code                           | When                                                   |
+| ------------------------------ | ------------------------------------------------------ |
+| `code`                         | `exit code`, or `exit /b code` outside a batch file.   |
+| 0                              | The standard input ended.                              |
+| The last command's return code | `/C`, once the string has run.                         |
+| The ERRORLEVEL                 | `exit` alone, or `exit /b` alone outside a batch file. |
+| 1                              | `cmd /?`.                                              |
+| 1                              | The standard input could not be read.                  |
 
 When the standard input cannot be read, the shell prints `cmd: the standard input cannot be read (error N)` on the standard error.
 

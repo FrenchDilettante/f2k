@@ -167,7 +167,10 @@ pub fn system_commit_limit() -> u64 {
 
 /// Set the system's commit limit, once, at boot.
 pub fn set_system_commit_limit(bytes: u64) {
-    SYSTEM_COMMIT_LIMIT_PAGES.store((bytes / 4096).min(u32::MAX as u64) as u32, Ordering::Relaxed);
+    SYSTEM_COMMIT_LIMIT_PAGES.store(
+        (bytes / 4096).min(u32::MAX as u64) as u32,
+        Ordering::Relaxed,
+    );
 }
 
 /// Note a charge (`delta` > 0) or discharge (`delta` < 0) of pages against

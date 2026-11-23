@@ -420,7 +420,12 @@ pub fn view_page(view_offset: u32, base: u32, va: u32) -> Option<(u32, u32)> {
 
 /// The write-back of one of a view's pages at unmap: the file offset to write at and how many bytes
 /// (clamped to the section's size). None for a page past the section's end.
-pub fn write_back_span(view_offset: u32, base: u32, va: u32, section_size: u32) -> Option<(u32, usize)> {
+pub fn write_back_span(
+    view_offset: u32,
+    base: u32,
+    va: u32,
+    section_size: u32,
+) -> Option<(u32, usize)> {
     let (index, offset) = view_page(view_offset, base, va)?;
     if offset >= section_size {
         return None;
@@ -1119,9 +1124,8 @@ mod target {
                     index << 12,
                     protect,
                 );
-                let mapped = process.with_space(|space| {
-                    space.map_soft(table, base + page * PAGE, entry)
-                });
+                let mapped =
+                    process.with_space(|space| space.map_soft(table, base + page * PAGE, entry));
                 if mapped.is_err() {
                     let _ = process.with_space(|space| space.release(table, base));
                     return Err(STATUS_NO_MEMORY);
@@ -2123,21 +2127,29 @@ mod tests {
         fn entry(&self, va: u32) -> u32 {
             *self.entries.get(&va).unwrap_or(&0)
         }
+
         fn set_entry(&mut self, va: u32, entry: u32) {
             self.entries.insert(va, entry);
         }
+
         fn zeroed_frame(&mut self) -> Option<u32> {
             None
         }
+
         fn free_frame(&mut self, _frame: u32) {}
+
         fn share_frame(&mut self, _frame: u32) {}
+
         fn frame_shared(&self, _frame: u32) -> bool {
             false
         }
+
         fn copy_frame(&mut self, _from: u32, _to: u32) {}
+
         fn frame_word(&self, _frame: u32, _index: u32) -> u32 {
             0
         }
+
         fn set_frame_word(&mut self, _frame: u32, _index: u32, _value: u32) {}
     }
 
@@ -2150,7 +2162,11 @@ mod tests {
         assert_eq!(page_file_offset(3), 3 * PAGE);
         assert_eq!(page_span_len(0x10_0000, 0), PAGE as usize);
         assert_eq!(page_span_len(0x10_0000, 15), PAGE as usize);
-        assert_eq!(page_span_len(0x10_800, 16), 0x800, "the section's last partial page");
+        assert_eq!(
+            page_span_len(0x10_800, 16),
+            0x800,
+            "the section's last partial page"
+        );
         assert_eq!(page_span_len(0x10_800, 17), 0, "past the section's end");
         assert_eq!(page_span_len(0, 0), 0);
     }
@@ -2164,9 +2180,21 @@ mod tests {
         let view_offset = 0x2000;
         assert_eq!(view_page(view_offset, base, base), Some((2, 0x2000)));
         assert_eq!(view_page(view_offset, base, base + PAGE), Some((3, 0x3000)));
-        assert_eq!(view_page(0, base, base + 0x10), None, "not page-aligned in the section");
-        assert_eq!(view_page(view_offset, base, base - PAGE), None, "below the view");
-        assert_eq!(view_page(0x1001, base, base), None, "the view's offset is off-page");
+        assert_eq!(
+            view_page(0, base, base + 0x10),
+            None,
+            "not page-aligned in the section"
+        );
+        assert_eq!(
+            view_page(view_offset, base, base - PAGE),
+            None,
+            "below the view"
+        );
+        assert_eq!(
+            view_page(0x1001, base, base),
+            None,
+            "the view's offset is off-page"
+        );
     }
 
     /// The write-back of one page at unmap: the file offset and the byte count, clamped to the
@@ -2207,9 +2235,15 @@ mod tests {
         let mut buf = [0xFFu8; 0x1000];
         read_section_page(&file, 1, &mut buf);
         assert_eq!(&buf[..0x800], &file[0x1000..0x1800], "the page's bytes");
-        assert!(buf[0x800..].iter().all(|&byte| byte == 0), "zero past the file's end");
+        assert!(
+            buf[0x800..].iter().all(|&byte| byte == 0),
+            "zero past the file's end"
+        );
         read_section_page(&file, 5, &mut buf);
-        assert!(buf.iter().all(|&byte| byte == 0), "a page past the file entirely");
+        assert!(
+            buf.iter().all(|&byte| byte == 0),
+            "a page past the file entirely"
+        );
     }
 
     /// The write-back pass over a view: every present page of the region is read from its frame
@@ -2222,8 +2256,12 @@ mod tests {
         let section_size = 0x2800; // two pages and a half
         let mut pages = FakePages::default();
         // Page 0 present on frame 0x10_0000, page 1 not present, page 2 present on 0x12_0000.
-        pages.entries.insert(base, encode(0x10_0000, PAGE_READWRITE));
-        pages.entries.insert(base + 2 * PAGE, encode(0x12_0000, PAGE_READWRITE));
+        pages
+            .entries
+            .insert(base, encode(0x10_0000, PAGE_READWRITE));
+        pages
+            .entries
+            .insert(base + 2 * PAGE, encode(0x12_0000, PAGE_READWRITE));
 
         // Each frame's page holds its frame number as the first byte; the writes record the
         // offset, the length and the first byte.
@@ -2247,7 +2285,11 @@ mod tests {
             },
         );
         assert!(ok);
-        assert_eq!(reads, vec![0x10_0000, 0x12_0000], "only the present pages, in order");
+        assert_eq!(
+            reads,
+            vec![0x10_0000, 0x12_0000],
+            "only the present pages, in order"
+        );
         assert_eq!(
             writes,
             vec![(0, PAGE as usize, 0x10), (2 * PAGE, 0x800, 0x12)],

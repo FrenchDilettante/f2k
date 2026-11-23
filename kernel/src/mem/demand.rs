@@ -155,21 +155,26 @@ pub fn scan_pages(
     mut chunk_live: impl FnMut(u32) -> bool,
 ) -> (usize, u32) {
     let mut count = 0;
-    let stop = walk_pages(start, end, |va| chunk_live(va), |va| {
-        if count >= victims.len() {
-            return false;
-        }
-        let e = entry(va);
-        let frame = e & vm::PTE_FRAME_MASK;
-        if e & vm::PTE_PRESENT != 0 && frame != 0 {
-            let protect = vm::decode(e)
-                .map(|(_, protect)| protect)
-                .unwrap_or_else(|| vm::soft_protect(e));
-            victims[count] = super::backing::Victim { va, frame, protect };
-            count += 1;
-        }
-        true
-    });
+    let stop = walk_pages(
+        start,
+        end,
+        |va| chunk_live(va),
+        |va| {
+            if count >= victims.len() {
+                return false;
+            }
+            let e = entry(va);
+            let frame = e & vm::PTE_FRAME_MASK;
+            if e & vm::PTE_PRESENT != 0 && frame != 0 {
+                let protect = vm::decode(e)
+                    .map(|(_, protect)| protect)
+                    .unwrap_or_else(|| vm::soft_protect(e));
+                victims[count] = super::backing::Victim { va, frame, protect };
+                count += 1;
+            }
+            true
+        },
+    );
     (count, stop)
 }
 
@@ -178,11 +183,12 @@ pub fn scan_pages(
 // The paging file's disk I/O waits on the disk interrupt, so it cannot run inside a borrow of
 // the memory manager's database (borrowed at the high level, interrupts masked): the fault path
 // reaches the database at the interrupted level, so a pass alternates short database borrows with
-// paging-file holds — unlink a frame and copy its page out, write the slot through the file, release
-// the frame to Standby — never holding both. The relief is working-set driven: the vector-14 hook
-// (user::seh) runs [`crate::mem::wstrim::relieve_pressure`] over the current process's working set
-// and records the victims it selects here; this module writes them out in groups. The backing arms'
-// staging ([`crate::mem::backing`]'s PageFile and Section resolutions) is driven from here as well.
+// paging-file holds — unlink a frame and copy its page out, write the slot through the file,
+// release the frame to Standby — never holding both. The relief is working-set driven: the
+// vector-14 hook (user::seh) runs [`crate::mem::wstrim::relieve_pressure`] over the current
+// process's working set and records the victims it selects here; this module writes them out in
+// groups. The backing arms' staging ([`crate::mem::backing`]'s PageFile and Section resolutions) is
+// driven from here as well.
 
 #[cfg(target_arch = "x86")]
 pub mod target {
@@ -209,8 +215,12 @@ pub mod target {
     }
 
     /// The victims of the current relieve, while the hook holds the one-at-a-time guard.
-    static mut VICTIMS: [Victim; BATCH] =
-        [Victim { va: 0, frame: 0, protect: 0, committed: false }; BATCH];
+    static mut VICTIMS: [Victim; BATCH] = [Victim {
+        va: 0,
+        frame: 0,
+        protect: 0,
+        committed: false,
+    }; BATCH];
     static VICTIM_COUNT: AtomicUsize = AtomicUsize::new(0);
     static VICTIM_CURSOR: AtomicUsize = AtomicUsize::new(0);
 
@@ -246,7 +256,12 @@ pub mod target {
     pub fn record_victim(va: u32, frame: u32, protect: u32) {
         let count = VICTIM_COUNT.load(Ordering::Relaxed);
         if count < BATCH {
-            victims()[count] = Victim { va, frame, protect, committed: false };
+            victims()[count] = Victim {
+                va,
+                frame,
+                protect,
+                committed: false,
+            };
             VICTIM_COUNT.store(count + 1, Ordering::Release);
         }
     }
@@ -464,7 +479,9 @@ pub mod target {
         // Step 1: unlink each still-Modified frame and copy its page out, compacted.
         let mut total = 0usize;
         mem::with_database(|db| {
-            let Parts { frames, scratch, .. } = db.parts();
+            let Parts {
+                frames, scratch, ..
+            } = db.parts();
             for index in 0..count {
                 let victim = victims()[index];
                 let fid = victim.frame / PAGE;
@@ -509,20 +526,21 @@ pub mod target {
             return 0;
         };
         // Step 2b: the run is written as one transfer.
-        let written = with_paging_file(|file| {
-            match file.write_pages(first, batch_range(0, want as usize)) {
-                Ok(()) => true,
-                Err(_) => {
-                    for slot in first..first + want {
-                        if file.is_allocated(slot) {
-                            file.free_slot(slot);
+        let written =
+            with_paging_file(
+                |file| match file.write_pages(first, batch_range(0, want as usize)) {
+                    Ok(()) => true,
+                    Err(_) => {
+                        for slot in first..first + want {
+                            if file.is_allocated(slot) {
+                                file.free_slot(slot);
+                            }
                         }
+                        false
                     }
-                    false
-                }
-            }
-        })
-        .unwrap_or(false);
+                },
+            )
+            .unwrap_or(false);
         if !written {
             put_back(count, &copied, FrameState::Modified);
             return 0;
@@ -551,7 +569,8 @@ pub mod target {
                 mem::with_database(|db| db.parts().frames.release(fid, FrameState::Standby));
                 vm::name_page_file(&mut CurrentPages, victim.va, slot as u32, victim.protect);
                 freed += 1;
-            } else if current & vm::PTE_PRESENT != 0 && vm::backing_payload(current) == victim.frame {
+            } else if current & vm::PTE_PRESENT != 0 && vm::backing_payload(current) == victim.frame
+            {
                 // Re-faulted while the write was in flight: the frame is in use again (its entry
                 // is present, naming it); the slot goes back.
                 let _ = with_paging_file(|file| {
@@ -599,7 +618,13 @@ mod tests {
 
     use super::*;
     use crate::mem::pte::{self, PteKind};
-    use crate::mem::vm::{PAGE_GUARD, PAGE_NOACCESS, PAGE_READONLY, PAGE_READWRITE, PAGE_WRITECOPY};
+    use crate::mem::vm::{
+        PAGE_GUARD,
+        PAGE_NOACCESS,
+        PAGE_READONLY,
+        PAGE_READWRITE,
+        PAGE_WRITECOPY,
+    };
 
     /// The old four-argument call: no relief runs.
     fn apply4(pages: &mut Fake, va: u32, write: bool, user: bool) -> bool {
@@ -702,7 +727,11 @@ mod tests {
             vm::PAGE_WRITECOPY => 3,
             _ => 2,
         };
-        plant(pages, page, fault::TRANSITION | frame | (index << INDEX_SHIFT));
+        plant(
+            pages,
+            page,
+            fault::TRANSITION | frame | (index << INDEX_SHIFT),
+        );
     }
 
     /// A demand-zero page's first touch — a read or a write, from ring 3 or the kernel — maps a
@@ -737,7 +766,10 @@ mod tests {
         demand_zero(&mut pages, page, PAGE_READONLY);
         assert!(apply4(&mut pages, page, false, true));
         let (_, frame, protect) = pte::decode(pages.entry(page)).unwrap();
-        assert_eq!((pte::classify(pages.entry(page)), protect), (PteKind::Present, PAGE_READONLY));
+        assert_eq!(
+            (pte::classify(pages.entry(page)), protect),
+            (PteKind::Present, PAGE_READONLY)
+        );
         assert!(!pte::writable(pages.entry(page)));
         assert_ne!(frame, 0);
         demand_zero(&mut pages, page + PAGE, PAGE_READONLY);
@@ -784,7 +816,10 @@ mod tests {
         assert!(apply4(&mut pages, page, false, true));
         let entry = pages.entry(page);
         assert_eq!(pte::classify(entry), PteKind::Present);
-        assert_eq!(pte::decode(entry), Some((PteKind::Present, FRAME, PAGE_READWRITE)));
+        assert_eq!(
+            pte::decode(entry),
+            Some((PteKind::Present, FRAME, PAGE_READWRITE))
+        );
         assert!(pte::writable(entry));
         assert!(pages.freed.is_empty(), "the frame was not given back");
 
@@ -802,7 +837,10 @@ mod tests {
         // A copy-on-write transition page fills held back.
         transition(&mut pages, page + 3 * PAGE, FRAME, PAGE_WRITECOPY);
         assert!(apply4(&mut pages, page + 3 * PAGE, true, true));
-        assert_eq!(pte::classify(pages.entry(page + 3 * PAGE)), PteKind::CopyOnWrite);
+        assert_eq!(
+            pte::classify(pages.entry(page + 3 * PAGE)),
+            PteKind::CopyOnWrite
+        );
     }
 
     /// A present copy-on-write page written is severed, as the address-space manager always did.
@@ -824,7 +862,11 @@ mod tests {
     fn a_guard_page_fires() {
         let mut pages = Fake::default();
         let page = 0x0040_0000;
-        plant(&mut pages, page, vm::encode(FRAME, PAGE_READWRITE | PAGE_GUARD));
+        plant(
+            &mut pages,
+            page,
+            vm::encode(FRAME, PAGE_READWRITE | PAGE_GUARD),
+        );
         assert!(apply4(&mut pages, page, false, true));
         assert_eq!(
             vm::decode(pages.entry(page)),
@@ -843,8 +885,14 @@ mod tests {
         demand_zero(&mut pages, page, PAGE_NOACCESS);
         assert!(!apply4(&mut pages, page, false, true), "a no-access page");
         plant(&mut pages, page, vm::encode(FRAME, PAGE_READONLY));
-        assert!(!apply4(&mut pages, page, true, true), "a write to a read-only page");
-        assert!(!apply4(&mut pages, USER_HIGH, false, true), "outside the application range");
+        assert!(
+            !apply4(&mut pages, page, true, true),
+            "a write to a read-only page"
+        );
+        assert!(
+            !apply4(&mut pages, USER_HIGH, false, true),
+            "outside the application range"
+        );
         assert!(!apply4(&mut pages, USER_HIGH + 0x1000, true, true));
     }
 
@@ -937,10 +985,15 @@ mod tests {
     #[test]
     fn a_walk_visits_every_page_when_every_chunk_has_a_table() {
         let mut seen = Vec::new();
-        let stop = walk_pages(0x1000, 0x1000 + 3 * PAGE, |_| true, |va| {
-            seen.push(va);
-            true
-        });
+        let stop = walk_pages(
+            0x1000,
+            0x1000 + 3 * PAGE,
+            |_| true,
+            |va| {
+                seen.push(va);
+                true
+            },
+        );
         assert_eq!(seen, vec![0x1000, 0x1000 + PAGE, 0x1000 + 2 * PAGE]);
         assert_eq!(stop, 0x1000 + 3 * PAGE);
     }
@@ -952,13 +1005,18 @@ mod tests {
         let mut chunk_reads = Vec::new();
         let mut seen = Vec::new();
         let start = CHUNK; // a chunk boundary
-        let stop = walk_pages(start, start + 2 * CHUNK + PAGE, |va| {
-            chunk_reads.push(va);
-            va != start + CHUNK // the second chunk has no table
-        }, |va| {
-            seen.push(va);
-            true
-        });
+        let stop = walk_pages(
+            start,
+            start + 2 * CHUNK + PAGE,
+            |va| {
+                chunk_reads.push(va);
+                va != start + CHUNK // the second chunk has no table
+            },
+            |va| {
+                seen.push(va);
+                true
+            },
+        );
         assert_eq!(chunk_reads, vec![start, start + CHUNK, start + 2 * CHUNK]);
         // The first chunk's 1024 pages were visited, the middle chunk's none, the third's first.
         let mut expected: Vec<u32> = (0..CHUNK / PAGE).map(|i| start + i * PAGE).collect();
@@ -972,7 +1030,11 @@ mod tests {
     #[test]
     fn a_scan_skips_chunkless_chunks_and_collects_present_pages() {
         use crate::mem::backing::Victim;
-        let mut victims = [Victim { va: 0, frame: 0, protect: 0 }; 4];
+        let mut victims = [Victim {
+            va: 0,
+            frame: 0,
+            protect: 0,
+        }; 4];
         let entries = |va: u32| -> u32 {
             match va {
                 0x2000 => present(0x2000, 0x0010_0000, PAGE_READWRITE),
@@ -983,7 +1045,8 @@ mod tests {
             }
         };
         // The second chunk (at CHUNK) has no table: its pages are never read.
-        let (count, stop) = scan_pages(&mut victims, 0, 2 * CHUNK + PAGE, entries, |va| va != CHUNK);
+        let (count, stop) =
+            scan_pages(&mut victims, 0, 2 * CHUNK + PAGE, entries, |va| va != CHUNK);
         assert_eq!(count, 4);
         assert_eq!(victims[0].va, 0x2000);
         assert_eq!(victims[0].frame, 0x0010_0000);
@@ -993,7 +1056,11 @@ mod tests {
         assert_eq!(victims[3].va, 2 * CHUNK);
         assert_eq!(stop, 2 * CHUNK + PAGE);
         // With room for only two, the scan stops where the victims filled.
-        let mut two = [Victim { va: 0, frame: 0, protect: 0 }; 2];
+        let mut two = [Victim {
+            va: 0,
+            frame: 0,
+            protect: 0,
+        }; 2];
         let (count, stop) = scan_pages(&mut two, 0, 2 * CHUNK + PAGE, entries, |va| va != CHUNK);
         assert_eq!(count, 2);
         // The walk stops one page past the one where the victims filled.

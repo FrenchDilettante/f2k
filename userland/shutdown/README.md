@@ -13,17 +13,17 @@ shutdown [\\computername] [/l] [/a] [/r] [/t:xx] ["msg"] [/y] [/c]
 
 The switches are read whatever their case.
 
-| Switch            | Meaning                                                                                                      |
-| ----------------- | ------------------------------------------------------------------------------------------------------------ |
-| `\\computername`  | The computer to shut down. Only the local computer's own name is taken (compared whatever its case).         |
-| `/l`              | The local computer. Without `\\computername`, the local computer is meant anyway.                            |
-| `/a`              | Abort a pending shutdown. Every other argument is then ignored.                                              |
-| `/r`              | Restart the computer instead of only shutting it down.                                                       |
-| `/t:xx`           | Wait `xx` seconds before the shutdown, counting down on the console. 20 without it; `/t:0` does not wait.    |
-| `"msg"`           | A message shown above the countdown, 127 characters at most. Several unquoted words are joined by a blank.   |
-| `/y`              | Answer yes to the question asked before the shutdown.                                                        |
-| `/c`              | Force the running programs to quit: they are ended without being asked first (`EWX_FORCE`).                  |
-| `/?`              | Print the usage.                                                                                             |
+| Switch           | Meaning                                                                                                    |
+| ---------------- | ---------------------------------------------------------------------------------------------------------- |
+| `\\computername` | The computer to shut down. Only the local computer's own name is taken (compared whatever its case).       |
+| `/l`             | The local computer. Without `\\computername`, the local computer is meant anyway.                          |
+| `/a`             | Abort a pending shutdown. Every other argument is then ignored.                                            |
+| `/r`             | Restart the computer instead of only shutting it down.                                                     |
+| `/t:xx`          | Wait `xx` seconds before the shutdown, counting down on the console. 20 without it; `/t:0` does not wait.  |
+| `"msg"`          | A message shown above the countdown, 127 characters at most. Several unquoted words are joined by a blank. |
+| `/y`             | Answer yes to the question asked before the shutdown.                                                      |
+| `/c`             | Force the running programs to quit: they are ended without being asked first (`EWX_FORCE`).                |
+| `/?`             | Print the usage.                                                                                           |
 
 The arguments are split as Microsoft's C runtime splits a command line: blanks separate them, double quotes group blanks into one argument and are dropped, and backslashes are plain unless they stand before a double quote.
 

@@ -418,10 +418,7 @@ impl Process {
             addr_of_mut!((*record).state).write(ShortLock::new(ProcessState::fresh()));
             ShortLock::write_in_place(addr_of_mut!((*record).handles), HandleTable::write_empty);
             ShortLock::write_in_place(addr_of_mut!((*record).space), AddressSpace::write_empty);
-            ShortLock::write_in_place(
-                addr_of_mut!((*record).working_set),
-                WorkingSet::write_empty,
-            );
+            ShortLock::write_in_place(addr_of_mut!((*record).working_set), WorkingSet::write_empty);
         }
     }
 

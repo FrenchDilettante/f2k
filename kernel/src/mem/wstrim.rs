@@ -58,7 +58,10 @@ impl TrimPolicy {
 
     /// Thresholds `free_threshold`/`batch_max`; a zero batch is refused.
     pub const fn new(free_threshold: u32, batch_max: usize) -> Self {
-        assert!(batch_max >= 1, "a relieve always selects at least one candidate");
+        assert!(
+            batch_max >= 1,
+            "a relieve always selects at least one candidate"
+        );
         TrimPolicy {
             free_threshold,
             batch_max,
@@ -286,7 +289,11 @@ mod tests {
         let wide = TrimPolicy::new(10, 100);
         assert_eq!(wide.victim_count(50, 10, 20), 30, "50 - 20, past the max");
         assert_eq!(wide.victim_count(15, 10, 20), 5, "towards the min");
-        assert_eq!(wide.victim_count(20, 10, 20), 10, "at the max, down to the min");
+        assert_eq!(
+            wide.victim_count(20, 10, 20),
+            10,
+            "at the max, down to the min"
+        );
     }
 
     /// A relieve above the threshold does nothing: the set, the database and the callbacks are
@@ -342,7 +349,16 @@ mod tests {
         ws.touch(page(5));
         assert_eq!(
             order(&ws),
-            [page(1), page(3), page(4), page(6), page(7), page(8), page(2), page(5)]
+            [
+                page(1),
+                page(3),
+                page(4),
+                page(6),
+                page(7),
+                page(8),
+                page(2),
+                page(5)
+            ]
         );
 
         let mut db = new_db();
@@ -377,13 +393,21 @@ mod tests {
                 "clean page {n} went to standby"
             );
             assert_eq!(
-                db.entry(n).share_count, 1,
+                db.entry(n).share_count,
+                1,
                 "clean page {n}'s frame is held while its transition entry names it"
             );
         }
         assert_eq!(
             clean_calls,
-            [(page(1), 1), (page(3), 3), (page(4), 4), (page(6), 6), (page(7), 7), (page(8), 8)],
+            [
+                (page(1), 1),
+                (page(3), 3),
+                (page(4), 4),
+                (page(6), 6),
+                (page(7), 7),
+                (page(8), 8)
+            ],
             "the clean victims, LRU order, as (page, frame)"
         );
         assert_eq!(
@@ -398,7 +422,11 @@ mod tests {
                 "dirty page {n} is the callback's to evict"
             );
         }
-        assert_eq!(db.available(), 6, "the standby frames still count as available");
+        assert_eq!(
+            db.available(),
+            6,
+            "the standby frames still count as available"
+        );
         // The held standby frames are not reallocated: nothing allocatable is left.
         assert_eq!(db.try_allocate(crate::mem::frame::PRIMARY_COLOR), None);
         assert_eq!(db.audit(), Ok(()));
@@ -408,7 +436,11 @@ mod tests {
         assert!(!db.unshare(1));
         assert_eq!(db.entry(1).state, FrameState::Active);
         assert_eq!(db.entry(1).share_count, 0);
-        assert_eq!(db.try_allocate(crate::mem::frame::PRIMARY_COLOR), None, "the rest stay held");
+        assert_eq!(
+            db.try_allocate(crate::mem::frame::PRIMARY_COLOR),
+            None,
+            "the rest stay held"
+        );
         assert_eq!(db.audit(), Ok(()));
     }
 
@@ -425,11 +457,15 @@ mod tests {
         let policy = TrimPolicy::new(0, 64);
         let map = victims(&[]);
         let mut clean_calls: Vec<(u32, FrameId)> = Vec::new();
-        let report = relieve_pressure(&policy, &mut ws, &mut db, 0, |va| map.get(&va).copied(), |va, frame| {
-            clean_calls.push((va, frame))
-        }, |_, _| {
-            panic!("no dirty pages in this set")
-        });
+        let report = relieve_pressure(
+            &policy,
+            &mut ws,
+            &mut db,
+            0,
+            |va| map.get(&va).copied(),
+            |va, frame| clean_calls.push((va, frame)),
+            |_, _| panic!("no dirty pages in this set"),
+        );
         assert_eq!(
             report,
             TrimReport {
@@ -460,9 +496,15 @@ mod tests {
         let policy = TrimPolicy::new(0, 64);
         let map = victims(&[]);
         let mut clean_calls: Vec<(u32, FrameId)> = Vec::new();
-        let report = relieve_pressure(&policy, &mut ws, &mut db, 0, |va| map.get(&va).copied(), |va, frame| {
-            clean_calls.push((va, frame))
-        }, |_, _| {});
+        let report = relieve_pressure(
+            &policy,
+            &mut ws,
+            &mut db,
+            0,
+            |va| map.get(&va).copied(),
+            |va, frame| clean_calls.push((va, frame)),
+            |_, _| {},
+        );
         assert_eq!(
             report,
             TrimReport {
@@ -473,7 +515,11 @@ mod tests {
                 skipped: 0
             }
         );
-        assert_eq!(order(&ws), [page(1), page(4), page(5)], "locked page 1 stayed");
+        assert_eq!(
+            order(&ws),
+            [page(1), page(4), page(5)],
+            "locked page 1 stayed"
+        );
         assert_eq!(ws.len(), 3, "down to the minimum");
         assert_eq!(db.entry(1).state, FrameState::Active);
         assert_eq!(db.entry(2).state, FrameState::Standby);
@@ -487,7 +533,15 @@ mod tests {
             assert!(locked.lock(page(n)));
         }
         let mut db = new_db();
-        let report = relieve_pressure(&policy, &mut locked, &mut db, 0, |va| map.get(&va).copied(), |_, _| {}, |_, _| {});
+        let report = relieve_pressure(
+            &policy,
+            &mut locked,
+            &mut db,
+            0,
+            |va| map.get(&va).copied(),
+            |_, _| {},
+            |_, _| {},
+        );
         assert_eq!(report.selected, 3);
         assert_eq!(report.clean, 0, "nothing evictable");
         assert_eq!(locked.len(), 3);
@@ -569,12 +623,24 @@ mod tests {
             }
         );
         assert!(ws.is_empty());
-        assert_eq!(db.entry(2).state, FrameState::Active, "page 2's frame stayed put");
+        assert_eq!(
+            db.entry(2).state,
+            FrameState::Active,
+            "page 2's frame stayed put"
+        );
         assert_eq!(db.entry(1).state, FrameState::Standby);
         assert_eq!(db.entry(1).share_count, 1, "page 1 went to standby held");
-        assert_eq!(db.entry(3).state, FrameState::Standby, "already listed: untouched, unheld");
+        assert_eq!(
+            db.entry(3).state,
+            FrameState::Standby,
+            "already listed: untouched, unheld"
+        );
         assert_eq!(db.entry(3).share_count, 0);
-        assert_eq!(db.entry(4).state, FrameState::Active, "shared: untouched, its hold kept");
+        assert_eq!(
+            db.entry(4).state,
+            FrameState::Active,
+            "shared: untouched, its hold kept"
+        );
         assert_eq!(db.entry(4).share_count, 1);
         assert_eq!(clean_calls, [(page(1), 1)]);
         assert!(dirty_calls.is_empty());
@@ -624,11 +690,15 @@ mod tests {
         let mut ws = WorkingSet::new();
         let mut db = new_db();
         let policy = TrimPolicy::new(4, 8);
-        let report = relieve_pressure(&policy, &mut ws, &mut db, 0, |_| None, |_, _| {
-            panic!("no clean victims")
-        }, |_, _| {
-            panic!("no victims to evict")
-        });
+        let report = relieve_pressure(
+            &policy,
+            &mut ws,
+            &mut db,
+            0,
+            |_| None,
+            |_, _| panic!("no clean victims"),
+            |_, _| panic!("no victims to evict"),
+        );
         assert_eq!(
             report,
             TrimReport {
@@ -672,7 +742,10 @@ mod tests {
         let cow = vm::encode(frame, vm::PAGE_WRITECOPY);
         assert_eq!(victim_of(cow).map(|v| v.dirty), Some(false));
         // A copy-on-write page's frame is named the same way.
-        assert_eq!(victim_of(cow).map(|v| v.frame), Some(frame / PAGE_SIZE as u32));
+        assert_eq!(
+            victim_of(cow).map(|v| v.frame),
+            Some(frame / PAGE_SIZE as u32)
+        );
     }
 
     /// An entry that is not present names no victim: a transition one, a paging-file one, a
@@ -681,7 +754,11 @@ mod tests {
     fn victim_of_reads_no_victim_off_a_non_present_entry() {
         let frame = 0x0050_0000u32;
         assert_eq!(
-            victim_of(vm::encode_backing(vm::TAG_TRANSITION, frame, vm::PAGE_READWRITE)),
+            victim_of(vm::encode_backing(
+                vm::TAG_TRANSITION,
+                frame,
+                vm::PAGE_READWRITE
+            )),
             None
         );
         assert_eq!(

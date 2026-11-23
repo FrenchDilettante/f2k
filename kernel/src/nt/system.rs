@@ -8,6 +8,8 @@
 /// The process information: the listing of every process and its threads.
 pub mod listing;
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use rtl::nt::info::{
     RtlTimeZoneInformation,
     SystemBasicInformation,
@@ -20,8 +22,6 @@ use super::call::{NtCall, NtResult, UserAddr, UserPtr};
 use crate::mem::faultstats::FaultCounts;
 use crate::mem::vm::{GRANULARITY, PAGE, USER_HIGH, USER_LOW};
 use crate::status::*;
-
-use core::sync::atomic::{AtomicU32, Ordering};
 
 info_class! {
     /// The classes NtQuerySystemInformation answers (SYSTEM_INFORMATION_CLASS).
@@ -280,9 +280,10 @@ pub fn set_system_time(_call: &mut NtCall, time: UserPtr<u64>, previous: UserPtr
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::Mutex;
     use std::vec::Vec;
+
+    use super::*;
 
     /// The performance tests share the peak-commitment static, so they run one at a time.
     static SERIAL: Mutex<()> = Mutex::new(());
@@ -322,10 +323,22 @@ mod tests {
     /// class not answered (GetTimeZoneInformation's error is the status's).
     #[test]
     fn the_time_zone_is_none_at_its_length() {
-        assert_eq!(query(44, 172, numbers(0x4000, 0x1000, 0x4000, 0x3000)), Ok(std::vec![0u8; 172]));
-        assert_eq!(query(44, 171, numbers(0x4000, 0x1000, 0x4000, 0x3000)), Err(STATUS_INFO_LENGTH_MISMATCH));
-        assert_eq!(query(44, 0, numbers(0x4000, 0x1000, 0x4000, 0x3000)), Err(STATUS_INFO_LENGTH_MISMATCH));
-        assert_eq!(query(0x77, 172, numbers(0x4000, 0x1000, 0x4000, 0x3000)), Err(STATUS_INVALID_INFO_CLASS));
+        assert_eq!(
+            query(44, 172, numbers(0x4000, 0x1000, 0x4000, 0x3000)),
+            Ok(std::vec![0u8; 172])
+        );
+        assert_eq!(
+            query(44, 171, numbers(0x4000, 0x1000, 0x4000, 0x3000)),
+            Err(STATUS_INFO_LENGTH_MISMATCH)
+        );
+        assert_eq!(
+            query(44, 0, numbers(0x4000, 0x1000, 0x4000, 0x3000)),
+            Err(STATUS_INFO_LENGTH_MISMATCH)
+        );
+        assert_eq!(
+            query(0x77, 172, numbers(0x4000, 0x1000, 0x4000, 0x3000)),
+            Err(STATUS_INVALID_INFO_CLASS)
+        );
         assert_eq!(rtl::status::dos_error(STATUS_INFO_LENGTH_MISMATCH.0), 24);
         assert_eq!(rtl::status::dos_error(STATUS_INVALID_INFO_CLASS.0), 87);
     }
@@ -344,7 +357,11 @@ mod tests {
             (0x1_0000, 0x7FFE_FFFF)
         );
         assert_eq!((word(&basic, 0x24), basic[0x28]), (1, 1));
-        assert_eq!(query(0, 48, numbers(0x4000, 0x1000, 0x4000, 0x3000)), Err(STATUS_INFO_LENGTH_MISMATCH), "exactly");
+        assert_eq!(
+            query(0, 48, numbers(0x4000, 0x1000, 0x4000, 0x3000)),
+            Err(STATUS_INFO_LENGTH_MISMATCH),
+            "exactly"
+        );
         let processor = query(1, 12, numbers(0x4000, 0x1000, 0x4000, 0x3000)).unwrap();
         assert_eq!((processor[0], processor[2]), (0, 6), "an x86 of level 6");
     }
@@ -381,10 +398,18 @@ mod tests {
     fn the_peak_commitment_is_the_running_max_of_the_committed_count() {
         let _serial = SERIAL.lock().unwrap();
         let high = query_performance(numbers(0x4000, 0x1000, 0x8000, 0x7000)).unwrap();
-        assert_eq!(word(&high, 0x38), 0x7000, "the peak reaches the committed count");
+        assert_eq!(
+            word(&high, 0x38),
+            0x7000,
+            "the peak reaches the committed count"
+        );
         let low = query_performance(numbers(0x4000, 0x1000, 0x8000, 0x100)).unwrap();
         assert_eq!(word(&low, 0x30), 0x100);
-        assert_eq!(word(&low, 0x38), 0x7000, "a smaller committed count does not lower the peak");
+        assert_eq!(
+            word(&low, 0x38),
+            0x7000,
+            "a smaller committed count does not lower the peak"
+        );
     }
 
     /// The performance class fills the fault counters the memory fixture's sysinfo block reads,

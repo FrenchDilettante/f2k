@@ -192,7 +192,9 @@ fn charge_commit(
     address: u32,
     size: u32,
 ) -> Result<u32, NtStatus> {
-    let fresh = space.uncommitted_pages(pages, address, size).map_err(refused)?;
+    let fresh = space
+        .uncommitted_pages(pages, address, size)
+        .map_err(refused)?;
     if fresh > 0 {
         space.quota.charge(fresh as u64 * PAGE as u64)?;
         crate::mem::note_commit_charge_pages(fresh as i32);
@@ -1166,7 +1168,9 @@ mod tests {
             87
         );
         assert_eq!(
-            error(allocate(&mut space, &mut pages,
+            error(allocate(
+                &mut space,
+                &mut pages,
                 0x8000_0000,
                 0,
                 4096,
@@ -1176,7 +1180,9 @@ mod tests {
             87
         );
         assert_eq!(
-            error(allocate(&mut space, &mut pages,
+            error(allocate(
+                &mut space,
+                &mut pages,
                 0x4000_0000,
                 0,
                 4096,
@@ -1199,7 +1205,9 @@ mod tests {
             Ok((big, 0x10_0000))
         );
         assert_eq!(
-            allocate(&mut space, &mut pages,
+            allocate(
+                &mut space,
+                &mut pages,
                 0x2000_0000,
                 0,
                 0x1_0000,
@@ -1209,7 +1217,9 @@ mod tests {
             Ok((0x2000_0000, 0x1_0000))
         );
         assert_eq!(
-            error(allocate(&mut space, &mut pages,
+            error(allocate(
+                &mut space,
+                &mut pages,
                 0x2000_0000,
                 0,
                 0x1_0000,
@@ -1221,7 +1231,9 @@ mod tests {
         // A reservation with a commit at an unaligned address: the granularity's base, the region
         // to the last page the request touches.
         assert_eq!(
-            allocate(&mut space, &mut pages,
+            allocate(
+                &mut space,
+                &mut pages,
                 0x3000_1234,
                 0,
                 0x1000,
@@ -1240,7 +1252,9 @@ mod tests {
         let rw = vm::PAGE_READWRITE;
         let (base, _) = allocate(&mut space, &mut pages, 0, 0, 0x10_0000, MEM_RESERVE, rw).unwrap();
         assert_eq!(
-            allocate(&mut space, &mut pages,
+            allocate(
+                &mut space,
+                &mut pages,
                 base + 0x1_0010,
                 0,
                 0x1000,
@@ -1254,7 +1268,9 @@ mod tests {
             Ok((MEM_COMMIT, 0x2000))
         );
         assert_eq!(
-            free(&mut space, &mut pages,
+            free(
+                &mut space,
+                &mut pages,
                 base + 0x1_0000,
                 0x2000,
                 MEM_DECOMMIT
@@ -1377,7 +1393,9 @@ mod tests {
                 Err(STATUS_CONFLICTING_ADDRESSES)
             );
             assert_eq!(
-                allocate(&mut space, &mut pages,
+                allocate(
+                    &mut space,
+                    &mut pages,
                     address,
                     0,
                     PAGE,
@@ -1415,7 +1433,9 @@ mod tests {
     fn protections_report_the_old_one() {
         let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
         space.quota = CommitQuota::new(1 << 40);
-        let (p, _) = allocate(&mut space, &mut pages,
+        let (p, _) = allocate(
+            &mut space,
+            &mut pages,
             0,
             0,
             0x3000,
@@ -1445,7 +1465,9 @@ mod tests {
             protect(&mut space, &mut pages, p, 0x1_0000, vm::PAGE_READWRITE),
             Err(STATUS_CONFLICTING_ADDRESSES)
         );
-        let (q, _) = allocate(&mut space, &mut pages,
+        let (q, _) = allocate(
+            &mut space,
+            &mut pages,
             0,
             0,
             0x2000,
@@ -1782,7 +1804,9 @@ mod tests {
         let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
         space.quota = CommitQuota::new(1 << 40);
         let rw = vm::PAGE_READWRITE;
-        let (p, _) = allocate(&mut space, &mut pages,
+        let (p, _) = allocate(
+            &mut space,
+            &mut pages,
             0,
             0,
             0x4000,
@@ -1797,7 +1821,9 @@ mod tests {
             Ok((p + 0x1000, 0x2000))
         );
         assert_eq!(
-            allocate(&mut space, &mut pages,
+            allocate(
+                &mut space,
+                &mut pages,
                 p,
                 0,
                 0x4000,
@@ -1826,7 +1852,9 @@ mod tests {
             );
         }
         assert_eq!(
-            error(allocate(&mut space, &mut pages,
+            error(allocate(
+                &mut space,
+                &mut pages,
                 p,
                 0,
                 0x1000,
@@ -1845,7 +1873,9 @@ mod tests {
             "past the region"
         );
         assert_eq!(
-            allocate(&mut space, &mut pages,
+            allocate(
+                &mut space,
+                &mut pages,
                 0x6000_0000,
                 0,
                 0x1000,
@@ -1886,7 +1916,9 @@ mod tests {
         let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
         space.quota = CommitQuota::new(1 << 40);
         let rw = vm::PAGE_READWRITE;
-        let (high, size) = allocate(&mut space, &mut pages,
+        let (high, size) = allocate(
+            &mut space,
+            &mut pages,
             0,
             0,
             0x1000,
@@ -1897,7 +1929,9 @@ mod tests {
         assert_eq!((high, size), (USER_HIGH - vm::GRANULARITY, 0x1000));
         let (low, _) = allocate(&mut space, &mut pages, 0, 0, 0x1000, MEM_RESERVE, rw).unwrap();
         assert_eq!(low, vm::USER_LOW);
-        let (bounded, _) = allocate(&mut space, &mut pages,
+        let (bounded, _) = allocate(
+            &mut space,
+            &mut pages,
             0,
             4,
             0x1000,
@@ -1925,7 +1959,9 @@ mod tests {
             "nothing fits below 2 KiB"
         );
         assert_eq!(
-            allocate(&mut space, &mut pages,
+            allocate(
+                &mut space,
+                &mut pages,
                 0x5000_0000,
                 4,
                 0x1000,
@@ -1953,7 +1989,11 @@ mod tests {
         space.quota = CommitQuota::new(0x4000);
         let rw = vm::PAGE_READWRITE;
         let (p, _) = allocate(&mut space, &mut pages, 0, 0, 0x10_0000, MEM_RESERVE, rw).unwrap();
-        assert_eq!(space.quota.charged(), 0, "a reservation alone charges nothing");
+        assert_eq!(
+            space.quota.charged(),
+            0,
+            "a reservation alone charges nothing"
+        );
         assert_eq!(
             query(&space, &pages, p).map(|info| info.state),
             Ok(MEM_RESERVE)
@@ -1984,7 +2024,15 @@ mod tests {
         );
         assert_eq!(space.quota.charged(), 0x3000);
         assert_eq!(
-            allocate(&mut space, &mut pages, p + 0x3000, 0, 0x2000, MEM_COMMIT, rw),
+            allocate(
+                &mut space,
+                &mut pages,
+                p + 0x3000,
+                0,
+                0x2000,
+                MEM_COMMIT,
+                rw
+            ),
             Err(STATUS_COMMITMENT_LIMIT)
         );
         assert_eq!(STATUS_COMMITMENT_LIMIT.0, 0xC000_012D);
@@ -2025,17 +2073,32 @@ mod tests {
         pages.budget = None;
         assert!(crate::mem::demand::apply(&mut pages, p, false, true));
         let (_, frame, _) = pte::decode(pages.entry(p)).unwrap();
-        assert_eq!(pages.frame_word(frame, 0), 0, "the faulted-in frame is zeroed");
+        assert_eq!(
+            pages.frame_word(frame, 0),
+            0,
+            "the faulted-in frame is zeroed"
+        );
         assert_eq!(
             free(&mut space, &mut pages, p, 0, MEM_RELEASE),
             Ok((p, 0x10_0000))
         );
         assert_eq!(space.quota.charged(), 0);
-        assert_eq!(query(&space, &pages, p).map(|info| info.state), Ok(vm::MEM_FREE));
+        assert_eq!(
+            query(&space, &pages, p).map(|info| info.state),
+            Ok(vm::MEM_FREE)
+        );
         // A reservation with a commit past the limit goes with its charge.
         space.quota = CommitQuota::new(PAGE as u64);
         assert_eq!(
-            allocate(&mut space, &mut pages, 0, 0, 0x2000, MEM_RESERVE | MEM_COMMIT, rw),
+            allocate(
+                &mut space,
+                &mut pages,
+                0,
+                0,
+                0x2000,
+                MEM_RESERVE | MEM_COMMIT,
+                rw
+            ),
             Err(STATUS_COMMITMENT_LIMIT)
         );
         assert_eq!(space.quota.charged(), 0);

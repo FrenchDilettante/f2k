@@ -22,7 +22,7 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use super::frame::{FrameDb, FrameHooks, FrameState};
-use super::pageout::{self, FrameMemory, PagingIo, PageWriter, SlotId, PAGE_SIZE};
+use super::pageout::{self, FrameMemory, PageWriter, PagingIo, SlotId, PAGE_SIZE};
 use super::vm::{self, Pages, PAGE};
 
 /// The paging-file slot a [`vm::TAG_PAGE_FILE`] entry names (bits 12-31 hold it counted from one).
@@ -182,9 +182,7 @@ pub fn relieve_pass<H: FrameHooks, Io: PagingIo, Mem: FrameMemory>(
             return false;
         };
         let current = pages.entry(victim.va);
-        if vm::backing_tag(current) == vm::TAG_TRANSITION
-            && vm::backing_payload(current) == frame
-        {
+        if vm::backing_tag(current) == vm::TAG_TRANSITION && vm::backing_payload(current) == frame {
             vm::name_page_file(pages, victim.va, slot, victim.protect);
             freed += 1;
             true
@@ -231,7 +229,7 @@ pub mod target {
     use crate::mem::fault::{self, Resolution};
     use crate::mem::pageout::PAGE_SIZE;
     use crate::mem::pagingfile::{with_paging_file, PagingFileIo};
-    use crate::mem::vm::{self, Kind, Pages, USER_HIGH, PAGE};
+    use crate::mem::vm::{self, Kind, Pages, PAGE, USER_HIGH};
 
     /// A fresh zeroed frame, or none: when the allocator finds none, `relieve` runs once and the
     /// allocation is retried once.
@@ -330,7 +328,9 @@ pub mod target {
         fn read_page(&self, index: u32, buf: &mut [u8; PAGE_SIZE]) -> bool {
             if self.paging_file {
                 with_paging_file(|file| {
-                    let Some(slot) = file.allocate_slot() else { return false };
+                    let Some(slot) = file.allocate_slot() else {
+                        return false;
+                    };
                     let read = file.read_page(slot, buf);
                     if file.is_allocated(slot) {
                         file.free_slot(slot);
@@ -345,8 +345,7 @@ pub mod target {
                 };
                 let offset = index * PAGE;
                 let len = file.size.saturating_sub(offset).min(PAGE) as usize;
-                len > 0
-                    && crate::fs::io::read_file_at(&file, offset, &mut buf[..len]).is_some()
+                len > 0 && crate::fs::io::read_file_at(&file, offset, &mut buf[..len]).is_some()
             }
         }
     }
@@ -410,8 +409,8 @@ pub mod target {
     #[allow(dead_code)]
     fn store() -> PagingFileIo {
         PagingFileIo
-    }}
-
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -429,7 +428,12 @@ mod tests {
         let table: &'static mut [FrameEntry] =
             Box::leak(vec![FrameEntry::new(); TABLE].into_boxed_slice());
         let buckets: &'static mut ColorTables = Box::leak(Box::new(ColorTables::new()));
-        FrameDb::new(table, buckets, crate::mem::frame::DEFAULT_COLOR_COUNT, NoHooks)
+        FrameDb::new(
+            table,
+            buckets,
+            crate::mem::frame::DEFAULT_COLOR_COUNT,
+            NoHooks,
+        )
     }
 
     /// Page tables as a map; frames numbered from 1 (physical = frame * PAGE), with a budget and
@@ -484,13 +488,18 @@ mod tests {
         }
 
         fn frame_word(&self, frame: u32, index: u32) -> u32 {
-            let Some(page) = self.filled.get(&frame) else { return 0 };
+            let Some(page) = self.filled.get(&frame) else {
+                return 0;
+            };
             let at = index as usize * 4;
             u32::from_le_bytes(page[at..at + 4].try_into().unwrap())
         }
 
         fn set_frame_word(&mut self, frame: u32, index: u32, value: u32) {
-            let page = self.filled.entry(frame).or_insert_with(|| vec![0; PAGE as usize]);
+            let page = self
+                .filled
+                .entry(frame)
+                .or_insert_with(|| vec![0; PAGE as usize]);
             let at = index as usize * 4;
             page[at..at + 4].copy_from_slice(&value.to_le_bytes());
         }
@@ -626,8 +635,14 @@ mod tests {
     fn soft_payloads_decode_to_their_slots_and_indices() {
         assert_eq!(slot_of(page_file_entry(7, PAGE_READWRITE)), 7);
         assert_eq!(section_index_of(prototype_entry(0x10, PAGE_READONLY)), 0x10);
-        assert_eq!(vm::backing_tag(page_file_entry(7, PAGE_READWRITE)), vm::TAG_PAGE_FILE);
-        assert_eq!(vm::soft_protect(page_file_entry(7, PAGE_READWRITE)), PAGE_READWRITE);
+        assert_eq!(
+            vm::backing_tag(page_file_entry(7, PAGE_READWRITE)),
+            vm::TAG_PAGE_FILE
+        );
+        assert_eq!(
+            vm::soft_protect(page_file_entry(7, PAGE_READWRITE)),
+            PAGE_READWRITE
+        );
     }
 
     /// The PageFile arm: a paged-out page's slot is read back into a fresh frame (the slot
@@ -644,7 +659,9 @@ mod tests {
         let page = 0x0040_0000;
 
         io.plant(3, 0xAB);
-        pages.entries.insert(page, page_file_entry(3, PAGE_READWRITE));
+        pages
+            .entries
+            .insert(page, page_file_entry(3, PAGE_READWRITE));
         let entry = pages.entry(page);
         assert!(page_file_in(
             &mut db,
@@ -660,14 +677,20 @@ mod tests {
         let (frame, protect) = vm::decode(entry).unwrap();
         assert_eq!(protect, PAGE_READWRITE);
         assert!(vm::PTE_PRESENT & entry != 0);
-        assert_eq!(mem.pages[(frame / PAGE) as usize], [0xAB; PAGE_SIZE], "the slot's bytes");
+        assert_eq!(
+            mem.pages[(frame / PAGE) as usize],
+            [0xAB; PAGE_SIZE],
+            "the slot's bytes"
+        );
         assert_eq!(io.freed, vec![3], "page-in releases the slot");
         assert!(pages.freed.is_empty());
 
         // No frame left: the relief hook runs once; with it freeing a frame the retry maps.
         let page = 0x0041_0000;
         io.plant(4, 0xCD);
-        pages.entries.insert(page, page_file_entry(4, PAGE_READONLY));
+        pages
+            .entries
+            .insert(page, page_file_entry(4, PAGE_READONLY));
         pages.budget = Some(0);
         let grants = pages.grants.clone();
         let before = pages.entry(page);
@@ -681,7 +704,11 @@ mod tests {
             before,
             &mut || false,
         ));
-        assert_eq!(pages.entry(page), before, "the relief freed nothing: the fault stands");
+        assert_eq!(
+            pages.entry(page),
+            before,
+            "the relief freed nothing: the fault stands"
+        );
         assert!(page_file_in(
             &mut db,
             &mut io,
@@ -705,7 +732,9 @@ mod tests {
         io.plant(5, 0xEE);
         io.fail_reads = true;
         pages.budget = None;
-        pages.entries.insert(page, page_file_entry(5, PAGE_READWRITE));
+        pages
+            .entries
+            .insert(page, page_file_entry(5, PAGE_READWRITE));
         let before = pages.entry(page);
         let taken = pages.next + 1;
         assert!(!page_file_in(
@@ -720,7 +749,10 @@ mod tests {
         ));
         assert_eq!(pages.entry(page), before);
         assert_eq!(pages.freed, vec![taken * PAGE], "the frame was given back");
-        assert!(io.freed.contains(&5) == false, "the slot was not released on a failed read");
+        assert!(
+            io.freed.contains(&5) == false,
+            "the slot was not released on a failed read"
+        );
     }
 
     /// The Section arm: the section's page is read from its backing at the page's index into a
@@ -736,7 +768,9 @@ mod tests {
         let page = 0x0040_0000;
 
         // Section page 2: file offset 0x2000, 0x800 bytes of file there, the rest zero.
-        pages.entries.insert(page, prototype_entry(2, PAGE_READONLY));
+        pages
+            .entries
+            .insert(page, prototype_entry(2, PAGE_READONLY));
         let entry = pages.entry(page);
         assert!(section_in(
             &mut pages,
@@ -750,11 +784,16 @@ mod tests {
         assert_eq!(protect, PAGE_READONLY);
         let filled = pages.filled.get(&frame).expect("the frame was filled");
         assert_eq!(&filled[..0x800], &source.file[0x2000..0x2800]);
-        assert!(filled[0x800..].iter().all(|&b| b == 0), "zero past the file's end");
+        assert!(
+            filled[0x800..].iter().all(|&b| b == 0),
+            "zero past the file's end"
+        );
 
         // A copy-on-write page maps held back: present, but not hardware-writable.
         let page = 0x0041_0000;
-        pages.entries.insert(page, prototype_entry(1, PAGE_WRITECOPY));
+        pages
+            .entries
+            .insert(page, prototype_entry(1, PAGE_WRITECOPY));
         let entry = pages.entry(page);
         assert!(section_in(
             &mut pages,
@@ -771,7 +810,9 @@ mod tests {
         // A failed read gives the frame back and leaves the entry as it was.
         source.fail = true;
         let page = 0x0042_0000;
-        pages.entries.insert(page, prototype_entry(0, PAGE_READWRITE));
+        pages
+            .entries
+            .insert(page, prototype_entry(0, PAGE_READWRITE));
         let before = pages.entry(page);
         let taken = pages.next + 1;
         assert!(!section_in(
@@ -789,7 +830,9 @@ mod tests {
         pages.budget = Some(0);
         let grants = pages.grants.clone();
         let page = 0x0043_0000;
-        pages.entries.insert(page, prototype_entry(0, PAGE_READWRITE));
+        pages
+            .entries
+            .insert(page, prototype_entry(0, PAGE_READWRITE));
         let entry = pages.entry(page);
         assert!(section_in(
             &mut pages,
@@ -834,16 +877,14 @@ mod tests {
         }
         // A shared page (a section's frame) and a non-private page are not evicted.
         mem.fill(6, 0x77);
-        pages.entries.insert(
-            base + 4 * PAGE,
-            vm::encode(6 * PAGE, PAGE_READWRITE),
-        );
+        pages
+            .entries
+            .insert(base + 4 * PAGE, vm::encode(6 * PAGE, PAGE_READWRITE));
         pages.holders.insert(6 * PAGE, 1);
         mem.fill(7, 0x88);
-        pages.entries.insert(
-            base + 5 * PAGE,
-            vm::encode(7 * PAGE, PAGE_READWRITE),
-        );
+        pages
+            .entries
+            .insert(base + 5 * PAGE, vm::encode(7 * PAGE, PAGE_READWRITE));
         let private = |va: u32| va < base + 5 * PAGE; // the last page is not private
 
         let mut victims = [Victim {
@@ -871,7 +912,11 @@ mod tests {
             assert_eq!(vm::backing_tag(entry), vm::TAG_PAGE_FILE, "page {page}");
             let slot = slot_of(entry);
             assert_ne!(slot, 0);
-            assert_eq!(io.page(slot), [0xA0 + page as u8; PAGE_SIZE], "the page's bytes");
+            assert_eq!(
+                io.page(slot),
+                [0xA0 + page as u8; PAGE_SIZE],
+                "the page's bytes"
+            );
             assert_eq!(
                 db.entry(page + 1).state,
                 crate::mem::frame::FrameState::Standby,
@@ -907,7 +952,10 @@ mod tests {
                 &mut || false,
             ));
             let (frame, _) = vm::decode(pages.entry(va)).unwrap();
-            assert_eq!(mem.pages[(frame / PAGE) as usize], [0xA0 + page as u8; PAGE_SIZE]);
+            assert_eq!(
+                mem.pages[(frame / PAGE) as usize],
+                [0xA0 + page as u8; PAGE_SIZE]
+            );
             assert_eq!(vm::backing_tag(pages.entry(va)), 0, "present again");
         }
         assert_eq!(db.audit(), Ok(()));
@@ -932,7 +980,9 @@ mod tests {
         mem.fill(1, 0x11);
         pages.entries.insert(base, vm::encode(PAGE, PAGE_READWRITE));
         mem.fill(2, 0x22);
-        pages.entries.insert(base + PAGE, vm::encode(2 * PAGE, PAGE_READWRITE));
+        pages
+            .entries
+            .insert(base + PAGE, vm::encode(2 * PAGE, PAGE_READWRITE));
         db.release(2, crate::mem::frame::FrameState::Standby);
 
         let mut victims = [Victim {

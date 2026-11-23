@@ -20,12 +20,13 @@
 //! reached through the [`Pages`] seam ([`CurrentPages`] on target, an in-memory fake in the tests).
 //!
 //! Reservations start on the 64 KiB allocation granularity and cover whole pages; a reservation
-//! without an address takes the lowest free range that fits. An eager commit ([`AddressSpace::commit`],
-//! the kernel's own pages: stacks) maps and zeroes its pages; a demand commit
-//! ([`AddressSpace::commit_demand`], the services' MEM_COMMIT) only writes demand-zero entries —
-//! committing a committed page keeps its contents and takes the new protection either way. A query
-//! reports the page's region and the run of pages after it in the same state and protection,
-//! within the region; outside every region it reports free memory up to the next region.
+//! without an address takes the lowest free range that fits. An eager commit
+//! ([`AddressSpace::commit`], the kernel's own pages: stacks) maps and zeroes its pages; a demand
+//! commit ([`AddressSpace::commit_demand`], the services' MEM_COMMIT) only writes demand-zero
+//! entries — committing a committed page keeps its contents and takes the new protection either
+//! way. A query reports the page's region and the run of pages after it in the same state and
+//! protection, within the region; outside every region it reports free memory up to the next
+//! region.
 //!
 //! Region kinds are what a query reports as the type; the services (`nt::memory`, `nt::section`)
 //! decide what each kind refuses. A view's kind carries its maximum ([`Maximum`], NT's VAD holds
@@ -310,7 +311,10 @@ pub fn map_named_frame(pages: &mut impl Pages, page: u32, frame: u32, protect: u
 /// protection in the index bits. The page is evicted from its mapping while its frame sits on a
 /// backing list, and a fault on it maps the named frame back ([`map_named_frame`], no I/O).
 pub fn soften_to_transition(pages: &mut impl Pages, va: u32, frame: u32, protect: u32) {
-    pages.set_entry(page_down(va), encode_backing(TAG_TRANSITION, frame, protect));
+    pages.set_entry(
+        page_down(va),
+        encode_backing(TAG_TRANSITION, frame, protect),
+    );
 }
 
 /// Rewrite the entry at `va` to a paging-file one: the page's bytes sit in the slot `slot`
@@ -1317,7 +1321,6 @@ impl Pages for CurrentPages {
         crate::mem::paging::set_user_pte(va, entry);
     }
 
-
     fn zeroed_frame(&mut self) -> Option<u32> {
         // A reserve stays with the kernel: a program that exhausts memory gets an error, never the
         // kernel a panic.
@@ -1516,7 +1519,10 @@ mod tests {
             index: 5,
             generation: 1,
         });
-        assert_eq!(space.take_view(0x41_0000).map(|v| v.mapping), Some(section(3)));
+        assert_eq!(
+            space.take_view(0x41_0000).map(|v| v.mapping),
+            Some(section(3))
+        );
         assert!(
             space.add_view_at(0x41_0000, 0, image),
             "an image's view maps its segment"
@@ -2160,7 +2166,10 @@ mod tests {
             .unwrap();
         assert!(vm.record_view(&mut pages, view, 0x20000, section));
         assert_eq!(vm.view_at(view), Some(section));
-        assert_eq!(vm.take_view(view).map(|v| (v.offset, v.mapping)), Some((0x20000, section)));
+        assert_eq!(
+            vm.take_view(view).map(|v| (v.offset, v.mapping)),
+            Some((0x20000, section))
+        );
     }
 
     /// A demand commit charges instead of mapping: fresh pages get demand-zero entries, no frame
@@ -2214,14 +2223,14 @@ mod tests {
         assert_eq!(vm.frame_at(&pages, base), Some(frame));
         assert_eq!(pages.frame_word(frame, 0), 42);
         let info = vm.query(&pages, base);
-        assert_eq!((info.state, info.protect, info.size), (MEM_COMMIT, PAGE_READONLY, PAGE));
+        assert_eq!(
+            (info.state, info.protect, info.size),
+            (MEM_COMMIT, PAGE_READONLY, PAGE)
+        );
         // A guarded protection commits as a guard entry.
         vm.commit_demand(&mut pages, base + 0x6000, PAGE, PAGE_READWRITE | PAGE_GUARD)
             .unwrap();
-        assert_eq!(
-            pte::classify(pages.entry(base + 0x6000)),
-            PteKind::Guard
-        );
+        assert_eq!(pte::classify(pages.entry(base + 0x6000)), PteKind::Guard);
     }
 
     /// A query over the demand entries: the committed run reports MEM_COMMIT with the recorded
@@ -2252,7 +2261,10 @@ mod tests {
             pte::encode(PteKind::Transition, 0x0070_0000, PAGE_READONLY),
         );
         let at = vm.query(&pages, base + 0x8000);
-        assert_eq!((at.state, at.protect, at.size), (MEM_COMMIT, PAGE_READONLY, PAGE));
+        assert_eq!(
+            (at.state, at.protect, at.size),
+            (MEM_COMMIT, PAGE_READONLY, PAGE)
+        );
         // A guard entry reports its protection with the guard flag.
         pages.set_entry(
             base + 0x9000,
@@ -2438,7 +2450,10 @@ mod tests {
             assert_eq!(soft_protect(entry), PAGE_READONLY);
             assert!(committed_entry(entry));
             assert!(!pte::committed(entry), "a soft entry carries no commit bit");
-            assert_eq!(encode_backing(tag, payload, PAGE_WRITECOPY) >> INDEX_SHIFT & 7, 3);
+            assert_eq!(
+                encode_backing(tag, payload, PAGE_WRITECOPY) >> INDEX_SHIFT & 7,
+                3
+            );
         }
 
         let mut vm = space();
@@ -2447,11 +2462,23 @@ mod tests {
             .reserve(None, 0x4000, PAGE_READWRITE, Kind::Mapped(Maximum::Write))
             .unwrap();
         // A view's untouched pages: prototype entries naming their section page indices.
-        vm.map_soft(&mut pages, base, encode_backing(TAG_PROTOTYPE, 0x10 << 12, PAGE_READONLY))
-            .unwrap();
-        vm.map_soft(&mut pages, base + PAGE, encode_backing(TAG_PROTOTYPE, 0x11 << 12, PAGE_READONLY))
-            .unwrap();
-        assert_eq!(vm.uncommitted_pages(&pages, base, 0x2000), Ok(0), "already committed");
+        vm.map_soft(
+            &mut pages,
+            base,
+            encode_backing(TAG_PROTOTYPE, 0x10 << 12, PAGE_READONLY),
+        )
+        .unwrap();
+        vm.map_soft(
+            &mut pages,
+            base + PAGE,
+            encode_backing(TAG_PROTOTYPE, 0x11 << 12, PAGE_READONLY),
+        )
+        .unwrap();
+        assert_eq!(
+            vm.uncommitted_pages(&pages, base, 0x2000),
+            Ok(0),
+            "already committed"
+        );
         let info = vm.query(&pages, base);
         assert_eq!(
             (info.state, info.protect, info.size, info.mem_type),
@@ -2477,12 +2504,23 @@ mod tests {
         vm.commit_demand(&mut pages, base, 0x2000, PAGE_READWRITE)
             .unwrap();
         pages.set_entry(base, encode_backing(TAG_PAGE_FILE, 7 << 12, PAGE_READWRITE));
-        pages.set_entry(base + PAGE, encode_backing(TAG_TRANSITION, 0x0070_0000, PAGE_READWRITE));
+        pages.set_entry(
+            base + PAGE,
+            encode_backing(TAG_TRANSITION, 0x0070_0000, PAGE_READWRITE),
+        );
         assert_eq!(vm.uncommitted_pages(&pages, base, 0x2000), Ok(0));
         assert_eq!(vm.decommit(&mut pages, base, 0x2000).unwrap(), 2);
         assert_eq!(pages.entry(base), 0);
-        assert_eq!(pages.discarded, vec![7], "the paging-file slot was released");
-        assert_eq!(pages.freed, vec![0x0070_0000], "the transition frame went back");
+        assert_eq!(
+            pages.discarded,
+            vec![7],
+            "the paging-file slot was released"
+        );
+        assert_eq!(
+            pages.freed,
+            vec![0x0070_0000],
+            "the transition frame went back"
+        );
         // A recommit over a paged-out page keeps its backing and charges nothing fresh.
         pages.set_entry(base, encode_backing(TAG_PAGE_FILE, 7 << 12, PAGE_READWRITE));
         let (_, fresh) = vm
@@ -2496,11 +2534,19 @@ mod tests {
         );
         // map_soft refuses a page outside every region or one already holding an entry.
         assert_eq!(
-            vm.map_soft(&mut pages, 0x6000_0000, encode_backing(TAG_PROTOTYPE, 0, PAGE_READONLY)),
+            vm.map_soft(
+                &mut pages,
+                0x6000_0000,
+                encode_backing(TAG_PROTOTYPE, 0, PAGE_READONLY)
+            ),
             Err(VmError::InvalidAddress)
         );
         assert_eq!(
-            vm.map_soft(&mut pages, base, encode_backing(TAG_PROTOTYPE, 0, PAGE_READONLY)),
+            vm.map_soft(
+                &mut pages,
+                base,
+                encode_backing(TAG_PROTOTYPE, 0, PAGE_READONLY)
+            ),
             Err(VmError::InvalidAddress)
         );
     }
@@ -2549,7 +2595,11 @@ mod tests {
         let entry = pages.entry(page);
         assert_eq!(entry, encode_backing(TAG_PAGE_FILE, 9 << 12, PAGE_READONLY));
         assert_eq!(fault::resolve(entry, false, true), Resolution::PageFile);
-        assert_eq!(fault::resolve(entry, true, true), Resolution::Raise, "a write to a read-only slot stands");
+        assert_eq!(
+            fault::resolve(entry, true, true),
+            Resolution::Raise,
+            "a write to a read-only slot stands"
+        );
         // A write to a read-write slot resolves the slot too.
         name_page_file(&mut pages, page, 3, PAGE_READWRITE);
         assert_eq!(
