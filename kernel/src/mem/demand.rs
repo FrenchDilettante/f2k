@@ -9,8 +9,9 @@
 //! paging-file page, no entry at all — is left to the exception path ([`super::backing`]). True
 //! when the page is mapped and the faulting access resumes.
 //!
-//! When a demand-zero map finds no frame, the fault path relieves pressure first: `relieve` runs
-//! once (a page-out pass over the frame database, [`target::relieve`] on the target) and the
+//! When a demand-zero map finds no frame, the fault path relieves pressure first: the vector-14
+//! hook trims the current process's working set ([`super::wstrim::relieve_pressure`], LRU-oldest
+//! first; the staged write-out of the victims it selects is [`target`] on the target) and the
 //! allocation is retried once. Without a frame after that the fault stands, the entry as it was.
 
 use super::fault::{self, Resolution};
@@ -108,12 +109,16 @@ pub fn apply_with(
 }
 
 /// One 4 MiB chunk of the user range: a page directory entry's span, 1024 pages.
+// Host-test helper: the target's relief walks the working set, not the user range.
+#[cfg_attr(not(test), allow(dead_code))]
 pub const CHUNK: u32 = 4 * 1024 * 1024;
 
 /// Walk the user pages `[start, end)` in order, visiting each with `visit` until it returns
 /// false. A 4 MiB chunk whose table `chunk_live` says is absent is skipped whole — one read
 /// per chunk instead of 1024 — so a scan over a large reservation costs the chunks, not the
 /// pages. Returns where the walk stopped.
+// Host-test helper: the target's relief walks the working set, not the user range.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn walk_pages(
     start: u32,
     end: u32,
@@ -138,6 +143,8 @@ pub fn walk_pages(
 /// Fill `victims` with the present pages of `[start, end)` — up to `victims.len()` — reading
 /// each entry through `entry` and skipping chunks as [`walk_pages`] does. Returns how many were
 /// found and where the walk stopped.
+// Host-test helper: the target's relief walks the working set, not the user range.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn scan_pages(
     victims: &mut [super::backing::Victim],
     start: u32,
@@ -170,34 +177,171 @@ pub fn scan_pages(
 // the memory manager's database (borrowed at the high level, interrupts masked): the fault path
 // reaches the database at the interrupted level, so a pass alternates short database borrows with
 // paging-file holds — unlink a frame and copy its page out, write the slot through the file, release
-// the frame to Standby — never holding both. The driver lives here because the relief is what a
-// demand map runs when no frame is left; the backing arms' staging ([`crate::mem::backing`]'s
-// PageFile and Section resolutions) is driven from here as well.
+// the frame to Standby — never holding both. The relief is working-set driven: the vector-14 hook
+// (user::seh) runs [`crate::mem::wstrim::relieve_pressure`] over the current process's working set
+// and records the victims it selects here; this module writes them out in groups. The backing arms'
+// staging ([`crate::mem::backing`]'s PageFile and Section resolutions) is driven from here as well.
 
 #[cfg(target_arch = "x86")]
 pub mod target {
-    use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+    use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
-    use super::{scan_pages, walk_pages};
-    use crate::mem::backing::Victim;
-    use crate::mem::frame::{FrameState, UnlinkOutcome};
-    use crate::mem::pageout::{self, PAGE_SIZE};
+    use super::super::frame::{FrameId, FrameState, UnlinkOutcome};
+    use crate::mem::pageout::{self, SlotId, PAGE_SIZE};
     use crate::mem::pagingfile::with_paging_file;
-    use crate::mem::vm::{self, CurrentPages, Kind, Pages, USER_HIGH, USER_LOW, PAGE};
+    use crate::mem::vm::{self, CurrentPages, Pages, PAGE};
     use crate::mem::{self, Parts};
 
-    /// How many pages one relief pass evicts at most.
-    const BATCH: usize = 256;
+    /// How many victims one relief selects at most: the trim batch the hook relieves with.
+    pub const BATCH: usize = 256;
 
-    /// The scan's cursor over the user range: a pass resumes where the last left off.
-    static mut CURSOR: u32 = USER_LOW;
-    static mut VICTIMS: [Victim; BATCH] = [Victim {
-        va: 0,
-        frame: 0,
-        protect: 0,
-    }; BATCH];
-    /// One relief at a time: a fault arriving while a pass waits on the disk I/O finds it busy.
+    /// One victim of the relieve, as the trim's `resolve` recorded it: the page's base address,
+    /// the frame its entry named (a physical address) and its recorded protection — committed to
+    /// the write-out by the trim's `evict_dirty`.
+    #[derive(Clone, Copy)]
+    struct Victim {
+        va: u32,
+        frame: u32,
+        protect: u32,
+        committed: bool,
+    }
+
+    /// The victims of the current relieve, while the hook holds the one-at-a-time guard.
+    static mut VICTIMS: [Victim; BATCH] =
+        [Victim { va: 0, frame: 0, protect: 0, committed: false }; BATCH];
+    static VICTIM_COUNT: AtomicUsize = AtomicUsize::new(0);
+    static VICTIM_CURSOR: AtomicUsize = AtomicUsize::new(0);
+
+    /// One relief at a time: a fault arriving while a relieve waits on the disk I/O finds it busy.
     static RELIEF_BUSY: AtomicBool = AtomicBool::new(false);
+
+    /// The victims array, while the relieve holds RELIEF_BUSY.
+    fn victims() -> &'static mut [Victim; BATCH] {
+        // SAFETY: RELIEF_BUSY is held for the whole relieve, so the array has one user.
+        unsafe { &mut *core::ptr::addr_of_mut!(VICTIMS) }
+    }
+
+    /// Begin a relief: false when one is already running. The victim queue starts empty.
+    pub fn try_begin_relieve() -> bool {
+        if RELIEF_BUSY
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            return false;
+        }
+        VICTIM_COUNT.store(0, Ordering::Relaxed);
+        VICTIM_CURSOR.store(0, Ordering::Relaxed);
+        true
+    }
+
+    /// End the relieve, releasing the one-at-a-time guard.
+    pub fn end_relieve() {
+        RELIEF_BUSY.store(false, Ordering::Release);
+    }
+
+    /// Record a victim the trim's `resolve` decoded: its page, frame and protection, waiting for
+    /// its `evict_dirty` to commit it to the write-out.
+    pub fn record_victim(va: u32, frame: u32, protect: u32) {
+        let count = VICTIM_COUNT.load(Ordering::Relaxed);
+        if count < BATCH {
+            victims()[count] = Victim { va, frame, protect, committed: false };
+            VICTIM_COUNT.store(count + 1, Ordering::Release);
+        }
+    }
+
+    /// Commit the resolved victim `frame` to the write-out (the trim's `evict_dirty` callback):
+    /// its page goes to a fresh paging-file slot below, so the slot it already holds is not used
+    /// — a resident page holds none.
+    pub fn queue_dirty(frame: FrameId, slot: SlotId) {
+        let _ = slot;
+        let count = VICTIM_COUNT.load(Ordering::Acquire);
+        for victim in &mut victims()[..count] {
+            if !victim.committed && victim.frame / PAGE == frame {
+                victim.committed = true;
+                return;
+            }
+        }
+    }
+
+    /// The write-out's group size: pages per transfer (and per database borrow's copy-out). A
+    /// group's slots are one run in the file, so one store operation writes them all.
+    const GROUP: usize = 64;
+
+    /// Take the next group of committed victims into the batch's front slots: how many, up to the
+    /// group size. Zero when the queue is drained.
+    fn take_batch() -> usize {
+        let cursor = VICTIM_CURSOR.load(Ordering::Relaxed);
+        let count = VICTIM_COUNT.load(Ordering::Acquire);
+        let victims = victims();
+        let mut out = 0;
+        let mut at = cursor;
+        while at < count && out < GROUP {
+            if victims[at].committed {
+                victims[out] = victims[at];
+                out += 1;
+            }
+            at += 1;
+        }
+        VICTIM_CURSOR.store(at, Ordering::Release);
+        out
+    }
+
+    /// Write the queued victims out to paging-file slots, in groups (see the module notes), and
+    /// free their frames: each committed victim is evicted — its frame to the Modified list, its
+    /// entry softened to a transition one naming the frame — and each group's pages are written
+    /// as one transfer. Returns how many frames went to Standby.
+    pub fn write_out_queued() -> u32 {
+        let mut freed = 0;
+        loop {
+            let count = take_batch();
+            if count == 0 {
+                break;
+            }
+            let mut kept = 0;
+            for index in 0..count {
+                let victim = victims()[index];
+                if evict(victim) {
+                    victims()[kept] = victim;
+                    kept += 1;
+                }
+            }
+            if kept > 0 {
+                freed += write_out_batch(kept);
+            }
+        }
+        freed
+    }
+
+    /// Evict one victim: its frame to the Modified list (when it is still in use and unshared),
+    /// its entry softened to a transition one naming the frame. True when evicted. The frame moves
+    /// first and the entry after: until the entry is softened the page stays reachable through it,
+    /// and no wait runs between the two steps.
+    fn evict(victim: Victim) -> bool {
+        let fid = victim.frame / PAGE;
+        let mut queued = false;
+        mem::with_database(|db| {
+            let Parts { frames, .. } = db.parts();
+            if frames.entry(fid).share_count > 0 {
+                return;
+            }
+            // The entry as it is now, inside the borrow: one re-faulted meanwhile names another
+            // frame, and is left alone.
+            let entry = CurrentPages.entry(victim.va);
+            if entry & vm::PTE_PRESENT == 0 || vm::backing_payload(entry) != victim.frame {
+                return;
+            }
+            if frames.entry(fid).state != FrameState::Active {
+                return;
+            }
+            pageout::to_modified(frames, fid);
+            queued = true;
+        });
+        if !queued {
+            return false;
+        }
+        vm::soften_to_transition(&mut CurrentPages, victim.va, victim.frame, victim.protect);
+        true
+    }
 
     /// The page buffers a staged transfer copies through: the disk I/O waits (a switch can happen
     /// inside it), so a buffer is claimed for the transfer, not borrowed from a stack.
@@ -251,244 +395,42 @@ pub mod target {
         }
     }
 
-    /// The victims array, while the relief holds RELIEF_BUSY.
-    fn victims() -> &'static mut [Victim; BATCH] {
-        // SAFETY: RELIEF_BUSY is held for the whole pass.
-        unsafe { &mut *core::ptr::addr_of_mut!(VICTIMS) }
-    }
-
-    /// The scan cursor, while the relief holds RELIEF_BUSY.
-    fn cursor() -> &'static mut u32 {
-        // SAFETY: RELIEF_BUSY is held for the whole pass.
-        unsafe { &mut *core::ptr::addr_of_mut!(CURSOR) }
-    }
-
-    /// Whether `va` lies in a private region of the running process's address space (the only
-    /// pages a relief evicts: a view's and the kernel's own are not).
-    fn is_private(va: u32) -> bool {
-        let process = crate::process::pool::address_space();
-        process.with_space(|space| {
-            matches!(space.region_at(va), Some(region) if region.kind == Kind::Private)
-        })
-    }
-
-    /// Run one pressure-relief pass over the running process's user range (see the module notes):
-    /// evict present private pages from the last pass's cursor on, then write them out to
-    /// paging-file slots. True when the pass made at least one frame available.
-    pub fn relieve() -> bool {
-        if RELIEF_BUSY
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            return false;
-        }
-        let freed = relieve_inner();
-        RELIEF_BUSY.store(false, Ordering::Release);
-        freed > 0
-    }
-
-    fn relieve_inner() -> u32 {
-        let count = scan();
-        if count == 0 {
-            return 0;
-        }
-        let mut kept = 0;
-        for index in 0..count {
-            let victim = victims()[index];
-            if !is_private(victim.va) {
-                continue;
-            }
-            if evict(victim) {
-                victims()[kept] = victim;
-                kept += 1;
-            }
-        }
-        if kept == 0 {
-            return 0;
-        }
-        // The write-out runs in groups, each group's pages as one transfer (a group's slots
-        // are one run): the disk wait is per transfer, not per page.
-        let mut freed = 0;
-        let mut start = 0;
-        while start < kept {
-            let end = (start + GROUP).min(kept);
-            freed += write_out_batch(start, end);
-            start = end;
-        }
-        freed
-    }
-
-    /// The user range's chunk map: bit `w` set when page directory entry `w` is present, so its
-    /// 4 MiB chunk's pages can be read. The directory is read once, in one database borrow,
-    /// through the scratch window.
-    fn chunk_map() -> [u64; 16] {
-        let dir = crate::mem::paging::current_directory_phys();
-        let mut map = [0u64; 16];
-        mem::with_database(|db| {
-            let Parts { scratch, .. } = db.parts();
-            let words = scratch.map_words(dir);
-            for (w, entry) in words.iter().enumerate() {
-                if entry & crate::mem::paging::PAGE_PRESENT != 0 {
-                    map[w / 64] |= 1u64 << (w % 64);
-                }
-            }
-        });
-        map
-    }
-
-    /// Scan the user range from the cursor for present pages, up to one batch: the victims of
-    /// this pass. Chunks with no page table are skipped whole, so a large reservation costs its
-    /// chunks, not its pages. Returns how many were found; the cursor is left where the scan
-    /// stopped.
-    fn scan() -> usize {
-        let victims = victims();
-        let cursor = cursor();
-        if *cursor >= USER_HIGH {
-            *cursor = USER_LOW;
-        }
-        let begin = *cursor;
-        let entry = |va| CurrentPages.entry(va);
-        let chunks = chunk_map();
-        let live = |va| {
-            let w = va >> 22;
-            chunks[(w / 64u32) as usize] & (1u64 << (w % 64u32)) != 0u64
-        };
-        let (mut count, mut stop) = scan_pages(victims, begin, USER_HIGH, entry, live);
-        if begin > USER_LOW {
-            // Wrap and sweep up to the cursor too, so one pass sees every present page — the
-            // pages a earlier pass evicted can be present again by the time the cursor comes
-            // round, and a pass that stops early would otherwise never revisit them.
-            let (wrapped, wrapped_stop) =
-                scan_pages(&mut victims[count.min(BATCH)..], USER_LOW, begin, entry, live);
-            count += wrapped;
-            if wrapped > 0 || count == 0 {
-                stop = wrapped_stop;
-            }
-        }
-        *cursor = if stop >= USER_HIGH { USER_LOW } else { stop };
-        count
-    }
-
-    /// Give back every allocated paging-file slot no entry of the running process names: a dead
-    /// process's paged-out pages keep their slots until here, and they are the only ones left
-    /// once the running process's are marked. Returns how many slots went back. Runs outside
-    /// every database borrow and paging-file hold (the walk reads entries, the frees take the
-    /// file in their own hold).
-    fn collect_unnamed_slots() -> u64 {
-        static mut LIVE: [u64; crate::mem::pagingfile::MAX_WORDS] =
-            [0; crate::mem::pagingfile::MAX_WORDS];
-        // SAFETY: RELIEF_BUSY is held for the whole pass, so the bitmap has one user at a time.
-        let live = unsafe { &mut *core::ptr::addr_of_mut!(LIVE) };
-        live.fill(0);
-        let chunks = chunk_map();
-        walk_pages(
-            USER_LOW,
-            USER_HIGH,
-            |va| {
-                let w = va >> 22;
-                chunks[(w / 64u32) as usize] & (1u64 << (w % 64u32)) != 0u64
-            },
-            |va| {
-                let entry = CurrentPages.entry(va);
-                if vm::backing_tag(entry) == vm::TAG_PAGE_FILE {
-                    let slot = u64::from(vm::backing_payload(entry) >> 12);
-                    if slot < crate::mem::pagingfile::MAX_PAGES {
-                        live[(slot / 64) as usize] |= 1u64 << (slot % 64);
-                    }
-                }
-                true
-            },
-        );
-        with_paging_file(|file| {
-            let mut freed = 0u64;
-            for slot in 1..file.pages() {
-                if file.is_allocated(slot)
-                    && live[(slot / 64) as usize] & (1u64 << (slot % 64)) == 0
-                {
-                    file.free_slot(slot);
-                    freed += 1;
-                }
-            }
-            freed
-        })
-        .unwrap_or(0)
-    }
-
-    /// Evict one victim: its frame to the Modified list and the writer's queue (when it is still
-    /// in use and unshared), its entry softened to a transition one naming the frame. True when
-    /// evicted. The frame moves first and the entry after: until the entry is softened the page
-    /// stays reachable through it, and no wait runs between the two steps.
-    fn evict(victim: Victim) -> bool {
-        let fid = victim.frame / PAGE;
-        let mut queued = false;
-        mem::with_database(|db| {
-            let Parts { frames, .. } = db.parts();
-            if frames.entry(fid).share_count > 0 {
-                return;
-            }
-            // The entry as it is now, inside the borrow: one re-faulted meanwhile names another
-            // frame, and is left alone.
-            let entry = CurrentPages.entry(victim.va);
-            if entry & vm::PTE_PRESENT == 0 || entry & vm::PTE_FRAME_MASK != victim.frame {
-                return;
-            }
-            match frames.entry(fid).state {
-                FrameState::Active => {
-                    pageout::to_modified(frames, fid);
-                    queued = true;
-                }
-                FrameState::Modified => {
-                    queued = true;
-                }
-                _ => {}
-            }
-        });
-        if !queued {
-            return false;
-        }
-        vm::soften_to_transition(&mut CurrentPages, victim.va, victim.frame, victim.protect);
-        true
-    }
-
-    /// The write-out's group size: pages per transfer (and per database borrow's copy-out). A
-    /// group's slots are one run in the file, so one store operation writes them all.
-    const GROUP: usize = 64;
     /// The batch buffer a group's pages are copied through: the disk I/O waits (a switch can
     /// happen inside it), so the pages are copied out of the frames under a database borrow
     /// into this, not borrowed from a stack.
     static mut BATCH_BUF: [u8; GROUP * PAGE_SIZE] = [0; GROUP * PAGE_SIZE];
 
-    /// The batch buffer, while the relief holds RELIEF_BUSY (one user at a time).
+    /// The batch buffer, while the relieve holds RELIEF_BUSY (one user at a time).
     fn batch_all() -> &'static mut [u8; GROUP * PAGE_SIZE] {
-        // SAFETY: RELIEF_BUSY is held for the whole pass, so the buffer has one user at a time.
+        // SAFETY: RELIEF_BUSY is held for the whole relieve, so the buffer has one user at a time.
         unsafe { &mut *core::ptr::addr_of_mut!(BATCH_BUF) }
     }
 
-    /// Page `index` of the batch buffer, while the relief holds RELIEF_BUSY.
+    /// Page `index` of the batch buffer, while the relieve holds RELIEF_BUSY.
     fn batch_page(index: usize) -> &'static mut [u8] {
         &mut batch_all()[index * PAGE_SIZE..(index + 1) * PAGE_SIZE]
     }
 
-    /// Pages `start..start + count` of the batch buffer, while the relief holds RELIEF_BUSY.
+    /// Pages `start..start + count` of the batch buffer, while the relieve holds RELIEF_BUSY.
     fn batch_range(start: usize, count: usize) -> &'static [u8] {
         &batch_all()[start * PAGE_SIZE..(start + count) * PAGE_SIZE]
     }
 
-    /// Write the evicted pages `victims[start..end]` out to paging-file slots, in one transfer,
-    /// staged around the paging file's lock (see the module notes): the frames unlinked from the
-    /// Modified list and their pages copied into the batch buffer under one database borrow, the
-    /// run of slots allocated (the file grown when no run is long enough) and written through
-    /// the file in one operation, the frames released to Standby, the entries rewritten to name
-    /// their slots. A page re-faulted while its write was in flight keeps its frame and its slot
-    /// goes back. Returns how many frames went to Standby.
-    fn write_out_batch(start: usize, end: usize) -> u32 {
+    /// Write the batch's `count` evicted pages out to paging-file slots, in one transfer, staged
+    /// around the paging file's lock (see the module notes): the frames unlinked from the Modified
+    /// list and their pages copied into the batch buffer under one database borrow, the run of
+    /// slots allocated (the file grown when no run is long enough) and written through the file in
+    /// one operation, the frames released to Standby, the entries rewritten to name their slots. A
+    /// page re-faulted while its write was in flight keeps its frame and its slot goes back.
+    /// Returns how many frames went to Standby.
+    fn write_out_batch(count: usize) -> u32 {
         let mut copied = [false; GROUP];
         let mut page_of = [0u32; GROUP];
         // Step 1: unlink each still-Modified frame and copy its page out, compacted.
-        let mut count = 0usize;
+        let mut total = 0usize;
         mem::with_database(|db| {
             let Parts { frames, scratch, .. } = db.parts();
-            for index in start..end {
+            for index in 0..count {
                 let victim = victims()[index];
                 let fid = victim.frame / PAGE;
                 if frames.entry(fid).state != FrameState::Modified {
@@ -497,23 +439,21 @@ pub mod target {
                 if frames.unlink(fid) != UnlinkOutcome::Unlinked {
                     continue;
                 }
-                scratch.read_frame(victim.frame, 0, batch_page(count));
-                copied[index - start] = true;
-                page_of[index - start] = count as u32;
-                count += 1;
+                scratch.read_frame(victim.frame, 0, batch_page(total));
+                copied[index] = true;
+                page_of[index] = total as u32;
+                total += 1;
             }
         });
-        if count == 0 {
+        if total == 0 {
             return 0;
         }
-        // Step 2: a run of slots for the batch — grown when the file is full, and when even the
-        // growth is refused, the slots no live entry names go back (a dead process's pages);
-        // shrunk when no run that long is free, so a fragmented file still takes the pages, in
-        // smaller transfers. Each try takes the file in its own hold: the disk I/O waits, and
-        // no database borrow is held across one.
-        let mut want = count as u64;
+        // Step 2: a run of slots for the batch — grown when the file is full, shrunk when no run
+        // that long is free, so a fragmented file still takes the pages, in smaller transfers.
+        // Each try takes the file in its own hold: the disk I/O waits, and no database borrow is
+        // held across one.
+        let mut want = total as u64;
         let mut extended = false;
-        let mut collected = false;
         let first = loop {
             if let Some(first) = with_paging_file(|file| file.allocate_slots(want)).flatten() {
                 break first;
@@ -524,19 +464,13 @@ pub mod target {
                     continue;
                 }
             }
-            if !collected {
-                collected = true;
-                if collect_unnamed_slots() > 0 {
-                    continue;
-                }
-            }
             if want > 1 {
                 want /= 2;
                 continue;
             }
             // No room at all: the frames go back on the Modified list, their entries still
             // transition ones naming their frames.
-            put_back(start, end, &copied, FrameState::Modified);
+            put_back(count, &copied, FrameState::Modified);
             return 0;
         };
         // Step 2b: the run is written as one transfer.
@@ -555,7 +489,7 @@ pub mod target {
         })
         .unwrap_or(false);
         if !written {
-            put_back(start, end, &copied, FrameState::Modified);
+            put_back(count, &copied, FrameState::Modified);
             return 0;
         }
         // Step 3: each copied page's frame — to Standby when its entry still is the transition
@@ -564,26 +498,44 @@ pub mod target {
         // while the write was in flight: then the frame holds the page again and the slot goes
         // back.
         let mut freed = 0;
-        for index in start..end {
-            if !copied[index - start] {
+        for index in 0..count {
+            if !copied[index] {
                 continue;
             }
             let victim = victims()[index];
             let fid = victim.frame / PAGE;
-            if page_of[index - start] >= want as u32 {
-                crate::mem::bootmem::with_frame_db(|db| db.release(fid, FrameState::Modified));
+            if page_of[index] >= want as u32 {
+                mem::with_database(|db| db.parts().frames.release(fid, FrameState::Modified));
                 continue;
             }
-            let slot = first + u64::from(page_of[index - start]);
+            let slot = first + u64::from(page_of[index]);
             let current = CurrentPages.entry(victim.va);
             if vm::backing_tag(current) == vm::TAG_TRANSITION
                 && vm::backing_payload(current) == victim.frame
             {
-                crate::mem::bootmem::with_frame_db(|db| db.release(fid, FrameState::Standby));
+                mem::with_database(|db| db.parts().frames.release(fid, FrameState::Standby));
                 vm::name_page_file(&mut CurrentPages, victim.va, slot as u32, victim.protect);
                 freed += 1;
+            } else if current & vm::PTE_PRESENT != 0 && vm::backing_payload(current) == victim.frame {
+                // Re-faulted while the write was in flight: the frame is in use again (its entry
+                // is present, naming it); the slot goes back.
+                let _ = with_paging_file(|file| {
+                    if file.is_allocated(slot) {
+                        file.free_slot(slot);
+                    }
+                });
             } else {
-                crate::mem::bootmem::with_frame_db(|db| db.release(fid, FrameState::Active));
+                // The entry no longer names the frame at all (decommitted meanwhile): the frame
+                // goes back to the pool, and the slot with it.
+                mem::with_database(|db| {
+                    let frames = db.parts().frames;
+                    if frames.entry(fid).state.is_list_state() {
+                        frames.unlink(fid);
+                    }
+                    if frames.unshare(fid) {
+                        frames.release(fid, FrameState::Free);
+                    }
+                });
                 let _ = with_paging_file(|file| {
                     if file.is_allocated(slot) {
                         file.free_slot(slot);
@@ -594,20 +546,18 @@ pub mod target {
         freed
     }
 
-    /// Put the copied pages' frames of `victims[start..end]` back on `state`'s list.
-    fn put_back(start: usize, end: usize, copied: &[bool; GROUP], state: FrameState) {
+    /// Put the copied pages' frames of the batch back on `state`'s list.
+    fn put_back(count: usize, copied: &[bool; GROUP], state: FrameState) {
         mem::with_database(|db| {
             let Parts { frames, .. } = db.parts();
-            for index in start..end {
-                if copied[index - start] {
+            for index in 0..count {
+                if copied[index] {
                     frames.release(victims()[index].frame / PAGE, state);
                 }
             }
         });
     }
-
 }
-
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;

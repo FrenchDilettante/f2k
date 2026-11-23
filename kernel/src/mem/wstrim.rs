@@ -18,6 +18,7 @@
 use super::frame::{FrameDb, FrameHooks, FrameId};
 use super::pageout::{self, SlotId};
 use super::paging::PAGE_SIZE;
+use super::vm;
 use super::ws::WorkingSet;
 
 /// One victim page, as the caller resolves it from the page's entry and the frame database: the
@@ -75,6 +76,27 @@ impl TrimPolicy {
         let down_to = if len > max { max } else { min };
         len.saturating_sub(down_to).min(self.batch_max)
     }
+}
+
+/// The victim a page's entry names, read off the entry alone: a present entry's frame, as a
+/// frame number, dirty, holding no slot — a resident page's frame may not be freed to Standby
+/// while its entry still names it (there is no frame-to-entry backlink), so the caller writes
+/// the page out and rewrites the entry, whatever the hardware dirty bit says (a page-in maps a
+/// page present without setting it). None for an entry that is not present — the page is
+/// already off its mapping, a soft entry or none at all — or that names no frame.
+pub fn victim_of(entry: u32) -> Option<Victim> {
+    if entry & vm::PTE_PRESENT == 0 {
+        return None;
+    }
+    let frame = vm::backing_payload(entry);
+    if frame == 0 {
+        return None;
+    }
+    Some(Victim {
+        frame: frame / PAGE_SIZE as u32,
+        dirty: true,
+        slot: pageout::INVALID_SLOT,
+    })
 }
 
 /// What one [`relieve_pressure`] did.
@@ -533,5 +555,58 @@ mod tests {
         );
         assert!(ws.is_empty());
         assert_eq!(db.list_total(FrameState::Standby), 0);
+    }
+
+    /// The victim a page's entry names: a present entry's frame, as a frame number, dirty — the
+    /// frame may not go to Standby while its entry names it — and no slot; whatever the
+    /// hardware dirty bit says, since a page-in maps a page present without setting it.
+    #[test]
+    fn victim_of_decodes_a_present_entry_to_a_dirty_victim_with_no_slot() {
+        let frame = 0x0050_0000u32;
+        // A written page (the hardware dirty bit set) and a merely read one both read dirty.
+        for extra in [0, 1 << 5, 1 << 6, (1 << 5) | (1 << 6)] {
+            let entry = vm::encode(frame, vm::PAGE_READWRITE) | extra;
+            assert_eq!(
+                victim_of(entry),
+                Some(Victim {
+                    frame: frame / PAGE_SIZE as u32,
+                    dirty: true,
+                    slot: pageout::INVALID_SLOT,
+                })
+            );
+        }
+        // A copy-on-write page's present entry names its frame the same way.
+        let entry = vm::encode(frame, vm::PAGE_WRITECOPY);
+        assert_eq!(victim_of(entry).map(|v| v.frame), Some(frame / PAGE_SIZE as u32));
+    }
+
+    /// An entry that is not present names no victim: a transition one, a paging-file one, a
+    /// demand-zero one, no entry at all — the page is already off its mapping or never on it.
+    #[test]
+    fn victim_of_reads_no_victim_off_a_non_present_entry() {
+        let frame = 0x0050_0000u32;
+        assert_eq!(
+            victim_of(vm::encode_backing(vm::TAG_TRANSITION, frame, vm::PAGE_READWRITE)),
+            None
+        );
+        assert_eq!(
+            victim_of(vm::encode_backing(
+                vm::TAG_PAGE_FILE,
+                7 << 12,
+                vm::PAGE_READWRITE
+            )),
+            None
+        );
+        assert_eq!(
+            victim_of(crate::mem::pte::encode(
+                crate::mem::pte::PteKind::DemandZero,
+                0,
+                vm::PAGE_READWRITE
+            )),
+            None
+        );
+        assert_eq!(victim_of(0), None);
+        // A present entry naming the null frame is malformed: no victim.
+        assert_eq!(victim_of(vm::PTE_PRESENT | 1 << 1 | 1 << 2), None);
     }
 }

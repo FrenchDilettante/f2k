@@ -385,15 +385,107 @@ mod target {
                 .is_ok_and(|head| head != END_OF_CHAIN)
     }
 
+    /// The free-frame threshold the fault path relieves at: the page allocator's kernel reserve —
+    /// a demand map that found no frame is at or below it.
+    const RELIEF_THRESHOLD: u32 = 256;
+
+    /// How many victims one relief selects at most: the trim batch
+    /// ([`crate::mem::demand::target::BATCH`]).
+    const RELIEF_BATCH: usize = crate::mem::demand::target::BATCH;
+
+    /// The vector-14 pressure-relief hook: relieve free-frame pressure by trimming the current
+    /// process's working set — [`crate::mem::wstrim::relieve_pressure`], LRU-oldest first, down
+    /// to the set's limits. Each victim's entry is decoded into its frame and backing
+    /// ([`crate::mem::wstrim::victim_of`]) and recorded; the dirty ones — on this target every
+    /// victim a present entry names — are committed to the write-out, which
+    /// [`crate::mem::demand::target::write_out_queued`] runs staged around the paging file's
+    /// lock: its disk I/O waits, and no frame-database borrow is held across a wait. True when
+    /// the relieve made at least one frame available.
+    fn relieve_working_set() -> bool {
+        if !crate::mem::demand::target::try_begin_relieve() {
+            return false;
+        }
+        let freed = relieve_working_set_inner();
+        crate::mem::demand::target::end_relieve();
+        freed > 0
+    }
+
+    /// One relieve: the trim itself, then the committed victims' page-out.
+    fn relieve_working_set_inner() -> u32 {
+        use crate::mem::{bootmem, vm, wstrim};
+        let process = crate::process::pool::address_space();
+        let policy = wstrim::TrimPolicy::new(RELIEF_THRESHOLD, RELIEF_BATCH);
+        let free = bootmem::with_frame_db(|db| db.available());
+        // The trim: the working set's lock outside the frame database's borrow (a process's lock
+        // is taken at the passive level, the database's at the high one). No I/O runs inside it:
+        // each victim's entry is decoded and recorded, and the dirty ones are committed to the
+        // write-out, which runs below, borrow by borrow.
+        let report = process.with_working_set(|ws| {
+            bootmem::with_frame_db(|frames| {
+                wstrim::relieve_pressure(
+                    &policy,
+                    ws,
+                    frames,
+                    free,
+                    |va| {
+                        let entry = vm::Pages::entry(&vm::CurrentPages, va);
+                        let victim = wstrim::victim_of(entry);
+                        if let Some(victim) = victim {
+                            let protect = vm::decode(entry)
+                                .map(|(_, protect)| protect)
+                                .unwrap_or_else(|| vm::soft_protect(entry));
+                            crate::mem::demand::target::record_victim(
+                                va,
+                                victim.frame * vm::PAGE,
+                                protect,
+                            );
+                        }
+                        victim
+                    },
+                    |frame, slot| crate::mem::demand::target::queue_dirty(frame, slot),
+                )
+            })
+        });
+        if !report.pressured {
+            return 0;
+        }
+        // The committed victims' page-out, staged: each group's frames unlinked and their pages
+        // copied out under a database borrow, the run of slots allocated and written through the
+        // file with no borrow held — the disk wait — the frames released to Standby and the
+        // entries rewritten under a final one.
+        crate::mem::demand::target::write_out_queued()
+    }
+
+    /// Note the faulted page resident in the current process's working set, so a later trim can
+    /// relieve pressure from it: only a private region's pages are tracked (a view's and the
+    /// kernel's own are never evicted).
+    fn note_resident(va: u32) {
+        let page = va & !(crate::mem::vm::PAGE - 1);
+        let process = crate::process::pool::address_space();
+        let private = process.with_space(|space| {
+            matches!(
+                space.region_at(page),
+                Some(region) if region.kind == crate::mem::vm::Kind::Private
+            )
+        });
+        if private {
+            process.with_working_set(|ws| {
+                ws.insert(page);
+            });
+        }
+    }
+
     /// Dispatch a user fault: true when the frame resumes the interrupted context — a page fault
     /// the address space resolved (a committed page's first touch, a page back from a backing
     /// list: [`crate::mem::demand::apply_with`]; a backing-store page — a paging-file slot, a
-    /// section's page: [`crate::mem::backing::apply`]) maps its frame and the access retries; when
-    /// no frame is left, the pressure relief runs once and the allocation is retried — or the
-    /// frame now returns into ntdll's dispatcher with the exception's records — false when there
-    /// is nobody to dispatch to (see the module notes) and the fault ends the process as an
-    /// unhandled exception. A single-step trap's context has the trap flag clear, as Windows
-    /// 2000's trap handler clears it before the dispatch.
+    /// section's page: [`crate::mem::backing::apply`]) maps its frame, notes it resident in the
+    /// current process's working set, and the access retries; when no frame is left, the
+    /// pressure relief runs once — a trim of that working set
+    /// ([`relieve_working_set`]) — and the allocation is retried — or the frame now returns into
+    /// ntdll's dispatcher with the exception's records — false when there is nobody to dispatch
+    /// to (see the module notes) and the fault ends the process as an unhandled exception. A
+    /// single-step trap's context has the trap flag clear, as Windows 2000's trap handler clears
+    /// it before the dispatch.
     pub fn dispatch_fault(frame: &mut TrapFrame, vector: u32, code: u32, cr2: u32) -> bool {
         if vector == 14 {
             // A page fault the entry resolves: apply it (map the page) and resume the access.
@@ -403,7 +495,7 @@ mod target {
                 cr2 & !(crate::mem::vm::PAGE - 1),
             );
             crate::mem::faultstats::note_fault(entry, write, true);
-            let mut relieve = crate::mem::backing::relieve;
+            let mut relieve = relieve_working_set;
             if crate::mem::demand::apply_with(
                 &mut crate::mem::vm::CurrentPages,
                 cr2,
@@ -417,6 +509,7 @@ mod target {
                 true,
                 &mut relieve,
             ) {
+                note_resident(cr2);
                 return true;
             }
         }

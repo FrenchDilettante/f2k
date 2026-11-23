@@ -12,14 +12,10 @@
 //! page from its backing; each maps the page present with the entry's protection. When no frame
 //! is left, the relief hook runs once and the allocation is retried once.
 //!
-//! The relief ([`relieve_pass`], and [`crate::mem::demand::target::relieve`] on the target) runs a
-//! [`pageout::PageWriter`] pass over the frame database under pressure: every present, unshared
-//! page of a private region found in the scanned range is evicted — its entry softened to a
-//! transition one, its frame marked modified ([`pageout::to_modified`]) and queued to the writer —
-//! and the pass writes the queued pages out to paging-file slots, the frames going to Standby and
-//! the entries rewritten to name their slots. Evicted pages always go out to slots: without a
-//! frame-to-entry backlink, a frame on Standby could be reused while a transition entry still
-//! named it, so the Standby list is not used for pages still named by an entry.
+//! The relief itself is working-set driven and lives with the fault path: the vector-14 hook in
+//! `user::seh` runs [`super::wstrim::relieve_pressure`] over the current process's working set,
+//! and the staged page-out of the victims it selects is [`super::demand::target`] on the target.
+//! [`relieve_pass`] below is the host-tested twin of that pass over an explicit page range.
 
 // The pure arms are driven by the host tests; the target runs its own staged driver (the level
 // rules split a pass around the paging file's lock), so on the target build they see only tests.
@@ -220,9 +216,6 @@ pub fn apply(
         false
     }
 }
-
-#[cfg(target_arch = "x86")]
-pub use crate::mem::demand::target::relieve;
 
 // --- The staged backing arms (target) -----------------------------------------------------------
 //
