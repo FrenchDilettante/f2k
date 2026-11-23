@@ -170,6 +170,33 @@ impl<T> DeviceLock<T> {
             self.owner.store(running, Ordering::SeqCst);
             return;
         }
+        // A free lock is taken in place, masked, without entering the wait: as Windows 2000's
+        // fast mutex and ERESOURCE are taken when nobody holds them (an interlocked step, no
+        // KeWaitForSingleObject). A wait satisfied at once is charged against the quantum, so
+        // entering one for every uncontended take ran a thread doing file reads off its quantum in
+        // a handful of them, an equal-priority thread taking the processor at each sixth.
+        debug_assert!(
+            crate::level::raised::<Dispatch, _>(|dispatch| {
+                let dispatcher = crate::sched::DISPATCHER.get(dispatch);
+                dispatcher
+                    .current()
+                    .is_some_and(|thread| dispatcher.thread(thread).in_critical_region())
+            }),
+            "a device lock taken outside a critical region"
+        );
+        let taken = masked(|| {
+            self.with_event(|event| {
+                let free = event.signaled();
+                if free {
+                    event.reset();
+                }
+                free
+            })
+        });
+        if taken {
+            self.owner.store(running, Ordering::SeqCst);
+            return;
+        }
         let status = crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, replay| {
             // An untimed lock wait never replays differently: the APC break re-enters the same
             // acquisition attempt.
