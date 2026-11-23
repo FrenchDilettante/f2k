@@ -5,7 +5,7 @@
 //! not replace.
 
 // The string instructions, one `rep` each. They must not be Rust loops: the kernel crate builds
-// unoptimized under every test profile (see Cargo.toml), where a `for` over `ptr::add` costs a
+// unoptimized under the dev profile (see Cargo.toml), where a `for` over `ptr::add` costs a
 // range step and two precondition checks per byte — every struct move goes through these symbols,
 // so a byte loop makes a thread's creation take milliseconds.
 core::arch::global_asm!(

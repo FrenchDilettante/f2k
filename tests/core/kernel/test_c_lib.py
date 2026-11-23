@@ -1,8 +1,8 @@
 """c_lib - the kernel's memory routines, read from the built kernel ELF (no boot).
 
 Every struct move, array zeroing and user-memory buffer in the kernel goes through memcpy, memset and
-memmove, and the kernel crate builds unoptimized under every test profile (Cargo.toml's dev-opt keeps
-it at opt-level 0). Written as Rust loops, those symbols cost a range step and two pointer
+memmove, and the kernel crate builds unoptimized under the dev profile (the suite's dev-opt and
+release optimize it). Written as Rust loops, those symbols cost a range step and two pointer
 precondition checks per byte: NtCreateThread took about 6 ms under QEMU, a new thread about 3 ms to
 reach its start routine, and sched's yield block — whose verdicts assume those windows are far
 shorter than a clock tick — passed about one boot in three, depending on where the tick fell. The

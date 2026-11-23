@@ -18,25 +18,14 @@ resolver = "2"
 [workspace.dependencies]
 # Shared dependencies can be listed here
 
-# Build profiles (cargo only honors them at the workspace root). Panic
-# behaviour is not set here: the kernel target spec (x86-f2k.json) already
-# says panic-strategy "abort", and a profile-level `panic` would leak into
-# the host unit tests' from-source std build and break it.
+# No `panic` setting: x86-f2k.json already aborts, and a profile one breaks the host tests.
 [profile.release]
-opt-level = 2            # Optimize for size/speed
-lto = true               # Link-time optimization
+opt-level = 2
+lto = true
 
-# The test kernel's optimized variant: `make ... KERNEL_PROFILE=dev-opt` (target/x86-f2k/dev-opt/,
-# beside the dev kernel instead of over it). The kernel crate itself stays unoptimized: optimizing it
-# exposes undefined behaviour the dev build tolerates (its intrusive lists are rewritten through raw
-# pointers while `&mut` borrows of their owners are live, which `noalias` lets LLVM cache across,
-# hanging the timer table's expiry walk). Everything under it is optimized: core, alloc,
-# compiler_builtins and rtl. memcpy, memset and memmove are the kernel's own string-instruction
-# routines (kernel/src/c_lib.rs) under every profile. The debug checks stay on throughout.
+# Optimized, with the debug checks kept: what `make test` boots.
 [profile.dev-opt]
 inherits = "dev"
+opt-level = 2
 debug-assertions = true
 overflow-checks = true
-
-[profile.dev-opt.package."*"]
-opt-level = 2

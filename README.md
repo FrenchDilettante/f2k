@@ -52,6 +52,7 @@ make clean
 ```
 
 The system DLLs build first, because the kernel embeds ntdll.
+The kernel builds with cargo's `release` profile; `KERNEL_PROFILE=dev-opt` keeps the debug assertions and overflow checks (what `make test` boots, `TEST_PROFILE`), and `KERNEL_PROFILE=dev` builds it unoptimized.
 So a bare `cargo check` in `kernel/` (and rust-analyzer) fails until `make userland` has run once.
 
 ### Running
