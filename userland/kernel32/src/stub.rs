@@ -25,8 +25,8 @@ use crate::ntcall::{self, Destination};
 /// ERROR_CALL_NOT_IMPLEMENTED: "This function is not supported on this system."
 pub const ERROR_CALL_NOT_IMPLEMENTED: u32 = 120;
 
-/// STATUS_NOT_IMPLEMENTED: what a stub that cannot fail raises.
-const STATUS_NOT_IMPLEMENTED: u32 = 0xC000_0002;
+// STATUS_NOT_IMPLEMENTED: what a stub that cannot fail raises.
+use rtl::status::STATUS_NOT_IMPLEMENTED;
 
 /// The calling process's memory, as NtQueryVirtualMemory describes it: a page can be read when it
 /// is committed and accessible. The lowest 64 KiB are never mapped.

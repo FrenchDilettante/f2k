@@ -43,18 +43,20 @@ const IMAGE_FILE_DLL: u16 = 0x2000;
 const IMAGE_FILE_MACHINE_I386: u16 = 0x014C;
 const IMAGE_SUBSYSTEM_POSIX_CUI: u32 = 7;
 
-/// The image section's refusals of a file that is no Windows image (ntstatus.h): a file no image
-/// section can be made of, a broken or foreign PE file, an empty file; an OS/2 (NE) program, an LE
-/// one, a file without the MZ signature, a DOS program (an MZ file without a new header), a
-/// Windows 3.x program.
-const STATUS_INVALID_FILE_FOR_SECTION: NtStatus = 0xC000_0020;
-const STATUS_INVALID_IMAGE_FORMAT: NtStatus = 0xC000_007B;
-const STATUS_MAPPED_FILE_SIZE_ZERO: NtStatus = 0xC000_011E;
-const STATUS_INVALID_IMAGE_NE_FORMAT: NtStatus = 0xC000_011B;
-const STATUS_INVALID_IMAGE_LE_FORMAT: NtStatus = 0xC000_012E;
-const STATUS_INVALID_IMAGE_NOT_MZ: NtStatus = 0xC000_012F;
-const STATUS_INVALID_IMAGE_PROTECT: NtStatus = 0xC000_0130;
-const STATUS_INVALID_IMAGE_WIN_16: NtStatus = 0xC000_0131;
+// The image section's refusals of a file that is no Windows image (ntstatus.h): a file no image
+// section can be made of, a broken or foreign PE file, an empty file; an OS/2 (NE) program, an LE
+// one, a file without the MZ signature, a DOS program (an MZ file without a new header), a
+// Windows 3.x program.
+use rtl::status::{
+    STATUS_INVALID_FILE_FOR_SECTION,
+    STATUS_INVALID_IMAGE_FORMAT,
+    STATUS_INVALID_IMAGE_LE_FORMAT,
+    STATUS_INVALID_IMAGE_NE_FORMAT,
+    STATUS_INVALID_IMAGE_NOT_MZ,
+    STATUS_INVALID_IMAGE_PROTECT,
+    STATUS_INVALID_IMAGE_WIN_16,
+    STATUS_MAPPED_FILE_SIZE_ZERO,
+};
 
 /// A file that is no program of a type GetBinaryType names.
 const BAD: Failure = Failure::Error(ERROR_BAD_EXE_FORMAT);

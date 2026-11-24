@@ -91,7 +91,7 @@ impl Frames for Thread {
         unsafe { sys::raise_exception(&mut record) };
         // A noncontinuable exception does not resume its raiser.
         // SAFETY: the raise never returns.
-        unsafe { sys::raise_status(seh::STATUS_NONCONTINUABLE_EXCEPTION) }
+        unsafe { sys::raise_status(rtl::status::STATUS_NONCONTINUABLE_EXCEPTION) }
     }
 }
 
@@ -178,7 +178,7 @@ unsafe extern "C" fn f2k_rtl_unwind(
     let record = if record == 0 {
         // SAFETY: RtlUnwind's own room, on this stack.
         unsafe {
-            *own = ExceptionRecord::status(seh::STATUS_UNWIND, 0, 0);
+            *own = ExceptionRecord::status(rtl::status::STATUS_UNWIND, 0, 0);
             (*own).address = return_address;
         }
         own as u32
@@ -225,7 +225,7 @@ unsafe extern "system" fn rtl_raise_status(_status: u32) -> ! {
 /// caller, as Windows 2000's RtlAllocateHeap does.
 #[unsafe(no_mangle)]
 extern "C" fn f2k_heap_raise_no_memory(size: u32) {
-    let mut record = ExceptionRecord::status(rtl::heap::STATUS_NO_MEMORY, 0, 0);
+    let mut record = ExceptionRecord::status(rtl::status::STATUS_NO_MEMORY, 0, 0);
     record.count = 1;
     record.information[0] = size;
     // SAFETY: a record on this stack.

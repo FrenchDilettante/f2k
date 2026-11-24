@@ -10,14 +10,13 @@
 //! exception the body raises, a fault reading the caller's text (NULL among them) too.
 
 use rtl::cstr::len_until_nul;
+// DBG_PRINTEXCEPTION_C: a debugger's print, its arguments the text's length (its terminator
+// counted) and its address.
+use rtl::status::DBG_PRINTEXCEPTION_C;
 
 use crate::edge::{wide_units, InWStr};
 use crate::heap::HeapArray;
 use crate::ntcall;
-
-/// DBG_PRINTEXCEPTION_C: a debugger's print, its arguments the text's length (its terminator
-/// counted) and its address.
-const DBG_PRINTEXCEPTION_C: u32 = 0x4001_0006;
 
 /// FILE_MAP_WRITE, the access a monitor's buffer is opened with.
 const FILE_MAP_WRITE: u32 = 0x0002;

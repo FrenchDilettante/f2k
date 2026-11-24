@@ -1298,11 +1298,11 @@ pub mod host {
     ) -> u32 {
         use rtl::resource::{self, Defaults, LANG_ENGLISH_US};
         if table != resource::RT_MESSAGETABLE {
-            return resource::STATUS_RESOURCE_TYPE_NOT_FOUND;
+            return rtl::status::STATUS_RESOURCE_TYPE_NOT_FOUND;
         }
         let (languages, count, any) = resource::languages(language as u16, Defaults::F2K);
         if !any && !languages[..count].contains(&LANG_ENGLISH_US) {
-            return resource::STATUS_RESOURCE_LANG_NOT_FOUND;
+            return rtl::status::STATUS_RESOURCE_LANG_NOT_FOUND;
         }
         let size = MESSAGE_TABLE.0.len() as u32;
         match resource::message_entry(&TableBytes, 0, size, id) {
@@ -2063,9 +2063,7 @@ pub mod files {
 
     /// The current directory's handle, as the stand-in's paths name it.
     pub const CURRENT_DIRECTORY_HANDLE: u32 = 0x48;
-    const STATUS_INVALID_HANDLE: u32 = 0xC000_0008;
-    const STATUS_END_OF_FILE: u32 = 0xC000_0011;
-    const STATUS_PENDING: u32 = 0x0000_0103;
+    use rtl::status::{STATUS_END_OF_FILE, STATUS_INVALID_HANDLE, STATUS_PENDING};
 
     /// A file service call, as the stand-in took it.
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2798,15 +2796,17 @@ pub mod threads {
     pub const THREAD: u32 = 0x48;
     pub const ENDED_THREAD: u32 = 0x4C;
 
-    const STATUS_INVALID_INFO_CLASS: u32 = 0xC000_0003;
-    const STATUS_INFO_LENGTH_MISMATCH: u32 = 0xC000_0004;
-    const STATUS_INVALID_HANDLE: u32 = 0xC000_0008;
-    const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
-    const STATUS_SUSPEND_COUNT_EXCEEDED: u32 = 0xC000_004A;
-    const STATUS_THREAD_IS_TERMINATING: u32 = 0xC000_004B;
-    const STATUS_UNSUCCESSFUL: u32 = 0xC000_0001;
     /// The process's stand-in blocks, rtl's (what `rtl::sys` reads on the host).
     pub use rtl::host::{counted, process, COMMAND_LINE, IMAGE_BASE, IMAGE_PATH};
+    use rtl::status::{
+        STATUS_INFO_LENGTH_MISMATCH,
+        STATUS_INVALID_HANDLE,
+        STATUS_INVALID_INFO_CLASS,
+        STATUS_INVALID_PARAMETER,
+        STATUS_SUSPEND_COUNT_EXCEEDED,
+        STATUS_THREAD_IS_TERMINATING,
+        STATUS_UNSUCCESSFUL,
+    };
 
     /// A thread as the stand-ins keep it.
     #[derive(Clone, Copy, Debug)]
@@ -3279,10 +3279,12 @@ pub mod modules {
     /// GetTickCount's ordinal in the stand-in kernel32.
     pub const GET_TICK_COUNT_ORDINAL: u32 = 7;
 
-    const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
-    const STATUS_DLL_NOT_FOUND: u32 = 0xC000_0135;
-    const STATUS_ORDINAL_NOT_FOUND: u32 = 0xC000_0138;
-    const STATUS_ENTRYPOINT_NOT_FOUND: u32 = 0xC000_0139;
+    use rtl::status::{
+        STATUS_DLL_NOT_FOUND,
+        STATUS_ENTRYPOINT_NOT_FOUND,
+        STATUS_INVALID_PARAMETER,
+        STATUS_ORDINAL_NOT_FOUND,
+    };
 
     std::thread_local! {
         /// The names the loader was asked for, as kernel32 converted them.
@@ -3585,21 +3587,21 @@ pub mod resources {
             .filter(|found| found.module as usize == module)
             .collect();
         if of_module.is_empty() {
-            return resource::STATUS_RESOURCE_DATA_NOT_FOUND;
+            return rtl::status::STATUS_RESOURCE_DATA_NOT_FOUND;
         }
         let of_type: std::vec::Vec<_> = of_module
             .into_iter()
             .filter(|found| matches(found.kind, &path[0]))
             .collect();
         if of_type.is_empty() {
-            return resource::STATUS_RESOURCE_TYPE_NOT_FOUND;
+            return rtl::status::STATUS_RESOURCE_TYPE_NOT_FOUND;
         }
         let named: std::vec::Vec<_> = of_type
             .into_iter()
             .filter(|found| matches(found.name, &path[1]))
             .collect();
         if named.is_empty() {
-            return resource::STATUS_RESOURCE_NAME_NOT_FOUND;
+            return rtl::status::STATUS_RESOURCE_NAME_NOT_FOUND;
         }
         let (languages, count, any) = resource::languages(language as u16, Defaults::F2K);
         let found = languages[..count]
@@ -3612,7 +3614,7 @@ pub mod resources {
                 unsafe { entry.write(core::ptr::from_ref::<ModelResource>(found) as usize) };
                 0
             }
-            None => resource::STATUS_RESOURCE_LANG_NOT_FOUND,
+            None => rtl::status::STATUS_RESOURCE_LANG_NOT_FOUND,
         }
     }
 
@@ -3627,7 +3629,7 @@ pub mod resources {
         let Some(found) = RESOURCE_MODEL.iter().find(|found| {
             core::ptr::from_ref(*found) as usize == entry && found.module as usize == module
         }) else {
-            return resource::STATUS_RESOURCE_DATA_NOT_FOUND;
+            return rtl::status::STATUS_RESOURCE_DATA_NOT_FOUND;
         };
         // SAFETY: the caller's places, when given.
         unsafe {
@@ -3682,16 +3684,18 @@ pub mod children {
     /// The protections a write may go through.
     const WRITABLE: u32 = 0x04 | 0x08 | 0x40 | 0x80;
 
-    const STATUS_INVALID_INFO_CLASS: u32 = 0xC000_0003;
-    const STATUS_INFO_LENGTH_MISMATCH: u32 = 0xC000_0004;
-    const STATUS_ACCESS_VIOLATION: u32 = 0xC000_0005;
-    const STATUS_INVALID_HANDLE: u32 = 0xC000_0008;
-    const STATUS_INVALID_CID: u32 = 0xC000_000B;
-    const STATUS_NO_MEMORY: u32 = 0xC000_0017;
-    const STATUS_CONFLICTING_ADDRESSES: u32 = 0xC000_0018;
-    const STATUS_OBJECT_NAME_NOT_FOUND: u32 = 0xC000_0034;
-    const STATUS_PROCESS_IS_TERMINATING: u32 = 0xC000_010A;
-    const STATUS_PARTIAL_COPY: u32 = 0x8000_000D;
+    use rtl::status::{
+        STATUS_ACCESS_VIOLATION,
+        STATUS_CONFLICTING_ADDRESSES,
+        STATUS_INFO_LENGTH_MISMATCH,
+        STATUS_INVALID_CID,
+        STATUS_INVALID_HANDLE,
+        STATUS_INVALID_INFO_CLASS,
+        STATUS_NO_MEMORY,
+        STATUS_OBJECT_NAME_NOT_FOUND,
+        STATUS_PARTIAL_COPY,
+        STATUS_PROCESS_IS_TERMINATING,
+    };
 
     /// A range of the child's address space: its base, its protection (the whole range's) and
     /// its bytes.
@@ -4327,9 +4331,7 @@ pub mod pipes {
 
     /// The read end's handle NtCreateNamedPipeFile answers.
     pub const PIPE_READ: u32 = 0x60;
-    const STATUS_BUFFER_OVERFLOW: u32 = 0x8000_0005;
-    const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
-    const STATUS_INVALID_HANDLE: u32 = 0xC000_0008;
+    use rtl::status::{STATUS_BUFFER_OVERFLOW, STATUS_INVALID_HANDLE, STATUS_INVALID_PARAMETER};
 
     /// A named-pipe call, as the stand-in took it.
     #[derive(Clone, Debug, PartialEq, Eq)]
@@ -4529,9 +4531,7 @@ pub mod toolhelp {
     use rtl::nt::info::{SystemProcessInformation, SystemThreadInformation};
     use rtl::nt::{ClientId, UnicodeString};
     use rtl::pod::Pod;
-
-    const STATUS_INFO_LENGTH_MISMATCH: u32 = 0xC000_0004;
-    const STATUS_OBJECT_TYPE_MISMATCH: u32 = 0xC000_0024;
+    use rtl::status::{STATUS_INFO_LENGTH_MISMATCH, STATUS_OBJECT_TYPE_MISMATCH};
     /// The first handle a backed section takes; each next one four on.
     const FIRST_SECTION: u32 = 0x1000;
 
@@ -4707,15 +4707,14 @@ pub mod atoms {
     use std::cell::RefCell;
     use std::vec::Vec;
 
+    // STATUS_OBJECT_NAME_INVALID: an empty name.
+    use rtl::status::STATUS_OBJECT_NAME_INVALID;
     use rtl::status::{
         STATUS_INVALID_HANDLE,
         STATUS_INVALID_PARAMETER,
         STATUS_OBJECT_NAME_NOT_FOUND,
         STATUS_SUCCESS,
     };
-
-    /// STATUS_OBJECT_NAME_INVALID: an empty name.
-    const STATUS_OBJECT_NAME_INVALID: u32 = 0xC000_0033;
 
     /// One string atom: its name and its references.
     type Entry = Option<(Vec<u16>, u16)>;

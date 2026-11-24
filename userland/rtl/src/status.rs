@@ -97,6 +97,8 @@ pub const STATUS_OBJECT_NAME_EXISTS: u32 = 0x4000_0000;
 pub const STATUS_IMAGE_NOT_AT_BASE: u32 = 0x4000_0003;
 pub const STATUS_NO_YIELD_PERFORMED: u32 = 0x4000_0024;
 pub const STATUS_TIMER_RESUME_IGNORED: u32 = 0x4000_0025;
+/// A debugger's print (OutputDebugString raises it).
+pub const DBG_PRINTEXCEPTION_C: u32 = 0x4001_0006;
 pub const STATUS_BUFFER_OVERFLOW: u32 = 0x8000_0005;
 pub const STATUS_NO_MORE_FILES: u32 = 0x8000_0006;
 pub const STATUS_PARTIAL_COPY: u32 = 0x8000_000D;
@@ -123,6 +125,13 @@ pub const STATUS_ALREADY_COMMITTED: u32 = 0xC000_0021;
 pub const STATUS_ACCESS_DENIED: u32 = 0xC000_0022;
 pub const STATUS_BUFFER_TOO_SMALL: u32 = 0xC000_0023;
 pub const STATUS_OBJECT_TYPE_MISMATCH: u32 = 0xC000_0024;
+/// The exception dispatcher's own: a continue from a noncontinuable exception, a handler's
+/// unknown disposition, an unwind's code, a record off the stack, an unwind target off it.
+pub const STATUS_NONCONTINUABLE_EXCEPTION: u32 = 0xC000_0025;
+pub const STATUS_INVALID_DISPOSITION: u32 = 0xC000_0026;
+pub const STATUS_UNWIND: u32 = 0xC000_0027;
+pub const STATUS_BAD_STACK: u32 = 0xC000_0028;
+pub const STATUS_INVALID_UNWIND_TARGET: u32 = 0xC000_0029;
 pub const STATUS_NOT_COMMITTED: u32 = 0xC000_002D;
 pub const STATUS_INVALID_PARAMETER_MIX: u32 = 0xC000_0030;
 pub const STATUS_OBJECT_NAME_INVALID: u32 = 0xC000_0033;
@@ -138,6 +147,7 @@ pub const STATUS_SEMAPHORE_LIMIT_EXCEEDED: u32 = 0xC000_0047;
 pub const STATUS_SECTION_NOT_IMAGE: u32 = 0xC000_0049;
 pub const STATUS_SUSPEND_COUNT_EXCEEDED: u32 = 0xC000_004A;
 pub const STATUS_THREAD_IS_TERMINATING: u32 = 0xC000_004B;
+pub const STATUS_REVISION_MISMATCH: u32 = 0xC000_0059;
 pub const STATUS_SECTION_PROTECTION: u32 = 0xC000_004E;
 pub const STATUS_FILE_LOCK_CONFLICT: u32 = 0xC000_0054;
 pub const STATUS_LOCK_NOT_GRANTED: u32 = 0xC000_0055;
@@ -146,6 +156,14 @@ pub const STATUS_PRIVILEGE_NOT_HELD: u32 = 0xC000_0061;
 pub const STATUS_INVALID_IMAGE_FORMAT: u32 = 0xC000_007B;
 pub const STATUS_RANGE_NOT_LOCKED: u32 = 0xC000_007E;
 pub const STATUS_DISK_FULL: u32 = 0xC000_007F;
+/// A resource that is not there: no resource directory (or a data entry where a table should be,
+/// or the reverse), no such type, no such name, no such language; a message table without the
+/// identifier.
+pub const STATUS_RESOURCE_DATA_NOT_FOUND: u32 = 0xC000_0089;
+pub const STATUS_RESOURCE_TYPE_NOT_FOUND: u32 = 0xC000_008A;
+pub const STATUS_RESOURCE_NAME_NOT_FOUND: u32 = 0xC000_008B;
+pub const STATUS_RESOURCE_LANG_NOT_FOUND: u32 = 0xC000_0204;
+pub const STATUS_MESSAGE_NOT_FOUND: u32 = 0xC000_0109;
 pub const STATUS_INSUFFICIENT_RESOURCES: u32 = 0xC000_009A;
 pub const STATUS_FREE_VM_NOT_AT_BASE: u32 = 0xC000_009F;
 pub const STATUS_MEMORY_NOT_ALLOCATED: u32 = 0xC000_00A0;
@@ -157,6 +175,8 @@ pub const STATUS_MEDIA_WRITE_PROTECTED: u32 = 0xC000_00A2;
 pub const STATUS_PIPE_NOT_AVAILABLE: u32 = 0xC000_00AC;
 pub const STATUS_INVALID_PIPE_STATE: u32 = 0xC000_00AD;
 pub const STATUS_PIPE_BUSY: u32 = 0xC000_00AE;
+/// The answer to an API number no csrss server serves.
+pub const STATUS_ILLEGAL_FUNCTION: u32 = 0xC000_00AF;
 pub const STATUS_PIPE_CLOSING: u32 = 0xC000_00B1;
 pub const STATUS_PIPE_LISTENING: u32 = 0xC000_00B3;
 pub const STATUS_IO_TIMEOUT: u32 = 0xC000_00B5;
@@ -183,7 +203,10 @@ pub const STATUS_IMAGE_ALREADY_LOADED: u32 = 0xC000_010E;
 pub const STATUS_INVALID_IMAGE_NE_FORMAT: u32 = 0xC000_011B;
 pub const STATUS_MAPPED_FILE_SIZE_ZERO: u32 = 0xC000_011E;
 pub const STATUS_TOO_MANY_OPENED_FILES: u32 = 0xC000_011F;
+pub const STATUS_CANCELLED: u32 = 0xC000_0120;
 pub const STATUS_CANNOT_DELETE: u32 = 0xC000_0121;
+/// A commit charge past the commit limit.
+pub const STATUS_COMMITMENT_LIMIT: u32 = 0xC000_012D;
 pub const STATUS_INVALID_IMAGE_LE_FORMAT: u32 = 0xC000_012E;
 pub const STATUS_INVALID_IMAGE_NOT_MZ: u32 = 0xC000_012F;
 pub const STATUS_INVALID_IMAGE_PROTECT: u32 = 0xC000_0130;

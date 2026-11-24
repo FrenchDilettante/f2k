@@ -24,8 +24,8 @@ const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
 /// The buffer the bytes move through.
 const COPY_CHUNK: usize = 0x1_0000;
 
-/// STATUS_NO_MEMORY: no room on the process heap for the buffer.
-const STATUS_NO_MEMORY: u32 = 0xC000_0017;
+// STATUS_NO_MEMORY: no room on the process heap for the buffer.
+use rtl::status::STATUS_NO_MEMORY;
 
 /// The copy's work once both files are open: the bytes, then the last-write time. The status that
 /// failed it.

@@ -2,11 +2,8 @@
 //! RtlVerifyVersionInfo, kernel32's VerifyVersionInfoW and A's work, against the system's version
 //! as RtlGetVersion reports it.
 
+use rtl::status::{STATUS_INVALID_PARAMETER, STATUS_REVISION_MISMATCH};
 use rtl::version::{self, Refusal, VersionInfo};
-
-/// STATUS_INVALID_PARAMETER and STATUS_REVISION_MISMATCH.
-const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
-const STATUS_REVISION_MISMATCH: u32 = 0xC000_0059;
 
 /// OSVERSIONINFOEXW, whose fields after the size a check reads (the size, its first dword, is not
 /// checked, as on Windows 2000).

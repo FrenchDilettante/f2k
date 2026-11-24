@@ -22,8 +22,8 @@
 //! answers is the data's address in the mapped image (nothing is copied, nothing is freed), which
 //! LockResource hands back as it is. FreeResource is obsolete on NT and answers FALSE.
 
-use rtl::resource::STATUS_RESOURCE_DATA_NOT_FOUND;
 use rtl::status::STATUS_INVALID_PARAMETER;
+use rtl::status::STATUS_RESOURCE_DATA_NOT_FOUND;
 
 use crate::edge::{CallerChar, CallerStr};
 use crate::error::{answer, Failure};

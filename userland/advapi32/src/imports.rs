@@ -607,11 +607,10 @@ pub mod host {
         DEBUG_PRINTS,
         LAST_ERROR,
     };
+    // What the key services answer on the host.
+    use rtl::status::STATUS_NOT_IMPLEMENTED;
 
     use super::{ObjectAttributes, UnicodeString};
-
-    /// What the key services answer on the host.
-    const STATUS_NOT_IMPLEMENTED: u32 = 0xC000_0002;
 
     pub unsafe extern "system" fn NtCreateKey(
         _: *mut u32,

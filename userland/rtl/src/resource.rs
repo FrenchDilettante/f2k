@@ -106,14 +106,16 @@ pub const MESSAGE_TABLE_NAME: u32 = 1;
 /// MESSAGE_RESOURCE_ENTRY's Flags: MESSAGE_RESOURCE_UNICODE, the text is UTF-16.
 pub const MESSAGE_RESOURCE_UNICODE: u16 = 0x0001;
 
-/// The statuses of a resource that is not there: no resource directory (or a data entry where a
-/// table should be, or the reverse), no such type, no such name, no such language; and a message
-/// table without the identifier.
-pub const STATUS_RESOURCE_DATA_NOT_FOUND: u32 = 0xC000_0089;
-pub const STATUS_RESOURCE_TYPE_NOT_FOUND: u32 = 0xC000_008A;
-pub const STATUS_RESOURCE_NAME_NOT_FOUND: u32 = 0xC000_008B;
-pub const STATUS_RESOURCE_LANG_NOT_FOUND: u32 = 0xC000_0204;
-pub const STATUS_MESSAGE_NOT_FOUND: u32 = 0xC000_0109;
+// The statuses of a resource that is not there: no resource directory (or a data entry where a
+// table should be, or the reverse), no such type, no such name, no such language; and a message
+// table without the identifier.
+use crate::status::{
+    STATUS_MESSAGE_NOT_FOUND,
+    STATUS_RESOURCE_DATA_NOT_FOUND,
+    STATUS_RESOURCE_LANG_NOT_FOUND,
+    STATUS_RESOURCE_NAME_NOT_FOUND,
+    STATUS_RESOURCE_TYPE_NOT_FOUND,
+};
 
 /// An entry's high bit: its name is a string (Name), its target a subtable (OffsetToData).
 const HIGH_BIT: u32 = 0x8000_0000;

@@ -49,16 +49,18 @@ pub const ERROR_NEGATIVE_SEEK: u32 = 131;
 pub const ERROR_ALREADY_EXISTS: u32 = 183;
 pub const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
 
-/// The statuses the file calls tell apart.
-pub const STATUS_PENDING: u32 = 0x0000_0103;
-pub const STATUS_INVALID_HANDLE: u32 = 0xC000_0008;
-pub const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
-pub const STATUS_END_OF_FILE: u32 = 0xC000_0011;
-pub const STATUS_OBJECT_TYPE_MISMATCH: u32 = 0xC000_0024;
-pub const STATUS_OBJECT_NAME_NOT_FOUND: u32 = 0xC000_0034;
-pub const STATUS_OBJECT_NAME_COLLISION: u32 = 0xC000_0035;
-pub const STATUS_OBJECT_PATH_NOT_FOUND: u32 = 0xC000_003A;
-pub const STATUS_NOT_A_DIRECTORY: u32 = 0xC000_0103;
+// The statuses the file calls tell apart.
+use rtl::status::{
+    STATUS_END_OF_FILE,
+    STATUS_INVALID_HANDLE,
+    STATUS_INVALID_PARAMETER,
+    STATUS_NOT_A_DIRECTORY,
+    STATUS_OBJECT_NAME_COLLISION,
+    STATUS_OBJECT_NAME_NOT_FOUND,
+    STATUS_OBJECT_PATH_NOT_FOUND,
+    STATUS_OBJECT_TYPE_MISMATCH,
+    STATUS_PENDING,
+};
 
 /// The file access rights and the generic ones the calls ask for.
 pub const FILE_LIST_DIRECTORY: u32 = 0x0001;

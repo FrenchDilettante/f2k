@@ -31,7 +31,7 @@ use rtl::pod::Pod;
 use crate::edge::Out;
 use crate::error::{answer, bool_answer, Failure, ERROR_BAD_LENGTH, ERROR_NO_MORE_FILES};
 use crate::heap::{HeapArray, Owned};
-use crate::ntcall::{self, MappedView, NtStatus};
+use crate::ntcall::{self, MappedView};
 
 /// CreateToolhelp32Snapshot's flags: the lists a snapshot takes, and its handle's inheritance.
 pub const TH32CS_SNAPHEAPLIST: u32 = 0x0000_0001;
@@ -42,8 +42,8 @@ pub const TH32CS_INHERIT: u32 = 0x8000_0000;
 
 /// SystemProcessInformation: NtQuerySystemInformation's process listing.
 const SYSTEM_PROCESS_INFORMATION: u32 = 5;
-/// The status of a listing buffer too short.
-const STATUS_INFO_LENGTH_MISMATCH: NtStatus = 0xC000_0004;
+// The status of a listing buffer too short.
+use rtl::status::STATUS_INFO_LENGTH_MISMATCH;
 const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
 
 /// A path's room in characters (MAX_PATH): `szExeFile`'s.

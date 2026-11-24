@@ -16,11 +16,13 @@ const UNTOUCHED: u32 = 0x0F2F_2F2F;
 /// The type slot as the call found it.
 const UNWRITTEN: u32 = 0xF2F2_F2F2;
 
-/// The section's refusals the scenarios arrange (ntstatus.h).
-const STATUS_INVALID_IMAGE_NOT_MZ: u32 = 0xC000_012F;
-const STATUS_MAPPED_FILE_SIZE_ZERO: u32 = 0xC000_011E;
-const STATUS_INVALID_IMAGE_PROTECT: u32 = 0xC000_0130;
-const STATUS_INVALID_IMAGE_WIN_16: u32 = 0xC000_0131;
+// The section's refusals the scenarios arrange (ntstatus.h).
+use rtl::status::{
+    STATUS_INVALID_IMAGE_NOT_MZ,
+    STATUS_INVALID_IMAGE_PROTECT,
+    STATUS_INVALID_IMAGE_WIN_16,
+    STATUS_MAPPED_FILE_SIZE_ZERO,
+};
 
 /// A fresh scene: a console program's section, the stand-in process in `C:\CORPUS\`, nothing
 /// recorded, the last error armed.

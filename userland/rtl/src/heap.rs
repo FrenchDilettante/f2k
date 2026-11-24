@@ -56,9 +56,6 @@ pub const HEAP_GENERATE_EXCEPTIONS: u32 = 0x0000_0004;
 pub const HEAP_ZERO_MEMORY: u32 = 0x0000_0008;
 pub const HEAP_REALLOC_IN_PLACE_ONLY: u32 = 0x0000_0010;
 
-/// STATUS_NO_MEMORY: what a heap that generates exceptions raises when it cannot serve.
-pub const STATUS_NO_MEMORY: u32 = 0xC000_0017;
-
 /// The page: reservations and commits are whole pages.
 pub const PAGE: usize = 0x1000;
 /// The address space's allocation granularity: a first segment sized from its commit alone

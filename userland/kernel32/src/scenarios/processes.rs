@@ -631,8 +631,8 @@ fn what_cannot_run_fails_as_on_windows_2000() {
     }
 }
 
-/// The text files' refusal: NtCreateSection's, a file with no MZ signature.
-const STATUS_INVALID_IMAGE_NOT_MZ: u32 = 0xC000_012F;
+// The text files' refusal: NtCreateSection's, a file with no MZ signature.
+use rtl::status::STATUS_INVALID_IMAGE_NOT_MZ;
 
 /// The image opens' names, in order.
 fn opened_names() -> Vec<String> {

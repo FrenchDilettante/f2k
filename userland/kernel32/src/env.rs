@@ -5,15 +5,15 @@
 //! GetEnvironmentStrings (and GetEnvironmentStringsA, the same function) an ANSI copy on the
 //! process heap (ntdll's RtlUnicodeToMultiByteN).
 
+// STATUS_BUFFER_TOO_SMALL: the value or expansion did not fit.
+use rtl::status::STATUS_BUFFER_TOO_SMALL;
+
 use crate::base::{set_last_error, unicode_string};
 use crate::edge::{counted, counted_optional, Fit, InStr, InWStr, OutBuf, Text};
 use crate::error::{answer, bool_answer, Failure, ERROR_NOT_ENOUGH_MEMORY};
 use crate::heap::{HeapArray, HeapString};
 use crate::nt::UnicodeString;
 use crate::ntcall::{self, PebLock};
-
-/// STATUS_BUFFER_TOO_SMALL: the value or expansion did not fit.
-const STATUS_BUFFER_TOO_SMALL: u32 = 0xC000_0023;
 
 /// An A call's string converted onto the process heap (see [`HeapString::of_ansi`], as Windows
 /// 2000's kernel32 converts the environment calls' strings; none is the empty string):

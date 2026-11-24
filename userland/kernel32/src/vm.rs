@@ -14,7 +14,7 @@ use crate::edge::Out;
 use crate::ntcall::{self, Destination};
 
 const MEM_RELEASE: u32 = 0x8000;
-const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
+use rtl::status::STATUS_INVALID_PARAMETER;
 
 /// NtQuerySystemInformation's classes, NtQueryInformationProcess's, and their structures' sizes.
 const SYSTEM_BASIC_INFORMATION: u32 = 0;

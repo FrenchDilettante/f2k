@@ -353,9 +353,7 @@ fn waited() -> Vec<u32> {
 /// Pins: kernel32.ReadFile, kernel32.WriteFile
 #[test]
 fn a_pending_synchronous_transfer_is_waited_for() {
-    const STATUS_END_OF_FILE: u32 = 0xC000_0011;
-    const STATUS_ACCESS_DENIED: u32 = 0xC000_0022;
-    const STATUS_BUFFER_OVERFLOW: u32 = 0x8000_0005;
+    use rtl::status::{STATUS_ACCESS_DENIED, STATUS_BUFFER_OVERFLOW, STATUS_END_OF_FILE};
     file_at(10, 0);
     let mut buffer = [0u8; 16];
     for (status, information, answer, count, error) in [
@@ -510,9 +508,7 @@ fn get_overlapped_result_waits_for_a_pending_request() {
 /// Pins: kernel32.GetOverlappedResult
 #[test]
 fn get_overlapped_result_answers_from_the_overlapped() {
-    const STATUS_END_OF_FILE: u32 = 0xC000_0011;
-    const STATUS_BUFFER_OVERFLOW: u32 = 0x8000_0005;
-    const STATUS_INVALID_HANDLE: u32 = 0xC000_0008;
+    use rtl::status::{STATUS_BUFFER_OVERFLOW, STATUS_END_OF_FILE, STATUS_INVALID_HANDLE};
     const EVENT: u32 = 0x5C;
     for (internal, internal_high, answer, error) in [
         (0, 16, 1, 0xDEAD),
@@ -1158,9 +1154,9 @@ fn a_temporary_file_name_with_the_caller_s_number_makes_no_file() {
 /// Pins: kernel32.GetTempFileNameA, kernel32.GetTempFileNameW
 #[test]
 fn a_temporary_file_name_needs_an_existing_directory() {
-    use crate::files::temp::{get_temp_file_name_a, get_temp_file_name_w};
+    use rtl::status::STATUS_OBJECT_NAME_NOT_FOUND;
 
-    const STATUS_OBJECT_NAME_NOT_FOUND: u32 = 0xC000_0034;
+    use crate::files::temp::{get_temp_file_name_a, get_temp_file_name_w};
     let none: Vec<u16> = "C:\\NONE\0".encode_utf16().collect();
     let prefix: Vec<u16> = "abc\0".encode_utf16().collect();
     stand_in_attributes(FILE_ATTRIBUTE_DIRECTORY);
@@ -1229,8 +1225,7 @@ fn a_self_numbered_temporary_file_name_makes_the_file() {
     use crate::shared::{self, host};
 
     const FILE_CREATE: u32 = 2;
-    const STATUS_OBJECT_NAME_COLLISION: u32 = 0xC000_0035;
-    const STATUS_ACCESS_DENIED: u32 = 0xC000_0022;
+    use rtl::status::{STATUS_ACCESS_DENIED, STATUS_OBJECT_NAME_COLLISION};
     host::set(shared::TICK_COUNT_MULTIPLIER, 0x0100_0000);
     host::set(shared::TICK_COUNT_LOW, 0x3_0ABC);
     stand_in_attributes(FILE_ATTRIBUTE_DIRECTORY);

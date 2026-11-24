@@ -28,8 +28,7 @@ const ERROR_INVALID_PARAMETER: u32 = 87;
 const ERROR_MOD_NOT_FOUND: u32 = 126;
 const ERROR_BAD_EXE_FORMAT: u32 = 193;
 const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
-const STATUS_ORDINAL_NOT_FOUND: u32 = 0xC000_0138;
-const STATUS_ENTRYPOINT_NOT_FOUND: u32 = 0xC000_0139;
+use rtl::status::{STATUS_ENTRYPOINT_NOT_FOUND, STATUS_ORDINAL_NOT_FOUND};
 
 /// The ANSI path limit: a module name's longest, in characters.
 const MAX_PATH: usize = 260;

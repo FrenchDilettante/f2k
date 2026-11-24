@@ -2903,9 +2903,6 @@ mod tests {
         STATUS_SUCCESS
     }
 
-    /// STATUS_CANCELLED, a cancelled request's status (an error).
-    const CANCELLED: NtStatus = NtStatus(0xC000_0120);
-
     /// A dispatch routine that opens a device by its name (as a driver's ZwCreateFile does): the
     /// open's claim on the stacks and the device it reaches; then completes its own request.
     fn opens_a_device(fake: &mut Fake, _: u32, irp: u32, _: u32) -> NtStatus {
@@ -3023,7 +3020,7 @@ mod tests {
         assert!(abandon(&mut fake, irp));
         assert_eq!(fake.progress(irp), Progress::Orphaned);
         assert!(fake.retired.is_empty());
-        fake.finish(irp, CANCELLED, 0);
+        fake.finish(irp, STATUS_CANCELLED, 0);
         assert_eq!(fake.retired, [irp]);
         assert!(fake.woken.is_empty());
 
@@ -3097,8 +3094,11 @@ mod tests {
             run(STATUS_SUCCESS, true, SL_INVOKE_ON_CANCEL),
             [(LETS_GO, 0xA2)]
         );
-        assert_eq!(run(CANCELLED, true, SL_INVOKE_ON_ERROR), [(LETS_GO, 0xA2)]);
-        assert!(run(CANCELLED, false, SL_INVOKE_ON_CANCEL).is_empty());
+        assert_eq!(
+            run(STATUS_CANCELLED, true, SL_INVOKE_ON_ERROR),
+            [(LETS_GO, 0xA2)]
+        );
+        assert!(run(STATUS_CANCELLED, false, SL_INVOKE_ON_CANCEL).is_empty());
 
         // The top location's routine, run on an error: no device above it, and past it the IRP
         // is completed.
@@ -3110,7 +3110,7 @@ mod tests {
             top.completion_routine = LETS_GO;
             top.control = SL_INVOKE_ON_ERROR;
         }
-        alone.finish(irp, CANCELLED, 0);
+        alone.finish(irp, STATUS_CANCELLED, 0);
         assert_eq!(alone.completions, [(LETS_GO, 0)]);
         assert_eq!(alone.progress(irp), Progress::Completed);
 

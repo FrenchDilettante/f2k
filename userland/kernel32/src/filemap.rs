@@ -12,7 +12,7 @@ use crate::ntcall::{self, View};
 use crate::sync::{self, Name};
 
 const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
-const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
+use rtl::status::STATUS_INVALID_PARAMETER;
 
 /// The page protections a mapping and a view take.
 const PAGE_NOACCESS: u32 = 0x01;

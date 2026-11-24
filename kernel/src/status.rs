@@ -175,6 +175,8 @@ statuses! {
     STATUS_INVALID_PIPE_STATE,
     /// A second call waiting through one end of a pipe.
     STATUS_PIPE_BUSY,
+    /// An API number no csrss server serves.
+    STATUS_ILLEGAL_FUNCTION,
     /// A write into a pipe whose reading end is closed.
     STATUS_PIPE_CLOSING,
     /// A read or write on a server end of a pipe no client has opened yet.
@@ -225,8 +227,13 @@ statuses! {
     STATUS_MAPPED_FILE_SIZE_ZERO,
     /// Every open-file record or file object is taken.
     STATUS_TOO_MANY_OPENED_FILES,
+    /// A cancelled request (only the I/O tests' drivers cancel one yet).
+    #[cfg(test)]
+    STATUS_CANCELLED,
     /// A file or key that cannot be deleted (read-only; a key with subkeys, or a hive's root).
     STATUS_CANNOT_DELETE,
+    /// A commit charge past the commit limit.
+    STATUS_COMMITMENT_LIMIT,
     /// An image in the LE (virtual device driver) format.
     STATUS_INVALID_IMAGE_LE_FORMAT,
     /// A file that does not start with MZ.

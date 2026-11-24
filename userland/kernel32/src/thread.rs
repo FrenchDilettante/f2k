@@ -40,8 +40,7 @@ const THREAD_ZERO_TLS_CELL: u32 = 10;
 const THREAD_AM_I_LAST_THREAD: u32 = 12;
 const THREAD_PRIORITY_BOOST: u32 = 14;
 
-const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
-const STATUS_NO_MEMORY: u32 = 0xC000_0017;
+use rtl::status::{STATUS_INVALID_PARAMETER, STATUS_NO_MEMORY};
 
 /// The documented priority specials and the saturation values the kernel takes for them
 /// ((LOW_REALTIME_PRIORITY + 1) / 2 either way), and GetThreadPriority's failure.

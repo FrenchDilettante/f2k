@@ -1001,9 +1001,11 @@ pub mod host {
     /// next one 4 past the one before.
     pub const FIRST_BRUSH: u32 = 0x0002_0400;
 
-    const STATUS_INVALID_HANDLE: u32 = 0xC000_0008;
-    const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
-    const STATUS_OBJECT_TYPE_MISMATCH: u32 = 0xC000_0024;
+    use rtl::status::{
+        STATUS_INVALID_HANDLE,
+        STATUS_INVALID_PARAMETER,
+        STATUS_OBJECT_TYPE_MISMATCH,
+    };
 
     /// Whether `handle` names a live brush object.
     fn is_brush_object(handle: u32) -> bool {
@@ -1125,8 +1127,8 @@ pub mod host {
         answer(brush, handle)
     }
 
-    /// The bitmap services: none on the host (the kernel's tests drive the surfaces and blits).
-    const STATUS_NOT_IMPLEMENTED: u32 = 0xC000_0002;
+    // The bitmap services: none on the host (the kernel's tests drive the surfaces and blits).
+    use rtl::status::STATUS_NOT_IMPLEMENTED;
 
     pub unsafe extern "system" fn NtGdiCreateCompatibleDC(_: usize, _: *mut u32) -> u32 {
         served();

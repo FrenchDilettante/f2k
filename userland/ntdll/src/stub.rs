@@ -4,12 +4,11 @@
 //! where DbgPrint lives), then fails with the export's failure value; ntdll's exports set no
 //! Win32 last error. An export that cannot fail (`never`) raises STATUS_NOT_IMPLEMENTED.
 
+// STATUS_NOT_IMPLEMENTED: what a stub that cannot fail raises.
+use rtl::status::STATUS_NOT_IMPLEMENTED;
 use rtl::stub::{describe, Entry, Fails, Line, Memory};
 
 use crate::service;
-
-/// STATUS_NOT_IMPLEMENTED: what a stub that cannot fail raises.
-const STATUS_NOT_IMPLEMENTED: u32 = 0xC000_0002;
 
 /// The calling process's memory, as NtQueryVirtualMemory describes it: a page can be read when it
 /// is committed and accessible. The lowest 64 KiB are never mapped.

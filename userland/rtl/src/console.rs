@@ -147,8 +147,8 @@ unsafe impl crate::pod::Pod for PortMessage {}
 // field's offset and the size), every bit pattern a value.
 unsafe impl crate::pod::Pod for CsrApiMsg {}
 
-/// STATUS_ILLEGAL_FUNCTION: the answer to an API number no server serves (csrss's).
-pub const STATUS_ILLEGAL_FUNCTION: u32 = 0xC000_00AF;
+// STATUS_ILLEGAL_FUNCTION: the answer to an API number no server serves (csrss's).
+use crate::status::STATUS_ILLEGAL_FUNCTION;
 
 /// The console server's index among csrss's servers (Windows 2000's CONSRV_SERVERDLL_INDEX).
 pub const CONSOLE_SERVER: u32 = 2;

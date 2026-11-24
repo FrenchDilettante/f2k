@@ -19,8 +19,8 @@ use crate::kernel32;
 /// ERROR_CALL_NOT_IMPLEMENTED: "This function is not supported on this system."
 pub const ERROR_CALL_NOT_IMPLEMENTED: u32 = 120;
 
-/// STATUS_NOT_IMPLEMENTED: what a stub that cannot fail raises (noncontinuable).
-const STATUS_NOT_IMPLEMENTED: u32 = 0xC000_0002;
+// STATUS_NOT_IMPLEMENTED: what a stub that cannot fail raises (noncontinuable).
+use rtl::status::STATUS_NOT_IMPLEMENTED;
 
 /// Log the call to `entry` with `args` (one value per argument, in order) and `reason`, then fail
 /// as `entry` fails.

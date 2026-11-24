@@ -57,12 +57,13 @@ pub const EXCEPTION_CONTINUE_SEARCH: u32 = 1;
 pub const EXCEPTION_NESTED_EXCEPTION: u32 = 2;
 pub const EXCEPTION_COLLIDED_UNWIND: u32 = 3;
 
-/// The codes the walks raise themselves.
-pub const STATUS_NONCONTINUABLE_EXCEPTION: u32 = 0xC000_0025;
-pub const STATUS_INVALID_DISPOSITION: u32 = 0xC000_0026;
-pub const STATUS_UNWIND: u32 = 0xC000_0027;
-pub const STATUS_BAD_STACK: u32 = 0xC000_0028;
-pub const STATUS_INVALID_UNWIND_TARGET: u32 = 0xC000_0029;
+// The codes the walks raise themselves.
+use crate::status::{
+    STATUS_BAD_STACK,
+    STATUS_INVALID_DISPOSITION,
+    STATUS_INVALID_UNWIND_TARGET,
+    STATUS_NONCONTINUABLE_EXCEPTION,
+};
 
 /// The most parameters a record carries.
 pub const EXCEPTION_MAXIMUM_PARAMETERS: usize = 15;
@@ -422,6 +423,7 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
+    use crate::status::STATUS_UNWIND;
 
     /// The fake stack: its base, and its limit (the TEB's).
     const STACK_BASE: u32 = 0x0013_0000;

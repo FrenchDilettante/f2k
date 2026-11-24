@@ -20,8 +20,8 @@ use crate::heap::{HeapString, HeapVec, OutOfMemory};
 /// RTL_PATH_TYPE's RtlPathTypeRelative: a name the search looks for under each directory.
 const RTL_PATH_TYPE_RELATIVE: u32 = 5;
 
-/// STATUS_BUFFER_TOO_SMALL: PATH's value, longer than the probe's empty buffer.
-const STATUS_BUFFER_TOO_SMALL: u32 = 0xC000_0023;
+// STATUS_BUFFER_TOO_SMALL: PATH's value, longer than the probe's empty buffer.
+use rtl::status::STATUS_BUFFER_TOO_SMALL;
 
 /// The default search's places under the system root, after the program's and the current
 /// directory.

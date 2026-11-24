@@ -7,10 +7,7 @@
 //! changes nothing, a discharge returns charge, and the room left is the limit minus what is
 //! charged. The per-process instance and the wiring into the allocate path are not here yet.
 
-use crate::status::NtStatus;
-
-/// The status a charge past the commit limit is refused with: STATUS_COMMITMENT_LIMIT.
-pub const STATUS_COMMITMENT_LIMIT: NtStatus = NtStatus(0xC000_012D);
+use crate::status::{NtStatus, STATUS_COMMITMENT_LIMIT};
 
 /// A process's commit charge: the bytes charged so far, against a limit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

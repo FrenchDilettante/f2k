@@ -35,6 +35,7 @@
 pub mod ini;
 
 use ini::Fit;
+use rtl::status::{STATUS_END_OF_FILE, STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND};
 
 use crate::base::set_last_error;
 use crate::edge::{
@@ -72,9 +73,6 @@ use crate::files::{
     GENERIC_READ,
     GENERIC_WRITE,
     MAX_PATH,
-    STATUS_END_OF_FILE,
-    STATUS_OBJECT_NAME_NOT_FOUND,
-    STATUS_OBJECT_PATH_NOT_FOUND,
     SYNCHRONIZE,
 };
 use crate::heap::HeapArray;

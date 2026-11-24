@@ -89,9 +89,10 @@ core::arch::global_asm!(
     include_str!("chkstk.s"),
 );
 
-use rtl::critsec::{CriticalSection, STATUS_SUCCESS};
+use rtl::critsec::CriticalSection;
 use rtl::heap::{HEAP_GENERATE_EXCEPTIONS, HEAP_GROWABLE, HEAP_REALLOC_IN_PLACE_ONLY};
 use rtl::ldr;
+use rtl::status::STATUS_SUCCESS;
 use rtl::sys::{self, Native};
 
 // The critical sections' bodies, cdecl, called by src/critsec.s's exports with their caller's

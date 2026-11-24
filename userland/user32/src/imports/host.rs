@@ -369,8 +369,8 @@ pub const SCREEN: Rect = Rect {
     bottom: 480,
 };
 pub const LISTED_MODE: (u32, u32) = (800, 600);
-/// STATUS_INFO_LENGTH_MISMATCH, the query service's refusal of an answer of another length.
-pub const STATUS_INFO_LENGTH_MISMATCH: u32 = 0xC000_0004;
+// STATUS_INFO_LENGTH_MISMATCH, the query service's refusal of an answer of another length.
+use rtl::status::STATUS_INFO_LENGTH_MISMATCH;
 
 /// The window manager's refusals whose Win32 error has no NTSTATUS of its own, as its services
 /// answer them: the error itself in a FACILITY_NTWIN32 status (win32k's `Failure::status`).

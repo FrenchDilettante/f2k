@@ -19,8 +19,9 @@ use crate::imports::{self, Probed};
 /// ERROR_CALL_NOT_IMPLEMENTED: "This function is not supported on this system."
 pub const ERROR_CALL_NOT_IMPLEMENTED: u32 = 120;
 
-/// STATUS_NOT_IMPLEMENTED: what a stub that cannot fail raises, and EXCEPTION_NONCONTINUABLE.
-const STATUS_NOT_IMPLEMENTED: u32 = 0xC000_0002;
+use rtl::status::STATUS_NOT_IMPLEMENTED;
+
+/// EXCEPTION_NONCONTINUABLE: what a stub that cannot fail raises STATUS_NOT_IMPLEMENTED as.
 const EXCEPTION_NONCONTINUABLE: u32 = 1;
 
 /// Log the call to `entry` with `args` (one value per argument, in order) and `reason`, then fail

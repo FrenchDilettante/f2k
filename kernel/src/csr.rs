@@ -935,7 +935,7 @@ fn base_call_server(api: u32, data: &mut [u8]) -> NtStatus {
         CREATE_PROCESS => announce_process(data),
         SET_PROCESS_SHUTDOWN_PARAM => set_shutdown_parameters(data),
         GET_PROCESS_SHUTDOWN_PARAM => get_shutdown_parameters(data),
-        _ => NtStatus(rtl::console::STATUS_ILLEGAL_FUNCTION),
+        _ => STATUS_ILLEGAL_FUNCTION,
     }
 }
 
@@ -1030,7 +1030,7 @@ fn announce_process(data: &mut [u8]) -> NtStatus {
 fn user_call_server(api: u32, data: &mut [u8]) -> NtStatus {
     use rtl::console::user::{check_flags, ExitWindowsEx, EXIT_WINDOWS_EX};
     if api != EXIT_WINDOWS_EX {
-        return NtStatus(rtl::console::STATUS_ILLEGAL_FUNCTION);
+        return STATUS_ILLEGAL_FUNCTION;
     }
     let Some(request) = ExitWindowsEx::<u32>::from_bytes(data) else {
         return STATUS_INVALID_PARAMETER;

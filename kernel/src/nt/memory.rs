@@ -864,7 +864,8 @@ mod tests {
 
     use super::*;
     use crate::mem::pte::{self, PteKind};
-    use crate::mem::quota::{CommitQuota, STATUS_COMMITMENT_LIMIT};
+    use crate::mem::quota::CommitQuota;
+    use crate::status::STATUS_COMMITMENT_LIMIT;
 
     /// A query's answer is MEMORY_BASIC_INFORMATION's dwords in order.
     #[test]

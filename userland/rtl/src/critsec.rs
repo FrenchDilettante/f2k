@@ -53,14 +53,10 @@ pub trait System {
     fn raise(&self, status: u32) -> !;
 }
 
-/// STATUS_SUCCESS.
-pub const STATUS_SUCCESS: u32 = 0;
-/// What an initialization asked to preallocate the event answers when none can be made.
-pub const STATUS_NO_MEMORY: u32 = 0xC000_0017;
-/// What a contended enter or leave raises when no event can be made for the section: Windows
-/// 2000's EnterCriticalSection raises in low memory (its documentation names
-/// STATUS_INVALID_HANDLE).
-pub const STATUS_INVALID_HANDLE: u32 = 0xC000_0008;
+// An initialization asked to preallocate the event answers STATUS_NO_MEMORY when none can be
+// made; a contended enter or leave with no event raises STATUS_INVALID_HANDLE, as Windows 2000's
+// EnterCriticalSection does in low memory.
+use crate::status::{STATUS_INVALID_HANDLE, STATUS_NO_MEMORY};
 
 /// The spin count's high bit, at initialization: make the event now, so a later contention cannot
 /// fail for want of one (InitializeCriticalSectionAndSpinCount on Windows 2000).

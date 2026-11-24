@@ -130,7 +130,7 @@ const ERROR_INVALID_PARAMETER: u32 = 87;
 const ERROR_BAD_EXE_FORMAT: u32 = 193;
 const ERROR_DIRECTORY: u32 = 267;
 
-const STATUS_ACCESS_VIOLATION: NtStatus = 0xC000_0005;
+use rtl::status::STATUS_ACCESS_VIOLATION;
 
 /// The section's refusals of a file that is no Windows image: not a PE file at all (no MZ, an NE,
 /// LE or Windows 3.x one), an empty file, a file no image section can be made of.
@@ -450,7 +450,7 @@ fn command_processor<'a>(command_line: &[u16], quoted: bool) -> Result<Program<'
 /// ERROR_BAD_EXE_FORMAT.
 #[inline(never)]
 fn image_section(program: &mut Program, command_line: Option<&[u16]>) -> Result<Owned, Failure> {
-    const STATUS_INVALID_IMAGE_NOT_MZ: NtStatus = 0xC000_012F;
+    use rtl::status::STATUS_INVALID_IMAGE_NOT_MZ;
     let mut section = open_image(&program.path)?;
     if section.as_ref().err() == Some(&STATUS_INVALID_IMAGE_NOT_MZ) && is_batch(program.path.text())
     {

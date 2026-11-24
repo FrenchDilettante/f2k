@@ -35,10 +35,8 @@ const FROM_SYSTEM: u32 = 0x1000;
 const ARGUMENT_ARRAY: u32 = 0x2000;
 const MAX_WIDTH_MASK: u32 = 0x00FF;
 
-/// The statuses kernel32 tells apart: a block the layout outgrew, and a call it cannot serve.
-const STATUS_BUFFER_OVERFLOW: u32 = 0x8000_0005;
-const STATUS_INVALID_PARAMETER: u32 = 0xC000_000D;
-const STATUS_NO_MEMORY: u32 = 0xC000_0017;
+// The statuses kernel32 tells apart: a block the layout outgrew, and a call it cannot serve.
+use rtl::status::{STATUS_BUFFER_OVERFLOW, STATUS_INVALID_PARAMETER, STATUS_NO_MEMORY};
 
 /// The layout's first room, in characters, and its last: the documentation's 64 KiB.
 const FIRST_ROOM: usize = 1024;
@@ -367,7 +365,7 @@ mod tests {
         assert_eq!(system(2, 0x040C, 0), Err(1815));
         assert!(system(2, 0x0400, 0).is_ok());
         assert_eq!(
-            rtl::status::dos_error(rtl::resource::STATUS_MESSAGE_NOT_FOUND),
+            rtl::status::dos_error(rtl::status::STATUS_MESSAGE_NOT_FOUND),
             crate::error::ERROR_MR_MID_NOT_FOUND
         );
     }

@@ -19,8 +19,8 @@ pub const ERROR_MR_MID_NOT_FOUND: u32 = 317;
 pub const ERROR_NOACCESS: u32 = 998;
 pub const ERROR_INVALID_FLAGS: u32 = 1004;
 
-/// STATUS_UNSUCCESSFUL: the status of a failure that names a Win32 error, not a status.
-const STATUS_UNSUCCESSFUL: NtStatus = 0xC000_0001;
+// STATUS_UNSUCCESSFUL: the status of a failure that names a Win32 error, not a status.
+use rtl::status::STATUS_UNSUCCESSFUL;
 
 /// Why a call failed: a service's status (its error set through ntdll's mapping,
 /// BaseSetLastNTError), a Win32 error kernel32 sets itself, or a fault the caller takes (the status
