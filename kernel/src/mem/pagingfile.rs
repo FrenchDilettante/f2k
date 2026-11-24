@@ -361,7 +361,8 @@ impl<S: PageStore> PagingIo for FileIo<'_, S> {
 // makes the file fresh at boot and sets the commit limit from it. Page I/O goes straight to the
 // device along the file's runs ([`Extents`], made again whenever the length changes), with no chain
 // walk and no directory-entry update, as Windows 2000's paging I/O does; a file in too many pieces
-// for the map goes through the file layer.
+// for the map goes through the file layer. The system holds the file open for its life, sharing
+// nothing, so no process opens it (its pages are other processes' memory and stale disk contents).
 
 #[cfg(target_arch = "x86")]
 mod target {
@@ -373,6 +374,7 @@ mod target {
     use crate::fs::fat32::read;
     use crate::fs::fat32::volume::with_boot_volume;
     use crate::fs::fat32::write::{self, Fill};
+    use crate::fs::file::{with_records, FileRecordId, ACCESS_READ, ACCESS_WRITE};
     use crate::mem::pageout::{PageIoError, PagingIo, SlotId, INVALID_SLOT};
     use crate::status::{NtStatus, STATUS_DISK_FULL};
 
@@ -389,16 +391,29 @@ mod target {
         }
     }
 
+    /// The system's open of the paging file: it reads and writes, sharing nothing.
+    const SYSTEM_ACCESS: u8 = ACCESS_READ | ACCESS_WRITE;
+
     /// The paging file on the boot volume: the store over its directory entry, kept by the boot
     /// ([`boot_create`]). Every operation runs inside the volume's locked section, so the store
-    /// itself holds nothing but the entry and the map of its runs.
+    /// itself holds nothing but the entry, the system's open of it and the map of its runs.
     pub struct BootVolumeStore {
         file: File,
+        /// The system's open of the file ([`crate::fs::file::FileRecords::open_system`]), held for
+        /// the system's life: every other open of the file is refused. Its record follows the
+        /// entry as the store changes it.
+        record: FileRecordId,
         /// The file's runs as of its last length change; none when it has too many.
         extents: Option<Extents>,
     }
 
     impl BootVolumeStore {
+        /// The open record follows the entry the store just changed.
+        fn publish(&self) {
+            let file = self.file;
+            with_records(|records| records.get_mut(self.record).file = file);
+        }
+
         /// The map, when it covers `len` bytes at `offset`.
         fn mapped(&self, offset: u64, len: usize) -> Option<&Extents> {
             self.extents
@@ -448,9 +463,11 @@ mod target {
                 return written;
             }
             let offset = u32::try_from(offset).map_err(|_| StoreError::Io)?;
-            with_boot_volume(|volume| write::write_at(volume, &mut self.file, offset, page))
-                .ok_or(StoreError::Io)?
-                .map_err(store_error)
+            let written =
+                with_boot_volume(|volume| write::write_at(volume, &mut self.file, offset, page))
+                    .ok_or(StoreError::Io)?;
+            self.publish();
+            written.map_err(store_error)
         }
 
         fn write_at_many(&mut self, offset: u64, data: &[u8]) -> Result<(), StoreError> {
@@ -458,9 +475,11 @@ mod target {
                 return written;
             }
             let offset = u32::try_from(offset).map_err(|_| StoreError::Io)?;
-            with_boot_volume(|volume| write::write_at(volume, &mut self.file, offset, data))
-                .ok_or(StoreError::Io)?
-                .map_err(store_error)
+            let written =
+                with_boot_volume(|volume| write::write_at(volume, &mut self.file, offset, data))
+                    .ok_or(StoreError::Io)?;
+            self.publish();
+            written.map_err(store_error)
         }
 
         fn set_len(&mut self, len: u64) -> Result<(), StoreError> {
@@ -472,6 +491,7 @@ mod target {
             })
             .ok_or(StoreError::Io)?;
             self.extents = extents;
+            self.publish();
             set.map_err(store_error)
         }
     }
@@ -572,7 +592,7 @@ mod target {
         let (size, limit) = boot_sizing(free_bytes, ram_bytes);
 
         remove_existing();
-        let store = match with_boot_volume(|volume| -> Result<BootVolumeStore, NtStatus> {
+        let file = match with_boot_volume(|volume| -> Result<File, NtStatus> {
             let mut file = File::plain(0, 0, false);
             file.attributes = ATTR_HIDDEN | ATTR_SYSTEM;
             file.times = crate::fs::io::now();
@@ -582,17 +602,29 @@ mod target {
                 PAGING_FILE_NAME,
                 &mut file,
             )?;
-            Ok(BootVolumeStore {
-                file,
-                extents: None,
-            })
+            Ok(file)
         }) {
-            Some(Ok(store)) => store,
+            Some(Ok(file)) => file,
             _ => return,
+        };
+        // The memory manager's open of the file (IoCreateFile with SL_OPEN_PAGING_FILE), held for
+        // the system's life: no process opens the file after it.
+        let Ok(record) = with_records(|records| records.open_system(file, SYSTEM_ACCESS)) else {
+            remove_existing();
+            return;
+        };
+        let store = BootVolumeStore {
+            file,
+            record,
+            extents: None,
         };
         let file = match PagingFile::create(store, size) {
             Ok(file) => file,
             Err(_) => {
+                with_records(|records| {
+                    let _ = records.cleanup(record, SYSTEM_ACCESS, 0, false);
+                    records.close(record);
+                });
                 remove_existing();
                 return;
             }

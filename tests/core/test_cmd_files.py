@@ -24,6 +24,10 @@ The second boot types at the prompt (as tests/core/test_cmd.py's do): `color 1e`
 cell of the screen; `del` of a directory asks `Are you sure (Y/N)?` and Y deletes its files;
 `prompt $+$p$g` shows a `+` once `pushd` saved a directory; `pause` waits for a key.
 
+The third boot runs a script over the paging file, \\pagefile.sys, which the system holds open:
+`type`, a redirection, `ren` and `del /a` are each refused (`Access is denied.`), while `dir /a /b`
+still lists it.
+
     uv run pytest tests/core/test_cmd_files.py
 """
 from __future__ import annotations
@@ -154,3 +158,39 @@ def test_console_built_ins_at_the_prompt(builder, log_path, boot_timeout):
     screen, context = type_at_the_prompt(builder, log_path, boot_timeout, steps, expected)
     colours = {attribute for _, attribute in screen.cells}
     assert colours == {0x1E}, f"the screen's attributes: {sorted(colours)}{context}"
+
+
+# The paging file, which the system holds open for itself, sharing nothing: no built-in reads,
+# writes, renames or deletes it (each open of it is refused, ERROR_ACCESS_DENIED, as FastFat refuses
+# a system file's), while the directory still lists it.
+PAGING_FILE_SCRIPT = [
+    "@echo off",
+    "type \\pagefile.sys",
+    "echo type %errorlevel%",
+    "echo x>\\pagefile.sys",
+    "echo x>>\\pagefile.sys",
+    "ren \\pagefile.sys f2kpf.sys",
+    "del /a \\pagefile.sys",
+    "dir /a /b \\pagefile.sys",
+    "echo done",
+]
+
+PAGING_FILE_EXPECTED = [
+    "Access is denied.",
+    "type 1",
+    "Access is denied.",
+    "Access is denied.",
+    "Access is denied.",
+    "C:\\pagefile.sys",
+    "Access is denied.",
+    "pagefile.sys",
+    "done",
+]
+
+
+@pytest.mark.kernel
+def test_the_paging_file_is_the_systems(builder, log_path, boot_timeout, tmp_path):
+    """`cmd /c` of the paging-file script: every open of the file refused, the listing kept."""
+    (script,) = write_batches(tmp_path, {"f2kpf.cmd": PAGING_FILE_SCRIPT})
+    output, code = run_with_c(builder, log_path, boot_timeout, "f2kpf", [script])
+    assert (output, code) == (PAGING_FILE_EXPECTED, 0)

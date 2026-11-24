@@ -16,7 +16,9 @@
 //! An open's last handle is its cleanup: its share access goes, its delete-on-close marks the file
 //! delete-pending, and the last cleanup of a delete-pending file deletes it. While a delete is
 //! pending, new opens are refused (STATUS_DELETE_PENDING). The object's last reference releases the
-//! record (a mapping can hold an object past its cleanup).
+//! record (a mapping can hold an object past its cleanup). A file the system holds open for itself
+//! (the paging file: FastFat's FCB_STATE_SYSTEM_FILE) refuses every other open, ahead of the share
+//! check (STATUS_ACCESS_DENIED).
 //!
 //! A directory opens too (backup semantics), for its metadata. Positions are 64-bit, as Win32 file
 //! pointers are; files themselves stay within FAT32's 32-bit sizes.
@@ -606,6 +608,9 @@ pub struct FileRecord {
     /// The file's image segment, which every image section of the file shares (NT's section
     /// object pointers): none, or a stale id, until an image section of the file makes one.
     pub image: Option<crate::ob::SegmentId>,
+    /// Whether the system holds the file open for itself (the paging file; FastFat's
+    /// FCB_STATE_SYSTEM_FILE): every other open is refused, and the record outlives every process.
+    system: bool,
 }
 
 /// Why an open found no record.
@@ -615,6 +620,8 @@ pub enum OpenError {
     Sharing,
     /// The file is being deleted: it goes with its last open's cleanup (ERROR_ACCESS_DENIED).
     DeletePending,
+    /// The system holds the file open for itself (ERROR_ACCESS_DENIED).
+    System,
     /// Every record or object is taken.
     Full,
 }
@@ -839,6 +846,9 @@ impl FileRecords {
         let index = match self.find(&file) {
             Some(FileRecordId(index)) => {
                 let record = self.records[index as usize].as_ref().expect("found");
+                if record.system {
+                    return Err(OpenError::System);
+                }
                 if record.delete_pending {
                     return Err(OpenError::DeletePending);
                 }
@@ -861,6 +871,7 @@ impl FileRecords {
                     delete_pending: false,
                     user_mapped: 0,
                     image: None,
+                    system: false,
                 });
                 index
             }
@@ -870,6 +881,23 @@ impl FileRecords {
         record.cleanups += 1;
         record.references += 1;
         Ok(FileRecordId(index))
+    }
+
+    /// The system's own open of the entry `file` names, for `access` and sharing nothing (the
+    /// memory manager's open of a paging file, IoCreateFile with SL_OPEN_PAGING_FILE):
+    /// share-checked as any open, then the record is the system's for good — every later open of
+    /// the file is refused ([`OpenError::System`], FastFat's check of FCB_STATE_SYSTEM_FILE ahead
+    /// of the share check) and the quiescent sweep keeps it. No file object stands for the open:
+    /// the kernel holds it through the record alone.
+    pub fn open_system(&mut self, file: File, access: u8) -> Result<FileRecordId, OpenError> {
+        let record = self.open_implying(file, access, 0, 0)?;
+        self.get_mut(record).system = true;
+        Ok(record)
+    }
+
+    /// Whether the open file `record` is held by the system for itself ([`Self::open_system`]).
+    pub fn is_system(&self, record: FileRecordId) -> bool {
+        self.get(record).system
     }
 
     /// The record `record` (a live object names it).
@@ -931,22 +959,25 @@ impl FileRecords {
         }
     }
 
-    /// Forget every record (at quiescence, once every process's opens were closed), returning how
-    /// many were still taken.
+    /// Forget every record (at quiescence, once every process's opens were closed) but the
+    /// system's own, returning how many were still taken.
     pub fn clear(&mut self) -> usize {
         let live = self.live();
         for record in self.records.iter_mut() {
-            *record = None;
+            if record.is_some_and(|record| !record.system) {
+                *record = None;
+            }
         }
         self.locks.fill(None);
         live
     }
 
-    /// How many records are taken.
+    /// How many records the processes' opens hold (the system's own not counted).
     pub fn live(&self) -> usize {
         self.records
             .iter()
-            .filter(|record| record.is_some())
+            .flatten()
+            .filter(|record| !record.system)
             .count()
     }
 }
@@ -1491,6 +1522,75 @@ mod tests {
         assert!(access.allows(ACCESS_WRITE, SHARE_ALL));
         access.remove(ACCESS_READ, ACCESS_READ | ACCESS_WRITE);
         assert_eq!(access, ShareAccess::default());
+    }
+
+    /// The system's own open (the paging file's): every other open of the file is refused, an
+    /// attributes-only one, a delete and an overwrite included, as FastFat refuses a system file.
+    #[test]
+    fn the_systems_open_refuses_every_other() {
+        let mut records = FileRecords::empty();
+        let held = records
+            .open_system(entry(1), ACCESS_READ | ACCESS_WRITE)
+            .unwrap();
+        assert!(records.is_system(held));
+        for (access, implied, share) in [
+            (ACCESS_READ, 0, SHARE_ALL),
+            (ACCESS_WRITE, 0, SHARE_ALL),
+            (ACCESS_DELETE, 0, SHARE_ALL),
+            (0, 0, 0),
+            (0, ACCESS_WRITE, SHARE_ALL),
+        ] {
+            assert_eq!(
+                records.open_implying(entry(1), access, implied, share),
+                Err(OpenError::System),
+                "access {access:#x} implied {implied:#x} share {share:#x}"
+            );
+        }
+        assert!(
+            records.open(entry(2), ACCESS_READ, 0).is_ok(),
+            "another file opens"
+        );
+        assert_eq!(
+            records.get(held).share,
+            ShareAccess {
+                opens: 1,
+                readers: 1,
+                writers: 1,
+                ..ShareAccess::default()
+            },
+            "the system reads and writes, sharing nothing"
+        );
+    }
+
+    /// The system's open is share-checked as any: a file a process holds open is not taken.
+    #[test]
+    fn the_systems_open_is_share_checked() {
+        let mut records = FileRecords::empty();
+        let reader = records.open(entry(1), ACCESS_READ, SHARE_ALL).unwrap();
+        assert_eq!(
+            records.open_system(entry(1), ACCESS_READ | ACCESS_WRITE),
+            Err(OpenError::Sharing)
+        );
+        assert!(!records.is_system(reader), "the refusal marked nothing");
+    }
+
+    /// The quiescent sweep keeps the system's open, and counts it as no leak.
+    #[test]
+    fn the_sweep_keeps_the_systems_open() {
+        let mut records = FileRecords::empty();
+        let held = records
+            .open_system(entry(1), ACCESS_READ | ACCESS_WRITE)
+            .unwrap();
+        records.open(entry(2), ACCESS_READ, 0).unwrap();
+        assert_eq!(records.live(), 1, "the system's open is not a process's");
+        assert_eq!(records.clear(), 1, "only the process's open leaked");
+        assert_eq!(records.find(&entry(1)), Some(held));
+        assert_eq!(records.find(&entry(2)), None);
+        assert_eq!(
+            records.open(entry(1), 0, SHARE_ALL),
+            Err(OpenError::System),
+            "still refused"
+        );
     }
 
     /// Delete-on-close is the file's, not the handle's: the flagged open's cleanup marks it

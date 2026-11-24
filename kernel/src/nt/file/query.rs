@@ -464,7 +464,8 @@ fn set_disk(
 }
 
 /// The file a name names, for the attribute queries: STATUS_OBJECT_NAME_NOT_FOUND when it is
-/// missing, STATUS_DELETE_PENDING while it is being deleted, STATUS_OBJECT_NAME_INVALID for a file
+/// missing, STATUS_ACCESS_DENIED when the system holds it open (the paging file),
+/// STATUS_DELETE_PENDING while it is being deleted, STATUS_OBJECT_NAME_INVALID for a file
 /// named with a trailing separator.
 fn named(attributes: UserAddr, out: UserAddr, size: u32) -> Result<File, NtStatus> {
     let target = target(attributes)?;
@@ -481,11 +482,17 @@ fn named(attributes: UserAddr, out: UserAddr, size: u32) -> Result<File, NtStatu
     if target.name.trailing && !file.directory {
         return Err(STATUS_OBJECT_NAME_INVALID);
     }
-    if with_records(|records| {
-        records
-            .find(&file)
-            .is_some_and(|record| records.delete_pending(record))
-    }) {
+    // The I/O manager opens the file for the query (FastFat has no fast query-open): a file the
+    // system holds open refuses it, as it refuses any open.
+    let (system, pending) = with_records(|records| {
+        records.find(&file).map_or((false, false), |record| {
+            (records.is_system(record), records.delete_pending(record))
+        })
+    });
+    if system {
+        return Err(STATUS_ACCESS_DENIED);
+    }
+    if pending {
         return Err(STATUS_DELETE_PENDING);
     }
     Ok(file)

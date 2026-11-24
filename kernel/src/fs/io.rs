@@ -64,6 +64,7 @@ mod target {
     use crate::ob::Referenced;
     use crate::status::{
         NtStatus,
+        STATUS_ACCESS_DENIED,
         STATUS_DELETE_PENDING,
         STATUS_INSUFFICIENT_RESOURCES,
         STATUS_IO_DEVICE_ERROR,
@@ -88,6 +89,8 @@ mod target {
         match error {
             OpenError::Sharing => STATUS_SHARING_VIOLATION,
             OpenError::DeletePending => STATUS_DELETE_PENDING,
+            // FastFat refuses a system file's open before its share check.
+            OpenError::System => STATUS_ACCESS_DENIED,
             // FastFat's answer when its pool has no room for the file's FCB.
             OpenError::Full => STATUS_INSUFFICIENT_RESOURCES,
         }
