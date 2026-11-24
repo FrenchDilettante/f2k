@@ -192,6 +192,15 @@ zw_ordinal = 733
 note = "resumes the CONTEXT's control and integer registers (TF honoured, privileged flags masked) and its floating-point state (FloatSave, the extended registers); TestAlert arms the next queued user APC. The debug registers are not restored"
 
 [[export]]
+name = "NtCallbackReturn"
+group = "nt"
+args = ["ptr Result", "u32 ResultLength", "u32 Status"]
+impl = { syscall = "crate::user::callback::callback_return" }
+ordinal = 78
+zw_ordinal = 724
+note = "the innermost user-mode callback answers its issuer (KeUserModeCallback) with the output block's address and length and the status, the issuing level resumed; STATUS_NO_CALLBACK_ACTIVE with none outstanding. STATUS_CALLBACK_POP_STACK (KiUserCallbackDispatcher's unwind) also resumes the caller's context from the issuing level"
+
+[[export]]
 name = "NtRaiseException"
 group = "nt"
 args = ["ptr ExceptionRecord", "ptr Context", "boolean FirstChance"]
@@ -947,6 +956,14 @@ args = ["ptr NormalRoutine", "ptr NormalContext", "ptr SystemArgument1", "ptr Sy
 impl = { native = "KiUserApcDispatcher" }
 ordinal = 31
 note = "the kernel delivers a user APC here: the routine called, then NtContinue of the interrupted context, TestAlert TRUE"
+
+[[export]]
+name = "KiUserCallbackDispatcher"
+group = "exceptions"
+args = ["u32 ApiNumber", "ptr InputBuffer", "u32 InputLength"]
+impl = { native = "KiUserCallbackDispatcher" }
+ordinal = 32
+note = "the kernel calls user mode here (KeUserModeCallback): PEB.KernelCallbackTable[ApiNumber](InputBuffer, InputLength), under a registration whose handler pops the callback when an unwind passes (NtCallbackReturn, STATUS_CALLBACK_POP_STACK); a routine that returns answers its EAX as the status, no output"
 
 [[export]]
 name = "RtlRaiseException"
@@ -1721,10 +1738,6 @@ name = "KiRaiseUserExceptionDispatcher"
 ordinal = 30
 
 [[export]]
-name = "KiUserCallbackDispatcher"
-ordinal = 32
-
-[[export]]
 name = "LdrAlternateResourcesEnabled"
 ordinal = 35
 
@@ -1842,10 +1855,6 @@ ordinal = 76
 [[export]]
 name = "NtAssignProcessToJobObject"
 ordinal = 77
-
-[[export]]
-name = "NtCallbackReturn"
-ordinal = 78
 
 [[export]]
 name = "NtCancelDeviceWakeupRequest"
@@ -3794,10 +3803,6 @@ ordinal = 722
 [[export]]
 name = "ZwAssignProcessToJobObject"
 ordinal = 723
-
-[[export]]
-name = "ZwCallbackReturn"
-ordinal = 724
 
 [[export]]
 name = "ZwCancelDeviceWakeupRequest"

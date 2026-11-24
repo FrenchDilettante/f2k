@@ -180,7 +180,8 @@ pub struct Thread {
     /// never-run thread.
     pub(crate) kernel_stack: u32,
     /// The kernel stack's top: this thread's gate-stack slot top, which the switch installs as the
-    /// TSS `esp0`.
+    /// TSS `esp0` — or, inside a user-mode callback, the top of the callback's level, below the
+    /// frames that issued it (see [`crate::user::callback`]).
     pub(crate) initial_stack: u32,
     /// The thread's TEB page: the base the switch writes into the TEB segment descriptor. Zero for
     /// kernel and idle threads.
@@ -210,6 +211,9 @@ pub struct Thread {
     /// The slot's frames, recorded for exactly-once release (the guard page below them is never
     /// mapped, so it is never recorded).
     pub(crate) gate_frames: [u32; crate::mem::paging::GATE_STACK_PAGES],
+    /// The innermost user-mode callback's frame on the kernel stack (Windows 2000's
+    /// KTHREAD CallbackStack), zero when none is outstanding (see [`crate::user::callback`]).
+    pub(crate) callback_stack: u32,
     /// The thread's floating-point state while it is off the processor (saved and restored by the
     /// switch, at the offset the assembly takes from this layout; 16-byte aligned, as the record).
     pub(crate) fpu: FxSaveArea,
@@ -434,6 +438,7 @@ impl Thread {
             exit_status: STILL_ACTIVE,
             gate_slot: NO_GATE_SLOT,
             gate_frames: [0; crate::mem::paging::GATE_STACK_PAGES],
+            callback_stack: 0,
             fpu: FxSaveArea::initial(),
             id,
             priority: 0,

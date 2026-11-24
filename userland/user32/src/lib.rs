@@ -40,6 +40,7 @@
 pub mod accel;
 pub mod bitmap;
 pub mod button;
+pub mod callback;
 pub mod caret;
 pub mod class;
 pub mod clipboard;

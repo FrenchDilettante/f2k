@@ -194,6 +194,8 @@ pub const STATUS_INVALID_PARAMETER_5: u32 = 0xC000_00F3;
 pub const STATUS_INVALID_PARAMETER_6: u32 = 0xC000_00F4;
 pub const STATUS_INVALID_PARAMETER_8: u32 = 0xC000_00F6;
 pub const STATUS_INVALID_PARAMETER_9: u32 = 0xC000_00F7;
+/// A kernel stack with no room left: a user-mode callback refused for want of it.
+pub const STATUS_STACK_OVERFLOW: u32 = 0xC000_00FD;
 pub const STATUS_VARIABLE_NOT_FOUND: u32 = 0xC000_0100;
 pub const STATUS_DIRECTORY_NOT_EMPTY: u32 = 0xC000_0101;
 pub const STATUS_FILE_CORRUPT_ERROR: u32 = 0xC000_0102;
@@ -222,8 +224,13 @@ pub const STATUS_TOO_LATE: u32 = 0xC000_0189;
 pub const STATUS_MAPPED_ALIGNMENT: u32 = 0xC000_0220;
 pub const STATUS_HANDLE_NOT_CLOSABLE: u32 = 0xC000_0235;
 pub const STATUS_USER_MAPPED_FILE: u32 = 0xC000_0243;
+/// NtCallbackReturn with no user-mode callback outstanding.
+pub const STATUS_NO_CALLBACK_ACTIVE: u32 = 0xC000_0258;
 /// A driver's import its kernel modules do not export (MmLoadSystemImage's answer).
 pub const STATUS_DRIVER_ENTRYPOINT_NOT_FOUND: u32 = 0xC000_0263;
+/// A user-mode callback an exception unwound past: ntdll's dispatcher hands it to NtCallbackReturn,
+/// which pops the callback, and its issuer gets it as the callback's status.
+pub const STATUS_CALLBACK_POP_STACK: u32 = 0xC000_0423;
 pub const STATUS_INVALID_SYSTEM_SERVICE: u32 = 0xC000_001C;
 /// The loader's: an export name a module does not have, or a module without exports; a module the
 /// process has not loaded; an ordinal a module does not export; an entry point not found; a DLL's

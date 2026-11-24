@@ -451,6 +451,34 @@ CASES = (
             "F2K: exit-during-read: volume usable after teardown (HELLO.EXE, 28672 bytes)",
         ),
     ),
+    # User-mode callbacks: winsta's first win32k service (user32's attach has set the callback
+    # table) issues the callback-smoke sequence on its way out, through user32's smoke slot. The
+    # room check's depth depends on the build's frames, so only its status is pinned. The last
+    # callback ends the process two levels deep: its exit code is the smoke's, and the teardown
+    # audit finds nothing left of the levels it gave up.
+    Case(
+        name="callback-smoke",
+        description="KeUserModeCallback from a system call: simple, nested 3 deep, a fault handled inside, an exception escaping a nested callback (its issuer gets STATUS_CALLBACK_POP_STACK), a user APC at a nested return, the room check, NtCallbackReturn with none outstanding, and the process's end 2 deep",
+        image="kernel",
+        features=("callback-smoke",),
+        cmdline="CORPUS\\winsta.exe handles",
+        ordered=True,
+        expects=(
+            "F2K: entering ring 3",
+            "F2K: callback-smoke: simple: status 0x00000000, answer 0x00001235",
+            "F2K: callback-smoke: nested 3 deep: status 0x00000000, answer 123",
+            "F2K: callback-smoke: fault handled inside the callback: status 0x00000000, readable 0",
+            "F2K: callback-smoke: escape: status 0x00000000, inner issuer got 0xc0000423, outer caught 0xc0000005",
+            "F2K: callback-smoke: user APC at a nested return: status 0x00000000, context 0x00a9c000",
+            "F2K: callback-smoke: room check: status 0xc00000fd, refused ",
+            "F2K: callback-smoke: NtCallbackReturn with no callback: 0xc0000258",
+            "F2K: callback-smoke: back at the thread's own level after each: yes",
+            "F2K: callback-smoke: ending the process 2 deep",
+            "F2K: user process exited normally (exit code=203)",
+            "F2K: teardown audit: frame database ok",
+        ),
+        forbids=("F2K: callback-smoke: FAILED",),
+    ),
     # No command line on either path: the kernel runs exit0.
     *both_paths(
         "boot-smoke",

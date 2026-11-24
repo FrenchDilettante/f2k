@@ -56,6 +56,7 @@
 pub mod accel;
 pub mod array_vec;
 pub mod bitmap;
+pub mod callback;
 pub mod codepage;
 pub mod console;
 pub mod cp1252;

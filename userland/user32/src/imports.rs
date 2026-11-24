@@ -191,6 +191,19 @@ mod raw {
     unsafe extern "system" {
         /// RtlNtStatusToDosError: the Win32 error a failed service's status maps to.
         pub fn RtlNtStatusToDosError(status: u32) -> u32;
+        /// NtCallbackReturn: the kernel's user-mode callback answered (its output block and
+        /// status); returns only when none is outstanding.
+        pub fn NtCallbackReturn(output: *const u8, length: u32, status: u32) -> u32;
+        /// RtlUnwind: the SEH chain unwound to `frame`, each handler above it called.
+        pub fn RtlUnwind(frame: u32, target_ip: u32, record: u32, value: u32);
+        /// NtQuerySystemInformation: a class of the system's information (here only the callback
+        /// smoke's own class).
+        pub fn NtQuerySystemInformation(
+            class: u32,
+            buffer: *const u8,
+            length: u32,
+            return_length: *mut u32,
+        ) -> u32;
         /// RtlAllocateHeap and RtlFreeHeap: a block of the heap, and its release.
         pub fn RtlAllocateHeap(heap: usize, flags: u32, size: usize) -> *mut u8;
         pub fn RtlFreeHeap(heap: usize, flags: u32, block: *mut u8) -> u32;
@@ -1110,6 +1123,42 @@ impl<T: Pod> LocalFixed<T> {
 pub fn debug_print(text: &CStr) {
     // SAFETY: the format and the text are NUL-terminated; the format takes the one string.
     unsafe { raw::DbgPrint(c"%s".as_ptr().cast(), text.as_ptr().cast::<u8>()) };
+}
+
+/// NtCallbackReturn: the kernel's innermost user-mode callback answers `output` and `status`. Comes
+/// back only when no callback is outstanding, with the service's status.
+#[cfg(all(target_arch = "x86", not(test)))]
+pub fn callback_return(output: &[u8], status: u32) -> u32 {
+    // SAFETY: the block is the caller's, read by the kernel before the issuer runs on.
+    unsafe { raw::NtCallbackReturn(output.as_ptr(), output.len() as u32, status) }
+}
+
+/// The callback smoke's kernel entry: NtQuerySystemInformation of its class, `request` the buffer
+/// and `reply` in the return length's place (a `callback-smoke` kernel writes the reply there).
+#[cfg(all(target_arch = "x86", not(test)))]
+pub fn smoke_query(request: &[u8], reply: &mut rtl::callback::SmokeReply) -> u32 {
+    // SAFETY: the request is read and the reply written for the call's length only.
+    unsafe {
+        raw::NtQuerySystemInformation(
+            rtl::callback::SMOKE_INFORMATION_CLASS,
+            request.as_ptr(),
+            request.len() as u32,
+            core::ptr::from_mut(reply).cast(),
+        )
+    }
+}
+
+/// RtlUnwind to the SEH registration `frame`, for the exception `record` a handler of its is
+/// taking (no target address: the call returns).
+///
+/// # Safety
+///
+/// `frame` is a registration on the calling thread's chain, and `record` the record its handler was
+/// handed; the frames above the registration are given up.
+#[cfg(all(target_arch = "x86", not(test)))]
+pub unsafe fn unwind_to(frame: u32, record: u32) {
+    // SAFETY: the caller's contract.
+    unsafe { raw::RtlUnwind(frame, 0, record, 0) }
 }
 
 /// RtlNtStatusToDosError: the Win32 error `status` maps to.

@@ -278,6 +278,17 @@ pub fn set_fast_peb_lock(lock: &'static CriticalSection, enter: usize, leave: us
     set_peb_field!(fast_peb_unlock_routine, leave);
 }
 
+/// The PEB's KernelCallbackTable: the routines ntdll's KiUserCallbackDispatcher calls the kernel's
+/// user-mode callbacks through (zero until user32's process attach sets it).
+pub fn kernel_callback_table() -> usize {
+    peb_field!(kernel_callback_table)
+}
+
+/// Point the PEB's KernelCallbackTable at `table` (user32's process attach).
+pub fn set_kernel_callback_table(table: usize) {
+    set_peb_field!(kernel_callback_table, table)
+}
+
 /// The loader lock (the PEB's LoaderLock, the critical section ntdll's loader holds).
 pub fn loader_lock() -> usize {
     peb_field!(loader_lock)

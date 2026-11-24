@@ -15,6 +15,7 @@
 
 pub mod apc;
 pub mod args;
+pub mod callback;
 #[cfg(target_arch = "x86")]
 pub mod context;
 pub mod params;
@@ -312,7 +313,7 @@ pub const RING3_STUB: [u8; 25] = [
 /// Trap frame the gate stubs build on the ring-0 stack, in the shape shared with the exception
 /// stubs (the CPU pushes the ring-3 tail; the stub pushes the rest in the same order).
 #[allow(dead_code)]
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 #[repr(C)]
 pub struct TrapFrame {
     pub edi: u32,

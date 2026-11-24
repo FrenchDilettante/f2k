@@ -2497,6 +2497,7 @@ ordinal = 541
 [[export]]
 name = "KeUserModeCallback"
 ordinal = 542
+note = "user/callback.rs implements it (call_user_mode, for win32k); the DDK-named entry point is not wired yet"
 
 [[export]]
 name = "KeWaitForMutexObject"

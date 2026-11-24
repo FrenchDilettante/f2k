@@ -276,6 +276,8 @@ pub struct SystemEntryPoints {
     pub apc_dispatcher: u32,
     /// ntdll's KiUserExceptionDispatcher, where an exception's dispatch enters user mode.
     pub exception_dispatcher: u32,
+    /// ntdll's KiUserCallbackDispatcher, where a user-mode callback enters user mode.
+    pub callback_dispatcher: u32,
 }
 
 impl SystemEntryPoints {
@@ -291,6 +293,7 @@ impl SystemEntryPoints {
             ldr_initialize_thunk: ntdll("LdrInitializeThunk"),
             apc_dispatcher: ntdll("KiUserApcDispatcher"),
             exception_dispatcher: ntdll("KiUserExceptionDispatcher"),
+            callback_dispatcher: ntdll("KiUserCallbackDispatcher"),
         }
     }
 }
@@ -342,6 +345,13 @@ pub fn apc_dispatcher() -> u32 {
 /// [`crate::user::seh`]).
 pub fn exception_dispatcher() -> u32 {
     ENTRY_POINTS.get().exception_dispatcher
+}
+
+/// ntdll's KiUserCallbackDispatcher: a user-mode callback enters user mode there (see
+/// [`crate::user::callback`]).
+#[cfg_attr(not(feature = "callback-smoke"), allow(dead_code))]
+pub fn callback_dispatcher() -> u32 {
+    ENTRY_POINTS.get().callback_dispatcher
 }
 
 #[cfg(test)]

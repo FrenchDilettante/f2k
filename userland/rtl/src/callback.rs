@@ -1,0 +1,97 @@
+//! The kernel's calls into user mode (KeUserModeCallback): what the kernel and user32 agree on.
+//!
+//! The kernel enters ntdll's KiUserCallbackDispatcher with an API number and an input block on the
+//! user stack; the dispatcher calls `PEB.KernelCallbackTable[api](input, length)`, a table user32
+//! sets at its process attach, and the routine answers through NtCallbackReturn (its output block,
+//! its length, a status). The table's slots are Windows 2000's `__fn*` dispatch routines as later
+//! slices fill them; [`CALLBACK_SLOTS`] of them, the last F2K's own [`SMOKE_API`].
+//!
+//! The smoke slot serves the kernel's `callback-smoke` boot: each [`SmokeRequest`] names an
+//! operation ([`op`]), and a routine that calls back into the kernel for a nested level enters it
+//! through NtQuerySystemInformation with the class [`SMOKE_INFORMATION_CLASS`] and a request of its
+//! own (so user32 keeps entering the kernel only as Windows 2000's does: its win32k stubs, and
+//! ntdll's for the rest). Without that feature the kernel never calls the slot, and the class is
+//! the invalid one it is to every other kernel.
+
+use crate::pod::Pod;
+
+/// The callback table's length: Windows 2000's `__fn*` slots and F2K's smoke slot.
+pub const CALLBACK_SLOTS: usize = 128;
+
+/// The smoke slot: the table's last, past every Windows 2000 slot.
+pub const SMOKE_API: u32 = CALLBACK_SLOTS as u32 - 1;
+
+/// The information class a smoke routine asks NtQuerySystemInformation for: the request as the
+/// buffer (its length the request's), the reply's address as the return length's place. Served
+/// only by a `callback-smoke` kernel; no Windows class is near it.
+pub const SMOKE_INFORMATION_CLASS: u32 = 0xF2C0_0001;
+
+/// What a smoke callback or the smoke's kernel entry is asked to do.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SmokeRequest {
+    /// One of [`op`].
+    pub op: u32,
+    /// The levels still to nest ([`op::NEST`], [`op::EXIT`]).
+    pub depth: u32,
+    /// The operation's argument: a value to echo, an address to touch, an APC routine.
+    pub argument: u32,
+}
+
+// SAFETY: three u32s, no padding.
+unsafe impl Pod for SmokeRequest {}
+
+/// A smoke callback's answer (its NtCallbackReturn output) or the smoke's kernel entry's reply.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SmokeReply {
+    pub answer: u32,
+    pub detail: u32,
+}
+
+// SAFETY: two u32s, no padding.
+unsafe impl Pod for SmokeReply {}
+
+/// The smoke operations. A callback for each answers as follows; the smoke's kernel entry, asked
+/// for one, calls back with the same request (APC and a zero-depth EXIT excepted).
+pub mod op {
+    /// Answer the argument plus one.
+    pub const ECHO: u32 = 1;
+    /// At depth 1, answer 1; deeper, call back one level less deep through the service and answer
+    /// the inner answer times ten plus the depth (3 deep: 123). A failed inner call's status is
+    /// the answer's, the inner reply with it.
+    pub const NEST: u32 = 2;
+    /// Read the byte at the argument under an exception frame of the routine's own: answer 1 when
+    /// it could be read, 0 when the read faulted.
+    pub const PROBE: u32 = 3;
+    /// Call back RAISE (same argument) through the service under an exception frame of the
+    /// routine's own: answer the exception code it caught, 0 for none.
+    pub const ESCAPE: u32 = 4;
+    /// Read the byte at the argument with no exception frame of the routine's own.
+    pub const RAISE: u32 = 5;
+    /// Ask the service to queue a user APC on the calling thread and arm its delivery: answer the
+    /// value the APC routine left (the routine's context), 0 when it did not run.
+    pub const APC: u32 = 6;
+    /// Call back EXIT one level less deep through the service; at depth 1, ask the service to end
+    /// the process ([`super::SMOKE_EXIT_CODE`]).
+    pub const EXIT: u32 = 7;
+}
+
+/// The exit code a smoke EXIT ends the process with.
+pub const SMOKE_EXIT_CODE: u32 = 203;
+
+/// The APC context the smoke APC routine is queued with, and leaves for its callback to answer.
+pub const SMOKE_APC_CONTEXT: u32 = 0x00A9_C000;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_smoke_slot_is_the_tables_last() {
+        assert_eq!(SMOKE_API, 127);
+        assert_eq!(core::mem::size_of::<SmokeRequest>(), 12);
+        assert_eq!(core::mem::size_of::<SmokeReply>(), 8);
+        assert!(SMOKE_INFORMATION_CLASS > 0xFFFF);
+    }
+}

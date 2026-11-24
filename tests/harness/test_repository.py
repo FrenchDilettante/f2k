@@ -413,6 +413,7 @@ RAW_ACCESS_ALLOWED = {
     "kernel/src/cm/mod.rs": "the registry's storage, pages of the nonpaged pool: its names, classes"
     " and value data, and a service's staged name",
     "kernel/src/cpu/gdt.rs": "the kernel's own descriptor table",
+    "kernel/src/cpu/mod.rs": "the processor's task state segment (its ring-0 stack pointer)",
     "kernel/src/dev/io.rs": "the I/O manager's arena (its DRIVER_OBJECTs, DEVICE_OBJECTs, FILE_OBJECTs"
     " and IRPs) and the loaded drivers' own strings and buffers, kernel memory: a program's buffers"
     " reach a driver only as a system buffer the copy fills and empties",

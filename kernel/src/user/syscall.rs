@@ -19,6 +19,10 @@
 //! - [`SYS_CSR_CALL`]: the client-server call, ntdll's CsrClientCallServer (`csr`);
 //! - [`SYS_DEBUG_PRINT`]: the debugger print, ntdll's DbgPrint (`dbgprint`).
 //!
+//! With the `callback-smoke` feature, NtQuerySystemInformation of the class
+//! `rtl::callback::SMOKE_INFORMATION_CLASS` is the user-mode callback diagnostic's own entry
+//! (`callback::smoke`).
+//!
 //! The gate is a 32-bit interrupt gate at DPL 3 (so entry clears IF).
 //!
 //! Entry choreography: the CPU switches to the TSS ring-0 stack and pushes the ring-3 tail; the
@@ -367,11 +371,12 @@ fn serve(frame: &mut TrapFrame, passive: &mut At<Passive>) -> Result<(), NtStatu
     // A Windows 2000 system service of either table, the client-server call, or the debugger
     // print.
     let (arg_bytes, service) = find_service(frame.eax)?;
+    let table = service_table(frame.eax);
 
     // A win32k service first connects the calling process to its window station and desktop, as
     // Windows 2000's first win32k call makes a thread a GUI thread (the internal numbers' table
     // bits are 0).
-    if service_table(frame.eax) == WIN32K_TABLE {
+    if table == WIN32K_TABLE {
         crate::win32k::winsta::connect(crate::user::args::calling_process())?;
     }
 
@@ -379,7 +384,16 @@ fn serve(frame: &mut TrapFrame, passive: &mut At<Passive>) -> Result<(), NtStatu
 
     let mut args = [0u32; MAX_ARG_BYTES / 4];
     copy_user_args(frame.edx, arg_bytes, &mut args);
+    #[cfg(feature = "callback-smoke")]
+    if super::callback::smoke::claims(frame.eax, &args) {
+        super::callback::smoke::service(frame, &args, passive);
+        return Ok(());
+    }
     service(frame, &args[..arg_bytes as usize / 4], passive);
+    #[cfg(feature = "callback-smoke")]
+    if table == WIN32K_TABLE {
+        super::callback::smoke::run_once(passive);
+    }
     // A service attaches to another process only for a scope inside it: the caller resumes on its
     // own address space (Windows stops on the same mismatch, APC_INDEX_MISMATCH).
     assert!(

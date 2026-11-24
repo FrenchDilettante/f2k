@@ -1,7 +1,7 @@
 # The exception dispatcher's entry points (Windows 2000's ntdll keeps them in assembly too): the
-# kernel's way into user mode for an exception and for a user APC, RtlUnwind's context capture, and
-# ExecuteHandler2's registration around a handler's call. Their bodies are Rust (src/except.rs over
-# rtl::seh, cdecl).
+# kernel's way into user mode for an exception, a user APC and a user-mode callback, RtlUnwind's
+# context capture, and ExecuteHandler2's registration around a handler's call. Their bodies are
+# Rust (src/except.rs over rtl::seh, cdecl).
 .text
 
 # The kernel enters user mode here for every exception it dispatches, a fault's or
@@ -32,6 +32,49 @@ _f2k_export_KiUserApcDispatcher:
     push eax
     call _f2k_raise_failed_status
     ud2
+
+# The kernel calls user mode here (KeUserModeCallback): a dummy return slot at [esp], then the API
+# number, the input block's address and its length. Under a registration of the dispatcher's own,
+# the table's routine is called with the address and the length; it answers through
+# NtCallbackReturn, or returns, and its EAX is the status, no output. Only a failed NtCallbackReturn
+# comes back: its status is raised.
+.p2align 4
+.globl _f2k_export_KiUserCallbackDispatcher
+_f2k_export_KiUserCallbackDispatcher:
+    mov eax, offset _f2k_callback_unwind_handler
+    push eax
+    push dword ptr fs:[0]
+    mov dword ptr fs:[0], esp
+    mov eax, dword ptr fs:[0x30]
+    mov eax, dword ptr [eax+0x2C]
+    mov ecx, dword ptr [esp+12]
+    push dword ptr [esp+20]
+    push dword ptr [esp+20]
+    call dword ptr [eax+ecx*4]
+    push eax
+    push 0
+    push 0
+    call _f2k_nt_NtCallbackReturn
+    push eax
+    call _f2k_raise_failed_status
+    ud2
+
+# The dispatcher's registration's handler (cdecl: record, frame, context, dispatcher): an unwind
+# passing through leaves the callback, so the kernel pops it (NtCallbackReturn with
+# STATUS_CALLBACK_POP_STACK: the issuer gets that status, and the issuing level's return to user
+# mode comes back here, the unwind going on). An exception searches on.
+.p2align 4
+_f2k_callback_unwind_handler:
+    mov eax, dword ptr [esp+4]
+    test dword ptr [eax+4], 6
+    jz 1f
+    push 0xC0000423
+    push 0
+    push 0
+    call _f2k_nt_NtCallbackReturn
+1:
+    mov eax, 1
+    ret
 
 # RtlUnwind(TargetFrame, TargetIp, ExceptionRecord, ReturnValue): the caller's context captured as
 # it was at the call (its registers, EFLAGS and segments; EIP its return address, ESP past the

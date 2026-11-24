@@ -81,6 +81,17 @@ kbd-smoke = []
 # served and the interrupt audit stay clean; then the normal boot proceeds.
 # The tests/core/kernel nest-smoke case drives the key and pins the lines.
 nest-smoke = []
+# The user-mode callback diagnostic boot: the first win32k service of a
+# process whose callback table user32 set issues callbacks through
+# user32's smoke slot on its way out (simple, nested, a fault handled in
+# the callback, an exception escaping a nested one, a user APC at a nested
+# return, the kernel stack's room check, NtCallbackReturn with none
+# outstanding) and reports them on COM1, then ends the process from a
+# callback two deep. The mechanism is default-on; the feature gates the
+# diagnostic and its entry (a reserved NtQuerySystemInformation class).
+# The tests/core/kernel
+# callback-smoke case pins the lines.
+callback-smoke = []
 # The opt-in performance trace: the interval clock's interrupt samples the
 # interrupted context and its frame-pointer call stack into a static ring
 # buffer, and the boot's end dumps it on COM1 before the line the harness

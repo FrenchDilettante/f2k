@@ -11,10 +11,17 @@
 
 extern crate rtl;
 // The user-mode exports' bodies (src/lib.rs): the .def exports them from the library.
-extern crate user32 as _;
+extern crate user32;
 
-/// The DLL's entry point: every reason succeeds (DLL_PROCESS_ATTACH answers TRUE).
+/// DLL_PROCESS_ATTACH, the reason the loader's first call gives.
+const DLL_PROCESS_ATTACH: u32 = 1;
+
+/// The DLL's entry point: every reason succeeds (DLL_PROCESS_ATTACH answers TRUE); the process's
+/// attach points the PEB's KernelCallbackTable at user32's callback table.
 #[unsafe(no_mangle)]
-extern "system" fn DllMain(_instance: usize, _reason: u32, _reserved: usize) -> u32 {
+extern "system" fn DllMain(_instance: usize, reason: u32, _reserved: usize) -> u32 {
+    if reason == DLL_PROCESS_ATTACH {
+        user32::callback::attach();
+    }
     1
 }

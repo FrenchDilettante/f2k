@@ -20,7 +20,8 @@ pub mod idt;
 /// switch's assembly writes the TSS's ring-0 stack and the TEB descriptor's base at every switch,
 /// with interrupts masked, at [`TSS_ESP0_OFFSET`] and [`TEB_DESCRIPTOR_OFFSET`]. Rust code writes
 /// them once, at boot, through [`ProcessorTables::build`], before they are loaded; afterwards it
-/// only reads them, through their addresses.
+/// only reads them, through their addresses, except for the ring-0 stack a user-mode callback's
+/// entry and return move ([`ProcessorTables::set_ring0_stack`]).
 ///
 /// Aligned so that each table starts on a 16-byte boundary (the processor's preferred alignment for
 /// the descriptor tables is 8).
@@ -36,7 +37,8 @@ pub struct ProcessorTables {
 // SAFETY: Rust reaches the tables' contents only through `build`, which hands out the one set of
 // references, once, at boot, before the tables are loaded; afterwards only the processor and the
 // context switch's assembly write them (one processor, interrupts masked for the switch's stores),
-// and Rust reads them only through their raw addresses.
+// and Rust reads them only through their raw addresses; its one later store, the ring-0 stack, is
+// made at the dispatch level, as the switch's is.
 unsafe impl Sync for ProcessorTables {}
 
 /// The tables, handed out once to be built.
@@ -79,6 +81,21 @@ impl ProcessorTables {
                 idt: &mut *self.idt.get(),
             }
         }
+    }
+
+    /// Make `top` the ring-0 stack the next entry from ring 3 starts at (the TSS's `esp0`): a
+    /// user-mode callback's entry and return move it, as the context switch does for the incoming
+    /// thread. The caller holds the dispatch level, so no switch lands between its record of the
+    /// running thread's stack top and this store; the tables are this processor's.
+    pub fn set_ring0_stack(
+        &self,
+        top: u32,
+        _dispatch: &mut crate::level::At<crate::level::Dispatch>,
+    ) {
+        // SAFETY: one aligned word of the loaded TSS, which the processor reads only on a gate
+        // entry from ring 3, never during this store (the dispatch level holds the switch off and
+        // the running code is in ring 0); no reference to the TSS exists past the build.
+        unsafe { (&raw mut (*self.tss.get()).esp0).write_volatile(top) }
     }
 
     /// The GDT's address, to read it once loaded.

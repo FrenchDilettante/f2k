@@ -264,6 +264,12 @@ statuses! {
     STATUS_HANDLE_NOT_CLOSABLE,
     /// A file with a mapped view, which cannot be truncated or deleted.
     STATUS_USER_MAPPED_FILE,
+    /// A user-mode callback refused: the kernel stack has no room left for another level.
+    STATUS_STACK_OVERFLOW,
+    /// NtCallbackReturn from a thread with no user-mode callback outstanding.
+    STATUS_NO_CALLBACK_ACTIVE,
+    /// A user-mode callback an exception unwound past: its issuer's answer.
+    STATUS_CALLBACK_POP_STACK,
     /// A system service number past its table, or of a table that does not exist.
     STATUS_INVALID_SYSTEM_SERVICE,
 }
