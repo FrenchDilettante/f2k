@@ -20,7 +20,8 @@
 //! and frames in the 3D colors (black: COLOR_3DDKSHADOW, gray: COLOR_3DSHADOW, white:
 //! COLOR_3DHILIGHT); its etched lines and frame with DrawEdge. An icon is not drawn: win32k's icon
 //! records hold no bits yet (the seam the icons left), so an SS_ICON static paints its background
-//! alone. Its WM_NCHITTEST is HTTRANSPARENT unless SS_NOTIFY.
+//! alone. Its WM_NCHITTEST is HTTRANSPARENT unless SS_NOTIFY; an SS_NOTIFY static sends its
+//! parent STN_CLICKED at WM_LBUTTONDOWN and STN_DBLCLK at WM_LBUTTONDBLCLK.
 
 use rtl::gdi::TRANSPARENT;
 use rtl::nonclient::WS_EX_STATICEDGE;
@@ -66,6 +67,9 @@ const SS_TYPEMASK: u32 = 0x1F;
 const SS_NOPREFIX: u32 = 0x80;
 /// The static notifies its parent of clicks (and is found under the mouse).
 const SS_NOTIFY: u32 = 0x0100;
+/// The notifications an SS_NOTIFY static sends (winuser.h's STN_*).
+const STN_CLICKED: u32 = 0;
+const STN_DBLCLK: u32 = 1;
 /// A text static's line centred vertically (one line: DrawText's DT_SINGLELINE | DT_VCENTER).
 const SS_CENTERIMAGE: u32 = 0x0200;
 /// A sunken border: WS_EX_STATICEDGE, given at creation.
@@ -226,6 +230,17 @@ fn static_control(window: usize, message: u32, wparam: u32, lparam: i32, ansi: b
         // A static lets the mouse through to the window under it unless SS_NOTIFY asks for its
         // clicks (controls `edges`: WindowFromPoint finds a plain static's parent).
         crate::nonclient::WM_NCHITTEST if style_of(window) & SS_NOTIFY == 0 => -1,
+        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK if style_of(window) & SS_NOTIFY != 0 => {
+            notify(
+                window,
+                if message == WM_LBUTTONDOWN {
+                    STN_CLICKED
+                } else {
+                    STN_DBLCLK
+                },
+            );
+            0
+        }
         STM_GETICON => match kind(window) {
             SS_ICON => read(window, IMAGE) as i32,
             _ => 0,
@@ -282,6 +297,30 @@ fn static_control(window: usize, message: u32, wparam: u32, lparam: i32, ansi: b
         }
         _ => message::default_procedure(window, message, wparam, lparam, ansi),
     }
+}
+
+/// The static's parent, 0 for a top-level static.
+fn parent_of(window: usize) -> usize {
+    if style_of(window) & WS_CHILD == 0 {
+        return 0;
+    }
+    window::links(window).map_or(0, |links: WindowLinks| links.parent as usize)
+}
+
+/// The notification `code` sent to the static's parent (WM_COMMAND: its id and the code, the
+/// static's handle).
+fn notify(window: usize, code: u32) {
+    let parent = parent_of(window);
+    if parent == 0 {
+        return;
+    }
+    let id = window::window_data(window).map_or(0, |data| data.id);
+    let _ = message::send(
+        parent,
+        crate::dialog::WM_COMMAND,
+        code << 16 | (id & 0xFFFF),
+        window as i32,
+    );
 }
 
 /// SS_SUNKEN made WS_EX_STATICEDGE, as Windows 2000's static does at its creation (controls
@@ -353,11 +392,7 @@ fn draw_static(window: usize, dc: usize) {
             draw::draw_edge_in(dc, client, draw::EDGE_ETCHED, BF_RECT);
         }
         kind => {
-            let parent = if style & WS_CHILD != 0 {
-                window::links(window).map_or(0, |links: WindowLinks| links.parent as usize)
-            } else {
-                0
-            };
+            let parent = parent_of(window);
             let brush = if parent != 0 {
                 message::send(parent, message::WM_CTLCOLORSTATIC, dc as u32, window as i32)
                     .unwrap_or(0) as usize

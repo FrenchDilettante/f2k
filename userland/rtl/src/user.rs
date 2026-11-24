@@ -67,6 +67,9 @@ pub const WM_KEYLAST: u32 = 0x0108;
 pub const WM_TIMER: u32 = 0x0113;
 pub const WM_SYSTIMER: u32 = 0x0118;
 pub const WM_MOUSEFIRST: u32 = 0x0200;
+pub const WM_LBUTTONDOWN: u32 = 0x0201;
+pub const WM_LBUTTONUP: u32 = 0x0202;
+pub const WM_LBUTTONDBLCLK: u32 = 0x0203;
 pub const WM_MOUSELAST: u32 = 0x020D;
 pub const WM_USER: u32 = 0x0400;
 

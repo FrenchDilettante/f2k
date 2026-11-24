@@ -10,7 +10,8 @@
 //!
 //! - BM_SETCHECK checks a check box or a radio button (any nonzero state is checked, but a
 //!   three-state box keeps BST_INDETERMINATE), never another kind, and notifies nothing; an auto
-//!   radio button checked so leaves its group as it is;
+//!   radio button checked so leaves its group as it is; a radio button takes WS_TABSTOP checked and
+//!   loses it unchecked;
 //! - BM_CLICK pushes the button and lets it go: the focus to it (a disabled one keeps none), an
 //!   automatic check box toggled, an automatic three-state box stepped, an automatic radio button
 //!   checked and its group's others unchecked, and BN_CLICKED sent to the parent, disabled or not;
@@ -18,6 +19,13 @@
 //! - a radio button the focus reaches unchecked, other than by a click, is clicked (the dialog
 //!   capture's Tab into an auto radio group sends its BN_CLICKED);
 //! - BM_SETSTYLE sets the style's low word; BM_SETSTATE the pushed bit;
+//! - WM_LBUTTONDOWN takes the focus and pushes it, WM_LBUTTONUP lets it go and clicks it (wherever
+//!   the release lands: only a mouse move off the button lets it go unclicked); WM_LBUTTONDBLCLK
+//!   sends BN_DBLCLK for a radio button, an owner-drawn one or a BS_NOTIFY one, and is another
+//!   press for the others;
+//! - BS_NOTIFY sends BN_SETFOCUS and BN_KILLFOCUS as the focus comes and goes;
+//! - an owner-drawn button's focus and pushed state are drawn at once, WM_DRAWITEM with ODA_FOCUS
+//!   and ODA_SELECT; the focus leaving redraws it whole too;
 //! - WM_GETDLGCODE: DLGC_BUTTON with DLGC_DEFPUSHBUTTON, DLGC_UNDEFPUSHBUTTON or DLGC_RADIOBUTTON
 //!   by kind, a group box DLGC_STATIC.
 //!
@@ -34,7 +42,7 @@ use rtl::window::{WindowLinks, GWL_STYLE};
 
 use crate::dialog::{self, BN_CLICKED, DLGC_BUTTON, DLGC_DEFPUSHBUTTON, DLGC_RADIOBUTTON};
 use crate::dialog::{DLGC_STATIC, DLGC_UNDEFPUSHBUTTON, WM_COMMAND, WM_GETDLGCODE, WM_GETFONT};
-use crate::dialog::{WM_SETFONT, WS_CHILD, WS_DISABLED};
+use crate::dialog::{WM_SETFONT, WS_CHILD, WS_DISABLED, WS_TABSTOP, WS_VISIBLE};
 use crate::draw::{self, BF_RECT, BF_SOFT, DT_CENTER, DT_LEFT, DT_SINGLELINE, DT_VCENTER};
 use crate::{focus, imports, message, paint, window};
 
@@ -72,6 +80,8 @@ const BS_OWNERDRAW: u32 = 0xB;
 const WM_DRAWITEM: u32 = 0x002B;
 const ODT_BUTTON: u32 = 4;
 const ODA_DRAWENTIRE: u32 = 0x0001;
+const ODA_SELECT: u32 = 0x0002;
+const ODA_FOCUS: u32 = 0x0004;
 const ODS_SELECTED: u32 = 0x0001;
 const ODS_DISABLED: u32 = 0x0004;
 const ODS_FOCUS: u32 = 0x0010;
@@ -113,6 +123,11 @@ const BS_VERTICAL: u32 = 0x0C00;
 const BS_VCENTER: u32 = 0x0C00;
 /// BS_NOTIFY: the button sends BN_SETFOCUS, BN_KILLFOCUS and BN_DBLCLK too.
 const BS_NOTIFY: u32 = 0x4000;
+
+/// The notifications beyond BN_CLICKED (winuser.h's BN_*).
+const BN_DBLCLK: u32 = 5;
+const BN_SETFOCUS: u32 = 6;
+const BN_KILLFOCUS: u32 = 7;
 
 /// The cases logged in this process: a kind, a style bit, a message.
 static LOGGED: rtl::stub::Logged<16> = rtl::stub::Logged::new();
@@ -158,7 +173,7 @@ fn log_undrawn(window: usize, call: (usize, u32, u32, i32)) {
 pub const BST_CHECKMASK: u32 = 0x0003;
 pub const BST_PUSHED: u32 = 0x0004;
 pub const BST_FOCUS: u32 = 0x0008;
-/// The button is being clicked (BM_CLICK, Space): its WM_SETFOCUS clicks nothing.
+/// The button is being clicked (BM_CLICK, Space, the mouse): its WM_SETFOCUS clicks nothing.
 const CLICKING: u32 = 0x0100;
 
 /// A button's extra bytes: its state block's address (0 before the first change).
@@ -240,19 +255,77 @@ fn radio(kind: u32) -> bool {
     matches!(kind, BS_RADIOBUTTON | BS_AUTORADIOBUTTON)
 }
 
-/// The button's state changed: `set` set, `clear` cleared, the button redrawn when it shows.
+/// The button's state changed: `set` set, `clear` cleared, the button redrawn when it shows (an
+/// owner-drawn one at once, its focus then its pushed state).
 fn change(window: usize, set: u32, clear: u32) {
     let state = read(window, STATE);
     let changed = (state | set) & !clear;
-    if changed != state {
-        write(window, STATE, changed);
+    if changed == state {
+        return;
+    }
+    write(window, STATE, changed);
+    if kind(window) == BS_OWNERDRAW {
+        let flipped = state ^ changed;
+        if flipped & BST_FOCUS != 0 {
+            draw_now(window, ODA_FOCUS);
+        }
+        if flipped & BST_PUSHED != 0 {
+            draw_now(window, ODA_SELECT);
+        }
+    } else {
         let _ = imports::invalidate_rect(window, 0, false);
     }
+}
+
+/// An owner-drawn button shown drawn at once, in a DC of its own: WM_DRAWITEM with `action`.
+fn draw_now(window: usize, action: u32) {
+    if style(window) & WS_VISIBLE == 0 || parent_of(window) == 0 {
+        return;
+    }
+    let dc = crate::dc::get_dc(window);
+    if dc == 0 {
+        return;
+    }
+    draw_item(window, dc, action);
+    crate::dc::release_dc(window, dc);
+}
+
+/// A mouse press: the focus taken, the button pushed.
+fn press(window: usize) {
+    change(window, CLICKING, 0);
+    focus::set_focus(window);
+    change(window, BST_PUSHED, 0);
 }
 
 /// The check state set (redrawn when it changes).
 fn set_check(window: usize, check: u32) {
     change(window, check & BST_CHECKMASK, BST_CHECKMASK & !check);
+}
+
+/// BM_SETCHECK: a check box or radio button checked (any nonzero state is checked, but a
+/// three-state box keeps BST_INDETERMINATE); a radio button takes WS_TABSTOP when checked and
+/// loses it when not, so Tab lands on a group's checked radio (dialog `radiotab`).
+fn set_checked(window: usize, wparam: u32) {
+    let kind = kind(window);
+    if !checkable(kind) {
+        return;
+    }
+    let check = match kind {
+        BS_3STATE | BS_AUTO3STATE => wparam.min(2),
+        _ => (wparam != 0) as u32,
+    };
+    set_check(window, check);
+    if radio(kind) {
+        let style = style(window);
+        let changed = if check != 0 {
+            style | WS_TABSTOP
+        } else {
+            style & !WS_TABSTOP
+        };
+        if changed != style {
+            let _ = imports::set_window_long(window, GWL_STYLE, changed, false);
+        }
+    }
 }
 
 /// The click of the button: its automatic check state moved, then BN_CLICKED to its parent.
@@ -263,7 +336,7 @@ fn activate(window: usize) {
         BS_AUTOCHECKBOX => set_check(window, (check == 0) as u32),
         BS_AUTO3STATE => set_check(window, (check + 1) % 3),
         BS_AUTORADIOBUTTON => {
-            set_check(window, 1);
+            set_checked(window, 1);
             uncheck_group(window);
         }
         _ => {}
@@ -341,14 +414,7 @@ fn button(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> 
             }
         }
         BM_SETCHECK => {
-            let kind = kind(window);
-            if checkable(kind) {
-                let check = match kind {
-                    BS_3STATE | BS_AUTO3STATE => wparam.min(2),
-                    _ => (wparam != 0) as u32,
-                };
-                set_check(window, check);
-            }
+            set_checked(window, wparam);
             0
         }
         BM_GETSTATE => (read(window, STATE) & (BST_CHECKMASK | BST_PUSHED | BST_FOCUS)) as i32,
@@ -386,16 +452,10 @@ fn button(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> 
             message::default_procedure(window, message, wparam, lparam, ansi)
         }
         WM_SETFOCUS => {
-            if style(window) & BS_NOTIFY != 0 {
-                crate::stub::message_once(
-                    &LOGGED,
-                    BS_NOTIFY,
-                    &crate::stub::BUTTON_PROC,
-                    "BS_NOTIFY's BN_SETFOCUS and BN_KILLFOCUS notifications are not yet sent",
-                    (window, message, wparam, lparam),
-                );
-            }
             change(window, BST_FOCUS, 0);
+            if style(window) & BS_NOTIFY != 0 {
+                notify(window, BN_SETFOCUS);
+            }
             let state = read(window, STATE);
             if radio(kind(window)) && state & (BST_CHECKMASK | CLICKING) == 0 {
                 activate(window);
@@ -403,7 +463,37 @@ fn button(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> 
             0
         }
         WM_KILLFOCUS => {
-            change(window, 0, BST_FOCUS | BST_PUSHED);
+            change(window, 0, BST_FOCUS | BST_PUSHED | CLICKING);
+            if kind(window) == BS_OWNERDRAW {
+                let _ = imports::invalidate_rect(window, 0, false);
+            }
+            if style(window) & BS_NOTIFY != 0 {
+                notify(window, BN_KILLFOCUS);
+            }
+            0
+        }
+        WM_LBUTTONDOWN | WM_LBUTTONUP | WM_LBUTTONDBLCLK if kind(window) == BS_GROUPBOX => {
+            message::default_procedure(window, message, wparam, lparam, ansi)
+        }
+        WM_LBUTTONDBLCLK
+            if radio(kind(window))
+                || kind(window) == BS_OWNERDRAW
+                || style(window) & BS_NOTIFY != 0 =>
+        {
+            notify(window, BN_DBLCLK);
+            0
+        }
+        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK => {
+            press(window);
+            0
+        }
+        WM_LBUTTONUP => {
+            if read(window, STATE) & BST_PUSHED != 0 {
+                change(window, 0, BST_PUSHED | CLICKING);
+                activate(window);
+            } else {
+                change(window, 0, CLICKING);
+            }
             0
         }
         WM_KEYDOWN if wparam == VK_SPACE => {
@@ -447,7 +537,7 @@ fn button(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> 
             if kind(window) == BS_OWNERDRAW && parent_of(window) != 0 {
                 // An owner-drawn button's paint is the parent's WM_DRAWITEM, as Windows 2000's.
                 if let Some(painting) = paint::Painting::begin(window) {
-                    draw_item(window, painting.dc());
+                    draw_item(window, painting.dc(), ODA_DRAWENTIRE);
                 }
             } else {
                 log_undrawn(window, (window, message, wparam, lparam));
@@ -485,7 +575,7 @@ fn color(index: u32) -> usize {
 /// the button selected (the DC's own, SYSTEM_FONT, for none), and two WM_CTLCOLORBTN sent to the
 /// parent, which set the DC's colors (the default procedure's: BTNFACE behind black text), the
 /// brush the second answers selected.
-fn draw_item(window: usize, dc: usize) {
+fn draw_item(window: usize, dc: usize, action: u32) {
     let parent = parent_of(window);
     let font = read(window, FONT);
     if font != 0 {
@@ -499,7 +589,7 @@ fn draw_item(window: usize, dc: usize) {
     if brush != 0 {
         let _ = imports::select_object(dc, brush);
     }
-    let item = item_struct(window, dc);
+    let item = item_struct(window, dc, action);
     // WM_DRAWITEM's wParam is the control's id (the dialog manager's convention): the parent
     // indexes its per-control tables with it.
     let _ = message::send(
@@ -510,9 +600,9 @@ fn draw_item(window: usize, dc: usize) {
     );
 }
 
-/// The DRAWITEMSTRUCT a BS_OWNERDRAW button's WM_DRAWITEM carries: a button drawn whole, in its
-/// own client rectangle, with its state.
-fn item_struct(window: usize, dc: usize) -> DrawItemStruct {
+/// The DRAWITEMSTRUCT a BS_OWNERDRAW button's WM_DRAWITEM carries: the button drawn for `action`,
+/// in its own client rectangle, with its state.
+fn item_struct(window: usize, dc: usize, action: u32) -> DrawItemStruct {
     let client = window::client_rect(window).unwrap_or_default();
     let state = read(window, STATE);
     let mut item_state = 0;
@@ -532,7 +622,7 @@ fn item_struct(window: usize, dc: usize) -> DrawItemStruct {
         // Windows 2000 fills itemID with the control's handle for a button (the capture shows
         // a handle where the id would be); only wParam carries the id.
         item_id: window as u32,
-        item_action: ODA_DRAWENTIRE,
+        item_action: action,
         item_state,
         hwnd_item: window as u32,
         hdc: dc as u32,
@@ -859,7 +949,7 @@ mod tests {
                 WM_DRAWITEM
             ]
         );
-        let item = item_struct(button, 0x1234);
+        let item = item_struct(button, 0x1234, ODA_DRAWENTIRE);
         let client = window::client_rect(button).unwrap();
         assert_eq!(item.ctl_type, ODT_BUTTON);
         assert_eq!(item.ctl_id, 7);

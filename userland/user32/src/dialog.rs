@@ -2133,6 +2133,14 @@ fn key_down(dialog: usize, msg: &Msg) -> bool {
                 let next = next_group_item(dialog, focus, back);
                 if next != focus {
                     set_dialog_focus(dialog, next);
+                    // An auto radio button the arrows reach is clicked too, checked or not (dialog
+                    // `radiotab`: its focus and this click each send BN_CLICKED).
+                    if dialog_code(next, 0) & DLGC_RADIOBUTTON != 0
+                        && window::style_of(next).unwrap_or(0) & 0xF
+                            == crate::button::BS_AUTORADIOBUTTON
+                    {
+                        let _ = message::send(next, BM_CLICK, 0, 0);
+                    }
                 }
             }
             true
