@@ -451,24 +451,35 @@ pub unsafe extern "system" fn create_directory_w(
 }
 
 /// GetFullPathNameW's work: the path made absolute and folded (RtlGetFullPathName_U; no lookup),
-/// its trailing separator kept, into the caller's buffer: its length when it fits with its
-/// terminator, the file part pointing at its last component (null when it ends in a separator);
-/// otherwise the size it needs, terminator included. An empty path is ERROR_PATH_NOT_FOUND, a full
-/// one past MAX_PATH ERROR_FILENAME_EXCED_RANGE (assumptions, unverified against Windows 2000).
+/// into the caller's buffer: its length when it fits with its terminator, the file part pointing
+/// at its last component (null when it has none); otherwise the size it needs, terminator
+/// included. A W call's path has no MAX_PATH limit; an A call's, made full through a buffer of
+/// MAX_PATH units, is 0 past it, the last error untouched (the files capture's devpath). An empty
+/// path is ERROR_PATH_NOT_FOUND.
 fn full_path(
     name: &Wide,
     mut buffer: Text<'_>,
     file_part: Option<Out<'_, usize>>,
 ) -> Result<u32, Failure> {
     let mut full = [0u16; MAX_PATH + 1];
-    let (bytes, part) = ntcall::get_full_path_name(name.terminated(), &mut full);
+    let (mut bytes, mut part) = ntcall::get_full_path_name(name.terminated(), &mut full);
     if bytes == 0 {
         return Err(Failure::Error(ERROR_PATH_NOT_FOUND));
     }
+    let mut long = None;
     if bytes > 2 * MAX_PATH {
-        return Err(Failure::Error(ERROR_FILENAME_EXCED_RANGE));
+        if let Text::Ansi(_) = buffer {
+            return Ok(0);
+        }
+        // The size it needs, its terminator included: made again into a buffer that holds it.
+        let room = long.insert(HeapArray::new(bytes / 2)?);
+        (bytes, part) = ntcall::get_full_path_name(name.terminated(), room);
+        if bytes == 0 || bytes >= 2 * room.len() {
+            return Err(Failure::Error(ERROR_PATH_NOT_FOUND));
+        }
     }
-    let fit = buffer.put_fitting(&full[..bytes / 2]);
+    let made = long.as_deref().unwrap_or(&full);
+    let fit = buffer.put_fitting(&made[..bytes / 2]);
     if let (Fit::Fits(_), Some(mut file_part)) = (fit, file_part) {
         // The part lies in the caller's buffer.
         file_part.set(part.map_or(0, |at| buffer.address(at)));
@@ -498,7 +509,7 @@ pub unsafe extern "system" fn get_full_path_name_a(
         )
     };
     let full =
-        widen(name.as_ref()).and_then(|name| full_path(&name, Text::Ansi(buffer), file_part));
+        widen_whole(name.as_ref()).and_then(|name| full_path(&name, Text::Ansi(buffer), file_part));
     answer(full, 0)
 }
 
@@ -523,7 +534,7 @@ pub unsafe extern "system" fn get_full_path_name_w(
             Out::optional(file_part.cast::<usize>()),
         )
     };
-    let full = wide(&name).and_then(|name| full_path(&name, Text::Wide(buffer), file_part));
+    let full = wide_whole(&name).and_then(|name| full_path(&name, Text::Wide(buffer), file_part));
     answer(full, 0)
 }
 

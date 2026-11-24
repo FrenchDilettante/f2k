@@ -175,6 +175,11 @@ impl Wide {
         if !is_verbatim(units) {
             return Err(Failure::Error(ERROR_PATH_NOT_FOUND));
         }
+        Wide::long(units)
+    }
+
+    /// A name copied onto the process heap, whatever its length.
+    fn long(units: &[u16]) -> Result<Wide, Failure> {
         let mut wide = Wide::empty();
         wide.length = units.len();
         let long = HeapArray::joined(&[units, &[0]]);
@@ -192,6 +197,23 @@ pub fn widen(name: Option<&InStr<'_>>) -> Result<Wide, Failure> {
     Ok(wide)
 }
 
+/// An A call's name converted whole, past MAX_PATH characters too (on the process heap), as
+/// Windows 2000's GetFullPathNameA converts its name: no ERROR_FILENAME_EXCED_RANGE.
+pub fn widen_whole(name: Option<&InStr<'_>>) -> Result<Wide, Failure> {
+    if let Ok(wide) = widen(name) {
+        return Ok(wide);
+    }
+    let bytes = name.map_or(0, |name| name.bytes().len());
+    let mut long =
+        HeapArray::new(bytes + 1).map_err(|_| Failure::Error(ERROR_NOT_ENOUGH_MEMORY))?;
+    let length = ntcall::ansi_to_unicode(name, &mut long).map_err(Failure::Status)?;
+    long.truncate(length + 1);
+    let mut wide = Wide::empty();
+    wide.length = length;
+    wide.long = Some(long);
+    Ok(wide)
+}
+
 /// A W call's name, copied ([`Wide::caller`]). A W call does not convert: a name past MAX_PATH is
 /// ntdll's DOS path conversion's to refuse, which it does but for a `\\?\` path —
 /// ERROR_PATH_NOT_FOUND here (the files capture: CreateFileW of a 300-character path), where an A
@@ -200,6 +222,13 @@ pub fn widen(name: Option<&InStr<'_>>) -> Result<Wide, Failure> {
 pub fn wide(name: &InWStr<'_>) -> Result<Wide, Failure> {
     let units = wide_units(name).ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY))?;
     Wide::caller(&units)
+}
+
+/// A W call's name copied whole, past MAX_PATH characters too, as Windows 2000's GetFullPathNameW
+/// hands its name to ntdll.
+pub fn wide_whole(name: &InWStr<'_>) -> Result<Wide, Failure> {
+    let units = wide_units(name).ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY))?;
+    Wide::of(&units).map_or_else(|| Wide::long(&units), Ok)
 }
 
 /// A caller's name of either form, into the buffer a path is read into: an A call's converted

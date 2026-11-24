@@ -2663,7 +2663,7 @@ pub mod files {
         // SAFETY: the caller's string.
         let path = unsafe { terminated(path) };
         let current = CURRENT_DIRECTORY.with(|current| current.borrow().clone());
-        let mut full = [0u16; 1040];
+        let mut full = vec![0u16; path.len() + current.len() + 8];
         let Ok((length, part)) = rtl::path::full_path_name(path, &current, &mut full) else {
             return 0;
         };

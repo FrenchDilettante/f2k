@@ -6,9 +6,6 @@ kind = "sectioned"
 gate = true
 timeout = 40
 
-[pending]
-devpath = "F2K's GetFullPathName adds a separator after a UNC server or share and after a \\\\.\\ device, resolves device names against the current directory instead of to \\\\.\\, and fails a 1112-character UNC path (A: ERROR_FILENAME_EXCED_RANGE where Windows 2000 leaves the last error; W: ERROR_PATH_NOT_FOUND where it answers the length); and CreateFile opens CON for GENERIC_READ|GENERIC_WRITE, which Windows 2000 refuses (ERROR_FILE_NOT_FOUND)"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only what a section calls itself, through its own helpers too, never what the C runtime's

@@ -362,10 +362,10 @@ pub unsafe extern "system" fn rtl_determine_dos_path_name_type_u(path: *const u1
 }
 
 /// RtlGetFullPathName_U: a DOS path made absolute against the current directory and folded (see
-/// [`rtl::path::full_path_name`]) into the caller's buffer of `buffer_length` bytes: its length in
-/// bytes, the file part pointed at (null when the path ends in a separator); when it does not fit
-/// with its terminator, the bytes it needs (terminator included), nothing written; zero for an
-/// empty path.
+/// [`rtl::path::full_path_name`]; no MAX_PATH limit) into the caller's buffer of `buffer_length`
+/// bytes: its length in bytes, the file part pointed at (null when it has none); when it does not
+/// fit with its terminator, the bytes it needs (terminator included), nothing written; zero for an
+/// empty path or no room on the heap.
 ///
 /// # Safety
 ///
@@ -382,19 +382,28 @@ pub unsafe extern "system" fn rtl_get_full_path_name_u(
     let path = unsafe { terminated(path) };
     let mut current = [0u16; MAX_PATH + 1];
     let (current_length, _) = current_directory(&mut current);
-    let mut full = [0u16; 4 * MAX_PATH];
-    let Ok((length, part)) = full_path_name(path, &current[..current_length], &mut full) else {
+    // The full path is no longer than the current directory, the path, a prefix and a separator.
+    let room = (path.len() + current_length + 8).min(MAX_STRING);
+    let heap = sys::process_heap();
+    let Some(block) = heap.alloc(&sys::Native, 0, 2 * room) else {
         return 0;
     };
-    if (buffer_length as usize) < 2 * (length + 1) {
-        return (2 * (length + 1)) as u32;
-    }
-    // SAFETY: the caller's buffer holds the path and its terminator.
-    unsafe {
-        buffer.copy_from_nonoverlapping(full.as_ptr(), length + 1);
-        if !file_part.is_null() {
-            *file_part = part.map_or(core::ptr::null_mut(), |at| buffer.add(at));
+    // SAFETY: a fresh block of `room` units.
+    let full = unsafe { core::slice::from_raw_parts_mut(block as *mut u16, room) };
+    let answer = match full_path_name(path, &current[..current_length], full) {
+        Err(_) => 0,
+        Ok((length, _)) if (buffer_length as usize) < 2 * (length + 1) => (2 * (length + 1)) as u32,
+        Ok((length, part)) => {
+            // SAFETY: the caller's buffer holds the path and its terminator.
+            unsafe {
+                buffer.copy_from_nonoverlapping(full.as_ptr(), length + 1);
+                if !file_part.is_null() {
+                    *file_part = part.map_or(core::ptr::null_mut(), |at| buffer.add(at));
+                }
+            }
+            (2 * length) as u32
         }
-    }
-    (2 * length) as u32
+    };
+    heap.free(&sys::Native, 0, block);
+    answer
 }

@@ -123,7 +123,12 @@ impl Builder<'_> {
 /// RtlGetFullPathName_U's work: `path` made absolute against `current` (the current directory's
 /// DOS path, its trailing separator included, `C:\DIR\`) and folded, into `out` (terminated); its
 /// length in units. A trailing separator is kept. The file part (its last component) starts where
-/// the second value says, when it has one.
+/// the second value says, when it has one past the root.
+///
+/// A DOS device's name ([`dos_device_name`]) is the device, `\\.\` and its name as written
+/// (`nul.txt` is `\\.\nul`), with no file part. A UNC path keeps its `\\server\share` as
+/// written, a separator added nowhere (`\\srv` stays `\\srv`); a `\\.\` or `\\?\` path its
+/// prefix; `..` never climbs above either.
 pub fn full_path_name(
     path: &[u16],
     current: &[u16],
@@ -137,9 +142,17 @@ pub fn full_path_name(
         len: 0,
         root: 0,
     };
+    if let Some((start, length)) = dos_device_span(path) {
+        built.push_all(&[BACKSLASH, BACKSLASH, u16::from(b'.'), BACKSLASH])?;
+        built.push_all(&path[start..start + length])?;
+        let len = built.len;
+        built.out[len] = 0;
+        return Ok((len, None));
+    }
     let current_drive = drive_of(current).unwrap_or(u16::from(b'C'));
     // The current directory's components, after its `C:\`.
     let current_rest = current.get(3..).unwrap_or(&[]);
+    let kind = path_type(path);
     let rest = if let Some(drive) = drive_of(path) {
         built.push_all(&[drive, COLON, BACKSLASH])?;
         built.root = 3;
@@ -149,20 +162,31 @@ pub fn full_path_name(
             built.components(current_rest)?;
         }
         tail
-    } else if path.len() >= 2 && is_separator(path[0]) && is_separator(path[1]) {
-        // `\\server\share\rest`: the prefix kept, the rest folded under it.
+    } else if matches!(kind, PathType::LocalDevice | PathType::RootLocalDevice) {
+        // `\\.\` or `\\?\`: the prefix kept, the rest folded under it.
+        built.push_all(&[BACKSLASH, BACKSLASH, path[2], BACKSLASH])?;
+        built.root = 4;
+        &path[4..]
+    } else if kind == PathType::UncAbsolute {
+        // `\\server\share\rest`: the prefix kept as written (its separators as far as they go),
+        // the rest folded under it.
         built.push_all(&[BACKSLASH, BACKSLASH])?;
         let tail = &path[2..];
-        let mut parts = tail.splitn(3, |&unit| is_separator(unit));
-        let server = parts.next().unwrap_or(&[]);
-        let share = parts.next().unwrap_or(&[]);
-        built.push_all(server)?;
-        built.push(BACKSLASH)?;
-        built.push_all(share)?;
-        built.push(BACKSLASH)?;
+        let mut at = 0;
+        for _ in 0..2 {
+            let end = tail[at..]
+                .iter()
+                .position(|&unit| is_separator(unit))
+                .map_or(tail.len(), |end| at + end);
+            built.push_all(&tail[at..end])?;
+            at = end;
+            if at < tail.len() {
+                built.push(BACKSLASH)?;
+                at += 1;
+            }
+        }
         built.root = built.len;
-        let consumed = server.len() + share.len() + 2;
-        &tail[consumed.min(tail.len())..]
+        &tail[at..]
     } else {
         // `\name` is rooted on the current directory's drive; anything else relative to it.
         built.push_all(&[current_drive, COLON, BACKSLASH])?;
@@ -173,12 +197,13 @@ pub fn full_path_name(
         path
     };
     built.components(rest)?;
-    if rest.last().is_some_and(|&unit| is_separator(unit)) && built.len > built.root {
+    if rest.last().is_some_and(|&unit| is_separator(unit)) && built.out[built.len - 1] != BACKSLASH
+    {
         built.push(BACKSLASH)?;
     }
     let len = built.len;
     let ends_in_separator = built.out[len - 1] == BACKSLASH;
-    let file_part = (!ends_in_separator).then(|| {
+    let file_part = (!ends_in_separator && len > built.root).then(|| {
         built.out[..len]
             .iter()
             .rposition(|&unit| unit == BACKSLASH)
@@ -260,11 +285,12 @@ pub struct NtName {
 /// The DOS devices a file name names whatever its directory and extension (RtlIsDosDeviceName_U's).
 const DOS_DEVICES: [&str; 4] = ["NUL", "CON", "AUX", "PRN"];
 
-/// The DOS device `path` names, as RtlIsDosDeviceName_U reads it, upper-cased: none for a UNC or
-/// `\\.\` path. The device is the last component's name (after the last separator, or a drive's
-/// colon), up to its first `.` or `:`, its trailing spaces dropped: `NUL`, `CON`, `AUX` or `PRN`,
-/// or `COM` or `LPT` and a digit from 1 to 9, in any case (`C:\x\nul.txt` and `Nul: ` are NUL).
-pub fn dos_device_name(path: &[u16]) -> Option<[u8; 4]> {
+/// Where the DOS device `path` names lies in it, as RtlIsDosDeviceName_U reads it: none for a UNC
+/// or `\\.\` path. The device is the last component's name (after the last separator, or a
+/// drive's colon), up to its first `.` or `:`, its trailing spaces dropped: `NUL`, `CON`, `AUX` or
+/// `PRN`, or `COM` or `LPT` and a digit from 1 to 9, in any case (`C:\x\nul.txt` and `Nul: ` are
+/// NUL). Its start and length.
+fn dos_device_span(path: &[u16]) -> Option<(usize, usize)> {
     if matches!(
         path_type(path),
         PathType::UncAbsolute | PathType::LocalDevice | PathType::RootLocalDevice
@@ -302,7 +328,17 @@ pub fn dos_device_name(path: &[u16]) -> Option<[u8; 4]> {
             .any(|device| device.as_bytes() == &upper[..3]),
         _ => (&upper[..3] == b"COM" || &upper[..3] == b"LPT") && (b'1'..=b'9').contains(&upper[3]),
     };
-    device.then_some(upper)
+    device.then_some((start, name.len()))
+}
+
+/// The DOS device `path` names ([`dos_device_span`]), upper-cased.
+pub fn dos_device_name(path: &[u16]) -> Option<[u8; 4]> {
+    let (start, length) = dos_device_span(path)?;
+    let mut upper = [0u8; 4];
+    for (byte, &unit) in upper.iter_mut().zip(&path[start..start + length]) {
+        *byte = (unit as u8).to_ascii_uppercase();
+    }
+    Some(upper)
 }
 
 /// RtlDosPathNameToNtPathName_U's work: the NT path of `path`, made absolute against `current` (the
@@ -468,6 +504,40 @@ mod tests {
         assert_eq!(full("", current), Err(PathError::Empty));
         let long = "x".repeat(300);
         assert_eq!(full(&long, current), Err(PathError::TooLong));
+    }
+
+    /// The files capture's devpath forms: UNC roots as written, `\\.\` and `\\?\` prefixes
+    /// kept, DOS devices as `\\.\` and their name, the file part only past the root.
+    #[test]
+    fn unc_device_and_dos_device_forms() {
+        let current = "C:\\CORPUS\\";
+        for (path, expect, part) in [
+            ("\\\\srv\\share", "\\\\srv\\share", None),
+            ("\\\\srv\\share\\", "\\\\srv\\share\\", None),
+            (
+                "\\\\srv\\share\\dir\\..\\..\\x",
+                "\\\\srv\\share\\x",
+                Some("x"),
+            ),
+            ("\\\\srv", "\\\\srv", None),
+            ("\\\\srv\\", "\\\\srv\\", None),
+            ("//srv/share/a", "\\\\srv\\share\\a", Some("a")),
+            ("\\\\.\\COM1", "\\\\.\\COM1", Some("COM1")),
+            ("\\\\?\\C:\\a\\..\\b", "\\\\?\\C:\\b", Some("b")),
+            ("CON", "\\\\.\\CON", None),
+            ("nul.txt", "\\\\.\\nul", None),
+            ("C:\\x\\con.txt", "\\\\.\\con", None),
+            ("C:\\x\\COM1:", "\\\\.\\COM1", None),
+            ("C:\\x\\CONX", "C:\\x\\CONX", Some("CONX")),
+        ] {
+            let (full, at) = full(path, current).unwrap();
+            assert_eq!(full, expect, "{path}");
+            assert_eq!(at.map(|at| &full[at..]), part, "{path}");
+        }
+        let long = format!("\\\\srv\\share\\{}", "a".repeat(1100));
+        let mut out = vec![0u16; long.len() + 1];
+        let (len, _) = full_path_name(&wide(&long), &wide(current), &mut out).unwrap();
+        assert_eq!(len, long.len(), "no MAX_PATH limit of its own");
     }
 
     /// The NT form: `\??\` before a DOS path, `\??\UNC\` before a UNC one.

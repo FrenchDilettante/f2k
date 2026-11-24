@@ -409,7 +409,9 @@ pub fn get_console_handle_information(console: u32) -> Result<u32, u32> {
 
 /// Which console buffer a file name names, as Windows 2000's CreateFile reads it: CONIN$ the input
 /// buffer, CONOUT$ the screen buffer (any case), CON the input buffer when asked read access alone
-/// and the screen buffer otherwise; none for any other name (a path included).
+/// and the screen buffer when asked write access alone; none for any other name (a path included)
+/// or for CON asked both or neither, which CreateFile then opens as a path, `\??\CON`, and does not
+/// find (the files capture's devpath: ERROR_FILE_NOT_FOUND).
 pub fn console_name(name: &[u16], access: u32) -> Option<bool> {
     let is = |word: &[u8]| {
         name.len() == word.len()
@@ -423,7 +425,11 @@ pub fn console_name(name: &[u16], access: u32) -> Option<bool> {
     } else if is(b"CONOUT$") {
         Some(true)
     } else if is(b"CON") {
-        Some(access & (GENERIC_READ | GENERIC_WRITE) != GENERIC_READ)
+        match access & (GENERIC_READ | GENERIC_WRITE) {
+            GENERIC_READ => Some(false),
+            GENERIC_WRITE => Some(true),
+            _ => None,
+        }
     } else {
         None
     }
