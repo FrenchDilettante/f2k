@@ -1,7 +1,8 @@
 //! Boot-time initialization of the physical frame database.
 //!
 //! Reads the Multiboot information structure the loader pointed EBX at, turns every available
-//! region into usable frame ranges, and releases all of them to the [`FrameDb`] except:
+//! region into usable frame ranges, and releases all of them to the [`FrameDb`], a run of
+//! consecutive frames at a time, except:
 //! - frame 0 (never allocatable),
 //! - the frames the kernel's image occupies: from its base to the end of its last section, as its
 //!   own headers give its size, and
@@ -23,15 +24,7 @@ use rtl::pod::Pod;
 
 use super::frame::{self, ColorTables, FrameDb, FrameEntry, FrameState, NoHooks, MAX_FRAMES};
 use super::layout::{KERNEL_IMAGE, NTOSKRNL_BASE};
-use super::multiboot::{
-    self,
-    BootMemoryPlan,
-    InfoBytes,
-    MemorySource,
-    Module,
-    MultibootInfo,
-    UsableRange,
-};
+use super::multiboot::{self, BootMemoryPlan, InfoBytes, MemorySource, Module, MultibootInfo};
 use super::paging::{KERNEL_BASE, LOADER_PHYS_BASE, PAGE_SIZE};
 use crate::sync::{InitOnce, StaticBuf};
 
@@ -123,17 +116,6 @@ fn image_frames() -> Range<u32> {
 /// structures are read through it.
 pub(crate) const BOOT_IDENTITY_LIMIT: u64 = KERNEL_IMAGE.size() as u64;
 
-/// Release every frame of `range` the plan releases (see [`BootMemoryPlan::releases`]), except
-/// those an earlier (overlapping) range already released.
-fn release_range(db: &mut FrameDb<NoHooks>, range: UsableRange, plan: &BootMemoryPlan) {
-    for frame in range.frames() {
-        if db.entry(frame).state.is_list_state() || !plan.releases(frame) {
-            continue;
-        }
-        db.release(frame, FrameState::Free);
-    }
-}
-
 /// Run `read` on the loader memory `[addr, addr + len)` cut at the boot identity window's end (see
 /// [`multiboot::readable_len`]): an empty slice when `addr` lies outside the window. Nothing past
 /// the window is read, whatever the loader's values say, and the slice does not outlive the call.
@@ -222,14 +204,14 @@ pub fn boot_init(multiboot_info_addr: u32) {
         // tables are no longer walked is the plan the image's frames alone would make.
         let plan = BootMemoryPlan::new(source, map, LOADER_FRAMES.start..image.end, MAX_FRAMES)
             .withholding(withheld.clone());
-        for range in plan.ranges() {
-            release_range(&mut db, range, &plan);
+        for run in plan.released_runs() {
+            db.release_run(run, FrameState::Free);
         }
         let after =
             BootMemoryPlan::new(source, map, image.clone(), MAX_FRAMES).withholding(withheld);
         let mut loader = LoaderMemory([0; LOADER_WORDS]);
-        for frame in LOADER_FRAMES {
-            if after.releases(frame) && after.ranges().any(|range| range.holds(frame)) {
+        for run in after.released_runs() {
+            for frame in run.start.max(LOADER_FRAMES.start)..run.end.min(LOADER_FRAMES.end) {
                 let bit = frame - LOADER_FRAMES.start;
                 loader.0[(bit / 32) as usize] |= 1 << (bit % 32);
             }

@@ -130,8 +130,8 @@ pub struct UsableRange {
 }
 
 impl UsableRange {
-    /// Iterate the frame numbers of this range.
-    pub fn frames(&self) -> impl Iterator<Item = FrameId> {
+    /// The frame numbers of this range.
+    pub fn frames(&self) -> Range<FrameId> {
         self.first..self.first + self.count
     }
 
@@ -296,6 +296,52 @@ impl<'a> BootMemoryPlan<'a> {
         !self.kernel.contains(&frame)
             && !self.module.contains(&frame)
             && !self.map.is_some_and(|map| frame_is_reserved(map, frame))
+    }
+
+    /// The frames the plan releases, in the order releasing each usable range's frames in turn
+    /// would ([`Self::ranges`], skipping those [`Self::releases`] keeps and those an earlier range
+    /// already holds), as runs of consecutive frames: the boot links each run at once.
+    pub fn released_runs(&self) -> impl Iterator<Item = Range<FrameId>> + '_ {
+        self.ranges().enumerate().flat_map(move |(index, range)| {
+            let end = u64::from(range.first) + u64::from(range.count);
+            let mut at = u64::from(range.first);
+            core::iter::from_fn(move || loop {
+                if at >= end {
+                    return None;
+                }
+                let kept = self.kept_spans(index).filter(|span| span.contains(&at));
+                if let Some(past) = kept.map(|span| span.end).max() {
+                    at = past;
+                    continue;
+                }
+                let stop = self
+                    .kept_spans(index)
+                    .map(|span| span.start)
+                    .filter(|&start| start > at)
+                    .fold(end, u64::min);
+                let run = at as FrameId..stop as FrameId;
+                at = stop;
+                return Some(run);
+            })
+        })
+    }
+
+    /// The frame spans not released from the usable range at `index` of [`Self::ranges`]: the
+    /// kernel image's, the withheld module's, every frame a reservation record covers any byte of,
+    /// and the earlier ranges'. Frame numbers are widened so a record's end cannot overflow.
+    fn kept_spans(&self, index: usize) -> impl Iterator<Item = Range<u64>> + '_ {
+        let widen = |span: &Range<FrameId>| u64::from(span.start)..u64::from(span.end);
+        let reserved = records(self.map.unwrap_or(&[]))
+            .filter(|&(_, len, kind)| kind != MEMORY_AVAILABLE && len != 0)
+            .map(|(base, len, _)| base / 4096..base.saturating_add(len).div_ceil(4096));
+        let earlier = self
+            .ranges()
+            .take(index)
+            .map(move |range| widen(&range.frames()));
+        [widen(&self.kernel), widen(&self.module)]
+            .into_iter()
+            .chain(reserved)
+            .chain(earlier)
     }
 
     /// Whether every frame of `run` is released, so the run can be taken out of the free lists
@@ -682,6 +728,67 @@ mod tests {
         assert!(plan.releases(0x200));
         assert!(!plan.releases(0x300));
         assert!(plan.releases(0x301));
+    }
+
+    /// The frames the boot released one at a time: each usable range's in turn, those the plan
+    /// releases and no earlier range released.
+    fn released_one_at_a_time(plan: &BootMemoryPlan) -> Vec<FrameId> {
+        let mut listed = vec![false; MAX_FRAMES];
+        let mut released = Vec::new();
+        for range in plan.ranges() {
+            for frame in range.frames() {
+                if !listed[frame as usize] && plan.releases(frame) {
+                    listed[frame as usize] = true;
+                    released.push(frame);
+                }
+            }
+        }
+        released
+    }
+
+    /// The released runs hold the frames releasing one at a time would, in the same order, each run
+    /// non-empty: over overlapping available records, reservations inside them on and off frame
+    /// boundaries (one reaching the address space's end), the kernel image, a module, the frame
+    /// table's capacity, and the fallback's one region.
+    #[test]
+    fn the_released_runs_are_the_frames_released_one_at_a_time() {
+        let map = [
+            record(0, 0x9_FC00, MEMORY_AVAILABLE),
+            record(0x9_F000, 0x6_1000, 2),
+            record(0x10_0000, 0x7F0_0000, MEMORY_AVAILABLE),
+            record(0x30_0800, 0x1000, 2),
+            record(0x40_0000, 0x10, 3),
+            record(0x5F_0000, 0x40_0000, MEMORY_AVAILABLE),
+            record(0x7FF_0000, 0, 2),
+            record(0xFFFF_0000, u64::MAX, 2),
+            record(0x800_0000, 0x1000_0000, MEMORY_AVAILABLE),
+            record(0x1_0000_0000, 0x1000_0000, MEMORY_AVAILABLE),
+        ]
+        .concat();
+        let with_map = memory(&[
+            (0x100, &info_with_map(0x200, map.len() as u32, 0)),
+            (0x200, &map),
+        ]);
+        let hint = MultibootInfo {
+            flags: flags::MEM_INFO,
+            mem_upper: 64 * 1024,
+            ..MultibootInfo::default()
+        };
+        let fallback = memory(&[(0x100, &hint.to_bytes())]);
+        let plans = [
+            plan_in(&with_map, 0x100).unwrap(),
+            plan_in(&with_map, 0x100).unwrap().withholding(0x700..0x900),
+            plan_in(&with_map, 0x100).unwrap().withholding(0x1F0..0x210),
+            plan_in(&fallback, 0x100)
+                .unwrap()
+                .withholding(0x2000..0x2001),
+        ];
+        for plan in &plans {
+            let runs: Vec<Range<FrameId>> = plan.released_runs().collect();
+            assert!(runs.iter().all(|run| !run.is_empty()));
+            let frames: Vec<FrameId> = runs.into_iter().flatten().collect();
+            assert_eq!(frames, released_one_at_a_time(plan));
+        }
     }
 
     /// A withheld module's frames are kept as the kernel's are, every frame holding any of its

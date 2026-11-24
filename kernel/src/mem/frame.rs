@@ -11,7 +11,8 @@
 //! subsequence of the list's frames with that color.
 //!
 //! Policy:
-//! - Releasing a frame appends at the tail, so reuse is FIFO.
+//! - Releasing a frame appends at the tail, so reuse is FIFO. A run of unused frames
+//!   ([`FrameDb::release_run`]) is linked in one pass, as releasing each in turn would.
 //! - Allocating a zeroed frame prefers Zeroed, then Free, then Standby, requesting zeroing for
 //!   frames that were not already zeroed.
 //! - Allocating an arbitrary frame prefers Free, then Zeroed, then Standby, and never requests
@@ -24,6 +25,8 @@
 //! This module is pure bookkeeping over an in-memory table: no unsafe code and no hardware access.
 //! The kernel wires it to real memory by providing the frame table and (later) real workers via
 //! [`FrameHooks`].
+
+use core::ops::Range;
 
 /// Physical frame number. Frame 0 is reserved and never allocated.
 pub type FrameId = u32;
@@ -684,6 +687,89 @@ impl<H: FrameHooks> FrameDb<H> {
         }
     }
 
+    /// Release the frames of `run` onto the colored list for `state` (Free or Zeroed), with the
+    /// result of releasing each in ascending order: the same list and color-chain order, counters
+    /// and hooks. Every frame of the run is unused, as a fresh entry is ([`FrameEntry::new`]):
+    /// checked over the run before one pass links it.
+    pub fn release_run(&mut self, run: Range<FrameId>, state: FrameState) {
+        assert!(
+            state.has_color_chain(),
+            "a run is released onto a colored list"
+        );
+        if run.is_empty() {
+            return;
+        }
+        assert!(
+            run.start != 0 && run.end as usize <= self.frames.len(),
+            "invalid frame run {}..{}",
+            run.start,
+            run.end
+        );
+        let (first, last) = (run.start, run.end - 1);
+        let count = run.end - run.start;
+        let colors = self.colors as FrameId;
+        let old_tail = self.list(state).tail;
+        let entries = &mut self.frames[run.start as usize..run.end as usize];
+        assert!(
+            entries.iter().all(|entry| *entry == FrameEntry::new()),
+            "a released run holds a frame in use or on a list"
+        );
+
+        // The list: the run follows the old tail in frame order.
+        for (frame, entry) in run.clone().zip(entries.iter_mut()) {
+            entry.state = state;
+            entry.prev = if frame == first {
+                old_tail
+            } else {
+                Some(frame - 1)
+            };
+            entry.next = (frame != last).then_some(frame + 1);
+            entry.next_color = Some(frame + colors).filter(|&next| next <= last);
+        }
+        if let Some(tail) = old_tail {
+            self.entry_mut(tail).next = Some(first);
+        }
+        let list = self.list_mut(state);
+        list.head.get_or_insert(first);
+        list.tail = Some(last);
+        list.total += count;
+
+        // The color chains: each color's first frame of the run follows its chain's old tail, its
+        // last ends the chain.
+        let table = Self::color_table(state);
+        for head in first..first + count.min(colors) {
+            let color = self.color_of(head);
+            let tail = head + (last - head) / colors * colors;
+            let bucket = &mut self.buckets.inner[table][color];
+            let old = bucket.tail.replace(tail);
+            bucket.head.get_or_insert(head);
+            if let Some(old) = old {
+                self.entry_mut(old).next_color = Some(head);
+            }
+        }
+
+        // Accounting and hooks, as the releases one at a time fire them.
+        let before = self.available;
+        self.available += count;
+        let after = self.available;
+        let reached = |mark: u32| before < mark && mark <= after;
+        let (low, high) = (self.low_water, self.high_water);
+        if reached(low) {
+            self.hooks.available_low();
+        }
+        if reached(high) && high != low {
+            self.hooks.available_high();
+        }
+        if state == FrameState::Zeroed {
+            for frame in run {
+                self.hooks.stamp_zeroed(frame);
+            }
+        } else if !self.zeroing_armed && self.free.total >= self.zero_threshold {
+            self.zeroing_armed = true;
+            self.hooks.zeroing_needed();
+        }
+    }
+
     // -----------------------------------------------------------------
     // Removal
 
@@ -1183,7 +1269,7 @@ mod tests {
     const TABLE: usize = 64;
 
     /// Records every hook firing so tests can assert on side effects.
-    #[derive(Default)]
+    #[derive(Debug, Default, PartialEq)]
     struct RecordingHooks {
         zeroed: Vec<FrameId>,
         stamped: Vec<FrameId>,
@@ -1240,6 +1326,106 @@ mod tests {
         for &f in frames {
             db.release(f, state);
         }
+    }
+
+    fn db_with_colors(colors: usize) -> FrameDb<RecordingHooks> {
+        let table: &'static mut [FrameEntry] =
+            Box::leak(vec![FrameEntry::new(); TABLE].into_boxed_slice());
+        let buckets: &'static mut ColorTables = Box::leak(Box::new(ColorTables::new()));
+        FrameDb::new(table, buckets, colors, RecordingHooks::default())
+    }
+
+    /// Everything a database holds: entries, lists, color chains, counters, latches and hooks.
+    fn assert_same<H: FrameHooks + PartialEq + core::fmt::Debug>(a: &FrameDb<H>, b: &FrameDb<H>) {
+        assert_eq!(a.frames, b.frames);
+        for state in [Zeroed, Free, Standby, Modified, ModifiedNoWrite, Bad] {
+            assert_eq!(a.list(state), b.list(state), "{state:?} list");
+        }
+        assert_eq!(
+            a.buckets.inner[0][..a.colors],
+            b.buckets.inner[0][..b.colors]
+        );
+        assert_eq!(
+            a.buckets.inner[1][..a.colors],
+            b.buckets.inner[1][..b.colors]
+        );
+        assert_eq!(
+            (
+                a.available,
+                a.zeroing_armed,
+                a.transition_private,
+                a.transition_shared
+            ),
+            (
+                b.available,
+                b.zeroing_armed,
+                b.transition_private,
+                b.transition_shared
+            )
+        );
+        assert_eq!(a.hooks, b.hooks);
+    }
+
+    /// A run released at once leaves the database exactly as releasing its frames one at a time in
+    /// ascending order does: list order, every color chain, counters and hooks, whatever the color
+    /// count, the target list, the runs' lengths against the color count, and the frames already
+    /// listed before and between them.
+    #[test]
+    fn release_run_matches_releasing_each_frame() {
+        let runs: [Range<FrameId>; 7] = [1..2, 3..3, 4..7, 9..24, 26..29, 30..31, 33..TABLE as u32];
+        for colors in [2, 4, 8, 16] {
+            for state in [Free, Zeroed] {
+                let (mut each, mut at_once) = (db_with_colors(colors), db_with_colors(colors));
+                for db in [&mut each, &mut at_once] {
+                    db.set_zeroing_threshold(20);
+                    db.release(8, Free);
+                    db.release(25, Zeroed);
+                    db.release(2, Standby);
+                }
+                for (index, run) in runs.iter().enumerate() {
+                    for frame in run.clone() {
+                        each.release(frame, state);
+                    }
+                    at_once.release_run(run.clone(), state);
+                    // Single releases between runs, onto either colored list.
+                    if index == 3 {
+                        each.release(32, Free);
+                        at_once.release(32, Free);
+                    }
+                    assert_same(&each, &at_once);
+                }
+                assert_eq!(at_once.audit(), Ok(()));
+                // And the lists hand the frames out in the same order.
+                while each.available() > 0 {
+                    let color = each.available() % colors as u32;
+                    assert_eq!(each.allocate(color), at_once.allocate(color));
+                }
+                assert_same(&each, &at_once);
+            }
+        }
+    }
+
+    /// A run holding a listed frame is refused before anything is linked.
+    #[test]
+    #[should_panic(expected = "a released run holds a frame in use or on a list")]
+    fn release_run_refuses_a_listed_frame() {
+        let mut db = new_db();
+        db.release(5, Free);
+        db.release_run(3..8, Free);
+    }
+
+    /// Runs go onto the colored lists only.
+    #[test]
+    #[should_panic(expected = "a run is released onto a colored list")]
+    fn release_run_requires_a_colored_state() {
+        new_db().release_run(3..8, Standby);
+    }
+
+    /// A run past the table is refused.
+    #[test]
+    #[should_panic(expected = "invalid frame run")]
+    fn release_run_refuses_frames_out_of_range() {
+        new_db().release_run(60..TABLE as u32 + 1, Free);
     }
 
     /// A frame's holders: each share adds one, each unshare drops one, and the last unshare says so
