@@ -244,6 +244,24 @@ impl<L: Level, M: Level> DerefMut for Raised<'_, L, M> {
     }
 }
 
+impl<L: Level, M: Level> Raised<'_, L, M> {
+    /// Lower back to `L` for `f`, with an `L` token standing in for the one the raise borrowed,
+    /// then raise to `M` again. The guard, and its `M` token, are borrowed meanwhile, so nothing at
+    /// `M` runs inside `f`.
+    #[cfg_attr(not(test), allow(dead_code))] // Until a send calls back to user mode.
+    pub fn lowered<R>(&mut self, f: impl FnOnce(&mut At<L>) -> R) -> R {
+        pcr().lower(self.previous);
+        // SAFETY: the processor is back at exactly `L`, as the raise found it; the `L` token the
+        // raise borrowed stays borrowed by this guard, so this one is the only one usable, and it
+        // is dropped before the raise below.
+        let mut at = unsafe { At::<L>::enter() };
+        let result = f(&mut at);
+        self.previous = pcr().raise(M::IRQL);
+        debug_assert_eq!(self.previous.level(), L::IRQL, "a token outlived its level");
+        result
+    }
+}
+
 impl<L: Level, M: Level> Drop for Raised<'_, L, M> {
     #[inline]
     fn drop(&mut self) {

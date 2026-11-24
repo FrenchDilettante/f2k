@@ -998,7 +998,7 @@ mod tests {
     use rtl::testing::utf16_bytes_z;
 
     use super::*;
-    use crate::win32k::queue::rig;
+    use crate::win32k::queue::{rig, QueueSession};
     use crate::win32k::window::WindowManager;
 
     /// The rig's window manager, with an empty clipboard, a thread and two of its windows.
@@ -1123,8 +1123,7 @@ mod tests {
         let WindowManager {
             windows, classes, ..
         } = m;
-        windows
-            .destroy_window_handle(classes, t, handle, &mut crate::win32k::queue::QueuePump)
+        Windows::destroy_window_handle(&mut QueueSession::new(windows, classes), t, handle)
             .unwrap();
         let delivered = rig::deliver(m, t);
         assert_eq!(delivered.first(), Some(&(handle, WM_RENDERALLFORMATS)));

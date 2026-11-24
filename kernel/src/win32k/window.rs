@@ -32,7 +32,9 @@
 //! path's hide run through them.
 //!
 //! Both registries, this one and the class registry ([`super::class`]), sit behind one lock, the
-//! window manager's ([`WindowManager`]): the decisions hold both at once, through every callback.
+//! window manager's ([`WindowManager`]). The decisions reach both through a session ([`Session`]),
+//! which holds the lock and may let it go around a send: nothing borrowed from the registries
+//! lives across a send, only ids and values, read again after it.
 //! The boot makes each desktop's own windows, the desktop window and the message window, on a
 //! thread record of the window manager's own ([`WindowManager::boot_desktop`]); a process thread
 //! gets its record at its first win32k service ([`Windows::connect_thread`], through
@@ -64,18 +66,19 @@
 //! (cbWndExtra) are a block of an arena of the registry's own ([`ExtraBytes`]), the record naming
 //! the block, as Windows 2000 allocates them with the window from its desktop's heap.
 //!
-//! Seams recorded: every send and window-manager call the decisions make goes through the [`Pump`]
-//! trait; the services run them with the queue's pump ([`super::queue::QueuePump`]), which queues
-//! each message for the window's thread and answers as the default procedure does, and the boot
-//! with [`DefaultProcedure`]; monitors come from the display slice (the boot sets the primary
-//! monitor's work area). The frame is the default procedure's: WM_NCCALCSIZE is sent, and the
-//! client rectangle is the window's less the frame, caption and menu bar its styles and its menu
-//! give ([`Windows::default_client`], rtl::nonclient's rules, which user32's default procedure
-//! draws by); a framed window's frame shows anew (shown, sized, SWP_FRAMECHANGED) with WM_NCPAINT,
-//! and a window hidden uncovers the windows under it: invalid there, their frames painted. A
-//! thread's end takes its windows and its queue, on its way out ([`WindowManager::end_thread`]);
-//! its record, empty, outlives it until its process's end, which takes the process's classes and
-//! its threads' records at its teardown ([`WindowManager::end_process`]).
+//! Seams recorded: every send and window-manager call the decisions make goes through the
+//! [`Session`] trait; the services run them in the queue's session
+//! ([`super::queue::QueueSession`]), which queues each message for the window's thread and answers
+//! as the default procedure does, and the boot in [`DefaultSession`]; monitors come from the
+//! display slice (the boot sets the primary monitor's work area). The frame is the default
+//! procedure's: WM_NCCALCSIZE is sent, and the client rectangle is the window's less the frame,
+//! caption and menu bar its styles and its menu give ([`Windows::default_client`], rtl::nonclient's
+//! rules, which user32's default procedure draws by); a framed window's frame shows anew (shown,
+//! sized, SWP_FRAMECHANGED) with WM_NCPAINT, and a window hidden uncovers the windows under it:
+//! invalid there, their frames painted. A thread's end takes its windows and its queue, on its way
+//! out ([`WindowManager::end_thread`]); its record, empty, outlives it until its process's end,
+//! which takes the process's classes and its threads' records at its teardown
+//! ([`WindowManager::end_process`]).
 
 // Parts of the decision logic have no caller until the message slice lands (the activation and
 // hook state, the zombie's references).
@@ -87,8 +90,6 @@ pub use rtl::window::{WindowData, WindowInfo, WindowPos};
 
 use super::class;
 use super::handle::{UserHandles, UserObject};
-#[cfg(target_arch = "x86")]
-use super::queue::QueuePump;
 #[cfg(target_arch = "x86")]
 use super::text::Staged;
 use super::text::{Text, Texts};
@@ -543,19 +544,35 @@ pub enum InsertAfter {
     After(WindowId),
 }
 
-/// The message pump's seam (the message slice): every message and window-manager call the
-/// create/destroy decisions make goes through here. The defaults answer as the default window
-/// procedure and the no-op window-manager calls do; the tests supply a recording pump.
-pub trait Pump {
+/// A decision's session with the window manager: the registries, reached through it, and every
+/// message and window-manager call the decisions make. The decisions take `&mut dyn Session`
+/// rather than `&mut Windows`, so nothing borrowed from the registries lives across a send: a send
+/// takes the session whole, and each decision reads the registries again after it
+/// ([`Session::windows`], [`Session::parts`]), with only generation-tagged ids and values carried
+/// across. That is what lets a send let go of the window manager's lock while a window procedure
+/// runs, as Windows 2000's `xxx` routines leave the USER critical section around a callback; a
+/// window named by an id may then be gone when the send returns ([`Windows::is_live`]).
+///
+/// The defaults answer as the default window procedure and the no-op window-manager calls do; the
+/// services' session is [`super::queue::QueueSession`], the boot's [`DefaultSession`], and the
+/// tests supply a recording one.
+pub trait Session {
+    /// Both registries, borrowed until the next send.
+    fn parts(&mut self) -> (&mut Windows, &mut class::Registry);
+
+    /// The window registry, borrowed until the next send.
+    fn windows(&mut self) -> &mut Windows {
+        self.parts().0
+    }
+
+    /// The class registry, borrowed until the next send.
+    fn classes(&mut self) -> &mut class::Registry {
+        self.parts().1
+    }
+
     /// Send `message` to `target`; the handler's answer. The default procedure continues a
     /// creation (WM_NCCREATE answers 1) and answers 0 to everything else.
-    fn send(
-        &mut self,
-        _windows: &mut Windows,
-        _classes: &mut class::Registry,
-        _target: WindowId,
-        message: &mut Message,
-    ) -> LResult {
+    fn send(&mut self, _target: WindowId, message: &mut Message) -> LResult {
         match message.message {
             WM_NCCREATE => 1,
             _ => 0,
@@ -564,21 +581,13 @@ pub trait Pump {
 
     /// The WM_SIZE send (wparam is the SIZE_* command, lparam the client area's width and height,
     /// as guigeo `sizemsg` captured).
-    fn send_size(
-        &mut self,
-        windows: &mut Windows,
-        classes: &mut class::Registry,
-        target: WindowId,
-        command: u32,
-    ) {
-        let client = windows.at(target).client_rect;
+    fn send_size(&mut self, target: WindowId, command: u32) {
+        let client = self.windows().at(target).client_rect;
         let size = makelong(
             (client.right - client.left) as u16,
             (client.bottom - client.top) as u16,
         );
         self.send(
-            windows,
-            classes,
             target,
             &mut Message {
                 message: WM_SIZE,
@@ -590,36 +599,24 @@ pub trait Pump {
     }
 
     /// WM_NCCALCSIZE to `target` for the window rectangle `rect`: the client rectangle. The send
-    /// goes through [`Pump::send`]; the answer is the default procedure's, the frame the window's
-    /// styles give taken off ([`Windows::default_client`]): the window manager cannot wait for a
-    /// client-side procedure's own answer (its sends are queued for the window's thread).
-    fn calc_client(
-        &mut self,
-        windows: &mut Windows,
-        classes: &mut class::Registry,
-        target: WindowId,
-        rect: Rect,
-    ) -> Rect {
+    /// goes through [`Session::send`]; the answer is the default procedure's, the frame the
+    /// window's styles give taken off ([`Windows::default_client`]): the window manager cannot
+    /// wait for a client-side procedure's own answer (its sends are queued for the window's
+    /// thread).
+    fn calc_client(&mut self, target: WindowId, rect: Rect) -> Rect {
         let mut message = Message {
             message: WM_NCCALCSIZE,
             wparam: 0,
             lparam: 0,
             payload: Payload::Rect(rect),
         };
-        self.send(windows, classes, target, &mut message);
-        windows.default_client(target, rect)
+        self.send(target, &mut message);
+        self.windows().default_client(target, rect)
     }
 
     /// The frame of `target` to be painted: WM_NCPAINT sent, wParam 1 (the whole frame).
-    fn paint_frame(
-        &mut self,
-        windows: &mut Windows,
-        classes: &mut class::Registry,
-        target: WindowId,
-    ) {
+    fn paint_frame(&mut self, target: WindowId) {
         self.send(
-            windows,
-            classes,
             target,
             &mut Message {
                 message: WM_NCPAINT,
@@ -631,44 +628,32 @@ pub trait Pump {
     }
 
     /// Show or hide the window (ShowWindow's command).
-    fn show(&mut self, _windows: &mut Windows, _target: WindowId, _command: u32) -> bool {
+    fn show(&mut self, _target: WindowId, _command: u32) -> bool {
         true
     }
 
     /// A SetWindowPos call (the SWP_* flags).
-    fn set_window_pos(&mut self, _windows: &mut Windows, _target: WindowId, _flags: u32) {}
+    fn set_window_pos(&mut self, _target: WindowId, _flags: u32) {}
 
     /// Activate a window (the AW_* decision as [`Activate`]).
-    fn activate(
-        &mut self,
-        _windows: &mut Windows,
-        _classes: &mut class::Registry,
-        _target: WindowId,
-        _command: Activate,
-    ) -> bool {
+    fn activate(&mut self, _target: WindowId, _command: Activate) -> bool {
         true
     }
 
     /// The min/max command (SW_SHOWMINNOACTIVE, SW_SHOWMAXIMIZED).
-    fn min_maximize(&mut self, _windows: &mut Windows, _target: WindowId, _command: u32) {}
+    fn min_maximize(&mut self, _target: WindowId, _command: u32) {}
 
     /// The focus check before and after the destroy messages.
-    fn check_focus(
-        &mut self,
-        _windows: &mut Windows,
-        _classes: &mut class::Registry,
-        _target: WindowId,
-    ) {
-    }
+    fn check_focus(&mut self, _target: WindowId) {}
 
     /// Share (or end sharing) input state between two threads.
     fn attach_input(&mut self, _from: ThreadId, _to: ThreadId, _attach: bool) {}
 
     /// Redraw the windows below `target` (the failed-hide fallback).
-    fn redraw_below(&mut self, _windows: &mut Windows, _target: WindowId) {}
+    fn redraw_below(&mut self, _target: WindowId) {}
 
     /// Release the mouse capture.
-    fn release_capture(&mut self, _windows: &mut Windows) {}
+    fn release_capture(&mut self) {}
 
     /// Destroy the caret.
     fn destroy_caret(&mut self) {}
@@ -677,7 +662,7 @@ pub trait Pump {
     fn post_destroy_event(&mut self, _thread: ThreadId, _window: WindowId) {}
 
     /// The WM_GETMINMAXINFO answer.
-    fn min_max_info(&mut self, _windows: &mut Windows, _target: WindowId) -> MinMaxInfo {
+    fn min_max_info(&mut self, _target: WindowId) -> MinMaxInfo {
         MinMaxInfo::unbounded()
     }
 
@@ -687,66 +672,77 @@ pub trait Pump {
     }
 
     /// Destroy a menu (its window's end): the menu and its popups go ([`super::menu`]).
-    fn destroy_menu(&mut self, windows: &mut Windows, menu: Hwnd) {
-        let _ = windows.destroy_menu_handle(menu);
+    fn destroy_menu(&mut self, menu: Hwnd) {
+        let _ = self.windows().destroy_menu_handle(menu);
     }
 
     /// Create the window's cache DC (CS_OWNDC/CS_CLASSDC); false on failure.
-    fn create_window_dc(
-        &mut self,
-        _windows: &mut Windows,
-        _target: WindowId,
-        _own_dc: bool,
-    ) -> bool {
+    fn create_window_dc(&mut self, _target: WindowId, _own_dc: bool) -> bool {
         true
     }
 
     /// Make the window layered; false on failure.
-    fn set_layered(&mut self, _windows: &mut Windows, _target: WindowId) -> bool {
+    fn set_layered(&mut self, _target: WindowId) -> bool {
         true
     }
 
     /// The full-screen check over the window's rect.
-    fn check_full_screen(
-        &mut self,
-        _windows: &mut Windows,
-        _target: WindowId,
-        _rect: &mut SizeRect,
-    ) {
-    }
+    fn check_full_screen(&mut self, _target: WindowId, _rect: &mut SizeRect) {}
 
     /// Where a top-level window inserts in the z-order (after the topmost pile).
-    fn foreground_insert_after(&mut self, _windows: &mut Windows, _target: WindowId) -> ZOrder {
+    fn foreground_insert_after(&mut self, _target: WindowId) -> ZOrder {
         ZOrder::Top
     }
 
     /// A hook's veto of a creation (the CBT hook's HCBT_CREATEWND).
-    fn cbt_create_veto(
-        &mut self,
-        _windows: &mut Windows,
-        _classes: &mut class::Registry,
-        _target: WindowId,
-        _params: &mut CreateParams,
-    ) -> bool {
+    fn cbt_create_veto(&mut self, _target: WindowId, _params: &mut CreateParams) -> bool {
         false
     }
 
     /// A hook's veto of a destroy (the CBT hook's HCBT_DESTROYWND).
-    fn cbt_destroy_veto(&mut self, _windows: &mut Windows, _target: WindowId) -> bool {
+    fn cbt_destroy_veto(&mut self, _target: WindowId) -> bool {
         false
     }
 
     /// Disown the clipboard (the window was the clipboard owner).
-    fn disown_clipboard(&mut self, _windows: &mut Windows, _target: WindowId) {}
+    fn disown_clipboard(&mut self, _target: WindowId) {}
 
     /// Re-post a queued WM_QUIT for the window with its exit code.
-    fn repost_quit(&mut self, _windows: &mut Windows, _target: WindowId) {}
+    fn repost_quit(&mut self, _target: WindowId) {}
 
     /// The timers/hotkeys/pending-sends cleanup at the window's end.
-    fn window_teardown(&mut self, _windows: &mut Windows, _target: WindowId) {}
+    fn window_teardown(&mut self, _target: WindowId) {}
 
     /// Delete the window's properties.
-    fn delete_properties(&mut self, _windows: &mut Windows, _target: WindowId) {}
+    fn delete_properties(&mut self, _target: WindowId) {}
+}
+
+/// What a session holds the registries by: the window manager's lock, its guard ([`Locked`]), in
+/// the services, or the two registries borrowed ([`Split`]) at the boot and in the tests. Only
+/// the guard can be let go of around a send.
+pub trait Hold {
+    /// Both registries.
+    fn parts(&mut self) -> (&mut Windows, &mut class::Registry);
+}
+
+/// The two registries, borrowed for the session's life.
+pub type Split<'a> = (&'a mut Windows, &'a mut class::Registry);
+
+impl Hold for Split<'_> {
+    fn parts(&mut self) -> (&mut Windows, &mut class::Registry) {
+        (&mut *self.0, &mut *self.1)
+    }
+}
+
+/// The window manager's lock, held for the session's life except where a send lets it go
+/// ([`crate::sync::ShortGuard::unlocked`]).
+pub type Locked<'a> = crate::sync::ShortGuard<'a, WindowManager>;
+
+impl Hold for Locked<'_> {
+    fn parts(&mut self) -> (&mut Windows, &mut class::Registry) {
+        let manager: &mut WindowManager = self;
+        (&mut manager.windows, &mut manager.classes)
+    }
 }
 
 // --- The window pool
@@ -1894,9 +1890,10 @@ impl Windows {
 
     /// The min/max-track clamp: a tiled or thick-framed window's size is clamped into the
     /// min/max track (the reserved/max size while minimized).
-    fn adjust_size(&mut self, id: WindowId, pump: &mut dyn Pump, cx: &mut i32, cy: &mut i32) {
+    fn adjust_size(s: &mut dyn Session, id: WindowId, cx: &mut i32, cy: &mut i32) {
+        let windows = s.windows();
         let (tiled, sizebox, minimized) = {
-            let w = self.at(id);
+            let w = windows.at(id);
             (
                 w.is_tiled(),
                 w.style & WS_THICKFRAME != 0,
@@ -1904,7 +1901,7 @@ impl Windows {
             )
         };
         if tiled || sizebox {
-            let mmi = pump.min_max_info(self, id);
+            let mmi = s.min_max_info(id);
             let (min, max) = if minimized {
                 (mmi.reserved, mmi.max_size)
             } else {
@@ -1991,26 +1988,24 @@ impl Windows {
     /// The creation decision logic: validate, resolve the class, allocate and wire the record,
     /// position it, and run the message sequence. The answer is the new window's id; the
     /// service answers its handle.
-    #[allow(clippy::too_many_arguments)]
     pub fn create_window_ex(
-        &mut self,
-        classes: &mut class::Registry,
+        s: &mut dyn Session,
         caller: ThreadId,
         args: &CreateArgs,
-        pump: &mut dyn Pump,
     ) -> Result<WindowId, Failure> {
+        let (windows, classes) = s.parts();
         // The private ANSI-creator bit is consumed here, never stored on the window.
         let ansi_creator = args.ex_style & ANSI_CREATOR_BIT != 0;
         let mut ex_style = args.ex_style & !ANSI_CREATOR_BIT;
 
         let (process, desktop_id) = {
-            let thread = self.thread(caller);
+            let thread = windows.thread(caller);
             (thread.process, thread.desktop)
         };
 
         // A parent on another desktop is refused before anything else is looked at.
         if let Some(parent) = args.parent {
-            if self.at(parent).desktop != desktop_id {
+            if windows.at(parent).desktop != desktop_id {
                 return Err(Failure::InvalidParameter);
             }
         }
@@ -2020,7 +2015,7 @@ impl Windows {
         // The desktop access check. It is skipped while the thread has no desktop handle yet:
         // that is the root desktop window's own creation.
         {
-            let thread = self.thread(caller);
+            let thread = windows.thread(caller);
             if thread.desktop_handle.is_some() && thread.desktop_access & DESKTOP_CREATEWINDOW == 0
             {
                 return Err(Failure::AccessDenied);
@@ -2032,7 +2027,7 @@ impl Windows {
             let Some(parent) = args.parent else {
                 return Err(Failure::TlwWithWsChild);
             };
-            if !self.validate_parent_depth(None, Some(parent)) {
+            if !windows.validate_parent_depth(None, Some(parent)) {
                 return Err(Failure::InvalidParameter);
             }
         }
@@ -2064,22 +2059,22 @@ impl Windows {
         }
 
         // The record and its handle.
-        let Some(id) = self.pool.allocate() else {
+        let Some(id) = windows.pool.allocate() else {
             return Err(Failure::OutOfMemory);
         };
-        let handle = self.handles.insert(UserObject::Window(WindowEntry {
+        let handle = windows.handles.insert(UserObject::Window(WindowEntry {
             id,
             owner: caller,
             marked_destroy: false,
             in_destroy: false,
         }));
         if handle == 0 {
-            self.pool.free(id);
+            windows.pool.free(id);
             return Err(Failure::OutOfMemory);
         }
         {
-            let monitor = self.thread(caller).monitor.unwrap_or(PRIMARY_MONITOR);
-            let w = self.at_mut(id);
+            let monitor = windows.thread(caller).monitor.unwrap_or(PRIMARY_MONITOR);
+            let w = windows.at_mut(id);
             w.handle = handle;
             w.thread = caller;
             w.process = process;
@@ -2095,12 +2090,12 @@ impl Windows {
         // The window's extra bytes, zeroed, allocated with it as Windows 2000 allocates them with
         // the window from its desktop's heap; none to allocate fails the creation.
         if info.cb_wnd_extra > 0 {
-            let Some(block) = self.extra.allocate(info.cb_wnd_extra as usize) else {
-                self.handles.close(handle);
-                self.pool.free(id);
+            let Some(block) = windows.extra.allocate(info.cb_wnd_extra as usize) else {
+                windows.handles.close(handle);
+                windows.pool.free(id);
                 return Err(Failure::OutOfMemory);
             };
-            self.at_mut(id).extra = Some(block);
+            windows.at_mut(id).extra = Some(block);
         }
 
         // The class reference (a class of another desktop is cloned for the window; a clone
@@ -2111,24 +2106,25 @@ impl Windows {
             desktop: desktop_id,
         };
         if !classes.reference_class(class_id, &mut view) {
-            if let Some(block) = self.at_mut(id).extra.take() {
-                self.extra.free(block);
+            if let Some(block) = windows.at_mut(id).extra.take() {
+                windows.extra.free(block);
             }
-            self.handles.close(handle);
-            self.pool.free(id);
+            windows.handles.close(handle);
+            windows.pool.free(id);
             return Err(Failure::CannotFindWindowClass);
         }
-        self.at_mut(id).class = Some(view.class);
+        windows.at_mut(id).class = Some(view.class);
 
         // The window count goes up early, so the failure paths keep it correct through the free.
-        self.thread_mut(caller).window_count += 1;
+        windows.thread_mut(caller).window_count += 1;
 
         // The name the creation was given, kept for its messages: no room for it fails it.
-        let Some(name) = self.texts.store(args.name) else {
-            self.rollback_create(classes, caller, id, pump);
+        let Some(name) = windows.texts.store(args.name) else {
+            Windows::rollback_create(s, caller, id);
             return Err(Failure::OutOfMemory);
         };
-        self.at_mut(id).create_name = name;
+        let windows = s.windows();
+        windows.at_mut(id).create_name = name;
 
         // The create parameters the WM_NCCREATE and WM_CREATE handlers see.
         let mut params = CreateParams {
@@ -2144,7 +2140,7 @@ impl Windows {
             y: args.y,
             cx: args.cx,
             cy: args.cy,
-            parent: args.parent.map_or(0, |p| self.at(p).handle),
+            parent: args.parent.map_or(0, |p| windows.at(p).handle),
             menu: if child {
                 args.menu.raw()
             } else {
@@ -2156,16 +2152,16 @@ impl Windows {
 
         // While callbacks run the parent pointer is the desktop's message window, so a parent
         // always exists.
-        let desktop = self.desktop_by_id(desktop_id);
+        let desktop = windows.desktop_by_id(desktop_id);
         let desktop_window = desktop.and_then(|d| d.window);
         let message_window = desktop.and_then(|d| d.message_window);
-        self.at_mut(id).parent = message_window;
+        windows.at_mut(id).parent = message_window;
 
         // The module and the window procedure are stored before any callback.
         // A class with a narrow form of its procedure (user32's own) gives a narrow caller's
         // window that form: its creator's form decides whether it is a Unicode window.
         {
-            let w = self.at_mut(id);
+            let w = windows.at_mut(id);
             w.module = args.instance;
             if ansi_creator && info.wnd_proc_ansi != 0 {
                 w.proc = Proc::Client(info.wnd_proc_ansi);
@@ -2176,20 +2172,21 @@ impl Windows {
             }
         }
         {
-            let w = self.at_mut(id);
+            let w = windows.at_mut(id);
             w.flags.ansi_creator = ansi_creator;
             w.flags.win31_compat = compat.win31;
             w.flags.win40_compat = compat.win40;
         }
 
         // A hook can veto the creation outright.
-        if pump.cbt_create_veto(self, classes, id, &mut params) {
-            self.rollback_create(classes, caller, id, pump);
+        if s.cbt_create_veto(id, &mut params) {
+            Windows::rollback_create(s, caller, id);
             return Err(Failure::OutOfMemory);
         }
+        let windows = s.windows();
 
         let mut z_order = ZOrder::Top;
-        let tiled = self.at(id).kind() == Kind::Tiled;
+        let tiled = windows.at(id).kind() == Kind::Tiled;
 
         // CW_USEDEFAULT is honored only by tiled (overlapped) windows; elsewhere it zeroes.
         let (mut x, mut y, mut cx, mut cy) = (args.x, args.y, args.cx, args.cy);
@@ -2210,7 +2207,7 @@ impl Windows {
         if child {
             if let Some(parent) = args.parent {
                 if Some(parent) != desktop_window {
-                    let p = self.at(parent);
+                    let p = windows.at(parent);
                     src.x = src.x.saturating_add(p.client_rect.left);
                     src.y = src.y.saturating_add(p.client_rect.top);
                 }
@@ -2224,7 +2221,7 @@ impl Windows {
         let mut rc = Rect::default();
         if tiled {
             {
-                let w = self.at_mut(id);
+                let w = windows.at_mut(id);
                 w.style |= WS_CLIPSIBLINGS;
                 if w.flags.win40_compat {
                     w.ex_style |= WS_EX_WINDOWEDGE;
@@ -2237,15 +2234,15 @@ impl Windows {
                 sw = y;
             }
             // The monitor: the thread's, else the parent's, else the primary.
-            let monitor = self
+            let monitor = windows
                 .thread(caller)
                 .monitor
-                .or_else(|| args.parent.map(|p| self.at(p).monitor))
+                .or_else(|| args.parent.map(|p| windows.at(p).monitor))
                 .unwrap_or(PRIMARY_MONITOR);
-            self.set_tiled_rect(&mut rc, monitor);
+            windows.set_tiled_rect(&mut rc, monitor);
             if is_default_position(x) {
                 // Default positioning: the startup info, else the cascade rect.
-                let usi = self.thread(caller).startup;
+                let usi = windows.thread(caller).startup;
                 if usi.flags & STARTF_USEPOSITION != 0 {
                     startup = true;
                     x = usi.x as i32;
@@ -2259,13 +2256,13 @@ impl Windows {
                     src.y = y;
                 }
                 def_pos = true;
-            } else if self.monitors[monitor as usize].window_stack > 0 {
+            } else if windows.monitors[monitor as usize].window_stack > 0 {
                 // An app-specified position undoes the cascade's stacking effect.
-                self.monitors[monitor as usize].window_stack -= 1;
+                windows.monitors[monitor as usize].window_stack -= 1;
             }
             if is_default_position(src.cx) {
                 // Default sizing: the startup info, else fill the cascade rect.
-                let usi = self.thread(caller).startup;
+                let usi = windows.thread(caller).startup;
                 if usi.flags & STARTF_USESIZE != 0 {
                     startup = true;
                     src.cx = usi.cx as i32;
@@ -2276,7 +2273,7 @@ impl Windows {
                 }
             } else if def_pos {
                 // A default position with an app size: keep the window inside the monitor.
-                let m = self.monitors[monitor as usize].rect;
+                let m = windows.monitors[monitor as usize].rect;
                 let dx = src.x.saturating_add(src.cx).saturating_sub(m.right);
                 let dy = src.y.saturating_add(src.cy).saturating_sub(m.bottom);
                 if dx > 0 {
@@ -2299,29 +2296,30 @@ impl Windows {
         }
         // The startup info is used once.
         if startup {
-            self.thread_mut(caller).startup.flags &= !(STARTF_USESIZE | STARTF_USEPOSITION);
+            windows.thread_mut(caller).startup.flags &= !(STARTF_USESIZE | STARTF_USEPOSITION);
         }
 
         // Popup windows clip their siblings (the desktop window excepted).
-        if self.at(id).kind() == Kind::Popup && Some(id) != desktop_window {
-            self.at_mut(id).style |= WS_CLIPSIBLINGS;
+        if windows.at(id).kind() == Kind::Popup && Some(id) != desktop_window {
+            windows.at_mut(id).style |= WS_CLIPSIBLINGS;
         }
 
         // The forced caption/border bits go into the style's high word.
         if tiled {
-            self.at_mut(id).style |= WS_CAPTION | WS_BORDER;
+            windows.at_mut(id).style |= WS_CAPTION | WS_BORDER;
         }
 
         // The class menu when no menu was given (top-level windows only); a load failure is
         // tolerated and leaves the window without a menu.
         let mut menu = args.menu;
         if !child && menu.is_none() && info.menu_name != class::MenuName::None {
-            if let Some(handle) = pump.load_class_menu(info.instance, &info.menu_name) {
+            if let Some(handle) = s.load_class_menu(info.instance, &info.menu_name) {
                 menu = MenuInput::Handle(handle);
                 params.menu = handle;
             }
         }
-        self.at_mut(id).menu = if child {
+        let windows = s.windows();
+        windows.at_mut(id).menu = if child {
             menu.as_child_menu()
         } else {
             menu.as_window_menu()
@@ -2332,21 +2330,22 @@ impl Windows {
         let mut parent = args.parent;
         if !child {
             {
-                let w = self.at_mut(id);
+                let w = windows.at_mut(id);
                 w.last_active = Some(id);
                 w.owner = None;
             }
             if let Some(p) = parent {
                 if Some(p) != message_window && Some(p) != desktop_window {
-                    let owner = self.top_level_window(p);
-                    if !self.validate_owner_depth(id, owner) {
-                        self.rollback_create(classes, caller, id, pump);
+                    let owner = windows.top_level_window(p);
+                    if !windows.validate_owner_depth(id, owner) {
+                        Windows::rollback_create(s, caller, id);
                         return Err(Failure::OutOfMemory);
                     }
+                    let windows = s.windows();
                     {
                         let owner_topmost =
-                            owner.is_some_and(|o| self.at(o).ex_style & WS_EX_TOPMOST != 0);
-                        let w = self.at_mut(id);
+                            owner.is_some_and(|o| windows.at(o).ex_style & WS_EX_TOPMOST != 0);
+                        let w = windows.at_mut(id);
                         w.owner = owner;
                         // A window must sit above a topmost owner.
                         if owner_topmost {
@@ -2355,9 +2354,9 @@ impl Windows {
                     }
                     // An owner on another thread shares input state.
                     if let Some(o) = owner {
-                        let owner_thread = self.at(o).thread;
+                        let owner_thread = windows.at(o).thread;
                         if owner_thread != caller {
-                            pump.attach_input(caller, owner_thread, true);
+                            s.attach_input(caller, owner_thread, true);
                         }
                     }
                 }
@@ -2366,16 +2365,17 @@ impl Windows {
                 parent = desktop_window;
             }
         }
+        let windows = s.windows();
         if let Some(p) = parent {
-            self.at_mut(id).parent = Some(p);
+            windows.at_mut(id).parent = Some(p);
         }
 
         // The CS_PARENTDC compat hack (skipped for pre-4.0 windows): the class style overrides
         // the clip bits unless the parent clips children.
-        if !self.at(id).flags.win31_compat && info.style & class::CS_PARENTDC != 0 {
+        if !windows.at(id).flags.win31_compat && info.style & class::CS_PARENTDC != 0 {
             if let Some(p) = parent {
-                if self.at(p).style & WS_CLIPCHILDREN == 0 {
-                    let w = self.at_mut(id);
+                if windows.at(p).style & WS_CLIPCHILDREN == 0 {
+                    let w = windows.at_mut(id);
                     w.style &= !(WS_CLIPCHILDREN | WS_CLIPSIBLINGS);
                 }
             }
@@ -2384,18 +2384,19 @@ impl Windows {
         // A child of another thread's parent shares input state.
         if child {
             if let Some(p) = parent {
-                if Some(p) != desktop_window && self.at(p).thread != caller {
-                    let parent_thread = self.at(p).thread;
-                    pump.attach_input(caller, parent_thread, true);
+                if Some(p) != desktop_window && windows.at(p).thread != caller {
+                    let parent_thread = windows.at(p).thread;
+                    s.attach_input(caller, parent_thread, true);
                 }
             }
         }
 
         // Size clamping, the full-screen check, negative sizes, and the final window rect.
-        self.adjust_size(id, pump, &mut src.cx, &mut src.cy);
+        Windows::adjust_size(s, id, &mut src.cx, &mut src.cy);
         if !child && ex_style & WS_EX_TOOLWINDOW == 0 {
-            pump.check_full_screen(self, id, &mut src);
+            s.check_full_screen(id, &mut src);
         }
+        let windows = s.windows();
         if src.cx < 0 {
             src.cx = 0;
         }
@@ -2403,7 +2404,7 @@ impl Windows {
             src.cy = 0;
         }
         {
-            let w = self.at_mut(id);
+            let w = windows.at_mut(id);
             w.window_rect = Rect {
                 left: src.x,
                 top: src.y,
@@ -2413,14 +2414,14 @@ impl Windows {
         }
 
         // Layered windows and class/own DCs: a failure rolls the creation back.
-        if ex_style & WS_EX_LAYERED != 0 && !pump.set_layered(self, id) {
-            self.rollback_create(classes, caller, id, pump);
+        if ex_style & WS_EX_LAYERED != 0 && !s.set_layered(id) {
+            Windows::rollback_create(s, caller, id);
             return Err(Failure::OutOfMemory);
         }
         if info.style & (class::CS_OWNDC | class::CS_CLASSDC) != 0
-            && !pump.create_window_dc(self, id, info.style & class::CS_OWNDC != 0)
+            && !s.create_window_dc(id, info.style & class::CS_OWNDC != 0)
         {
-            self.rollback_create(classes, caller, id, pump);
+            Windows::rollback_create(s, caller, id);
             return Err(Failure::OutOfMemory);
         }
 
@@ -2437,10 +2438,11 @@ impl Windows {
             lparam: 0,
             payload: Payload::Create(params),
         };
-        if pump.send(self, classes, id, &mut message) == 0 {
-            self.rollback_create(classes, caller, id, pump);
+        if s.send(id, &mut message) == 0 {
+            Windows::rollback_create(s, caller, id);
             return Err(Failure::OutOfMemory);
         }
+        let windows = s.windows();
         let Payload::Create(mut params) = message.payload else {
             unreachable!("the payload came back whole")
         };
@@ -2448,7 +2450,7 @@ impl Windows {
         // WM_NCCREATE may have set the window text: the name WM_CREATE sees is refreshed from
         // the record, except when the original name was empty and the text never got set.
         {
-            let w = self.at(id);
+            let w = windows.at(id);
             if w.flags.title_set && !(w.create_name.is_empty() && w.title.is_empty()) {
                 params.name = CreateName::Title;
             }
@@ -2460,26 +2462,29 @@ impl Windows {
             if !child && Some(p) != message_window {
                 let topmost_pile = match z_order {
                     ZOrder::Top => true,
-                    ZOrder::After(after) => self.at(after).ex_style & WS_EX_TOPMOST != 0,
+                    ZOrder::After(after) => windows.at(after).ex_style & WS_EX_TOPMOST != 0,
                     ZOrder::Bottom => false,
                 };
-                if self.at(id).ex_style & WS_EX_TOPMOST == 0 && topmost_pile {
-                    z_order = pump.foreground_insert_after(self, id);
+                if windows.at(id).ex_style & WS_EX_TOPMOST == 0 && topmost_pile {
+                    z_order = s.foreground_insert_after(id);
                 }
             }
-            self.link_window(id, z_order, p);
+            let windows = s.windows();
+            windows.link_window(id, z_order, p);
         }
+        let windows = s.windows();
 
         // A window created minimized is minimized once it is made (the min/max setup below): its
         // client area is a normal window's until then, so that minimizing it empties it (guigeo
         // `createmax`: a WM_SIZE of SIZE_MINIMIZED, hidden or not).
-        let created_minimized = self.at(id).style & WS_MINIMIZE != 0;
-        self.at_mut(id).style &= !WS_MINIMIZE;
+        let created_minimized = windows.at(id).style & WS_MINIMIZE != 0;
+        windows.at_mut(id).style &= !WS_MINIMIZE;
 
         // WM_NCCALCSIZE: the client rect, the window's less the frame.
-        let window_rect = self.at(id).window_rect;
-        let client = pump.calc_client(self, classes, id, window_rect);
-        self.at_mut(id).client_rect = client;
+        let window_rect = windows.at(id).window_rect;
+        let client = s.calc_client(id, window_rect);
+        let windows = s.windows();
+        windows.at_mut(id).client_rect = client;
 
         // WM_CREATE: a -1 answer destroys the window for real and fails the create.
         let mut message = Message {
@@ -2488,32 +2493,32 @@ impl Windows {
             lparam: 0,
             payload: Payload::Create(params),
         };
-        if pump.send(self, classes, id, &mut message) == -1 {
-            let _ = self.destroy_window(classes, caller, id, pump);
+        if s.send(id, &mut message) == -1 {
+            let _ = Windows::destroy_window(s, caller, id);
             return Err(Failure::OutOfMemory);
         }
+        let windows = s.windows();
         // The creation's name is the sends' no longer (the queue's sends keep their own copy).
-        let name = core::mem::take(&mut self.at_mut(id).create_name);
-        self.texts.free(name);
+        let name = core::mem::take(&mut windows.at_mut(id).create_name);
+        windows.texts.free(name);
 
         // The window is officially created.
-        self.at_mut(id).flags.initialized = true;
+        windows.at_mut(id).flags.initialized = true;
 
         // WM_SIZE/WM_MOVE, unless they are deferred to show time (tiled windows).
-        if !self.at(id).flags.sendsizemove {
-            pump.send_size(self, classes, id, SIZENORMAL);
-            let mut rc = self.at(id).client_rect;
+        if !windows.at(id).flags.sendsizemove {
+            s.send_size(id, SIZENORMAL);
+            let windows = s.windows();
+            let mut rc = windows.at(id).client_rect;
             if let Some(p) = parent {
                 if Some(p) != desktop_window {
                     // WM_MOVE's position is client-relative for children.
-                    let pc = self.at(p).client_rect;
+                    let pc = windows.at(p).client_rect;
                     rc.left = rc.left.saturating_sub(pc.left);
                     rc.top = rc.top.saturating_sub(pc.top);
                 }
             }
-            pump.send(
-                self,
-                classes,
+            s.send(
                 id,
                 &mut Message {
                     message: WM_MOVE,
@@ -2523,6 +2528,7 @@ impl Windows {
                 },
             );
         }
+        let windows = s.windows();
 
         // Min/max setup: a window created with WS_MINIMIZE or WS_MAXIMIZE is minimized or
         // maximized now, hidden or not, its normal place the one it was created at (guigeo
@@ -2532,32 +2538,33 @@ impl Windows {
         // WS_VISIBLE and either bit gets two WM_SIZEs of its new state, a hidden one one).
         let min_max = if created_minimized {
             Some(SW_SHOWMINNOACTIVE)
-        } else if self.at(id).style & WS_MAXIMIZE != 0 {
-            self.at_mut(id).style &= !WS_MAXIMIZE;
+        } else if windows.at(id).style & WS_MAXIMIZE != 0 {
+            windows.at_mut(id).style &= !WS_MAXIMIZE;
             Some(SW_SHOWMAXIMIZED)
         } else {
             None
         };
         if let Some(command) = min_max {
-            pump.min_maximize(self, id, command as u32);
-            let deferred = self.at(id).flags.sendsizemove;
-            let _ = self.min_maximize(classes, id, command, pump);
-            if !self.pool.is_live(id) {
+            s.min_maximize(id, command as u32);
+            let windows = s.windows();
+            let deferred = windows.at(id).flags.sendsizemove;
+            let _ = Windows::min_maximize(s, id, command);
+            let windows = s.windows();
+            if !windows.pool.is_live(id) {
                 return Err(Failure::OutOfMemory);
             }
-            self.at_mut(id).flags.sendsizemove = deferred;
+            windows.at_mut(id).flags.sendsizemove = deferred;
         }
+        let windows = s.windows();
 
         // Children tell their parent about the create.
-        if child && self.at(id).ex_style & WS_EX_NOPARENTNOTIFY == 0 {
-            if let Some(p) = self.at(id).parent {
+        if child && windows.at(id).ex_style & WS_EX_NOPARENTNOTIFY == 0 {
+            if let Some(p) = windows.at(id).parent {
                 let (menu_id, handle) = {
-                    let w = self.at(id);
+                    let w = windows.at(id);
                     (w.menu.id().unwrap_or(0) as u16, w.handle)
                 };
-                pump.send(
-                    self,
-                    classes,
+                s.send(
                     p,
                     &mut Message {
                         message: WM_PARENTNOTIFY,
@@ -2572,16 +2579,15 @@ impl Windows {
         // A window created with WS_VISIBLE is shown last (a show command that is none is not
         // carried out).
         if args.style & WS_VISIBLE != 0 {
-            let _ = self.show_window(classes, id, sw, pump);
+            let _ = Windows::show_window(s, id, sw);
         }
+        let windows = s.windows();
 
         // The process's hotkey lands on the first tiled/APPWINDOW window.
         if tiled || ex_style & WS_EX_APPWINDOW != 0 {
-            let hotkey = self.thread(caller).hotkey;
+            let hotkey = windows.thread(caller).hotkey;
             if hotkey != 0 {
-                pump.send(
-                    self,
-                    classes,
+                s.send(
                     id,
                     &mut Message {
                         message: WM_SETHOTKEY,
@@ -2590,7 +2596,8 @@ impl Windows {
                         payload: Payload::None,
                     },
                 );
-                self.thread_mut(caller).hotkey = 0;
+                let windows = s.windows();
+                windows.thread_mut(caller).hotkey = 0;
             }
         }
 
@@ -2601,19 +2608,14 @@ impl Windows {
     /// sure it is not treated as visible, and free it (which sends WM_NCDESTROY, destroys any
     /// children, dereferences the class, drops the window count and frees the record and handle;
     /// no WM_DESTROY is sent — the window was never linked).
-    fn rollback_create(
-        &mut self,
-        classes: &mut class::Registry,
-        caller: ThreadId,
-        id: WindowId,
-        pump: &mut dyn Pump,
-    ) {
+    fn rollback_create(s: &mut dyn Session, caller: ThreadId, id: WindowId) {
+        let windows = s.windows();
         {
-            let w = self.at_mut(id);
+            let w = windows.at_mut(id);
             w.flags.destroyed = true;
             w.style &= !WS_VISIBLE;
         }
-        self.free_window(classes, caller, id, pump);
+        Windows::free_window(s, caller, id);
     }
 
     // --- Destroy
@@ -2631,36 +2633,37 @@ impl Windows {
     /// destroys its own owned windows first — and the cascade descends the owner chain through
     /// the records rather than by recursing (see [`Walk`]).
     pub fn destroy_window(
-        &mut self,
-        classes: &mut class::Registry,
+        s: &mut dyn Session,
         caller: ThreadId,
         window: WindowId,
-        pump: &mut dyn Pump,
     ) -> Result<bool, Failure> {
-        if !self.begin_destroy(caller, window, pump)? {
+        if !Windows::begin_destroy(s, caller, window)? {
             return Ok(false);
         }
-        self.destroy_prologue(classes, window, pump);
+        Windows::destroy_prologue(s, window);
         let mut current = window;
         loop {
+            let windows = s.windows();
             // The windows `current` owns are destroyed before its own WM_DESTROY.
-            if let Some(owned) = self.next_owned_window(current) {
-                match self.begin_destroy(caller, owned, pump) {
+            if let Some(owned) = windows.next_owned_window(current) {
+                match Windows::begin_destroy(s, caller, owned) {
                     Ok(true) => {
-                        self.at_mut(owned).walk.owner = Some(current);
-                        self.destroy_prologue(classes, owned, pump);
+                        s.windows().at_mut(owned).walk.owner = Some(current);
+                        Windows::destroy_prologue(s, owned);
                         current = owned;
                     }
                     // One that cannot be destroyed loses its owner (a vetoed one included: the
                     // scan would find it again otherwise).
-                    Ok(false) | Err(_) => self.at_mut(owned).owner = None,
+                    Ok(false) | Err(_) => s.windows().at_mut(owned).owner = None,
                 }
                 continue;
             }
-            let walk = self.at(current).walk;
-            self.destroy_epilogue(classes, caller, current, walk.already, pump);
+            let windows = s.windows();
+            let walk = windows.at(current).walk;
+            Windows::destroy_epilogue(s, caller, current, walk.already);
+            let windows = s.windows();
             if let Some(saved) = walk.saved_hooks {
-                self.thread_mut(caller).hooks_disabled = saved;
+                windows.thread_mut(caller).hooks_disabled = saved;
             }
             match walk.owner {
                 Some(owner) => current = owner,
@@ -2672,16 +2675,15 @@ impl Windows {
     /// The destroy service over a handle: the handle validation first (an invalid handle is
     /// ERROR_INVALID_WINDOW_HANDLE), then the destroy.
     pub fn destroy_window_handle(
-        &mut self,
-        classes: &mut class::Registry,
+        s: &mut dyn Session,
         caller: ThreadId,
         handle: Hwnd,
-        pump: &mut dyn Pump,
     ) -> Result<bool, Failure> {
-        let Some(window) = self.window_from_handle(handle) else {
+        let windows = s.windows();
+        let Some(window) = windows.window_from_handle(handle) else {
             return Err(Failure::InvalidWindowHandle);
         };
-        self.destroy_window(classes, caller, window, pump)
+        Windows::destroy_window(s, caller, window)
     }
 
     /// The entry checks of `window`'s destroy: its handle must still name it, and only its thread
@@ -2690,48 +2692,49 @@ impl Windows {
     /// can veto a first destroy: false, the window untouched. The re-entry state goes into the
     /// window's walk, for the epilogue.
     fn begin_destroy(
-        &mut self,
+        s: &mut dyn Session,
         caller: ThreadId,
         window: WindowId,
-        pump: &mut dyn Pump,
     ) -> Result<bool, Failure> {
-        let handle = self.at(window).handle;
-        let Some(entry) = self.handles.window(handle) else {
+        let windows = s.windows();
+        let handle = windows.at(window).handle;
+        let Some(entry) = windows.handles.window(handle) else {
             return Err(Failure::InvalidWindowHandle);
         };
         let already = entry.marked_destroy;
         if already {
             // The re-entry path: adopt the current thread as the owner.
             if entry.owner != caller {
-                self.handles.update_window(handle, |mut e| {
+                windows.handles.update_window(handle, |mut e| {
                     e.owner = caller;
                     e
                 });
-                self.at_mut(window).thread = caller;
+                windows.at_mut(window).thread = caller;
             }
-        } else if self.at(window).thread != caller {
+        } else if windows.at(window).thread != caller {
             return Err(Failure::AccessDenied);
         }
         // A hook can veto a first destroy.
         let vetoed = !already
             && {
-                let t = self.thread(caller);
+                let t = windows.thread(caller);
                 !t.in_cleanup && !t.hooks_disabled
             }
-            && pump.cbt_destroy_veto(self, window);
+            && s.cbt_destroy_veto(window);
+        let windows = s.windows();
         if vetoed {
             return Ok(false);
         }
         // Hooks are disabled for the duration of a re-entry's destroy.
         let saved_hooks = if already {
-            let t = self.thread_mut(caller);
+            let t = windows.thread_mut(caller);
             let saved = t.hooks_disabled;
             t.hooks_disabled = true;
             Some(saved)
         } else {
             None
         };
-        self.at_mut(window).walk = Walk {
+        windows.at_mut(window).walk = Walk {
             already,
             saved_hooks,
             ..Walk::NONE
@@ -2742,34 +2745,28 @@ impl Windows {
     /// The first part of `window`'s destroy, before the windows it owns go: a cross-thread
     /// owner's input sharing ends, a child tells its parent, and the window is hidden before
     /// anything is messaged.
-    fn destroy_prologue(
-        &mut self,
-        classes: &mut class::Registry,
-        window: WindowId,
-        pump: &mut dyn Pump,
-    ) {
+    fn destroy_prologue(s: &mut dyn Session, window: WindowId) {
+        let windows = s.windows();
         // A cross-thread owner's input sharing ends here.
         {
-            let w = self.at(window);
-            if !w.is_child() {
-                if let Some(o) = w.owner {
-                    let owner_thread = self.at(o).thread;
-                    if owner_thread != w.thread {
-                        pump.attach_input(w.thread, owner_thread, false);
-                    }
+            let w = windows.at(window);
+            let (thread, owner) = (w.thread, w.owner.filter(|_| !w.is_child()));
+            if let Some(o) = owner {
+                let owner_thread = windows.at(o).thread;
+                if owner_thread != thread {
+                    s.attach_input(thread, owner_thread, false);
                 }
             }
         }
+        let windows = s.windows();
 
         // A child tells its parent about the destroy before anything else happens to it.
         {
-            let w = self.at(window);
+            let w = windows.at(window);
             if w.is_child() && w.ex_style & WS_EX_NOPARENTNOTIFY == 0 {
                 if let Some(p) = w.parent {
                     let (menu_id, handle) = (w.menu.id().unwrap_or(0) as u16, w.handle);
-                    pump.send(
-                        self,
-                        classes,
+                    s.send(
                         p,
                         &mut Message {
                             message: WM_PARENTNOTIFY,
@@ -2781,20 +2778,21 @@ impl Windows {
                 }
             }
         }
+        let windows = s.windows();
 
         // Mark in-destroy (the mother desktop window excepted), then hide before anything is
         // messaged.
-        if self.at(window).parent.is_some() {
-            self.at_mut(window).flags.in_destroy = true;
+        if windows.at(window).parent.is_some() {
+            windows.at_mut(window).flags.in_destroy = true;
         }
-        if self.at(window).is_visible() {
+        if windows.at(window).is_visible() {
             // A child through ShowWindow's decision; a top-level window hidden without activating
             // anyone else or moving/resizing/reordering. Whether the hide took is the check below.
-            if self.at(window).is_child() {
-                let _ = self.show_window(classes, window, SW_HIDE, pump);
+            if windows.at(window).is_child() {
+                let _ = Windows::show_window(s, window, SW_HIDE);
             } else {
-                let _ = self.set_window_pos(
-                    classes,
+                let _ = Windows::set_window_pos(
+                    s,
                     window,
                     InsertAfter::Top,
                     0,
@@ -2802,13 +2800,13 @@ impl Windows {
                     0,
                     0,
                     SWP_HIDEWINDOW | SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER,
-                    pump,
                 );
             }
-            if self.at(window).is_visible() {
+            let windows = s.windows();
+            if windows.at(window).is_visible() {
                 // The hide did not take: force the bit off and redraw what was below.
-                self.at_mut(window).style &= !WS_VISIBLE;
-                pump.redraw_below(self, window);
+                windows.at_mut(window).style &= !WS_VISIBLE;
+                s.redraw_below(window);
             }
         }
     }
@@ -2836,16 +2834,10 @@ impl Windows {
     /// The last part of `window`'s destroy, once the windows it owned are gone: the activation
     /// fixups and the destroy messages (both skipped on the re-entry path, `already`), the
     /// unlink, and the free.
-    fn destroy_epilogue(
-        &mut self,
-        classes: &mut class::Registry,
-        caller: ThreadId,
-        window: WindowId,
-        already: bool,
-        pump: &mut dyn Pump,
-    ) {
-        let desktop_window = self
-            .desktop_by_id(self.at(window).desktop)
+    fn destroy_epilogue(s: &mut dyn Session, caller: ThreadId, window: WindowId, already: bool) {
+        let windows = s.windows();
+        let desktop_window = windows
+            .desktop_by_id(windows.at(window).desktop)
             .and_then(|d| d.window);
 
         // Activation fixups (skipped on the re-entry path).
@@ -2853,9 +2845,9 @@ impl Windows {
             let mut target = None;
             let mut command = Activate::Skip;
             {
-                let t = self.thread(caller);
+                let t = windows.thread(caller);
                 if t.active == Some(window) {
-                    let w = self.at(window);
+                    let w = windows.at(window);
                     if w.is_popup() && w.owner.is_some() {
                         // A popup: try its creator.
                         target = w.owner;
@@ -2865,56 +2857,63 @@ impl Windows {
                         target = Some(window);
                         command = Activate::Skip;
                     }
-                } else if t.active.is_none() && self.foreground_thread == Some(caller) {
+                } else if t.active.is_none() && windows.foreground_thread == Some(caller) {
                     target = Some(window);
                     command = Activate::Skip;
                 }
             }
             if let Some(t) = target {
-                let ok = pump.activate(self, classes, t, command);
-                if !ok || (command == Activate::Skip && self.thread(caller).active == Some(window))
+                let ok = s.activate(t, command);
+                let windows = s.windows();
+                if !ok
+                    || (command == Activate::Skip && windows.thread(caller).active == Some(window))
                 {
-                    let t = self.thread_mut(caller);
+                    let t = windows.thread_mut(caller);
                     t.active = None;
                     t.focus = None;
-                    pump.destroy_caret();
+                    s.destroy_caret();
                 }
             }
+            let windows = s.windows();
             // Fix the owner chain's last-active popup: repoint it to the direct owner.
-            let owner = self.at(window).owner;
+            let owner = windows.at(window).owner;
             if let Some(o) = owner {
                 let mut root = o;
-                while let Some(n) = self.at(root).owner {
+                while let Some(n) = windows.at(root).owner {
                     root = n;
                 }
-                if self.at(root).last_active == Some(window) {
-                    self.at_mut(root).last_active = Some(o);
+                if windows.at(root).last_active == Some(window) {
+                    windows.at_mut(root).last_active = Some(o);
                 }
             }
         }
 
         // The destroy messages (skipped on the re-entry path).
         if !already {
-            self.send_destroy_messages(classes, window, pump);
+            Windows::send_destroy_messages(s, window);
         }
+        let windows = s.windows();
 
         // Unlink from the parent's child list (the re-entry path leaves the list alone).
-        if let Some(p) = self.at(window).parent {
+        if let Some(p) = windows.at(window).parent {
             if !already {
-                let w = self.at(window);
-                if w.is_child() && Some(p) != desktop_window && self.at(p).thread != w.thread {
-                    let parent_thread = self.at(p).thread;
-                    pump.attach_input(w.thread, parent_thread, false);
+                let w = windows.at(window);
+                let (child, thread) = (w.is_child(), w.thread);
+                let parent_thread = windows.at(p).thread;
+                if child && Some(p) != desktop_window && parent_thread != thread {
+                    s.attach_input(thread, parent_thread, false);
                 }
-                self.unlink_window(window, p);
+                let windows = s.windows();
+                windows.unlink_window(window, p);
             }
         }
+        let windows = s.windows();
 
         // Mark destroyed (the owner field stays valid for handlers).
-        self.at_mut(window).flags.destroyed = true;
+        windows.at_mut(window).flags.destroyed = true;
 
         // Free it.
-        self.free_window(classes, caller, window, pump);
+        Windows::free_window(s, caller, window);
     }
 
     /// The WM_DESTROY cascade: the window itself first, then its children depth-first (parents
@@ -2922,38 +2921,37 @@ impl Windows {
     /// subtree's; a handler that destroys the sibling the walk visits next ends the walk of their
     /// parent's children. The walk follows the child and parent links, the next sibling kept in
     /// the record ([`Walk::next`]).
-    fn send_destroy_messages(
-        &mut self,
-        classes: &mut class::Registry,
-        window: WindowId,
-        pump: &mut dyn Pump,
-    ) {
-        self.send_destroy(classes, window, pump);
+    fn send_destroy_messages(s: &mut dyn Session, window: WindowId) {
+        Windows::send_destroy(s, window);
         let mut current = window;
         let mut descend = true;
         loop {
+            let windows = s.windows();
             if descend {
-                if let Some(child) = self.at(current).child {
-                    let next = self.at(child).next;
-                    self.at_mut(child).walk.next = next;
+                if let Some(child) = windows.at(current).child {
+                    let next = windows.at(child).next;
+                    windows.at_mut(child).walk.next = next;
                     current = child;
-                    self.send_destroy(classes, current, pump);
+                    Windows::send_destroy(s, current);
                     continue;
                 }
             }
             // `current`'s subtree is done.
-            pump.check_focus(self, classes, current);
+            s.check_focus(current);
+            let windows = s.windows();
             if current == window {
                 return;
             }
-            let parent = self.at(current).parent.expect("a child has its parent");
+            let parent = windows.at(current).parent.expect("a child has its parent");
             // Continue only while the next sibling is still a live child of the parent.
-            match self.at_mut(current).walk.next.take() {
-                Some(next) if self.pool.is_live(next) && self.at(next).parent == Some(parent) => {
-                    let after = self.at(next).next;
-                    self.at_mut(next).walk.next = after;
+            match windows.at_mut(current).walk.next.take() {
+                Some(next)
+                    if windows.pool.is_live(next) && windows.at(next).parent == Some(parent) =>
+                {
+                    let after = windows.at(next).next;
+                    windows.at_mut(next).walk.next = after;
                     current = next;
-                    self.send_destroy(classes, current, pump);
+                    Windows::send_destroy(s, current);
                     descend = true;
                 }
                 _ => {
@@ -2966,19 +2964,13 @@ impl Windows {
 
     /// One window's step of the WM_DESTROY cascade, before its children's: the focus check, the
     /// clipboard, and WM_DESTROY itself.
-    fn send_destroy(
-        &mut self,
-        classes: &mut class::Registry,
-        window: WindowId,
-        pump: &mut dyn Pump,
-    ) {
-        pump.check_focus(self, classes, window);
-        if self.clipboard_owner == Some(window) {
-            pump.disown_clipboard(self, window);
+    fn send_destroy(s: &mut dyn Session, window: WindowId) {
+        s.check_focus(window);
+        let windows = s.windows();
+        if windows.clipboard_owner == Some(window) {
+            s.disown_clipboard(window);
         }
-        pump.send(
-            self,
-            classes,
+        s.send(
             window,
             &mut Message {
                 message: WM_DESTROY,
@@ -2994,35 +2986,32 @@ impl Windows {
     /// its parent's — and a cross-thread child gets a destroy event posted to its own queue
     /// instead. The walk descends through the child links and climbs back through the parent
     /// links, which the unlink leaves in place; each record's free is [`Windows::free_record`].
-    fn free_window(
-        &mut self,
-        classes: &mut class::Registry,
-        caller: ThreadId,
-        window: WindowId,
-        pump: &mut dyn Pump,
-    ) {
-        self.adopt_marked(caller, window);
+    fn free_window(s: &mut dyn Session, caller: ThreadId, window: WindowId) {
+        let windows = s.windows();
+        windows.adopt_marked(caller, window);
         let mut current = window;
         loop {
-            if let Some(child) = self.at(current).child {
+            let windows = s.windows();
+            if let Some(child) = windows.at(current).child {
                 {
-                    let w = self.at_mut(child);
+                    let w = windows.at_mut(child);
                     // Don't try to hide a child whose parent is dying.
                     w.style &= !WS_VISIBLE;
                     w.flags.destroyed = true;
                 }
-                self.unlink_window(child, current);
-                let child_thread = self.at(child).thread;
+                windows.unlink_window(child, current);
+                let child_thread = windows.at(child).thread;
                 if child_thread != caller {
-                    pump.post_destroy_event(child_thread, child);
+                    s.post_destroy_event(child_thread, child);
                 } else {
-                    self.adopt_marked(caller, child);
+                    windows.adopt_marked(caller, child);
                     current = child;
                 }
                 continue;
             }
-            let parent = self.at(current).parent;
-            self.free_record(classes, caller, current, pump);
+            let windows = s.windows();
+            let parent = windows.at(current).parent;
+            Windows::free_record(s, caller, current);
             if current == window {
                 return;
             }
@@ -3050,19 +3039,12 @@ impl Windows {
     /// free-vs-zombie decision. WM_NCDESTROY to this window, then the backpointers, menus,
     /// properties, the class dereference, and the handle marks. The last lock frees the record
     /// and the handle; any other lock count leaves a zombie.
-    fn free_record(
-        &mut self,
-        classes: &mut class::Registry,
-        caller: ThreadId,
-        window: WindowId,
-        pump: &mut dyn Pump,
-    ) {
-        let handle = self.at(window).handle;
+    fn free_record(s: &mut dyn Session, caller: ThreadId, window: WindowId) {
+        let windows = s.windows();
+        let handle = windows.at(window).handle;
 
         // WM_NCDESTROY to this window.
-        pump.send(
-            self,
-            classes,
+        s.send(
             window,
             &mut Message {
                 message: WM_NCDESTROY,
@@ -3071,18 +3053,19 @@ impl Windows {
                 payload: Payload::None,
             },
         );
+        let windows = s.windows();
 
         // Clear the owner's last-active if it points at this window.
-        let owner = self.at(window).owner;
+        let owner = windows.at(window).owner;
         if let Some(o) = owner {
-            if self.at(o).last_active == Some(window) {
-                self.at_mut(o).last_active = Some(o);
+            if windows.at(o).last_active == Some(window) {
+                windows.at_mut(o).last_active = Some(o);
             }
         }
 
         // Clear the queue and desktop backpointers that point at this window.
         {
-            let t = self.thread_mut(caller);
+            let t = windows.thread_mut(caller);
             if t.focus == Some(window) {
                 t.focus = None;
             }
@@ -3091,11 +3074,12 @@ impl Windows {
             }
             if t.capture == Some(window) {
                 t.capture = None;
-                pump.release_capture(self);
+                s.release_capture();
             }
         }
-        let desktop_id = self.at(window).desktop;
-        if let Some(d) = self.desktop_by_id_mut(desktop_id) {
+        let windows = s.windows();
+        let desktop_id = windows.at(window).desktop;
+        if let Some(d) = windows.desktop_by_id_mut(desktop_id) {
             if d.foreground == Some(window) {
                 d.foreground = None;
             }
@@ -3103,54 +3087,57 @@ impl Windows {
                 d.tray = None;
             }
         }
-        if self.clipboard_owner == Some(window) {
-            self.clipboard_owner = None;
+        if windows.clipboard_owner == Some(window) {
+            windows.clipboard_owner = None;
         }
 
         // Timers, hotkeys, pending sends; then a queued WM_QUIT is re-posted with its exit code.
-        pump.window_teardown(self, window);
-        pump.repost_quit(self, window);
+        s.window_teardown(window);
+        s.repost_quit(window);
+        let windows = s.windows();
 
         // The menus: a top-level window's menu goes (the desktop's shared dialog system menu
         // does not).
         {
-            let w = self.at(window);
+            let w = windows.at(window);
             if !w.is_child() {
                 if let Menu::Handle(h) = w.menu {
-                    let shared = self
+                    let shared = windows
                         .desktop_by_id(w.desktop)
                         .is_some_and(|d| d.dialog_menu == h);
                     if h != 0 && !shared {
-                        pump.destroy_menu(self, h);
+                        s.destroy_menu(h);
                     }
                 }
             }
         }
+        let windows = s.windows();
         // And its copy of the system menu (GetSystemMenu's).
-        self.destroy_system_menu(handle);
+        windows.destroy_system_menu(handle);
 
         // The properties, the texts and the extra bytes go with the record.
-        pump.delete_properties(self, window);
+        s.delete_properties(window);
+        let (windows, classes) = s.parts();
         let (title, name) = {
-            let w = self.at_mut(window);
+            let w = windows.at_mut(window);
             (
                 core::mem::take(&mut w.title),
                 core::mem::take(&mut w.create_name),
             )
         };
-        self.texts.free(title);
-        self.texts.free(name);
-        if let Some(block) = self.at_mut(window).extra.take() {
-            self.extra.free(block);
+        windows.texts.free(title);
+        windows.texts.free(name);
+        if let Some(block) = windows.at_mut(window).extra.take() {
+            windows.extra.free(block);
         }
 
         // The links: a zombie window re-points its parent at the desktop window; a freed one
         // drops them.
-        let desktop_window = self
-            .desktop_by_id(self.at(window).desktop)
+        let desktop_window = windows
+            .desktop_by_id(windows.at(window).desktop)
             .and_then(|d| d.window);
         {
-            let w = self.at_mut(window);
+            let w = windows.at_mut(window);
             if Some(window) != desktop_window {
                 w.parent = desktop_window;
             } else {
@@ -3162,17 +3149,17 @@ impl Windows {
         }
 
         // The class reference goes back.
-        if let Some(class_id) = self.at(window).class {
+        if let Some(class_id) = windows.at(window).class {
             let mut view = class::Window {
                 class: class_id,
-                owner: self.at(window).process,
-                desktop: self.at(window).desktop,
+                owner: windows.at(window).process,
+                desktop: windows.at(window).desktop,
             };
-            classes.dereference_class(&mut self.handles, &mut view);
+            classes.dereference_class(&mut windows.handles, &mut view);
         }
 
         // Mark the handle for destruction (the in-destroy flag blocks unlock recursion).
-        self.handles.update_window(handle, |mut e| {
+        windows.handles.update_window(handle, |mut e| {
             e.marked_destroy = true;
             e.in_destroy = true;
             e
@@ -3180,26 +3167,26 @@ impl Windows {
 
         // The final unlock: the record's lock count drops.
         let locks = {
-            let w = self.at_mut(window);
+            let w = windows.at_mut(window);
             w.locks -= 1;
             w.locks
         };
         if locks > 0 {
             // Still referenced elsewhere: the window becomes a zombie, not freed.
-            self.handles.update_window(handle, |mut e| {
+            windows.handles.update_window(handle, |mut e| {
                 e.in_destroy = false;
                 e
             });
-            self.make_zombie(classes, window);
+            windows.make_zombie(classes, window);
             return;
         }
 
         // The last reference: free the record and the handle (the old HWND stops validating).
-        self.at_mut(window).class = None;
-        self.thread_mut(caller).window_count -= 1;
-        self.at_mut(window).parent = None;
-        self.handles.close(handle);
-        self.pool.free(window);
+        windows.at_mut(window).class = None;
+        windows.thread_mut(caller).window_count -= 1;
+        windows.at_mut(window).parent = None;
+        windows.handles.close(handle);
+        windows.pool.free(window);
     }
 
     /// The zombie: a still-referenced window at its free becomes an inert icon-title window —
@@ -3241,32 +3228,34 @@ impl Windows {
     /// top of each tree first, and its queue ends ([`super::queue::detach`]: what was sent to it
     /// and not answered fails its sender). The record itself stays, empty of windows, until its
     /// process's end or until another thread takes it over ([`Windows::connect_thread`]).
-    pub fn end_thread(
-        &mut self,
-        classes: &mut class::Registry,
-        thread: ThreadId,
-        pump: &mut dyn Pump,
-    ) {
-        let Some(t) = self.threads.get_mut(thread.0 as usize).filter(|t| t.live) else {
+    pub fn end_thread(s: &mut dyn Session, thread: ThreadId) {
+        let windows = s.windows();
+        let Some(t) = windows
+            .threads
+            .get_mut(thread.0 as usize)
+            .filter(|t| t.live)
+        else {
             return;
         };
         t.in_cleanup = true;
-        while let Some(window) = self.doomed_window(|w| w.thread == thread) {
-            if self
+        while let Some(window) = s.windows().doomed_window(|w| w.thread == thread) {
+            let windows = s.windows();
+            if windows
                 .at(window)
                 .parent
-                .is_some_and(|p| !self.pool.is_live(p))
+                .is_some_and(|p| !windows.pool.is_live(p))
             {
-                self.at_mut(window).parent = None;
+                windows.at_mut(window).parent = None;
             }
-            if self.destroy_window(classes, thread, window, pump) != Ok(true) {
+            if Windows::destroy_window(s, thread, window) != Ok(true) {
                 // Not reachable (the window's own thread, in cleanup, destroys it); never loop.
                 break;
             }
         }
-        super::queue::detach(self, thread);
-        if self.foreground_thread == Some(thread) {
-            self.foreground_thread = None;
+        let windows = s.windows();
+        super::queue::detach(windows, thread);
+        if windows.foreground_thread == Some(thread) {
+            windows.foreground_thread = None;
         }
     }
 
@@ -3276,39 +3265,37 @@ impl Windows {
     /// (another reference holds it) is left to that reference; a window left without its parent —
     /// a child of another thread's window, whose destroy event found no queue — is destroyed as a
     /// top-level one.
-    pub fn end_process(
-        &mut self,
-        classes: &mut class::Registry,
-        owner: class::Owner,
-        pump: &mut dyn Pump,
-    ) {
-        for t in self.threads.iter_mut() {
+    pub fn end_process(s: &mut dyn Session, owner: class::Owner) {
+        let windows = s.windows();
+        for t in windows.threads.iter_mut() {
             if t.live && t.process == owner {
                 t.in_cleanup = true;
             }
         }
-        while let Some(window) = self.process_window(owner) {
-            if self
+        while let Some(window) = s.windows().process_window(owner) {
+            let windows = s.windows();
+            if windows
                 .at(window)
                 .parent
-                .is_some_and(|p| !self.pool.is_live(p))
+                .is_some_and(|p| !windows.pool.is_live(p))
             {
-                self.at_mut(window).parent = None;
+                windows.at_mut(window).parent = None;
             }
-            let thread = self.at(window).thread;
-            if self.destroy_window(classes, thread, window, pump) != Ok(true) {
+            let thread = windows.at(window).thread;
+            if Windows::destroy_window(s, thread, window) != Ok(true) {
                 // Not reachable (the window's own thread, in cleanup, destroys it); never loop.
                 break;
             }
         }
+        let windows = s.windows();
         for index in 0..THREADS {
-            let t = &self.threads[index];
+            let t = &windows.threads[index];
             if t.live && t.process == owner {
                 let thread = ThreadId(index as u16);
-                super::queue::detach(self, thread);
-                self.threads[index] = Thread::EMPTY;
-                if self.foreground_thread == Some(thread) {
-                    self.foreground_thread = None;
+                super::queue::detach(windows, thread);
+                windows.threads[index] = Thread::EMPTY;
+                if windows.foreground_thread == Some(thread) {
+                    windows.foreground_thread = None;
                 }
             }
         }
@@ -3434,7 +3421,7 @@ impl Windows {
 // ------------------------------------------------------------------
 
 /// The show commands that minimize, maximize or restore the window before the show
-/// ([`Windows::min_maximize`], after the min/max seam, [`Pump::min_maximize`]): the minimizing
+/// ([`Windows::min_maximize`], after the min/max seam, [`Session::min_maximize`]): the minimizing
 /// ones and the maximizing one, always; restoring ones only from a minimized or maximized window.
 fn min_max_command(command: i32, style: u32) -> bool {
     match command {
@@ -3462,17 +3449,16 @@ impl Windows {
     /// restore it first ([`Windows::min_maximize`]). A tiled window's first show sends the WM_SIZE
     /// and WM_MOVE its creation deferred, unless a change of its client area sent them since.
     pub fn show_window(
-        &mut self,
-        classes: &mut class::Registry,
+        s: &mut dyn Session,
         window: WindowId,
         command: i32,
-        pump: &mut dyn Pump,
     ) -> Result<bool, Failure> {
+        let windows = s.windows();
         if !(SW_HIDE..=SW_MAX).contains(&command) {
             return Err(Failure::InvalidParameter);
         }
-        let was_visible = self.at(window).is_visible();
-        let child = self.at(window).is_child();
+        let was_visible = windows.at(window).is_visible();
+        let child = windows.at(window).is_child();
         let show = command != SW_HIDE;
         let activate = !child
             && !matches!(
@@ -3485,19 +3471,18 @@ impl Windows {
                     | SW_FORCEMINIMIZE
             );
 
-        if min_max_command(command, self.at(window).style) {
-            pump.min_maximize(self, window, command as u32);
-            self.min_maximize(classes, window, command, pump)?;
-            if !self.pool.is_live(window) {
+        if min_max_command(command, windows.at(window).style) {
+            s.min_maximize(window, command as u32);
+            Windows::min_maximize(s, window, command)?;
+            let windows = s.windows();
+            if !windows.pool.is_live(window) {
                 return Ok(was_visible);
             }
         }
 
         if show != was_visible {
             if command != SW_SHOWNORMAL {
-                pump.send(
-                    self,
-                    classes,
+                s.send(
                     window,
                     &mut Message {
                         message: WM_SHOWWINDOW,
@@ -3506,7 +3491,8 @@ impl Windows {
                         payload: Payload::None,
                     },
                 );
-                if !self.pool.is_live(window) {
+                let windows = s.windows();
+                if !windows.pool.is_live(window) {
                     return Ok(was_visible);
                 }
             }
@@ -3519,27 +3505,29 @@ impl Windows {
                     SWP_HIDEWINDOW
                 }
                 | if activate { 0 } else { SWP_NOACTIVATE };
-            self.set_window_pos(classes, window, InsertAfter::Top, 0, 0, 0, 0, flags, pump)?;
+            Windows::set_window_pos(s, window, InsertAfter::Top, 0, 0, 0, 0, flags)?;
         } else if show && activate {
-            pump.activate(self, classes, window, Activate::Try);
+            s.activate(window, Activate::Try);
         }
+        let windows = s.windows();
         // A handler may have destroyed the window: nothing is left to do.
-        if !self.pool.is_live(window) {
+        if !windows.pool.is_live(window) {
             return Ok(was_visible);
         }
 
         // The hidden window was its thread's active one: the next one is activated.
         if !show && was_visible && !child {
-            let thread = self.at(window).thread;
-            if self.thread(thread).active == Some(window) {
-                pump.activate(self, classes, window, Activate::Skip);
+            let thread = windows.at(window).thread;
+            if windows.thread(thread).active == Some(window) {
+                s.activate(window, Activate::Skip);
             }
         }
+        let windows = s.windows();
 
         // The size and position messages a tiled window's creation deferred to its first show.
-        if self.at(window).flags.sendsizemove {
-            self.at_mut(window).flags.sendsizemove = false;
-            let style = self.at(window).style;
+        if windows.at(window).flags.sendsizemove {
+            windows.at_mut(window).flags.sendsizemove = false;
+            let style = windows.at(window).style;
             let size = if style & WS_MINIMIZE != 0 {
                 SIZE_MINIMIZED
             } else if style & WS_MAXIMIZE != 0 {
@@ -3547,11 +3535,10 @@ impl Windows {
             } else {
                 SIZENORMAL
             };
-            pump.send_size(self, classes, window, size);
-            let (x, y) = self.client_position(window);
-            pump.send(
-                self,
-                classes,
+            s.send_size(window, size);
+            let windows = s.windows();
+            let (x, y) = windows.client_position(window);
+            s.send(
                 window,
                 &mut Message {
                     message: WM_MOVE,
@@ -3580,19 +3567,14 @@ impl Windows {
     /// - Restored, it goes back to its normal place.
     ///
     /// A command that would leave the window as it is does nothing.
-    fn min_maximize(
-        &mut self,
-        classes: &mut class::Registry,
-        window: WindowId,
-        command: i32,
-        pump: &mut dyn Pump,
-    ) -> Result<(), Failure> {
+    fn min_maximize(s: &mut dyn Session, window: WindowId, command: i32) -> Result<(), Failure> {
+        let windows = s.windows();
         enum State {
             Minimized,
             Maximized,
             Normal,
         }
-        let style = self.at(window).style;
+        let style = windows.at(window).style;
         let minimized = style & WS_MINIMIZE != 0;
         let maximized = style & WS_MAXIMIZE != 0;
         let target = match command {
@@ -3608,17 +3590,17 @@ impl Windows {
                 }
                 State::Maximized
             }
-            _ if minimized && self.at(window).restore_maximized => State::Maximized,
+            _ if minimized && windows.at(window).restore_maximized => State::Maximized,
             _ if minimized || maximized => State::Normal,
             _ => return Ok(()),
         };
-        let origin = self.parent_origin(window);
-        let here = self
+        let origin = windows.parent_origin(window);
+        let here = windows
             .at(window)
             .window_rect
             .saturating_offset_back(origin.0, origin.1);
         {
-            let w = self.at_mut(window);
+            let w = windows.at_mut(window);
             if minimized {
                 w.min_position = Some((here.left, here.top));
             } else if !maximized {
@@ -3627,7 +3609,7 @@ impl Windows {
         }
         let place = match target {
             State::Minimized => {
-                let w = self.at_mut(window);
+                let w = windows.at_mut(window);
                 w.restore_maximized = maximized;
                 w.style = (w.style | WS_MINIMIZE) & !WS_MAXIMIZE;
                 let (x, y) = w.min_position.unwrap_or(MINIMIZED_POSITION);
@@ -3639,18 +3621,18 @@ impl Windows {
                 }
             }
             State::Maximized => {
-                let w = self.at_mut(window);
+                let w = windows.at_mut(window);
                 w.style = (w.style | WS_MAXIMIZE) & !WS_MINIMIZE;
-                self.maximized_rect(window)
+                windows.maximized_rect(window)
             }
             State::Normal => {
-                let w = self.at_mut(window);
+                let w = windows.at_mut(window);
                 w.style &= !(WS_MINIMIZE | WS_MAXIMIZE);
                 w.normal.unwrap_or(here)
             }
         };
-        self.set_window_pos(
-            classes,
+        Windows::set_window_pos(
+            s,
             window,
             InsertAfter::Top,
             place.left,
@@ -3658,7 +3640,6 @@ impl Windows {
             place.width(),
             place.height(),
             SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-            pump,
         )
     }
 
@@ -3745,12 +3726,11 @@ impl Windows {
     /// carried out ([`Windows::show_window`]). ERROR_INVALID_PARAMETER for a length that is not the
     /// structure's.
     pub fn set_window_placement(
-        &mut self,
-        classes: &mut class::Registry,
+        s: &mut dyn Session,
         window: WindowId,
         placement: &rtl::window::WindowPlacement,
-        pump: &mut dyn Pump,
     ) -> Result<(), Failure> {
+        let windows = s.windows();
         use rtl::window::{WPF_RESTORETOMAXIMIZED, WPF_SETMINPOSITION};
         if placement.length as usize != core::mem::size_of::<rtl::window::WindowPlacement>() {
             return Err(Failure::InvalidParameter);
@@ -3762,7 +3742,7 @@ impl Windows {
             bottom: placement.normal.bottom,
         };
         {
-            let w = self.at_mut(window);
+            let w = windows.at_mut(window);
             w.normal = Some(normal);
             w.min_position = (placement.flags & WPF_SETMINPOSITION != 0)
                 .then_some((placement.min_x, placement.min_y));
@@ -3770,9 +3750,9 @@ impl Windows {
                 .then_some((placement.max_x, placement.max_y));
             w.restore_maximized = placement.flags & WPF_RESTORETOMAXIMIZED != 0;
         }
-        if self.at(window).style & (WS_MINIMIZE | WS_MAXIMIZE) == 0 {
-            self.set_window_pos(
-                classes,
+        if windows.at(window).style & (WS_MINIMIZE | WS_MAXIMIZE) == 0 {
+            Windows::set_window_pos(
+                s,
                 window,
                 InsertAfter::Top,
                 normal.left,
@@ -3780,14 +3760,13 @@ impl Windows {
                 normal.width(),
                 normal.height(),
                 SWP_NOZORDER | SWP_NOACTIVATE,
-                pump,
             )?;
         }
-        if !self.pool.is_live(window) {
+        let windows = s.windows();
+        if !windows.pool.is_live(window) {
             return Err(Failure::InvalidWindowHandle);
         }
-        self.show_window(classes, window, placement.show_cmd as i32, pump)
-            .map(|_| ())
+        Windows::show_window(s, window, placement.show_cmd as i32).map(|_| ())
     }
 
     /// EndDeferWindowPos's decision over the positions a BeginDeferWindowPos batch gathered, in
@@ -3798,15 +3777,14 @@ impl Windows {
     /// 2000 works out every change first, then makes them): before a window's second position its
     /// children are moved again by what its first moved them, quietly.
     pub fn end_defer_window_pos(
-        &mut self,
-        classes: &mut class::Registry,
+        s: &mut dyn Session,
         positions: &[WindowPos],
-        pump: &mut dyn Pump,
     ) -> Result<(), Failure> {
+        let windows = s.windows();
         let mut began = [(0 as Hwnd, 0i32, 0i32); DEFER_POSITIONS];
         for (at, pos) in positions.iter().enumerate() {
-            let origin = self.window_from_handle(pos.hwnd).map_or((0, 0), |w| {
-                let client = self.at(w).client_rect;
+            let origin = windows.window_from_handle(pos.hwnd).map_or((0, 0), |w| {
+                let client = windows.at(w).client_rect;
                 (client.left, client.top)
             });
             let first = positions[..at]
@@ -3818,18 +3796,19 @@ impl Windows {
             };
         }
         for (at, pos) in positions.iter().enumerate() {
-            let Some(window) = self.window_from_handle(pos.hwnd) else {
+            let windows = s.windows();
+            let Some(window) = windows.window_from_handle(pos.hwnd) else {
                 continue;
             };
-            let client = self.at(window).client_rect;
+            let client = windows.at(window).client_rect;
             let (_, left, top) = began[at];
-            self.offset_descendants(
+            windows.offset_descendants(
                 window,
                 client.left.saturating_sub(left),
                 client.top.saturating_sub(top),
             );
-            self.set_window_pos_handle(
-                classes,
+            Windows::set_window_pos_handle(
+                s,
                 pos.hwnd,
                 pos.insert_after,
                 pos.x,
@@ -3837,7 +3816,6 @@ impl Windows {
                 pos.cx,
                 pos.cy,
                 pos.flags,
-                pump,
             )?;
         }
         Ok(())
@@ -3860,8 +3838,7 @@ impl Windows {
     /// procedure's answer to WM_WINDOWPOSCHANGED, not this decision's.
     #[allow(clippy::too_many_arguments)]
     pub fn set_window_pos(
-        &mut self,
-        classes: &mut class::Registry,
+        s: &mut dyn Session,
         window: WindowId,
         after: InsertAfter,
         x: i32,
@@ -3869,18 +3846,18 @@ impl Windows {
         cx: i32,
         cy: i32,
         flags: u32,
-        pump: &mut dyn Pump,
     ) -> Result<(), Failure> {
+        let windows = s.windows();
         let show_call = flags & SWP_SHOWWINDOW_CALL;
         let mut flags = flags & !SWP_SHOWWINDOW_CALL;
-        if self.at(window).parent.is_none() {
+        if windows.at(window).parent.is_none() {
             flags |= SWP_NOZORDER;
         }
-        let old = self.at(window).window_rect;
-        let origin = self.parent_origin(window);
+        let old = windows.at(window).window_rect;
+        let origin = windows.parent_origin(window);
         let mut pos = WindowPos {
-            hwnd: self.at(window).handle,
-            insert_after: self.insert_after_handle(after),
+            hwnd: windows.at(window).handle,
+            insert_after: windows.insert_after_handle(after),
             x,
             y,
             cx,
@@ -3905,17 +3882,21 @@ impl Windows {
                 lparam: 0,
                 payload: Payload::WindowPos(pos),
             };
-            pump.send(self, classes, window, &mut message);
-            if !self.pool.is_live(window) {
+            s.send(window, &mut message);
+            let windows = s.windows();
+            if !windows.pool.is_live(window) {
                 return Err(Failure::InvalidWindowHandle);
             }
             if let Payload::WindowPos(changed) = message.payload {
                 if changed.insert_after != pos.insert_after {
-                    after = self.insert_after_of(changed.insert_after).unwrap_or(after);
+                    after = windows
+                        .insert_after_of(changed.insert_after)
+                        .unwrap_or(after);
                 }
                 pos = changed;
             }
         }
+        let windows = s.windows();
         let mut flags = pos.flags;
 
         // The default procedure's answer to WM_WINDOWPOSCHANGING: a tiled or sizable window that is
@@ -3923,7 +3904,7 @@ impl Windows {
         // SM_CXMINTRACK by SM_CYMINTRACK: the guigeo capture's defer sizes a window 90 wide to
         // 112).
         if flags & SWP_NOSIZE == 0 {
-            let w = self.at(window);
+            let w = windows.at(window);
             if (w.is_tiled() || w.style & WS_THICKFRAME != 0) && w.style & WS_MINIMIZE == 0 {
                 pos.cx = pos.cx.max(rtl::nonclient::MIN_X);
                 pos.cy = pos.cy.max(rtl::nonclient::MIN_Y);
@@ -3951,10 +3932,11 @@ impl Windows {
         if !sized {
             flags |= SWP_NOSIZE;
         }
-        let old_client = self.at(window).client_rect;
+        let old_client = windows.at(window).client_rect;
         let client = if sized || flags & SWP_FRAMECHANGED != 0 {
-            let client = pump.calc_client(self, classes, window, rect);
-            if !self.pool.is_live(window) {
+            let client = s.calc_client(window, rect);
+            let windows = s.windows();
+            if !windows.pool.is_live(window) {
                 return Err(Failure::InvalidWindowHandle);
             }
             client
@@ -3964,12 +3946,13 @@ impl Windows {
                 rect.top.saturating_sub(old.top),
             )
         };
+        let windows = s.windows();
         {
-            let w = self.at_mut(window);
+            let w = windows.at_mut(window);
             w.window_rect = rect;
             w.client_rect = client;
         }
-        self.offset_descendants(
+        windows.offset_descendants(
             window,
             client.left.saturating_sub(old_client.left),
             client.top.saturating_sub(old_client.top),
@@ -3977,66 +3960,71 @@ impl Windows {
 
         // The z-order; a window that keeps its place among its siblings reports SWP_NOZORDER.
         if flags & SWP_NOZORDER == 0 {
-            let before = self.z_place(window);
-            self.reorder(window, after);
-            if self.z_place(window) == before {
+            let before = windows.z_place(window);
+            windows.reorder(window, after);
+            if windows.z_place(window) == before {
                 flags |= SWP_NOZORDER;
             }
         }
 
         // The visibility.
-        let visible = self.at(window).is_visible();
-        let was_shown = super::paint::is_shown(self, window);
+        let visible = windows.at(window).is_visible();
+        let was_shown = super::paint::is_shown(windows, window);
         if flags & SWP_SHOWWINDOW != 0 && !visible {
-            self.at_mut(window).style |= WS_VISIBLE;
+            windows.at_mut(window).style |= WS_VISIBLE;
             // A window shown for the first time is invalid over its whole area, to be erased:
             // the newly exposed client has nothing valid in it yet, so the next read of the
             // queue makes a WM_PAINT and UpdateWindow sends one at once.
-            super::paint::invalidate(self, window, None, true);
+            super::paint::invalidate(windows, window, None, true);
         } else if flags & SWP_HIDEWINDOW != 0 && visible {
-            self.at_mut(window).style &= !WS_VISIBLE;
+            windows.at_mut(window).style &= !WS_VISIBLE;
             if was_shown {
-                self.expose(classes, old, window, pump);
+                Windows::expose(s, old, window);
             }
         } else {
             flags &= !(SWP_SHOWWINDOW | SWP_HIDEWINDOW);
         }
+        let windows = s.windows();
 
         // The activation.
         if flags & SWP_NOACTIVATE == 0
-            && !self.at(window).is_child()
-            && self.at(window).is_visible()
+            && !windows.at(window).is_child()
+            && windows.at(window).is_visible()
         {
-            pump.activate(self, classes, window, Activate::Try);
-            if !self.pool.is_live(window) {
+            s.activate(window, Activate::Try);
+            let windows = s.windows();
+            if !windows.pool.is_live(window) {
                 return Err(Failure::InvalidWindowHandle);
             }
         }
+        let windows = s.windows();
 
         // A resize of a shown window leaves the whole client in the update region, without the
         // erase flag, unless SWP_NOREDRAW says not to redraw (Windows 2000 repaints the whole
         // client on a size change).
         if sized
             && flags & SWP_NOREDRAW == 0
-            && self.pool.is_live(window)
-            && super::paint::is_shown(self, window)
+            && windows.pool.is_live(window)
+            && super::paint::is_shown(windows, window)
         {
-            super::paint::invalidate(self, window, None, false);
+            super::paint::invalidate(windows, window, None, false);
         }
 
         // The frame, painted where it shows anew: the window shown, sized, or its frame changed.
-        if self.pool.is_live(window)
+        if windows.pool.is_live(window)
             && (sized || flags & (SWP_SHOWWINDOW | SWP_FRAMECHANGED) != 0)
-            && super::paint::is_shown(self, window)
-            && self.has_frame(window)
+            && super::paint::is_shown(windows, window)
+            && windows.has_frame(window)
         {
-            pump.paint_frame(self, classes, window);
+            s.paint_frame(window);
         }
+        let windows = s.windows();
 
         // What the client area did: the default procedure's WM_SIZE and WM_MOVE follow from it. A
         // minimized window hidden reports its client area sized (the guigeo capture's minmax: its
         // SW_HIDE brings a WM_SIZE of SIZE_MINIMIZED).
-        let hid_minimized = flags & SWP_HIDEWINDOW != 0 && self.at(window).style & WS_MINIMIZE != 0;
+        let hid_minimized =
+            flags & SWP_HIDEWINDOW != 0 && windows.at(window).style & WS_MINIMIZE != 0;
         if (client.right - client.left, client.bottom - client.top)
             == (
                 old_client.right - old_client.left,
@@ -4064,7 +4052,7 @@ impl Windows {
         // ones a tiled window's creation deferred to its first show: it sends them no more (the
         // guigeo capture's minmax: a window moved before its first show gets one WM_SIZE from it).
         if flags & (SWP_NOCLIENTSIZE | SWP_NOCLIENTMOVE) != SWP_NOCLIENTSIZE | SWP_NOCLIENTMOVE {
-            self.at_mut(window).flags.sendsizemove = false;
+            windows.at_mut(window).flags.sendsizemove = false;
         }
 
         let done = WindowPos {
@@ -4075,9 +4063,7 @@ impl Windows {
             flags: flags | show_call,
             ..pos
         };
-        pump.send(
-            self,
-            classes,
+        s.send(
             window,
             &mut Message {
                 message: WM_WINDOWPOSCHANGED,
@@ -4093,15 +4079,10 @@ impl Windows {
     /// window it overlaps is invalid there, to be erased, and its frame is painted. Windows
     /// 2000 repaints what was under a window hidden or destroyed; F2K's windows do not clip one
     /// another, so every window under the area is repainted, not just what shows.
-    fn expose(
-        &mut self,
-        classes: &mut class::Registry,
-        area: Rect,
-        gone: WindowId,
-        pump: &mut dyn Pump,
-    ) {
+    fn expose(s: &mut dyn Session, area: Rect, gone: WindowId) {
         for index in 0..WINDOWS {
-            let header = &self.pool.headers[index];
+            let windows = s.windows();
+            let header = &windows.pool.headers[index];
             if !header.live {
                 continue;
             }
@@ -4109,22 +4090,22 @@ impl Windows {
                 index: index as u16,
                 generation: header.generation,
             };
-            if id == gone || !super::paint::is_shown(self, id) {
+            if id == gone || !super::paint::is_shown(windows, id) {
                 continue;
             }
-            let window_rect = self.at(id).window_rect;
+            let window_rect = windows.at(id).window_rect;
             let over = window_rect.intersect(area);
             if over.is_empty() {
                 continue;
             }
-            let client = self.at(id).client_rect;
+            let client = windows.at(id).client_rect;
             let part = client.intersect(over);
             if !part.is_empty() {
                 let local = part.saturating_offset_back(client.left, client.top);
-                super::paint::invalidate(self, id, Some(local), true);
+                super::paint::invalidate(windows, id, Some(local), true);
             }
-            if self.has_frame(id) && part != over {
-                pump.paint_frame(self, classes, id);
+            if windows.has_frame(id) && part != over {
+                s.paint_frame(id);
             }
         }
     }
@@ -4140,8 +4121,7 @@ impl Windows {
     /// name something; ERROR_INVALID_WINDOW_HANDLE otherwise.
     #[allow(clippy::too_many_arguments)]
     pub fn set_window_pos_handle(
-        &mut self,
-        classes: &mut class::Registry,
+        s: &mut dyn Session,
         handle: Hwnd,
         insert_after: Hwnd,
         x: i32,
@@ -4149,16 +4129,17 @@ impl Windows {
         cx: i32,
         cy: i32,
         flags: u32,
-        pump: &mut dyn Pump,
     ) -> Result<(), Failure> {
-        let window = self.window_of(handle)?;
+        let windows = s.windows();
+        let window = windows.window_of(handle)?;
         let after = if flags & SWP_NOZORDER != 0 {
             InsertAfter::Top
         } else {
-            self.insert_after_of(insert_after)
+            windows
+                .insert_after_of(insert_after)
                 .ok_or(Failure::InvalidWindowHandle)?
         };
-        self.set_window_pos(classes, window, after, x, y, cx, cy, flags, pump)
+        Windows::set_window_pos(s, window, after, x, y, cx, cy, flags)
     }
 
     /// The insert-after handle's meaning: a special handle, or a live window; none otherwise.
@@ -4551,27 +4532,25 @@ impl Windows {
     /// replaced; another process's window is refused it. GWL_HWNDPARENT changes a top-level
     /// window's owner; a child's parent is SetParent's change, refused here. GWL_ID sets a child's
     /// id, another window's menu handle. Another index is InvalidIndex.
-    #[allow(clippy::too_many_arguments)]
     pub fn set_window_long(
-        &mut self,
-        classes: &mut class::Registry,
+        s: &mut dyn Session,
         caller: class::Owner,
         handle: Hwnd,
         index: i32,
         value: u32,
         ansi: bool,
-        pump: &mut dyn Pump,
     ) -> Result<(u32, bool), Failure> {
+        let windows = s.windows();
         use rtl::window::*;
-        let window = self.window_of(handle)?;
+        let window = windows.window_of(handle)?;
         if index >= 0 {
-            return Ok((self.set_extra_value(window, index, 4, value)?, false));
+            return Ok((windows.set_extra_value(window, index, 4, value)?, false));
         }
-        let data = self.window_data(window, caller);
+        let data = windows.window_data(window, caller);
         let previous = match index {
-            GWL_STYLE | GWL_EXSTYLE => self.set_style(classes, window, index, value, pump),
+            GWL_STYLE | GWL_EXSTYLE => Windows::set_style(s, window, index, value),
             GWL_ID => {
-                let w = self.at_mut(window);
+                let w = windows.at_mut(window);
                 w.menu = match value {
                     0 => Menu::None,
                     id if w.is_child() => Menu::Id(id),
@@ -4579,13 +4558,13 @@ impl Windows {
                 };
                 data.id
             }
-            GWL_USERDATA => core::mem::replace(&mut self.at_mut(window).user_data, value),
-            GWL_HINSTANCE => core::mem::replace(&mut self.at_mut(window).module, value),
+            GWL_USERDATA => core::mem::replace(&mut windows.at_mut(window).user_data, value),
+            GWL_HINSTANCE => core::mem::replace(&mut windows.at_mut(window).module, value),
             GWL_WNDPROC => {
-                if self.at(window).process != caller {
+                if windows.at(window).process != caller {
                     return Err(Failure::AccessDenied);
                 }
-                let w = self.at_mut(window);
+                let w = windows.at_mut(window);
                 let was_ansi = w.flags.ansi_proc;
                 w.proc = Proc::Client(value);
                 w.flags.ansi_proc = ansi;
@@ -4593,17 +4572,17 @@ impl Windows {
                 return Ok((data.proc, was_ansi));
             }
             GWL_HWNDPARENT => {
-                if self.at(window).is_child() {
+                if windows.at(window).is_child() {
                     return Err(Failure::InvalidParameter);
                 }
                 let owner = match value {
                     0 => None,
-                    owner => Some(self.window_of(owner)?),
+                    owner => Some(windows.window_of(owner)?),
                 };
-                if !self.validate_owner_depth(window, owner) {
+                if !windows.validate_owner_depth(window, owner) {
                     return Err(Failure::InvalidParameter);
                 }
-                self.at_mut(window).owner = owner;
+                windows.at_mut(window).owner = owner;
                 data.parent
             }
             _ => return Err(Failure::InvalidIndex),
@@ -4613,14 +4592,8 @@ impl Windows {
 
     /// GWL_STYLE's or GWL_EXSTYLE's change (`index`) of `window` to `value`, between the
     /// WM_STYLECHANGING and WM_STYLECHANGED the window is sent: the style it had.
-    fn set_style(
-        &mut self,
-        classes: &mut class::Registry,
-        window: WindowId,
-        index: i32,
-        value: u32,
-        pump: &mut dyn Pump,
-    ) -> u32 {
+    fn set_style(s: &mut dyn Session, window: WindowId, index: i32, value: u32) -> u32 {
+        let windows = s.windows();
         fn field(w: &mut Window, index: i32) -> &mut u32 {
             if index == rtl::window::GWL_STYLE {
                 &mut w.style
@@ -4628,7 +4601,7 @@ impl Windows {
                 &mut w.ex_style
             }
         }
-        let old = *field(self.at_mut(window), index);
+        let old = *field(windows.at_mut(window), index);
         // The private ANSI-creator bit is never an extended style a window holds.
         let value = if index == rtl::window::GWL_EXSTYLE {
             value & !ANSI_CREATOR_BIT
@@ -4644,19 +4617,18 @@ impl Windows {
                 style_new: value,
             }),
         };
-        pump.send(self, classes, window, &mut changing);
+        s.send(window, &mut changing);
+        let windows = s.windows();
         let new = match changing.payload {
             Payload::Style(style) => style.style_new,
             _ => value,
         };
         // A handler may have destroyed the window.
-        if !self.pool.is_live(window) {
+        if !windows.pool.is_live(window) {
             return old;
         }
-        *field(self.at_mut(window), index) = new;
-        pump.send(
-            self,
-            classes,
+        *field(windows.at_mut(window), index) = new;
+        s.send(
             window,
             &mut Message {
                 message: rtl::user::WM_STYLECHANGED,
@@ -4700,11 +4672,23 @@ impl Windows {
 // --- The window manager: both registries behind one lock
 // ------------------------------------------
 
-/// The pump the boot runs the desktop's own windows' creation with: every send answers as the
-/// default window procedure does, and every window-manager call is [`Pump`]'s default.
-pub struct DefaultProcedure;
+/// The session the boot runs the desktop's own windows' creation with, and the ends of threads and
+/// processes: every send answers as the default window procedure does, and every window-manager
+/// call is [`Session`]'s default.
+pub struct DefaultSession<H: Hold>(pub H);
 
-impl Pump for DefaultProcedure {}
+impl<'a> DefaultSession<Split<'a>> {
+    /// A session over the two registries.
+    pub fn new(windows: &'a mut Windows, classes: &'a mut class::Registry) -> Self {
+        DefaultSession((windows, classes))
+    }
+}
+
+impl<H: Hold> Session for DefaultSession<H> {
+    fn parts(&mut self) -> (&mut Windows, &mut class::Registry) {
+        self.0.parts()
+    }
+}
 
 /// HWND_MESSAGE (winuser.h): the parent that makes a message-only window, a child of the desktop's
 /// message window.
@@ -4842,14 +4826,24 @@ impl WindowManager {
             params: 0,
             version: 0x0005_0000,
         };
-        let message = self.create_window(thread, 0, &mut args, &mut DefaultProcedure)?;
+        let message = WindowManager::create_window(
+            &mut DefaultSession::new(&mut self.windows, &mut self.classes),
+            thread,
+            0,
+            &mut args,
+        )?;
         args.class_name = class::Name::Atom(DESKTOP_CLASS_ATOM);
         args.style = WS_POPUP | WS_CLIPCHILDREN;
         args.x = work_area.left;
         args.y = work_area.top;
         args.cx = work_area.right - work_area.left;
         args.cy = work_area.bottom - work_area.top;
-        let window = self.create_window(thread, 0, &mut args, &mut DefaultProcedure)?;
+        let window = WindowManager::create_window(
+            &mut DefaultSession::new(&mut self.windows, &mut self.classes),
+            thread,
+            0,
+            &mut args,
+        )?;
         let id = |handle| self.windows.window_from_handle(handle);
         let (window, message) = (id(window), id(message));
         self.windows.set_desktop(desktop, window, message);
@@ -4871,30 +4865,29 @@ impl WindowManager {
     /// window is ERROR_INVALID_WINDOW_HANDLE), the class name resolved to its atom through the
     /// class registry, then the creation. The new window's handle is the answer.
     pub fn create_window(
-        &mut self,
+        s: &mut dyn Session,
         caller: ThreadId,
         parent: Hwnd,
         args: &mut CreateArgs,
-        pump: &mut dyn Pump,
     ) -> Result<Hwnd, Failure> {
+        let (windows, classes) = s.parts();
         args.parent = match parent {
             0 => None,
             HWND_MESSAGE => Some(
-                self.windows
+                windows
                     .message_window(caller)
                     .ok_or(Failure::InvalidWindowHandle)?,
             ),
             handle => Some(
-                self.windows
+                windows
                     .window_from_handle(handle)
                     .ok_or(Failure::InvalidWindowHandle)?,
             ),
         };
-        args.class_atom = self.classes.atom_of(args.class_name);
-        let id = self
-            .windows
-            .create_window_ex(&mut self.classes, caller, args, pump)?;
-        Ok(self.windows.handle_of(id))
+        args.class_atom = classes.atom_of(args.class_name);
+        let id = Windows::create_window_ex(s, caller, args)?;
+        let windows = s.windows();
+        Ok(windows.handle_of(id))
     }
 
     /// The display's mode is now `width` by `height` (the display side's call, at a mode change):
@@ -4925,7 +4918,7 @@ impl WindowManager {
             ..
         } = self;
         clipboard.process_gone(windows, owner);
-        windows.end_process(classes, owner, &mut DefaultProcedure);
+        Windows::end_process(&mut DefaultSession::new(windows, classes), owner);
         classes.destroy_owner_classes(&mut windows.handles, owner);
         // The process's own user objects, as Windows 2000 destroys them at its end: its menus
         // (those its windows held went with them), its accelerator tables, its cursors and icons
@@ -4950,7 +4943,10 @@ impl WindowManager {
         else {
             return;
         };
-        windows.end_thread(classes, ThreadId(index as u16), &mut DefaultProcedure);
+        Windows::end_thread(
+            &mut DefaultSession::new(windows, classes),
+            ThreadId(index as u16),
+        );
     }
 
     /// What the processes' ends left behind: the processes' live windows and their classes, menus,
@@ -4968,16 +4964,10 @@ impl WindowManager {
     /// ShowWindow's: the window's former visibility as the style's state byte holds it, WS_VISIBLE
     /// shifted down to it — 16 for a window that was visible, 0 for one that was not, as Windows
     /// 2000's ShowWindow answers (the guigeo capture).
-    pub fn show_window(
-        &mut self,
-        handle: Hwnd,
-        command: i32,
-        pump: &mut dyn Pump,
-    ) -> Result<u32, Failure> {
-        let window = self.windows.window_of(handle)?;
-        let was_visible = self
-            .windows
-            .show_window(&mut self.classes, window, command, pump)?;
+    pub fn show_window(s: &mut dyn Session, handle: Hwnd, command: i32) -> Result<u32, Failure> {
+        let windows = s.windows();
+        let window = windows.window_of(handle)?;
+        let was_visible = Windows::show_window(s, window, command)?;
         Ok(if was_visible { WS_VISIBLE >> 24 } else { 0 })
     }
 
@@ -4985,40 +4975,27 @@ impl WindowManager {
     /// message queue that would carry it to the window's thread comes with the message slice).
     /// The command is checked first; nothing is answered but the call's success.
     pub fn show_window_async(
-        &mut self,
+        s: &mut dyn Session,
         handle: Hwnd,
         command: i32,
-        pump: &mut dyn Pump,
     ) -> Result<(), Failure> {
-        self.show_window(handle, command, pump).map(|_| ())
+        WindowManager::show_window(s, handle, command).map(|_| ())
     }
 
     /// NtUserMoveWindow's decision over a handle: MoveWindow is SetWindowPos with the window's
     /// place in the z-order and the activation left alone, and without the redraw when `repaint`
     /// is false (the MoveWindow documentation).
-    #[allow(clippy::too_many_arguments)]
     pub fn move_window(
-        &mut self,
+        s: &mut dyn Session,
         handle: Hwnd,
         x: i32,
         y: i32,
         cx: i32,
         cy: i32,
         repaint: bool,
-        pump: &mut dyn Pump,
     ) -> Result<(), Failure> {
         let flags = SWP_NOZORDER | SWP_NOACTIVATE | if repaint { 0 } else { SWP_NOREDRAW };
-        self.windows.set_window_pos_handle(
-            &mut self.classes,
-            handle,
-            HWND_TOP,
-            x,
-            y,
-            cx,
-            cy,
-            flags,
-            pump,
-        )
+        Windows::set_window_pos_handle(s, handle, HWND_TOP, x, y, cx, cy, flags)
     }
 
     /// NtUserGetWindowPlacement's answer for the window `handle` names
@@ -5030,25 +5007,22 @@ impl WindowManager {
 
     /// NtUserSetWindowPlacement's decision over a handle ([`Windows::set_window_placement`]).
     pub fn set_window_placement(
-        &mut self,
+        s: &mut dyn Session,
         handle: Hwnd,
         placement: &rtl::window::WindowPlacement,
-        pump: &mut dyn Pump,
     ) -> Result<(), Failure> {
-        let window = self.windows.window_of(handle)?;
-        self.windows
-            .set_window_placement(&mut self.classes, window, placement, pump)
+        let windows = s.windows();
+        let window = windows.window_of(handle)?;
+        Windows::set_window_placement(s, window, placement)
     }
 
     /// NtUserEndDeferWindowPosEx's decision over a batch's positions
     /// ([`Windows::end_defer_window_pos`]).
     pub fn end_defer_window_pos(
-        &mut self,
+        s: &mut dyn Session,
         positions: &[WindowPos],
-        pump: &mut dyn Pump,
     ) -> Result<(), Failure> {
-        self.windows
-            .end_defer_window_pos(&mut self.classes, positions, pump)
+        Windows::end_defer_window_pos(s, positions)
     }
 
     /// NtUserQueryWindow's answer for the window `handle` names, the index `index` and the
@@ -5365,8 +5339,8 @@ pub fn create_window_ex(
         params: param,
         version,
     };
-    let created = super::queue::with_manager(call.passive(), |manager| {
-        manager.create_window(caller, parent.raw(), &mut args, &mut QueuePump)
+    let created = super::queue::with_session(call.passive(), |s| {
+        WindowManager::create_window(s, caller, parent.raw(), &mut args)
     })
     .map_err(Failure::status)?;
     window.write(created)?;
@@ -5378,11 +5352,8 @@ pub fn create_window_ex(
 #[cfg(target_arch = "x86")]
 pub fn destroy_window(call: &mut NtCall, window: Handle) -> NtResult {
     let caller = super::winsta::gui_thread(call)?.thread;
-    let destroyed = super::queue::with_manager(call.passive(), |manager| {
-        let WindowManager {
-            windows, classes, ..
-        } = manager;
-        windows.destroy_window_handle(classes, caller, window.raw(), &mut QueuePump)
+    let destroyed = super::queue::with_session(call.passive(), |s| {
+        Windows::destroy_window_handle(s, caller, window.raw())
     })
     .map_err(Failure::status)?;
     if destroyed {
@@ -5394,7 +5365,7 @@ pub fn destroy_window(call: &mut NtCall, window: Handle) -> NtResult {
 
 /// NtUserSetWindowPos(Window, InsertAfter, X, Y, Width, Height, Flags): SetWindowPos's arguments
 /// as they are ([`Windows::set_window_pos_handle`]), its messages and its activation through the
-/// queue's pump.
+/// queue's session.
 #[cfg(target_arch = "x86")]
 #[allow(clippy::too_many_arguments)]
 pub fn set_window_pos(
@@ -5408,21 +5379,8 @@ pub fn set_window_pos(
     flags: u32,
 ) -> NtResult {
     super::winsta::gui_thread(call)?;
-    super::queue::with_manager(call.passive(), |manager| {
-        let WindowManager {
-            windows, classes, ..
-        } = manager;
-        windows.set_window_pos_handle(
-            classes,
-            window.raw(),
-            insert_after.raw(),
-            x,
-            y,
-            cx,
-            cy,
-            flags,
-            &mut QueuePump,
-        )
+    super::queue::with_session(call.passive(), |s| {
+        Windows::set_window_pos_handle(s, window.raw(), insert_after.raw(), x, y, cx, cy, flags)
     })
     .map_err(Failure::status)?;
     Ok(STATUS_SUCCESS)
@@ -5441,8 +5399,8 @@ pub fn move_window(
     repaint: u32,
 ) -> NtResult {
     super::winsta::gui_thread(call)?;
-    super::queue::with_manager(call.passive(), |manager| {
-        manager.move_window(window.raw(), x, y, cx, cy, repaint != 0, &mut QueuePump)
+    super::queue::with_session(call.passive(), |s| {
+        WindowManager::move_window(s, window.raw(), x, y, cx, cy, repaint != 0)
     })
     .map_err(Failure::status)?;
     Ok(STATUS_SUCCESS)
@@ -5450,7 +5408,7 @@ pub fn move_window(
 
 /// NtUserShowWindow(Window, Command, Previous): ShowWindow's arguments, and its answer through
 /// `previous` ([`WindowManager::show_window`]), written once the window manager's lock is let go;
-/// its messages and its activation through the queue's pump.
+/// its messages and its activation through the queue's session.
 #[cfg(target_arch = "x86")]
 pub fn show_window(
     call: &mut NtCall,
@@ -5459,8 +5417,8 @@ pub fn show_window(
     previous: UserPtr<u32>,
 ) -> NtResult {
     super::winsta::gui_thread(call)?;
-    let answer = super::queue::with_manager(call.passive(), |manager| {
-        manager.show_window(window.raw(), command, &mut QueuePump)
+    let answer = super::queue::with_session(call.passive(), |s| {
+        WindowManager::show_window(s, window.raw(), command)
     })
     .map_err(Failure::status)?;
     previous.write(answer)?;
@@ -5472,8 +5430,8 @@ pub fn show_window(
 #[cfg(target_arch = "x86")]
 pub fn show_window_async(call: &mut NtCall, window: Handle, command: i32) -> NtResult {
     super::winsta::gui_thread(call)?;
-    super::queue::with_manager(call.passive(), |manager| {
-        manager.show_window_async(window.raw(), command, &mut QueuePump)
+    super::queue::with_session(call.passive(), |s| {
+        WindowManager::show_window_async(s, window.raw(), command)
     })
     .map_err(Failure::status)?;
     Ok(STATUS_SUCCESS)
@@ -5493,13 +5451,13 @@ pub fn get_window_placement(call: &mut NtCall, window: Handle, placement: UserAd
 }
 
 /// NtUserSetWindowPlacement(Window, Placement): the caller's WINDOWPLACEMENT made the window's
-/// ([`WindowManager::set_window_placement`]), its messages through the queue's pump.
+/// ([`WindowManager::set_window_placement`]), its messages through the queue's session.
 #[cfg(target_arch = "x86")]
 pub fn set_window_placement(call: &mut NtCall, window: Handle, placement: UserAddr) -> NtResult {
     super::winsta::gui_thread(call)?;
     let placement = placement.cast::<rtl::window::WindowPlacement>().read()?;
-    super::queue::with_manager(call.passive(), |manager| {
-        manager.set_window_placement(window.raw(), &placement, &mut QueuePump)
+    super::queue::with_session(call.passive(), |s| {
+        WindowManager::set_window_placement(s, window.raw(), &placement)
     })
     .map_err(Failure::status)?;
     Ok(STATUS_SUCCESS)
@@ -5524,8 +5482,8 @@ pub fn end_defer_window_pos(call: &mut NtCall, positions: UserAddr, count: u32) 
             .cast::<WindowPos>()
             .read()?;
     }
-    super::queue::with_manager(call.passive(), |manager| {
-        manager.end_defer_window_pos(&batch[..count], &mut QueuePump)
+    super::queue::with_session(call.passive(), |s| {
+        WindowManager::end_defer_window_pos(s, &batch[..count])
     })
     .map_err(Failure::status)?;
     Ok(STATUS_SUCCESS)
@@ -5646,19 +5604,8 @@ pub fn set_window_long(
     previous_ansi: UserPtr<u32>,
 ) -> NtResult {
     let caller = super::winsta::gui_thread(call)?.owner;
-    let (old, old_ansi) = super::queue::with_manager(call.passive(), |manager| {
-        let WindowManager {
-            windows, classes, ..
-        } = manager;
-        windows.set_window_long(
-            classes,
-            caller,
-            window.raw(),
-            index,
-            value,
-            ansi != 0,
-            &mut QueuePump,
-        )
+    let (old, old_ansi) = super::queue::with_session(call.passive(), |s| {
+        Windows::set_window_long(s, caller, window.raw(), index, value, ansi != 0)
     })
     .map_err(Failure::status)?;
     previous.write(old)?;
@@ -5976,7 +5923,6 @@ mod tests {
         register_on(c, handles, name, wc, DESKTOP, OWNER, class::MenuArg::None)
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn register_on(
         c: &mut class::Registry,
         handles: &UserHandles,
@@ -6100,10 +6046,10 @@ mod tests {
         pump: &mut Rec,
     ) -> Result<WindowId, Failure> {
         let a = args(atom, style);
-        w.create_window_ex(c, t, &a, pump)
+        Windows::create_window_ex(&mut pump.on(w, c), t, &a)
     }
 
-    /// One recorded pump call.
+    /// One recorded session call.
     #[derive(Clone, Debug, PartialEq)]
     enum Ev {
         Send(WindowId, u32, WParam, LParam),
@@ -6130,8 +6076,9 @@ mod tests {
         Props(WindowId),
     }
 
-    /// A recording pump: logs every call, answers WM_NCCREATE with 1 and WM_CREATE with 0 unless
-    /// told otherwise, and can play a handler that sets a title or destroys a sibling.
+    /// A recorder of a session's calls ([`Rec::on`]): logs every call, answers WM_NCCREATE with 1
+    /// and WM_CREATE with 0 unless told otherwise, and can play a handler that sets a title or
+    /// destroys a sibling.
     struct Rec {
         events: Vec<Ev>,
         /// (target, message, params) for every WM_NCCREATE/WM_CREATE.
@@ -6219,120 +6166,129 @@ mod tests {
         }
     }
 
-    impl Pump for Rec {
+    /// A session over the two registries whose sends and calls a [`Rec`] records and plays.
+    struct RecSession<'a> {
+        windows: &'a mut Windows,
+        classes: &'a mut class::Registry,
+        rec: &'a mut Rec,
+    }
+
+    impl Rec {
+        /// A session over `windows` and `classes` that this records.
+        fn on<'a>(
+            &'a mut self,
+            windows: &'a mut Windows,
+            classes: &'a mut class::Registry,
+        ) -> RecSession<'a> {
+            RecSession {
+                windows,
+                classes,
+                rec: self,
+            }
+        }
+    }
+
+    impl Session for RecSession<'_> {
+        fn parts(&mut self) -> (&mut Windows, &mut class::Registry) {
+            (&mut *self.windows, &mut *self.classes)
+        }
+
         /// The handler's inset when it has one, the default procedure's frame otherwise.
-        fn calc_client(
-            &mut self,
-            windows: &mut Windows,
-            classes: &mut class::Registry,
-            target: WindowId,
-            rect: Rect,
-        ) -> Rect {
+        fn calc_client(&mut self, target: WindowId, rect: Rect) -> Rect {
             let mut message = Message {
                 message: WM_NCCALCSIZE,
                 wparam: 0,
                 lparam: 0,
                 payload: Payload::Rect(rect),
             };
-            self.send(windows, classes, target, &mut message);
+            self.send(target, &mut message);
             match message.payload {
-                Payload::Rect(client) if self.nccalc_inset != 0 => client,
-                _ => windows.default_client(target, rect),
+                Payload::Rect(client) if self.rec.nccalc_inset != 0 => client,
+                _ => self.windows.default_client(target, rect),
             }
         }
 
         /// The frame paints are not among the decisions' messages these tests follow.
-        fn paint_frame(
-            &mut self,
-            _windows: &mut Windows,
-            _classes: &mut class::Registry,
-            _target: WindowId,
-        ) {
-        }
+        fn paint_frame(&mut self, _target: WindowId) {}
 
-        fn send(
-            &mut self,
-            windows: &mut Windows,
-            classes: &mut class::Registry,
-            target: WindowId,
-            message: &mut Message,
-        ) -> LResult {
+        fn send(&mut self, target: WindowId, message: &mut Message) -> LResult {
             if let Payload::Create(ref p) = message.payload {
-                self.params.push((target, message.message, *p));
-                self.names
-                    .push(windows.create_name(target, p.name).to_vec());
+                self.rec.params.push((target, message.message, *p));
+                self.rec
+                    .names
+                    .push(self.windows.create_name(target, p.name).to_vec());
             }
-            self.parents.push((target, windows.at(target).parent));
-            self.styles.push((target, windows.at(target).style));
-            self.events.push(Ev::Send(
+            self.rec
+                .parents
+                .push((target, self.windows.at(target).parent));
+            self.rec
+                .styles
+                .push((target, self.windows.at(target).style));
+            self.rec.events.push(Ev::Send(
                 target,
                 message.message,
                 message.wparam,
                 message.lparam,
             ));
-            if message.message == WM_NCCREATE && !self.title_done {
-                if let Some(units) = self.title_on_nccreate.clone() {
-                    self.title_done = true;
-                    let handle = windows.at(target).handle;
-                    windows.set_window_text(handle, &units).unwrap();
-                    windows.at_mut(target).flags.title_set = true;
+            if message.message == WM_NCCREATE && !self.rec.title_done {
+                if let Some(units) = self.rec.title_on_nccreate.clone() {
+                    self.rec.title_done = true;
+                    let handle = self.windows.at(target).handle;
+                    self.windows.set_window_text(handle, &units).unwrap();
+                    self.windows.at_mut(target).flags.title_set = true;
                 }
             }
             if let Payload::WindowPos(ref mut pos) = message.payload {
                 if message.message == WM_WINDOWPOSCHANGING {
-                    if let Some(answer) = self.changing_answer {
+                    if let Some(answer) = self.rec.changing_answer {
                         *pos = answer;
                     }
                 }
-                self.positions.push((target, message.message, *pos));
+                self.rec.positions.push((target, message.message, *pos));
                 // A handler that shows the window again undoes the hide.
                 if message.message == WM_WINDOWPOSCHANGED
                     && pos.flags & SWP_HIDEWINDOW != 0
-                    && !self.hide_works
+                    && !self.rec.hide_works
                 {
-                    windows.at_mut(target).style |= WS_VISIBLE;
+                    self.windows.at_mut(target).style |= WS_VISIBLE;
                 }
             }
-            if message.message == WM_NCCALCSIZE && self.nccalc_inset != 0 {
+            if message.message == WM_NCCALCSIZE && self.rec.nccalc_inset != 0 {
                 if let Payload::Rect(ref mut r) = message.payload {
-                    r.left += self.nccalc_inset;
-                    r.top += self.nccalc_inset;
-                    r.right -= self.nccalc_inset;
-                    r.bottom -= self.nccalc_inset;
+                    r.left += self.rec.nccalc_inset;
+                    r.top += self.rec.nccalc_inset;
+                    r.right -= self.rec.nccalc_inset;
+                    r.bottom -= self.rec.nccalc_inset;
                 }
             }
             if message.message == WM_DESTROY {
-                if let Some((watch, victim)) = self.destroy_on_destroy {
+                if let Some((watch, victim)) = self.rec.destroy_on_destroy {
                     if target == watch {
-                        let _ = windows.destroy_window(classes, self.caller, victim, self);
+                        let caller = self.rec.caller;
+                        let _ = Windows::destroy_window(self, caller, victim);
                     }
                 }
             }
             match message.message {
-                WM_NCCREATE => self.nccreate_answer,
-                WM_CREATE => self.create_answer,
+                WM_NCCREATE => self.rec.nccreate_answer,
+                WM_CREATE => self.rec.create_answer,
                 _ => 0,
             }
         }
 
-        fn send_size(
-            &mut self,
-            windows: &mut Windows,
-            _classes: &mut class::Registry,
-            target: WindowId,
-            command: u32,
-        ) {
-            let c = windows.at(target).client_rect;
+        fn send_size(&mut self, target: WindowId, command: u32) {
+            let c = self.windows.at(target).client_rect;
             let size = makelong((c.right - c.left) as u16, (c.bottom - c.top) as u16);
-            self.events
+            self.rec
+                .events
                 .push(Ev::Send(target, WM_SIZE, command, size as LParam));
         }
 
-        fn show(&mut self, windows: &mut Windows, target: WindowId, command: u32) -> bool {
-            self.events.push(Ev::Show(target, command));
+        fn show(&mut self, target: WindowId, command: u32) -> bool {
+            self.rec.events.push(Ev::Show(target, command));
             // A successful show sets the visible bit, a hide clears it.
-            if self.hide_works {
-                let w = windows.at_mut(target);
+            if self.rec.hide_works {
+                let w = self.windows.at_mut(target);
                 if command == SW_HIDE as u32 {
                     w.style &= !WS_VISIBLE;
                 } else {
@@ -6342,134 +6298,109 @@ mod tests {
             true
         }
 
-        fn set_window_pos(&mut self, windows: &mut Windows, target: WindowId, flags: u32) {
-            self.events.push(Ev::SetPos(target, flags));
-            if self.hide_works && flags & SWP_HIDEWINDOW != 0 {
-                windows.at_mut(target).style &= !WS_VISIBLE;
+        fn set_window_pos(&mut self, target: WindowId, flags: u32) {
+            self.rec.events.push(Ev::SetPos(target, flags));
+            if self.rec.hide_works && flags & SWP_HIDEWINDOW != 0 {
+                self.windows.at_mut(target).style &= !WS_VISIBLE;
             }
         }
 
-        fn activate(
-            &mut self,
-            _windows: &mut Windows,
-            _classes: &mut class::Registry,
-            target: WindowId,
-            command: Activate,
-        ) -> bool {
-            self.events.push(Ev::Activate(target, command));
-            self.activate_ok
+        fn activate(&mut self, target: WindowId, command: Activate) -> bool {
+            self.rec.events.push(Ev::Activate(target, command));
+            self.rec.activate_ok
         }
 
-        fn min_maximize(&mut self, _windows: &mut Windows, target: WindowId, command: u32) {
-            self.events.push(Ev::MinMax(target, command));
+        fn min_maximize(&mut self, target: WindowId, command: u32) {
+            self.rec.events.push(Ev::MinMax(target, command));
         }
 
-        fn check_focus(
-            &mut self,
-            _windows: &mut Windows,
-            _classes: &mut class::Registry,
-            target: WindowId,
-        ) {
-            self.events.push(Ev::Focus(target));
+        fn check_focus(&mut self, target: WindowId) {
+            self.rec.events.push(Ev::Focus(target));
         }
 
         fn attach_input(&mut self, from: ThreadId, to: ThreadId, attach: bool) {
-            self.events.push(Ev::Attach(from, to, attach));
+            self.rec.events.push(Ev::Attach(from, to, attach));
         }
 
-        fn redraw_below(&mut self, _windows: &mut Windows, target: WindowId) {
-            self.events.push(Ev::Redraw(target));
+        fn redraw_below(&mut self, target: WindowId) {
+            self.rec.events.push(Ev::Redraw(target));
         }
 
-        fn release_capture(&mut self, _windows: &mut Windows) {
-            self.events.push(Ev::ReleaseCapture);
+        fn release_capture(&mut self) {
+            self.rec.events.push(Ev::ReleaseCapture);
         }
 
         fn destroy_caret(&mut self) {
-            self.events.push(Ev::Caret);
+            self.rec.events.push(Ev::Caret);
         }
 
         fn post_destroy_event(&mut self, thread: ThreadId, window: WindowId) {
-            self.events.push(Ev::PostEvent(thread, window));
+            self.rec.events.push(Ev::PostEvent(thread, window));
         }
 
-        fn min_max_info(&mut self, _windows: &mut Windows, target: WindowId) -> MinMaxInfo {
-            self.events.push(Ev::MinMaxInfo(target));
-            self.mmi
+        fn min_max_info(&mut self, target: WindowId) -> MinMaxInfo {
+            self.rec.events.push(Ev::MinMaxInfo(target));
+            self.rec.mmi
         }
 
         fn load_class_menu(&mut self, module: u32, _name: &class::MenuName) -> Option<Hwnd> {
-            self.events.push(Ev::LoadMenu(module));
-            if self.no_menus {
+            self.rec.events.push(Ev::LoadMenu(module));
+            if self.rec.no_menus {
                 return None;
             }
-            let h = self.next_menu_handle;
-            self.next_menu_handle += 4;
+            let h = self.rec.next_menu_handle;
+            self.rec.next_menu_handle += 4;
             Some(h)
         }
 
-        fn destroy_menu(&mut self, _windows: &mut Windows, menu: Hwnd) {
-            self.events.push(Ev::DestroyMenu(menu));
+        fn destroy_menu(&mut self, menu: Hwnd) {
+            self.rec.events.push(Ev::DestroyMenu(menu));
         }
 
-        fn create_window_dc(
-            &mut self,
-            _windows: &mut Windows,
-            target: WindowId,
-            own_dc: bool,
-        ) -> bool {
-            self.events.push(Ev::WindowDc(target, own_dc));
+        fn create_window_dc(&mut self, target: WindowId, own_dc: bool) -> bool {
+            self.rec.events.push(Ev::WindowDc(target, own_dc));
             true
         }
 
-        fn set_layered(&mut self, _windows: &mut Windows, target: WindowId) -> bool {
-            self.events.push(Ev::Layered(target));
+        fn set_layered(&mut self, target: WindowId) -> bool {
+            self.rec.events.push(Ev::Layered(target));
             true
         }
 
-        fn check_full_screen(
-            &mut self,
-            _windows: &mut Windows,
-            target: WindowId,
-            _rect: &mut SizeRect,
-        ) {
-            self.events.push(Ev::FullScreen(target));
+        fn check_full_screen(&mut self, target: WindowId, _rect: &mut SizeRect) {
+            self.rec.events.push(Ev::FullScreen(target));
         }
 
-        fn foreground_insert_after(&mut self, _windows: &mut Windows, target: WindowId) -> ZOrder {
-            self.events.push(Ev::InsertAfter(target));
+        fn foreground_insert_after(&mut self, target: WindowId) -> ZOrder {
+            self.rec.events.push(Ev::InsertAfter(target));
             ZOrder::Top
         }
 
-        fn cbt_create_veto(
-            &mut self,
-            windows: &mut Windows,
-            _classes: &mut class::Registry,
-            target: WindowId,
-            _params: &mut CreateParams,
-        ) -> bool {
-            self.parents.push((target, windows.at(target).parent));
+        fn cbt_create_veto(&mut self, target: WindowId, _params: &mut CreateParams) -> bool {
+            self.rec
+                .parents
+                .push((target, self.windows.at(target).parent));
             false
         }
 
-        fn cbt_destroy_veto(&mut self, _windows: &mut Windows, target: WindowId) -> bool {
-            self.veto_destroy || self.veto_window == Some(target)
+        fn cbt_destroy_veto(&mut self, target: WindowId) -> bool {
+            self.rec.veto_destroy || self.rec.veto_window == Some(target)
         }
 
-        fn disown_clipboard(&mut self, _windows: &mut Windows, target: WindowId) {
-            self.events.push(Ev::Clipboard(target));
+        fn disown_clipboard(&mut self, target: WindowId) {
+            self.rec.events.push(Ev::Clipboard(target));
         }
 
-        fn repost_quit(&mut self, _windows: &mut Windows, target: WindowId) {
-            self.events.push(Ev::Quit(target));
+        fn repost_quit(&mut self, target: WindowId) {
+            self.rec.events.push(Ev::Quit(target));
         }
 
-        fn window_teardown(&mut self, _windows: &mut Windows, target: WindowId) {
-            self.events.push(Ev::Teardown(target));
+        fn window_teardown(&mut self, target: WindowId) {
+            self.rec.events.push(Ev::Teardown(target));
         }
 
-        fn delete_properties(&mut self, _windows: &mut Windows, target: WindowId) {
-            self.events.push(Ev::Props(target));
+        fn delete_properties(&mut self, target: WindowId) {
+            self.rec.events.push(Ev::Props(target));
         }
     }
 
@@ -6486,7 +6417,7 @@ mod tests {
         let mut pump = Rec::new(t);
         let mut a = args(atom, WS_OVERLAPPED);
         a.parent = Some(other);
-        let err = w.create_window_ex(c, t, &a, &mut pump).unwrap_err();
+        let err = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap_err();
         assert_eq!(err, Failure::InvalidParameter);
         assert_eq!(err.code(), 87);
         assert_eq!(live(w), before, "nothing was allocated");
@@ -6536,13 +6467,13 @@ mod tests {
         // The deepest parent gives a chain depth of 101: refused.
         let mut a = args(atom, WS_CHILD);
         a.parent = Some(chain[99]);
-        let err = w.create_window_ex(c, t, &a, &mut pump).unwrap_err();
+        let err = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap_err();
         assert_eq!(err, Failure::InvalidParameter);
         assert_eq!(err.code(), 87);
         // 99 ancestors give a depth of 100: accepted.
         let mut a = args(atom, WS_CHILD);
         a.parent = Some(chain[98]);
-        assert!(w.create_window_ex(c, t, &a, &mut pump).is_ok());
+        assert!(Windows::create_window_ex(&mut pump.on(w, c), t, &a).is_ok());
     }
 
     /// The private ANSI-creator bit is consumed at the create: it never reaches the stored
@@ -6556,7 +6487,7 @@ mod tests {
         let mut a = args(atom, WS_OVERLAPPED);
         a.ex_style = ANSI_CREATOR_BIT | WS_EX_TOPMOST;
         a.class_name = class::Name::Text(&name);
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         let rec = w.at(id);
         assert_eq!(rec.ex_style & ANSI_CREATOR_BIT, 0, "the bit is not stored");
         assert_eq!(
@@ -6590,11 +6521,11 @@ mod tests {
         let mut pump = Rec::new(t);
         let mut a = args(atom, WS_POPUP);
         a.ex_style = WS_EX_STATICEDGE | WS_EX_WINDOWEDGE;
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(w.at(id).ex_style & WS_EX_WINDOWEDGE, 0, "cleared");
         let mut a = args(atom, WS_POPUP);
         a.ex_style = WS_EX_DLGMODALFRAME;
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(
             w.at(id).ex_style & WS_EX_WINDOWEDGE,
             WS_EX_WINDOWEDGE,
@@ -6613,7 +6544,7 @@ mod tests {
         let name = wide("NoSuchClass");
         let mut a = args(0, WS_OVERLAPPED);
         a.class_name = class::Name::Text(&name);
-        let err = w.create_window_ex(c, t, &a, &mut pump).unwrap_err();
+        let err = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap_err();
         assert_eq!(err, Failure::CannotFindWindowClass);
         assert_eq!(err.code(), 1407);
     }
@@ -6628,7 +6559,7 @@ mod tests {
         let mut pump = Rec::new(t);
         let mut a = args(0x8002, WS_OVERLAPPED);
         a.class_name = class::Name::Atom(0x8002);
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert!(w.pool.is_live(id));
         let (_, _, params) = pump
             .params
@@ -6639,7 +6570,7 @@ mod tests {
         // Atom 0 fails.
         let mut pump = Rec::new(t);
         let a = args(0, WS_OVERLAPPED);
-        let err = w.create_window_ex(c, t, &a, &mut pump).unwrap_err();
+        let err = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap_err();
         assert_eq!(err, Failure::CannotFindWindowClass);
     }
 
@@ -6655,7 +6586,7 @@ mod tests {
         let name = wide("Private");
         let mut a = args(atom, WS_OVERLAPPED);
         a.class_name = class::Name::Text(&name);
-        let err = w.create_window_ex(c, t, &a, &mut pump).unwrap_err();
+        let err = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap_err();
         assert_eq!(err, Failure::CannotFindWindowClass);
         assert_eq!(err.code(), 1407);
         assert_eq!(live(w), 2, "nothing was allocated");
@@ -6720,7 +6651,7 @@ mod tests {
         let mut pump = Rec::new(t);
         let mut a = args(atom, WS_OVERLAPPED | WS_VISIBLE);
         a.ex_style = WS_EX_LAYERED | WS_EX_TOPMOST;
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         let rec = w.at(id);
         // WS_VISIBLE and the layered bit are stripped from the stored style (seen at
         // WM_NCCREATE, before any show re-sets the visible bit).
@@ -6769,7 +6700,7 @@ mod tests {
         a.menu = MenuInput::Id(7);
         a.name = &name;
         a.params = 0x1234;
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         // While the create hook ran, the parent pointer was the message window (a parent always
         // exists during early callbacks).
         assert_eq!(pump.parents[0], (id, Some(msg)));
@@ -6789,7 +6720,7 @@ mod tests {
         let mut pump = Rec::new(t);
         let mut a = args(atom, WS_OVERLAPPED);
         a.menu = MenuInput::Handle(0x9000);
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(w.at(id).menu, Menu::Handle(0x9000));
         let (_, _, p) = pump
             .params
@@ -6812,7 +6743,7 @@ mod tests {
         a.parent = Some(parent);
         a.x = CW_USEDEFAULT;
         a.cx = CW_USEDEFAULT;
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(
             w.at(id).window_rect,
             Rect {
@@ -6827,7 +6758,7 @@ mod tests {
         a.parent = Some(parent);
         a.x = CW_USEDEFAULT_ALT;
         a.cx = CW_USEDEFAULT_ALT;
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(w.at(id).window_rect.right, 0);
         assert_eq!(w.at(id).window_rect.bottom, 0);
     }
@@ -6851,7 +6782,7 @@ mod tests {
         a.y = 6;
         a.cx = 30;
         a.cy = 40;
-        let first = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let first = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(
             w.at(first).window_rect,
             Rect {
@@ -6861,7 +6792,7 @@ mod tests {
                 bottom: 66
             }
         );
-        let second = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let second = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         // The new child goes below the existing one.
         assert_eq!(w.at(parent).child, Some(first));
         assert_eq!(w.at(first).next, Some(second));
@@ -6875,7 +6806,7 @@ mod tests {
         let (w, c, t, atom, _, _) = setup();
         let mut pump = Rec::new(t);
         let a = args(atom, WS_OVERLAPPED); // no caption/border given
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         let rec = w.at(id);
         assert_eq!(rec.style & WS_CLIPSIBLINGS, WS_CLIPSIBLINGS);
         assert_eq!(rec.style & (WS_CAPTION | WS_BORDER), WS_CAPTION | WS_BORDER);
@@ -6891,7 +6822,7 @@ mod tests {
         let mut a = args(atom, WS_OVERLAPPED | WS_VISIBLE);
         a.x = CW_USEDEFAULT;
         a.y = SW_SHOWNA;
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         // SW_SHOWNA: shown at the top of the z-order, not activated.
         let show = SWP_SHOWWINDOW | SWP_NOMOVE | SWP_NOSIZE;
         assert_eq!(pump.changing_flags(), vec![(id, show | SWP_NOACTIVATE)]);
@@ -6902,7 +6833,7 @@ mod tests {
         let mut a = args(atom, WS_OVERLAPPED | WS_VISIBLE);
         a.x = CW_USEDEFAULT;
         a.y = CW_USEDEFAULT;
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(pump.changing_flags(), vec![(id, show)]);
         assert!(pump.events.contains(&Ev::Activate(id, Activate::Try)));
     }
@@ -6917,7 +6848,7 @@ mod tests {
         let mut a = args(atom, WS_OVERLAPPED);
         a.x = CW_USEDEFAULT;
         a.cx = CW_USEDEFAULT;
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(
             w.at(id).window_rect,
             Rect {
@@ -6929,7 +6860,7 @@ mod tests {
         );
         assert_eq!(w.monitors[0].window_stack, 1);
         // The second cascaded window is offset by the frame+caption metrics (12, 24).
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(
             w.at(id).window_rect,
             Rect {
@@ -6941,7 +6872,7 @@ mod tests {
         );
         // An offset past a quarter of the work area resets the stack.
         w.monitors[0].window_stack = 100;
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(
             w.at(id).window_rect,
             Rect {
@@ -6964,7 +6895,7 @@ mod tests {
         a.x = CW_USEDEFAULT;
         a.cx = 700;
         a.cy = 100;
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         // 0+700 exceeds the 640-wide monitor: shifted left, clamped at the left edge.
         assert_eq!(
             w.at(id).window_rect,
@@ -6986,7 +6917,7 @@ mod tests {
         a.y = 60;
         a.cx = 100;
         a.cy = 100;
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(
             w.at(id).window_rect,
             Rect {
@@ -7011,7 +6942,7 @@ mod tests {
         let mut a = args(atom, WS_OVERLAPPED);
         a.x = CW_USEDEFAULT;
         a.cx = CW_USEDEFAULT;
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(
             w.at(id).window_rect,
             Rect {
@@ -7032,7 +6963,7 @@ mod tests {
         let mut a = args(atom, WS_OVERLAPPED);
         a.x = CW_USEDEFAULT;
         a.cx = CW_USEDEFAULT;
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(
             w.at(id).window_rect,
             Rect {
@@ -7056,7 +6987,7 @@ mod tests {
         let (w, c, t, atom, _, _) = setup();
         let mut pump = Rec::new(t);
         let a = args(atom, WS_POPUP);
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(w.at(id).style & WS_CLIPSIBLINGS, WS_CLIPSIBLINGS);
         // The min/max track clamp on a thick-framed window.
         pump.mmi = MinMaxInfo {
@@ -7068,7 +6999,7 @@ mod tests {
         let mut a = args(atom, WS_OVERLAPPED | WS_THICKFRAME);
         a.cx = 30;
         a.cy = 10_000;
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(
             w.at(id).window_rect,
             Rect {
@@ -7084,7 +7015,7 @@ mod tests {
         a.parent = Some(parent);
         a.cx = -5;
         a.cy = -7;
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(
             w.at(id).window_rect,
             Rect {
@@ -7110,7 +7041,7 @@ mod tests {
         let mut pump = Rec::new(t);
         let mut a = args(atom, WS_POPUP);
         a.parent = Some(owner);
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(w.at(id).owner, Some(owner));
         assert_eq!(
             w.at(id).ex_style & WS_EX_TOPMOST,
@@ -7129,7 +7060,7 @@ mod tests {
         let foreign = raw_window(w, t2, WS_OVERLAPPED, None);
         let mut a = args(atom, WS_POPUP);
         a.parent = Some(foreign);
-        let _ = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let _ = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert!(pump.events.contains(&Ev::Attach(t, t2, true)));
         // An owner-chain loop is refused and the record rolled back.
         let x = raw_window(w, t, WS_OVERLAPPED, None);
@@ -7139,7 +7070,7 @@ mod tests {
         let before = live(w);
         let mut a = args(atom, WS_POPUP);
         a.parent = Some(x);
-        let err = w.create_window_ex(c, t, &a, &mut pump).unwrap_err();
+        let err = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap_err();
         assert_eq!(
             err,
             Failure::OutOfMemory,
@@ -7155,13 +7086,13 @@ mod tests {
         let (w, c, t, atom, desk, msg) = setup();
         let mut pump = Rec::new(t);
         let a = args(atom, WS_OVERLAPPED);
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(w.at(id).parent, Some(desk));
         assert_eq!(w.at(desk).child, Some(id));
         // A message-window parent stays.
         let mut a = args(atom, WS_OVERLAPPED);
         a.parent = Some(msg);
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(w.at(id).parent, Some(msg));
         assert_eq!(w.at(msg).child, Some(id));
     }
@@ -7182,7 +7113,7 @@ mod tests {
         );
         let mut pump = Rec::new(t);
         let a = args(atom, WS_OVERLAPPED);
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert!(pump.events.contains(&Ev::LoadMenu(MODULE)));
         assert_eq!(w.at(id).menu, Menu::Handle(0x5000));
         let (_, _, p) = pump
@@ -7194,7 +7125,7 @@ mod tests {
         // A load failure is tolerated.
         pump.no_menus = true;
         let a = args(atom, WS_OVERLAPPED);
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(w.at(id).menu, Menu::None);
     }
 
@@ -7207,11 +7138,11 @@ mod tests {
         let mut a = args(atom, WS_CHILD);
         a.parent = Some(parent);
         a.menu = MenuInput::Id(9);
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(w.at(id).menu, Menu::Id(9));
         let mut a = args(atom, WS_OVERLAPPED);
         a.menu = MenuInput::Handle(0x9000);
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(w.at(id).menu, Menu::Handle(0x9000));
     }
 
@@ -7227,13 +7158,13 @@ mod tests {
         let mut pump = Rec::new(t);
         let mut a = args(atom, WS_CHILD | WS_CLIPSIBLINGS | WS_CLIPCHILDREN);
         a.parent = Some(parent);
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(w.at(id).style & (WS_CLIPCHILDREN | WS_CLIPSIBLINGS), 0);
         // A pre-4.0 window keeps them.
         let mut a = args(atom, WS_CHILD | WS_CLIPSIBLINGS);
         a.parent = Some(parent);
         a.version = 0x0003_0000;
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(w.at(id).style & WS_CLIPSIBLINGS, WS_CLIPSIBLINGS);
     }
 
@@ -7248,7 +7179,7 @@ mod tests {
         let mut pump = Rec::new(t);
         let mut a = args(atom, WS_CHILD);
         a.parent = Some(parent);
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert!(pump.events.contains(&Ev::Attach(t, t2, true)));
         assert_eq!(w.at(id).parent, Some(parent));
     }
@@ -7271,7 +7202,7 @@ mod tests {
         assert_eq!(w.at(id).client_rect, framed);
         w.set_window_menu(id, 0x1234);
         let flags = SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED;
-        w.set_window_pos(c, id, InsertAfter::Top, 0, 0, 0, 0, flags, &mut pump)
+        Windows::set_window_pos(&mut pump.on(w, c), id, InsertAfter::Top, 0, 0, 0, 0, flags)
             .unwrap();
         assert_eq!(
             w.at(id).client_rect,
@@ -7321,7 +7252,7 @@ mod tests {
         let mut pump = Rec::new(t);
         pump.title_on_nccreate = Some(wide("new title"));
         let a = args(atom, WS_OVERLAPPED);
-        let _ = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let _ = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         let create = pump
             .params
             .iter()
@@ -7341,7 +7272,7 @@ mod tests {
         let name: Vec<u16> = (0..10_000u32).map(|i| 0x41 + (i % 26) as u16).collect();
         let mut a = args(atom, WS_OVERLAPPED);
         a.name = &name;
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(pump.names[0], name, "WM_NCCREATE carries the whole name");
         assert!(
             w.at(id).create_name.is_empty(),
@@ -7352,7 +7283,7 @@ mod tests {
         assert_eq!(w.set_window_text(handle, &title), Ok(()));
         assert_eq!(w.window_text(id), &title[..]);
         assert_eq!(w.texts.counts().0, before.0 + 1, "the title alone is held");
-        assert!(w.destroy_window(c, t, id, &mut pump).is_ok());
+        assert!(Windows::destroy_window(&mut pump.on(w, c), t, id).is_ok());
         assert_eq!(
             w.texts.counts().0,
             before.0,
@@ -7427,7 +7358,7 @@ mod tests {
         a.y = 6;
         a.cx = 30;
         a.cy = 40;
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         let own: Vec<u32> = pump
             .sends()
             .iter()
@@ -7481,7 +7412,7 @@ mod tests {
         let mut a = args(atom, WS_CHILD);
         a.parent = Some(parent);
         a.menu = MenuInput::Id(9);
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         let handle = w.at(id).handle;
         assert!(pump.events.contains(&Ev::Send(
             parent,
@@ -7494,7 +7425,7 @@ mod tests {
         let mut a = args(atom, WS_CHILD);
         a.parent = Some(parent);
         a.ex_style = WS_EX_NOPARENTNOTIFY;
-        let _ = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let _ = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert!(!pump
             .events
             .iter()
@@ -7509,7 +7440,7 @@ mod tests {
         w.thread_mut(t).hotkey = 0x1234;
         let mut pump = Rec::new(t);
         let a = args(atom, WS_OVERLAPPED | WS_VISIBLE);
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         // The create parameters carried WS_VISIBLE; the stored style had it stripped (the show
         // at the end sets the visible bit again).
         let (_, _, p) = &pump.params[0];
@@ -7553,9 +7484,7 @@ mod tests {
         let mut pump = Rec::new(t);
         assert_eq!(w.window_from_handle(0xDEAD_BEEF), None);
         assert_eq!(w.window_from_handle(0), None);
-        let err = w
-            .destroy_window_handle(c, t, 0xDEAD_BEEF, &mut pump)
-            .unwrap_err();
+        let err = Windows::destroy_window_handle(&mut pump.on(w, c), t, 0xDEAD_BEEF).unwrap_err();
         assert_eq!(err, Failure::InvalidWindowHandle);
         assert_eq!(err.code(), 1400);
         assert_eq!(
@@ -7575,7 +7504,7 @@ mod tests {
         let mut pump = Rec::new(t);
         let id = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
         let mut pump2 = Rec::new(t2);
-        let err = w.destroy_window(c, t2, id, &mut pump2).unwrap_err();
+        let err = Windows::destroy_window(&mut pump2.on(w, c), t2, id).unwrap_err();
         assert_eq!(err, Failure::AccessDenied);
         assert_eq!(err.code(), 5);
         assert!(w.pool.is_live(id));
@@ -7602,7 +7531,7 @@ mod tests {
         });
         w.at_mut(id).thread = t2;
         let mut pump2 = Rec::new(t);
-        assert!(w.destroy_window(c, t, id, &mut pump2).unwrap());
+        assert!(Windows::destroy_window(&mut pump2.on(w, c), t, id).unwrap());
         assert!(!w.pool.is_live(id));
     }
 
@@ -7614,7 +7543,7 @@ mod tests {
         let id = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
         pump.events.clear();
         pump.veto_destroy = true;
-        assert!(!w.destroy_window(c, t, id, &mut pump).unwrap());
+        assert!(!Windows::destroy_window(&mut pump.on(w, c), t, id).unwrap());
         assert!(w.pool.is_live(id));
         assert!(!w.at(id).flags.destroyed);
         assert!(pump.events.is_empty());
@@ -7633,11 +7562,11 @@ mod tests {
         let mut pump = Rec::new(t);
         let mut a = args(atom, WS_CHILD | WS_VISIBLE);
         a.parent = Some(parent);
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         let handle = w.at(id).handle;
         pump.events.clear();
         pump.positions.clear();
-        assert!(w.destroy_window(c, t, id, &mut pump).unwrap());
+        assert!(Windows::destroy_window(&mut pump.on(w, c), t, id).unwrap());
         assert_eq!(
             pump.sends(),
             vec![
@@ -7681,7 +7610,7 @@ mod tests {
         let id = create(w, c, t, atom, WS_OVERLAPPED | WS_VISIBLE, &mut pump).unwrap();
         pump.events.clear();
         pump.positions.clear();
-        assert!(w.destroy_window(c, t, id, &mut pump).unwrap());
+        assert!(Windows::destroy_window(&mut pump.on(w, c), t, id).unwrap());
         assert_eq!(
             pump.changing_flags(),
             vec![(
@@ -7695,7 +7624,7 @@ mod tests {
         pump.hide_works = false; // a WM_WINDOWPOSCHANGED handler shows the window again
         let id = create(w, c, t, atom, WS_OVERLAPPED | WS_VISIBLE, &mut pump).unwrap();
         pump.events.clear();
-        assert!(w.destroy_window(c, t, id, &mut pump).unwrap());
+        assert!(Windows::destroy_window(&mut pump.on(w, c), t, id).unwrap());
         assert!(pump.events.contains(&Ev::Redraw(id)));
     }
 
@@ -7707,10 +7636,10 @@ mod tests {
         let owner = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
         let mut a = args(atom, WS_POPUP);
         a.parent = Some(owner);
-        let owned = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let owned = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(w.at(owned).owner, Some(owner));
         pump.events.clear();
-        assert!(w.destroy_window(c, t, owner, &mut pump).unwrap());
+        assert!(Windows::destroy_window(&mut pump.on(w, c), t, owner).unwrap());
         let sends = pump.sends();
         let owned_destroy = sends
             .iter()
@@ -7737,12 +7666,12 @@ mod tests {
         let owner = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
         let mut a = args(atom, WS_POPUP);
         a.parent = Some(owner);
-        let popup = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let popup = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         w.thread_mut(t).active = Some(popup);
         w.thread_mut(t).focus = Some(popup);
         w.at_mut(owner).last_active = Some(popup);
         pump.events.clear();
-        assert!(w.destroy_window(c, t, popup, &mut pump).unwrap());
+        assert!(Windows::destroy_window(&mut pump.on(w, c), t, popup).unwrap());
         // A popup's creator is tried.
         assert!(pump.events.contains(&Ev::Activate(owner, Activate::Try)));
         assert_eq!(
@@ -7756,7 +7685,7 @@ mod tests {
         w.thread_mut(t).focus = Some(id);
         pump.activate_ok = false;
         pump.events.clear();
-        assert!(w.destroy_window(c, t, id, &mut pump).unwrap());
+        assert!(Windows::destroy_window(&mut pump.on(w, c), t, id).unwrap());
         assert!(pump.events.contains(&Ev::Activate(id, Activate::Skip)));
         assert_eq!(w.thread(t).active, None);
         assert_eq!(w.thread(t).focus, None);
@@ -7774,13 +7703,13 @@ mod tests {
         let p = create(w, c, t, atom, WS_OVERLAPPED, pump).unwrap();
         let mut a = args(atom, WS_CHILD);
         a.parent = Some(p);
-        let c1 = w.create_window_ex(c, t, &a, pump).unwrap();
+        let c1 = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         let mut a = args(atom, WS_CHILD);
         a.parent = Some(c1);
-        let g1 = w.create_window_ex(c, t, &a, pump).unwrap();
+        let g1 = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         let mut a = args(atom, WS_CHILD);
         a.parent = Some(p);
-        let c2 = w.create_window_ex(c, t, &a, pump).unwrap();
+        let c2 = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         (p, c1, g1, c2)
     }
 
@@ -7793,7 +7722,7 @@ mod tests {
         let mut pump = Rec::new(t);
         let (p, c1, g1, c2) = tree(w, c, t, atom, &mut pump);
         pump.events.clear();
-        assert!(w.destroy_window(c, t, p, &mut pump).unwrap());
+        assert!(Windows::destroy_window(&mut pump.on(w, c), t, p).unwrap());
         assert_eq!(
             pump.sends(),
             vec![
@@ -7823,7 +7752,7 @@ mod tests {
         let (p, c1, g1, c2) = tree(w, c, t, atom, &mut pump);
         pump.events.clear();
         pump.destroy_on_destroy = Some((c1, c2));
-        assert!(w.destroy_window(c, t, p, &mut pump).unwrap());
+        assert!(Windows::destroy_window(&mut pump.on(w, c), t, p).unwrap());
         assert_eq!(
             pump.sends(),
             vec![
@@ -7854,10 +7783,10 @@ mod tests {
             let mut a = args(atom, WS_CHILD);
             a.ex_style = WS_EX_NOPARENTNOTIFY;
             a.parent = chain.last().copied();
-            chain.push(w.create_window_ex(c, t, &a, &mut pump).unwrap());
+            chain.push(Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap());
         }
         pump.events.clear();
-        assert!(w.destroy_window(c, t, top, &mut pump).unwrap());
+        assert!(Windows::destroy_window(&mut pump.on(w, c), t, top).unwrap());
         let destroys: Vec<WindowId> = pump
             .sends()
             .iter()
@@ -7888,12 +7817,12 @@ mod tests {
         for _ in 0..40 {
             let mut a = args(atom, WS_POPUP | WS_VISIBLE);
             a.parent = chain.last().copied();
-            let owned = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+            let owned = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
             assert_eq!(w.at(owned).owner, chain.last().copied());
             chain.push(owned);
         }
         pump.events.clear();
-        assert!(w.destroy_window(c, t, root, &mut pump).unwrap());
+        assert!(Windows::destroy_window(&mut pump.on(w, c), t, root).unwrap());
         let sends: Vec<(WindowId, u32)> = pump
             .sends()
             .into_iter()
@@ -7937,7 +7866,7 @@ mod tests {
         let owner = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
         let mut a = args(atom, WS_POPUP);
         a.parent = Some(owner);
-        let owned = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let owned = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         let t2 = w
             .add_thread(OTHER_OWNER, DESKTOP, DESKTOP_CREATEWINDOW, Some(0x70), None)
             .unwrap();
@@ -7946,7 +7875,7 @@ mod tests {
         w.at_mut(foreign).owner = Some(owner);
         // The hook vetoes the owned window's destroy alone.
         pump.veto_window = Some(owned);
-        assert!(w.destroy_window(c, t, owner, &mut pump).unwrap());
+        assert!(Windows::destroy_window(&mut pump.on(w, c), t, owner).unwrap());
         assert!(!w.pool.is_live(owner));
         assert!(w.pool.is_live(owned));
         assert_eq!(w.at(owned).owner, None, "the vetoed window lost its owner");
@@ -7993,9 +7922,9 @@ mod tests {
         let mut pump = Rec::new(t);
         let mut a = args(atom, WS_OVERLAPPED);
         a.menu = MenuInput::Handle(0x9000);
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         pump.events.clear();
-        assert!(w.destroy_window(c, t, id, &mut pump).unwrap());
+        assert!(Windows::destroy_window(&mut pump.on(w, c), t, id).unwrap());
         let after = &pump.events[pump
             .events
             .iter()
@@ -8052,7 +7981,7 @@ mod tests {
         // Freed: the last lock.
         let id = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
         let handle = w.at(id).handle;
-        assert!(w.destroy_window(c, t, id, &mut pump).unwrap());
+        assert!(Windows::destroy_window(&mut pump.on(w, c), t, id).unwrap());
         assert!(!w.pool.is_live(id));
         assert_eq!(
             w.window_from_handle(handle),
@@ -8063,10 +7992,10 @@ mod tests {
         // Zombie: another reference held.
         let mut a = args(atom, WS_OVERLAPPED);
         a.menu = MenuInput::Handle(0x9000);
-        let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         let handle = w.at(id).handle;
         w.at_mut(id).locks = 2;
-        assert!(w.destroy_window(c, t, id, &mut pump).unwrap());
+        assert!(Windows::destroy_window(&mut pump.on(w, c), t, id).unwrap());
         assert!(w.pool.is_live(id), "the zombie stays");
         assert_eq!(
             w.window_from_handle(handle),
@@ -8104,7 +8033,7 @@ mod tests {
         let handle = w.at(id).handle;
         assert_eq!(w.at(desk).child, Some(id));
         pump.events.clear();
-        assert!(w.destroy_window_handle(c, t, handle, &mut pump).unwrap());
+        assert!(Windows::destroy_window_handle(&mut pump.on(w, c), t, handle).unwrap());
         assert_eq!(pump.sends(), vec![(id, WM_DESTROY), (id, WM_NCDESTROY)]);
         assert!(!w.pool.is_live(id));
         assert_eq!(w.at(desk).child, None);
@@ -8120,9 +8049,7 @@ mod tests {
             "the class reference is back"
         );
         // A second destroy of the same HWND: 1400.
-        let err = w
-            .destroy_window_handle(c, t, handle, &mut pump)
-            .unwrap_err();
+        let err = Windows::destroy_window_handle(&mut pump.on(w, c), t, handle).unwrap_err();
         assert_eq!(err, Failure::InvalidWindowHandle);
         assert_eq!(err.code(), 1400);
     }
@@ -8137,7 +8064,7 @@ mod tests {
         let first = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
         let first = w.handle_of(first);
         assert_eq!(first >> 16, 1, "a slot's first handle has the count 1");
-        assert!(w.destroy_window_handle(c, t, first, &mut pump).unwrap());
+        assert!(Windows::destroy_window_handle(&mut pump.on(w, c), t, first).unwrap());
         let second = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
         let old = w.handle_of(second);
         assert_eq!(
@@ -8145,7 +8072,7 @@ mod tests {
             (first & 0xFFFF, 2),
             "the same slot, counted on"
         );
-        assert!(w.destroy_window_handle(c, t, old, &mut pump).unwrap());
+        assert!(Windows::destroy_window_handle(&mut pump.on(w, c), t, old).unwrap());
         let next = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
         let new = w.handle_of(next);
         assert_eq!(new, old + 0x1_0000);
@@ -8164,7 +8091,7 @@ mod tests {
         assert_eq!(w.window_from_handle(first | 0xFFFF_0000), Some(next));
         assert_eq!(w.window_from_handle(new + 0x1_0000), None);
         assert_eq!(
-            w.destroy_window_handle(c, t, old, &mut pump),
+            Windows::destroy_window_handle(&mut pump.on(w, c), t, old),
             Err(Failure::InvalidWindowHandle)
         );
     }
@@ -8305,9 +8232,13 @@ mod tests {
         let mut a = args(0, WS_OVERLAPPED);
         a.class_name = class::Name::Text(&upper);
         a.ex_style = ANSI_CREATOR_BIT;
-        let narrow = m
-            .create_window(t, 0, &mut a, &mut DefaultProcedure)
-            .unwrap();
+        let narrow = WindowManager::create_window(
+            &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+            t,
+            0,
+            &mut a,
+        )
+        .unwrap();
         let id = m.windows.window_from_handle(narrow).unwrap();
         let data = m.windows.window_data(id, OWNER);
         assert_eq!(
@@ -8316,14 +8247,22 @@ mod tests {
         );
         let mut a = args(0, WS_CHILD);
         a.class_name = class::Name::Text(&upper);
-        let first = m
-            .create_window(t, narrow, &mut a, &mut DefaultProcedure)
-            .unwrap();
+        let first = WindowManager::create_window(
+            &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+            t,
+            narrow,
+            &mut a,
+        )
+        .unwrap();
         let mut a = args(0, WS_CHILD);
         a.class_name = class::Name::Text(&upper);
-        let second = m
-            .create_window(t, narrow, &mut a, &mut DefaultProcedure)
-            .unwrap();
+        let second = WindowManager::create_window(
+            &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+            t,
+            narrow,
+            &mut a,
+        )
+        .unwrap();
         let first_id = m.windows.window_from_handle(first).unwrap();
         let data = m.windows.window_data(first_id, OWNER);
         assert_eq!((data.proc, data.flags & WINDOW_ANSI_PROC), (0x1000, 0));
@@ -8342,9 +8281,13 @@ mod tests {
         let mut a = args(0, WS_POPUP);
         a.class_name = class::Name::Text(&dialog_name);
         a.name = &title;
-        let boxed = m
-            .create_window(t, 0, &mut a, &mut DefaultProcedure)
-            .unwrap();
+        let boxed = WindowManager::create_window(
+            &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+            t,
+            0,
+            &mut a,
+        )
+        .unwrap();
         m.windows.set_window_text(boxed, &title).unwrap();
         let lower = wide("box");
         let found = m.find_window(
@@ -8399,9 +8342,13 @@ mod tests {
         let mut a = args(0, WS_OVERLAPPED);
         a.class_name = class::Name::Text(&name);
         a.name = &title;
-        let handle = m
-            .create_window(t, 0, &mut a, &mut DefaultProcedure)
-            .unwrap();
+        let handle = WindowManager::create_window(
+            &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+            t,
+            0,
+            &mut a,
+        )
+        .unwrap();
         let id = m.windows.window_from_handle(handle).unwrap();
         let desktop = *m.windows.desktop_by_id(DESKTOP).unwrap();
         assert_eq!(m.windows.at(id).parent, desktop.window);
@@ -8410,39 +8357,60 @@ mod tests {
 
         let mut a = args(0, WS_CHILD);
         a.class_name = class::Name::Text(&name);
-        let child = m
-            .create_window(t, handle, &mut a, &mut DefaultProcedure)
-            .unwrap();
+        let child = WindowManager::create_window(
+            &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+            t,
+            handle,
+            &mut a,
+        )
+        .unwrap();
         let child = m.windows.window_from_handle(child).unwrap();
         assert_eq!(m.windows.at(child).parent, Some(id));
 
         let mut a = args(0, WS_CHILD);
         a.class_name = class::Name::Text(&name);
-        let only = m
-            .create_window(t, HWND_MESSAGE, &mut a, &mut DefaultProcedure)
-            .unwrap();
+        let only = WindowManager::create_window(
+            &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+            t,
+            HWND_MESSAGE,
+            &mut a,
+        )
+        .unwrap();
         let only = m.windows.window_from_handle(only).unwrap();
         assert_eq!(m.windows.at(only).parent, desktop.message_window);
 
         let mut a = args(0, WS_CHILD);
         a.class_name = class::Name::Text(&name);
         assert_eq!(
-            m.create_window(t, 0x1234, &mut a, &mut DefaultProcedure),
+            WindowManager::create_window(
+                &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+                t,
+                0x1234,
+                &mut a
+            ),
             Err(Failure::InvalidWindowHandle)
         );
         let missing = wide("Missing");
         let mut a = args(0, WS_OVERLAPPED);
         a.class_name = class::Name::Text(&missing);
         assert_eq!(
-            m.create_window(t, 0, &mut a, &mut DefaultProcedure),
+            WindowManager::create_window(
+                &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+                t,
+                0,
+                &mut a
+            ),
             Err(Failure::CannotFindWindowClass)
         );
 
         // The process's thread cannot destroy the desktop's windows.
         let root = m.windows.handle_of(desktop.window.unwrap());
         assert_eq!(
-            m.windows
-                .destroy_window_handle(&mut m.classes, t, root, &mut DefaultProcedure),
+            Windows::destroy_window_handle(
+                &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+                t,
+                root
+            ),
             Err(Failure::AccessDenied)
         );
     }
@@ -8469,7 +8437,7 @@ mod tests {
         assert_eq!(w.class_views(&mut views[..1]), 1, "cut at the buffer");
 
         let handle = w.handle_of(a);
-        w.destroy_window_handle(c, t, handle, &mut pump).unwrap();
+        Windows::destroy_window_handle(&mut pump.on(w, c), t, handle).unwrap();
         assert_eq!(w.class_window(handle), None);
         assert_eq!(w.class_views(&mut views), 1);
     }
@@ -8525,8 +8493,13 @@ mod tests {
         let create = |m: &mut WindowManager, thread, parent, name: &[u16], style| {
             let mut a = args(0, style);
             a.class_name = class::Name::Text(name);
-            m.create_window(thread, parent, &mut a, &mut DefaultProcedure)
-                .unwrap()
+            WindowManager::create_window(
+                &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+                thread,
+                parent,
+                &mut a,
+            )
+            .unwrap()
         };
         let top = create(m, t, 0, &app, WS_OVERLAPPED);
         let child = create(m, t, top, &app, WS_CHILD);
@@ -8581,7 +8554,10 @@ mod tests {
         let mut pump = Rec::new(t);
         let id = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
         pump.events.clear();
-        assert_eq!(w.show_window(c, id, SW_SHOW, &mut pump), Ok(false));
+        assert_eq!(
+            Windows::show_window(&mut pump.on(w, c), id, SW_SHOW),
+            Ok(false)
+        );
         assert!(w.at(id).is_visible());
         assert_eq!(
             pump.sends(),
@@ -8600,7 +8576,10 @@ mod tests {
 
         pump.events.clear();
         pump.positions.clear();
-        assert_eq!(w.show_window(c, id, SW_HIDE, &mut pump), Ok(true));
+        assert_eq!(
+            Windows::show_window(&mut pump.on(w, c), id, SW_HIDE),
+            Ok(true)
+        );
         assert!(!w.at(id).is_visible());
         assert!(pump.events.contains(&Ev::Send(id, WM_SHOWWINDOW, 0, 0)));
         assert_eq!(
@@ -8610,25 +8589,37 @@ mod tests {
 
         // Hidden already: nothing happens.
         pump.events.clear();
-        assert_eq!(w.show_window(c, id, SW_HIDE, &mut pump), Ok(false));
+        assert_eq!(
+            Windows::show_window(&mut pump.on(w, c), id, SW_HIDE),
+            Ok(false)
+        );
         assert!(pump.events.is_empty());
 
         // SW_SHOWNORMAL: no WM_SHOWWINDOW (its documentation), the show all the same.
-        assert_eq!(w.show_window(c, id, SW_SHOWNORMAL, &mut pump), Ok(false));
+        assert_eq!(
+            Windows::show_window(&mut pump.on(w, c), id, SW_SHOWNORMAL),
+            Ok(false)
+        );
         assert!(w.at(id).is_visible());
         assert!(!pump.messages().contains(&WM_SHOWWINDOW));
 
         // Visible already: activated, nothing else.
         pump.events.clear();
-        assert_eq!(w.show_window(c, id, SW_SHOW, &mut pump), Ok(true));
+        assert_eq!(
+            Windows::show_window(&mut pump.on(w, c), id, SW_SHOW),
+            Ok(true)
+        );
         assert_eq!(pump.events, vec![Ev::Activate(id, Activate::Try)]);
         pump.events.clear();
-        assert_eq!(w.show_window(c, id, SW_SHOWNA, &mut pump), Ok(true));
+        assert_eq!(
+            Windows::show_window(&mut pump.on(w, c), id, SW_SHOWNA),
+            Ok(true)
+        );
         assert!(pump.events.is_empty());
 
         for command in [-1, SW_MAX + 1, 0x100] {
             assert_eq!(
-                w.show_window(c, id, command, &mut pump),
+                Windows::show_window(&mut pump.on(w, c), id, command),
                 Err(Failure::InvalidParameter)
             );
         }
@@ -8654,30 +8645,76 @@ mod tests {
         let name = wide("App");
         let mut a = args(0, WS_OVERLAPPEDWINDOW);
         a.class_name = class::Name::Text(&name);
-        let h = m
-            .create_window(t, 0, &mut a, &mut DefaultProcedure)
-            .unwrap();
-        let p = &mut DefaultProcedure;
-        assert_eq!(m.show_window(h, SW_SHOW, p), Ok(0));
-        assert_eq!(m.show_window(h, SW_HIDE, p), Ok(16));
-        assert_eq!(m.show_window(h, SW_SHOW, p), Ok(0));
-        assert_eq!(m.show_window_async(h, SW_HIDE, p), Ok(()));
+        let h = WindowManager::create_window(
+            &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+            t,
+            0,
+            &mut a,
+        )
+        .unwrap();
+        assert_eq!(
+            WindowManager::show_window(
+                &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+                h,
+                SW_SHOW
+            ),
+            Ok(0)
+        );
+        assert_eq!(
+            WindowManager::show_window(
+                &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+                h,
+                SW_HIDE
+            ),
+            Ok(16)
+        );
+        assert_eq!(
+            WindowManager::show_window(
+                &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+                h,
+                SW_SHOW
+            ),
+            Ok(0)
+        );
+        assert_eq!(
+            WindowManager::show_window_async(
+                &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+                h,
+                SW_HIDE
+            ),
+            Ok(())
+        );
         assert_eq!(
             m.query_window(h, QUERY_WINDOW_VISIBLE, 4, OWNER),
             Ok(Query::Visible(0))
         );
-        assert_eq!(m.show_window_async(h, SW_SHOW, p), Ok(()));
+        assert_eq!(
+            WindowManager::show_window_async(
+                &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+                h,
+                SW_SHOW
+            ),
+            Ok(())
+        );
         assert_eq!(
             m.query_window(h, QUERY_WINDOW_VISIBLE, 4, OWNER),
             Ok(Query::Visible(1))
         );
         let bogus = 0x7FFF_FFFC;
         assert_eq!(
-            m.show_window(bogus, SW_SHOW, p),
+            WindowManager::show_window(
+                &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+                bogus,
+                SW_SHOW
+            ),
             Err(Failure::InvalidWindowHandle)
         );
         assert_eq!(
-            m.show_window_async(bogus, SW_SHOW, p),
+            WindowManager::show_window_async(
+                &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+                bogus,
+                SW_SHOW
+            ),
             Err(Failure::InvalidWindowHandle)
         );
     }
@@ -8703,10 +8740,13 @@ mod tests {
         let mut a = args(0, WS_OVERLAPPEDWINDOW);
         a.class_name = class::Name::Text(&name);
         (a.x, a.y, a.cx, a.cy) = (0, 0, 320, 200);
-        let h = m
-            .create_window(t, 0, &mut a, &mut DefaultProcedure)
-            .unwrap();
-        let p = &mut DefaultProcedure;
+        let h = WindowManager::create_window(
+            &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+            t,
+            0,
+            &mut a,
+        )
+        .unwrap();
         let rect =
             |m: &WindowManager| match m.query_window(h, QUERY_WINDOW_INFO, 60, OWNER).unwrap() {
                 Query::Info(info) => {
@@ -8717,22 +8757,32 @@ mod tests {
                 other => panic!("{other:?}"),
             };
         assert_eq!(rect(m), (0, 0, 320, 200));
-        assert_eq!(m.move_window(h, 100, 100, 300, 250, true, p), Ok(()));
+        assert_eq!(
+            WindowManager::move_window(
+                &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+                h,
+                100,
+                100,
+                300,
+                250,
+                true
+            ),
+            Ok(())
+        );
         assert_eq!(rect(m), (100, 100, 400, 350));
         let WindowManager {
             windows, classes, ..
         } = &mut *m;
         assert_eq!(
-            windows.set_window_pos_handle(
-                classes,
+            Windows::set_window_pos_handle(
+                &mut DefaultSession::new(windows, classes),
                 h,
                 HWND_TOP,
                 50,
                 60,
                 200,
                 150,
-                SWP_NOACTIVATE,
-                p
+                SWP_NOACTIVATE
             ),
             Ok(())
         );
@@ -8741,16 +8791,15 @@ mod tests {
             windows, classes, ..
         } = &mut *m;
         assert_eq!(
-            windows.set_window_pos_handle(
-                classes,
+            Windows::set_window_pos_handle(
+                &mut DefaultSession::new(windows, classes),
                 h,
                 HWND_TOP,
                 0,
                 0,
                 0,
                 0,
-                SWP_NOSIZE | SWP_NOMOVE,
-                p
+                SWP_NOSIZE | SWP_NOMOVE
             ),
             Ok(())
         );
@@ -8758,7 +8807,15 @@ mod tests {
 
         let bogus = 0x7FFF_FFFC;
         assert_eq!(
-            m.move_window(bogus, 1, 2, 3, 4, true, p),
+            WindowManager::move_window(
+                &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+                bogus,
+                1,
+                2,
+                3,
+                4,
+                true
+            ),
             Err(Failure::InvalidWindowHandle)
         );
         assert_eq!(
@@ -8773,45 +8830,42 @@ mod tests {
             windows, classes, ..
         } = &mut *m;
         assert_eq!(
-            windows.set_window_pos_handle(
-                classes,
+            Windows::set_window_pos_handle(
+                &mut DefaultSession::new(windows, classes),
                 bogus,
                 HWND_TOP,
                 0,
                 0,
                 0,
                 0,
-                SWP_NOSIZE | SWP_NOMOVE,
-                p
+                SWP_NOSIZE | SWP_NOMOVE
             ),
             Err(Failure::InvalidWindowHandle)
         );
         // A bogus insert-after handle, unless the z-order is left alone.
         assert_eq!(
-            windows.set_window_pos_handle(
-                classes,
+            Windows::set_window_pos_handle(
+                &mut DefaultSession::new(windows, classes),
                 h,
                 bogus,
                 0,
                 0,
                 0,
                 0,
-                SWP_NOSIZE | SWP_NOMOVE,
-                p
+                SWP_NOSIZE | SWP_NOMOVE
             ),
             Err(Failure::InvalidWindowHandle)
         );
         assert_eq!(
-            windows.set_window_pos_handle(
-                classes,
+            Windows::set_window_pos_handle(
+                &mut DefaultSession::new(windows, classes),
                 h,
                 bogus,
                 0,
                 0,
                 0,
                 0,
-                SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER,
-                p
+                SWP_NOSIZE | SWP_NOMOVE | SWP_NOZORDER
             ),
             Ok(())
         );
@@ -8901,7 +8955,7 @@ mod tests {
             assert_eq!(w.extra_value(id, offset, 4), Ok(0));
         }
         let mut set = |w: &mut Windows, index: i32, value: u32| {
-            w.set_window_long(c, OWNER, h, index, value, false, &mut pump)
+            Windows::set_window_long(&mut pump.on(w, c), OWNER, h, index, value, false)
                 .map(|(previous, _)| previous)
         };
         assert_eq!(set(w, 0, 0x1111_1111), Ok(0));
@@ -8925,7 +8979,7 @@ mod tests {
         let plain = create(w, c, t, none, WS_OVERLAPPED, &mut pump).unwrap();
         assert_eq!(w.extra_value(plain, 0, 4), Err(Failure::InvalidIndex));
 
-        assert!(w.destroy_window(c, t, id, &mut pump).unwrap());
+        assert!(Windows::destroy_window(&mut pump.on(w, c), t, id).unwrap());
         assert_eq!(w.extra.taken_granules(), 0);
         assert_eq!(
             w.set_window_word(h, 0, 1),
@@ -8944,14 +8998,13 @@ mod tests {
         let style = w.at(id).style;
         pump.events.clear();
         assert_eq!(
-            w.set_window_long(
-                c,
+            Windows::set_window_long(
+                &mut pump.on(w, c),
                 OWNER,
                 h,
                 rtl::window::GWL_STYLE,
                 style | WS_THICKFRAME,
-                false,
-                &mut pump
+                false
             ),
             Ok((style, false))
         );
@@ -8965,14 +9018,13 @@ mod tests {
         );
         let ex = w.at(id).ex_style;
         assert_eq!(
-            w.set_window_long(
-                c,
+            Windows::set_window_long(
+                &mut pump.on(w, c),
                 OWNER,
                 h,
                 rtl::window::GWL_EXSTYLE,
                 ex | WS_EX_TOOLWINDOW | ANSI_CREATOR_BIT,
-                false,
-                &mut pump
+                false
             ),
             Ok((ex, false))
         );
@@ -8992,7 +9044,7 @@ mod tests {
         let mut a = args(atom, WS_CHILD);
         a.parent = Some(top);
         a.menu = MenuInput::Id(77);
-        let child = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let child = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         let (ht, hc) = (w.handle_of(top), w.handle_of(child));
 
         let data = w.window_data(child, OWNER);
@@ -9012,7 +9064,7 @@ mod tests {
         );
 
         let mut set = |w: &mut Windows, h: Hwnd, index: i32, value: u32, ansi: bool| {
-            w.set_window_long(c, OWNER, h, index, value, ansi, &mut pump)
+            Windows::set_window_long(&mut pump.on(w, c), OWNER, h, index, value, ansi)
         };
         assert_eq!(set(w, hc, rtl::window::GWL_ID, 88, false), Ok((77, false)));
         assert_eq!(w.window_data(child, OWNER).id, 88);
@@ -9042,14 +9094,13 @@ mod tests {
             Ok((0x0040_2000, false))
         );
         assert_eq!(
-            w.set_window_long(
-                c,
+            Windows::set_window_long(
+                &mut pump.on(w, c),
                 OTHER_OWNER,
                 ht,
                 rtl::window::GWL_WNDPROC,
                 1,
-                false,
-                &mut pump
+                false
             ),
             Err(Failure::AccessDenied)
         );
@@ -9075,7 +9126,7 @@ mod tests {
         let mut a = args(atom, WS_CHILD);
         (a.x, a.y, a.cx, a.cy) = (5, 6, 20, 10);
         a.parent = Some(top);
-        let child = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let child = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         // The create: window 10,20 100x80, client inset by 4; the child at 5,6 in the client.
         assert_eq!(
             w.at(top).client_rect,
@@ -9099,16 +9150,15 @@ mod tests {
 
         // A move and a size.
         assert_eq!(
-            w.set_window_pos(
-                c,
+            Windows::set_window_pos(
+                &mut pump.on(w, c),
                 top,
                 InsertAfter::Top,
                 50,
                 60,
                 200,
                 150,
-                SWP_NOZORDER | SWP_NOACTIVATE,
-                &mut pump
+                SWP_NOZORDER | SWP_NOACTIVATE
             ),
             Ok(())
         );
@@ -9156,7 +9206,16 @@ mod tests {
         pump.positions.clear();
         let flags = SWP_NOZORDER | SWP_NOACTIVATE;
         assert_eq!(
-            w.set_window_pos(c, top, InsertAfter::Top, 0, 0, 200, 150, flags, &mut pump),
+            Windows::set_window_pos(
+                &mut pump.on(w, c),
+                top,
+                InsertAfter::Top,
+                0,
+                0,
+                200,
+                150,
+                flags
+            ),
             Ok(())
         );
         assert_eq!(
@@ -9189,7 +9248,16 @@ mod tests {
         // The same place again: nothing changed, no WM_WINDOWPOSCHANGED (guigeo `sizemsg`).
         pump.events.clear();
         assert_eq!(
-            w.set_window_pos(c, top, InsertAfter::Top, 0, 0, 200, 150, flags, &mut pump),
+            Windows::set_window_pos(
+                &mut pump.on(w, c),
+                top,
+                InsertAfter::Top,
+                0,
+                0,
+                200,
+                150,
+                flags
+            ),
             Ok(())
         );
         assert_eq!(pump.messages(), vec![WM_WINDOWPOSCHANGING]);
@@ -9197,16 +9265,15 @@ mod tests {
         // A child's position is in its parent's client coordinates, and is reported so.
         pump.positions.clear();
         assert_eq!(
-            w.set_window_pos(
-                c,
+            Windows::set_window_pos(
+                &mut pump.on(w, c),
                 child,
                 InsertAfter::Top,
                 1,
                 2,
                 0,
                 0,
-                SWP_NOSIZE | SWP_NOZORDER,
-                &mut pump
+                SWP_NOSIZE | SWP_NOZORDER
             ),
             Ok(())
         );
@@ -9224,16 +9291,15 @@ mod tests {
 
         // A negative size is taken as zero.
         assert_eq!(
-            w.set_window_pos(
-                c,
+            Windows::set_window_pos(
+                &mut pump.on(w, c),
                 child,
                 InsertAfter::Top,
                 1,
                 2,
                 -5,
                 -5,
-                SWP_NOZORDER,
-                &mut pump
+                SWP_NOZORDER
             ),
             Ok(())
         );
@@ -9266,7 +9332,7 @@ mod tests {
         });
         let flags = SWP_NOZORDER | SWP_NOACTIVATE;
         assert_eq!(
-            w.set_window_pos(c, id, InsertAfter::Top, 1, 1, 1, 1, flags, &mut pump),
+            Windows::set_window_pos(&mut pump.on(w, c), id, InsertAfter::Top, 1, 1, 1, 1, flags),
             Ok(())
         );
         assert_eq!(
@@ -9280,16 +9346,15 @@ mod tests {
         );
         pump.positions.clear();
         assert_eq!(
-            w.set_window_pos(
-                c,
+            Windows::set_window_pos(
+                &mut pump.on(w, c),
                 id,
                 InsertAfter::Top,
                 1,
                 1,
                 1,
                 1,
-                flags | SWP_NOSENDCHANGING,
-                &mut pump
+                flags | SWP_NOSENDCHANGING
             ),
             Ok(())
         );
@@ -9305,16 +9370,15 @@ mod tests {
         assert_eq!(pump.positions.len(), 1, "WM_WINDOWPOSCHANGED alone");
         pump.changing_answer = None;
         assert_eq!(
-            w.set_window_pos(
-                c,
+            Windows::set_window_pos(
+                &mut pump.on(w, c),
                 id,
                 InsertAfter::Top,
                 30,
                 30,
                 30,
                 30,
-                flags | SWP_SHOWWINDOW,
-                &mut pump
+                flags | SWP_SHOWWINDOW
             ),
             Ok(())
         );
@@ -9351,8 +9415,8 @@ mod tests {
         };
         assert_eq!(order(w), vec![d, cc, b, a]);
         let pos = |w: &mut Windows, c: &mut class::Registry, id, after, pump: &mut Rec| {
-            w.set_window_pos(
-                c,
+            Windows::set_window_pos(
+                &mut pump.on(w, c),
                 id,
                 after,
                 0,
@@ -9360,7 +9424,6 @@ mod tests {
                 0,
                 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                pump,
             )
             .unwrap()
         };
@@ -9394,12 +9457,12 @@ mod tests {
         // Not a sibling, or the window itself: nothing changes.
         let mut ca = args(atom, WS_CHILD);
         ca.parent = Some(a);
-        let kid = w.create_window_ex(c, t, &ca, &mut pump).unwrap();
+        let kid = Windows::create_window_ex(&mut pump.on(w, c), t, &ca).unwrap();
         pos(w, c, d, InsertAfter::After(kid), &mut pump);
         pos(w, c, d, InsertAfter::After(d), &mut pump);
         assert_eq!(order(w), vec![cc, d, a, b]);
         // A child: HWND_TOPMOST is HWND_TOP, without the topmost bit.
-        let kid2 = w.create_window_ex(c, t, &ca, &mut pump).unwrap();
+        let kid2 = Windows::create_window_ex(&mut pump.on(w, c), t, &ca).unwrap();
         assert_eq!(w.at(a).child, Some(kid), "children stack at the bottom");
         pos(w, c, kid2, InsertAfter::TopMost, &mut pump);
         assert_eq!(w.at(a).child, Some(kid2));
@@ -9417,12 +9480,21 @@ mod tests {
         let mut pump = Rec::new(t);
         let top = create(w, c, t, atom, WS_POPUP | WS_VISIBLE, &mut pump).unwrap();
         pump.events.clear();
-        w.set_window_pos(c, top, InsertAfter::Top, 1, 1, 0, 0, SWP_NOSIZE, &mut pump)
-            .unwrap();
+        Windows::set_window_pos(
+            &mut pump.on(w, c),
+            top,
+            InsertAfter::Top,
+            1,
+            1,
+            0,
+            0,
+            SWP_NOSIZE,
+        )
+        .unwrap();
         assert!(pump.events.contains(&Ev::Activate(top, Activate::Try)));
         pump.events.clear();
-        w.set_window_pos(
-            c,
+        Windows::set_window_pos(
+            &mut pump.on(w, c),
             top,
             InsertAfter::Top,
             2,
@@ -9430,14 +9502,13 @@ mod tests {
             0,
             0,
             SWP_NOSIZE | SWP_NOACTIVATE,
-            &mut pump,
         )
         .unwrap();
         assert!(!pump.events.iter().any(|e| matches!(e, Ev::Activate(..))));
 
         let mut a = args(atom, WS_CHILD | WS_VISIBLE);
         a.parent = Some(top);
-        let child = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let child = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert!(!pump
             .events
             .iter()
@@ -9445,7 +9516,10 @@ mod tests {
 
         w.thread_mut(t).active = Some(top);
         pump.events.clear();
-        assert_eq!(w.show_window(c, top, SW_HIDE, &mut pump), Ok(true));
+        assert_eq!(
+            Windows::show_window(&mut pump.on(w, c), top, SW_HIDE),
+            Ok(true)
+        );
         assert!(pump.events.contains(&Ev::Activate(top, Activate::Skip)));
     }
 
@@ -9464,8 +9538,17 @@ mod tests {
         let id = create(w, c, t, atom, WS_OVERLAPPEDWINDOW, &mut pump).unwrap();
         assert!(w.at(id).flags.sendsizemove);
         let flags = SWP_NOZORDER | SWP_NOACTIVATE;
-        w.set_window_pos(c, id, InsertAfter::Top, 50, 60, 200, 150, flags, &mut pump)
-            .unwrap();
+        Windows::set_window_pos(
+            &mut pump.on(w, c),
+            id,
+            InsertAfter::Top,
+            50,
+            60,
+            200,
+            150,
+            flags,
+        )
+        .unwrap();
         assert!(!w.at(id).flags.sendsizemove, "the client area changed");
         let normal = Rect {
             left: 50,
@@ -9474,7 +9557,10 @@ mod tests {
             bottom: 210,
         };
         pump.events.clear();
-        assert_eq!(w.show_window(c, id, SW_SHOWMAXIMIZED, &mut pump), Ok(false));
+        assert_eq!(
+            Windows::show_window(&mut pump.on(w, c), id, SW_SHOWMAXIMIZED),
+            Ok(false)
+        );
         assert_eq!(pump.events[0], Ev::MinMax(id, SW_SHOWMAXIMIZED as u32));
         assert_eq!(
             w.at(id).style & (WS_MINIMIZE | WS_MAXIMIZE | WS_VISIBLE),
@@ -9499,7 +9585,7 @@ mod tests {
         );
         assert!(!pump.messages().contains(&WM_SIZE), "no deferred WM_SIZE");
 
-        w.show_window(c, id, SW_MINIMIZE, &mut pump).unwrap();
+        Windows::show_window(&mut pump.on(w, c), id, SW_MINIMIZE).unwrap();
         let minimized = w.at(id);
         assert_eq!(minimized.style & (WS_MINIMIZE | WS_MAXIMIZE), WS_MINIMIZE);
         assert_eq!(
@@ -9525,9 +9611,9 @@ mod tests {
         );
         assert_eq!(placement.normal, normal);
 
-        w.show_window(c, id, SW_RESTORE, &mut pump).unwrap();
+        Windows::show_window(&mut pump.on(w, c), id, SW_RESTORE).unwrap();
         assert_eq!(w.at(id).style & (WS_MINIMIZE | WS_MAXIMIZE), WS_MAXIMIZE);
-        w.show_window(c, id, SW_RESTORE, &mut pump).unwrap();
+        Windows::show_window(&mut pump.on(w, c), id, SW_RESTORE).unwrap();
         assert_eq!(w.at(id).style & (WS_MINIMIZE | WS_MAXIMIZE), 0);
         assert_eq!(w.at(id).window_rect, normal);
         let placement = w.window_placement(id);
@@ -9547,9 +9633,9 @@ mod tests {
         );
 
         // From the normal state a minimized window restores to it.
-        w.show_window(c, id, SW_MINIMIZE, &mut pump).unwrap();
+        Windows::show_window(&mut pump.on(w, c), id, SW_MINIMIZE).unwrap();
         assert!(!w.at(id).restore_maximized);
-        w.show_window(c, id, SW_SHOWNORMAL, &mut pump).unwrap();
+        Windows::show_window(&mut pump.on(w, c), id, SW_SHOWNORMAL).unwrap();
         assert_eq!(w.at(id).window_rect, normal);
     }
 
@@ -9575,7 +9661,7 @@ mod tests {
             let mut pump = Rec::new(t);
             let mut a = args(atom, WS_OVERLAPPEDWINDOW | bit | visible);
             (a.cx, a.cy) = (300, 200);
-            let id = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+            let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
             assert_eq!(
                 w.at(id).style & (WS_MINIMIZE | WS_MAXIMIZE | WS_VISIBLE),
                 bit | visible
@@ -9611,7 +9697,7 @@ mod tests {
                 },
                 "the change's, then the show's and its deferred WM_SIZE"
             );
-            w.show_window(c, id, SW_RESTORE, &mut pump).unwrap();
+            Windows::show_window(&mut pump.on(w, c), id, SW_RESTORE).unwrap();
             assert_eq!(w.at(id).style & (WS_MINIMIZE | WS_MAXIMIZE), 0);
             assert_eq!(w.at(id).window_rect, asked);
             assert!(!w.at(id).flags.sendsizemove);
@@ -9630,8 +9716,8 @@ mod tests {
             (140, 100, 260, 190, SWP_SHOWWINDOW, true),
             (160, 110, 270, 170, SWP_HIDEWINDOW, false),
         ] {
-            w.set_window_pos(
-                c,
+            Windows::set_window_pos(
+                &mut pump.on(w, c),
                 id,
                 InsertAfter::Top,
                 x,
@@ -9639,7 +9725,6 @@ mod tests {
                 cx,
                 cy,
                 flags | SWP_NOACTIVATE,
-                &mut pump,
             )
             .unwrap();
             assert_eq!(w.at(id).window_rect, Rect::new(x, y, x + cx, y + cy));
@@ -9654,18 +9739,21 @@ mod tests {
         let (w, c, t, atom, _, _) = setup();
         let mut pump = Rec::new(t);
         let id = create(w, c, t, atom, WS_OVERLAPPEDWINDOW, &mut pump).unwrap();
-        w.show_window(c, id, SW_MINIMIZE, &mut pump).unwrap();
+        Windows::show_window(&mut pump.on(w, c), id, SW_MINIMIZE).unwrap();
         pump.positions.clear();
-        assert_eq!(w.show_window(c, id, SW_HIDE, &mut pump), Ok(true));
+        assert_eq!(
+            Windows::show_window(&mut pump.on(w, c), id, SW_HIDE),
+            Ok(true)
+        );
         let (_, message, changed) = *pump.positions.last().unwrap();
         assert_eq!(message, WM_WINDOWPOSCHANGED);
         assert_eq!(
             changed.flags & (SWP_HIDEWINDOW | SWP_NOCLIENTSIZE),
             SWP_HIDEWINDOW
         );
-        w.show_window(c, id, SW_SHOWNORMAL, &mut pump).unwrap();
+        Windows::show_window(&mut pump.on(w, c), id, SW_SHOWNORMAL).unwrap();
         pump.positions.clear();
-        w.show_window(c, id, SW_HIDE, &mut pump).unwrap();
+        Windows::show_window(&mut pump.on(w, c), id, SW_HIDE).unwrap();
         let (_, _, changed) = *pump.positions.last().unwrap();
         assert_ne!(changed.flags & SWP_NOCLIENTSIZE, 0);
     }
@@ -9695,8 +9783,7 @@ mod tests {
             max_y: -1,
             normal: first,
         };
-        w.set_window_placement(c, id, &placement, &mut pump)
-            .unwrap();
+        Windows::set_window_placement(&mut pump.on(w, c), id, &placement).unwrap();
         assert_eq!(
             w.at(id).style & (WS_MINIMIZE | WS_VISIBLE),
             WS_MINIMIZE | WS_VISIBLE
@@ -9709,13 +9796,12 @@ mod tests {
         placement.show_cmd = SW_HIDE as u32;
         placement.length = 0;
         assert_eq!(
-            w.set_window_placement(c, id, &placement, &mut pump),
+            Windows::set_window_placement(&mut pump.on(w, c), id, &placement),
             Err(Failure::InvalidParameter)
         );
         placement.length = 44;
         placement.show_cmd = SW_SHOWNORMAL as u32;
-        w.set_window_placement(c, id, &placement, &mut pump)
-            .unwrap();
+        Windows::set_window_placement(&mut pump.on(w, c), id, &placement).unwrap();
         assert_eq!(w.at(id).window_rect, first);
         assert_eq!(
             w.window_placement(id).min_x,
@@ -9723,8 +9809,7 @@ mod tests {
             "kept as it left the state"
         );
         placement.show_cmd = SW_HIDE as u32;
-        w.set_window_placement(c, id, &placement, &mut pump)
-            .unwrap();
+        Windows::set_window_placement(&mut pump.on(w, c), id, &placement).unwrap();
         let answer = w.window_placement(id);
         assert_eq!((answer.min_x, answer.show_cmd), (-1, SW_SHOWNORMAL as u32));
         assert!(!w.at(id).is_visible());
@@ -9739,8 +9824,8 @@ mod tests {
         let mut pump = Rec::new(t);
         let parent = create(w, c, t, atom, WS_OVERLAPPEDWINDOW, &mut pump).unwrap();
         let flags = SWP_NOZORDER | SWP_NOACTIVATE;
-        w.set_window_pos(
-            c,
+        Windows::set_window_pos(
+            &mut pump.on(w, c),
             parent,
             InsertAfter::Top,
             10,
@@ -9748,7 +9833,6 @@ mod tests {
             320,
             200,
             flags,
-            &mut pump,
         )
         .unwrap();
         let mut a = args(atom, WS_CHILD);
@@ -9757,7 +9841,7 @@ mod tests {
         a.y = 10;
         a.cx = 50;
         a.cy = 40;
-        let child = w.create_window_ex(c, t, &a, &mut pump).unwrap();
+        let child = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         let handle = w.at(parent).handle;
         let pos = |x, y, cx, cy| WindowPos {
             hwnd: handle,
@@ -9768,8 +9852,11 @@ mod tests {
             cy,
             flags,
         };
-        w.end_defer_window_pos(c, &[pos(1, 2, 100, 50), pos(5, 6, 150, 70)], &mut pump)
-            .unwrap();
+        Windows::end_defer_window_pos(
+            &mut pump.on(w, c),
+            &[pos(1, 2, 100, 50), pos(5, 6, 150, 70)],
+        )
+        .unwrap();
         let rect = w.at(parent).window_rect;
         assert_eq!(
             (rect.left, rect.top, rect.right, rect.bottom),
@@ -9781,8 +9868,7 @@ mod tests {
             (child_rect.left - client.left, child_rect.top - client.top),
             (1, -8)
         );
-        w.end_defer_window_pos(c, &[pos(30, 40, 90, 80)], &mut pump)
-            .unwrap();
+        Windows::end_defer_window_pos(&mut pump.on(w, c), &[pos(30, 40, 90, 80)]).unwrap();
         let rect = w.at(parent).window_rect;
         assert_eq!((rect.right - rect.left, rect.bottom - rect.top), (112, 80));
     }
@@ -9798,7 +9884,7 @@ mod tests {
         let id = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
         pump.events.clear();
         pump.positions.clear();
-        w.show_window(c, id, SW_SHOW, &mut pump).unwrap();
+        Windows::show_window(&mut pump.on(w, c), id, SW_SHOW).unwrap();
         let (_, _, changed) = *pump.positions.last().unwrap();
         assert_eq!(changed.flags, 0x1000_1847);
         let messages = pump.messages();
@@ -9836,8 +9922,13 @@ mod tests {
         let make = |m: &mut WindowManager, parent, style| {
             let mut a = args(0, style);
             a.class_name = class::Name::Text(&name);
-            m.create_window(t, parent, &mut a, &mut DefaultProcedure)
-                .unwrap()
+            WindowManager::create_window(
+                &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+                t,
+                parent,
+                &mut a,
+            )
+            .unwrap()
         };
         let top = make(m, 0, WS_OVERLAPPED | WS_VISIBLE);
         let child = make(m, top, WS_CHILD | WS_VISIBLE);
@@ -9847,7 +9938,12 @@ mod tests {
         assert_eq!(visible(m, top), Query::Visible(1));
         assert_eq!(visible(m, child), Query::Visible(1));
         assert_eq!(visible(m, only), Query::Visible(0), "a message-only window");
-        m.show_window(top, SW_HIDE, &mut DefaultProcedure).unwrap();
+        WindowManager::show_window(
+            &mut DefaultSession::new(&mut m.windows, &mut m.classes),
+            top,
+            SW_HIDE,
+        )
+        .unwrap();
         assert_eq!(visible(m, child), Query::Visible(0), "its parent is hidden");
         let desktop = m.windows.desktop_by_id(DESKTOP).unwrap().window.unwrap();
         assert!(m.windows.is_window_visible(desktop));
@@ -9986,8 +10082,8 @@ mod tests {
         let top = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
 
         // Hidden: a resize invalidates nothing.
-        w.set_window_pos(
-            c,
+        Windows::set_window_pos(
+            &mut pump.on(w, c),
             top,
             InsertAfter::Top,
             10,
@@ -9995,17 +10091,19 @@ mod tests {
             300,
             200,
             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-            &mut pump,
         )
         .unwrap();
         assert_eq!(update_of(w, top), None);
 
         // Shown: the first show invalidated the client whole; validate it away, then resize again.
-        assert_eq!(w.show_window(c, top, SW_SHOW, &mut pump), Ok(false));
+        assert_eq!(
+            Windows::show_window(&mut pump.on(w, c), top, SW_SHOW),
+            Ok(false)
+        );
         begin_validate(w, top);
         assert_eq!(update_of(w, top), None);
-        w.set_window_pos(
-            c,
+        Windows::set_window_pos(
+            &mut pump.on(w, c),
             top,
             InsertAfter::Top,
             10,
@@ -10013,7 +10111,6 @@ mod tests {
             400,
             260,
             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
-            &mut pump,
         )
         .unwrap();
         // The window at 10,20 of 400x260, the client inset by 4: the whole client, no erase.
@@ -10032,8 +10129,8 @@ mod tests {
 
         // SWP_NOREDRAW: the client stays valid through a resize.
         begin_validate(w, top);
-        w.set_window_pos(
-            c,
+        Windows::set_window_pos(
+            &mut pump.on(w, c),
             top,
             InsertAfter::Top,
             10,
@@ -10041,7 +10138,6 @@ mod tests {
             500,
             300,
             SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOREDRAW,
-            &mut pump,
         )
         .unwrap();
         assert_eq!(update_of(w, top), None);
@@ -10055,7 +10151,7 @@ mod tests {
     /// faulting.
     #[test]
     fn set_window_pos_saturates_an_extreme_rectangle() {
-        use crate::win32k::queue::{rig, QueuePump};
+        use crate::win32k::queue::{rig, QueueSession};
         let (m, atom) = rig::manager();
         let t = rig::thread(m, 1, 0x10);
         let h = rig::popup(m, atom, t);
@@ -10064,16 +10160,15 @@ mod tests {
         } = m;
         let flags = SWP_NOZORDER;
         assert_eq!(
-            windows.set_window_pos_handle(
-                classes,
+            Windows::set_window_pos_handle(
+                &mut QueueSession::new(windows, classes),
                 h,
                 0,
                 0x7FFF_FFF0,
                 0,
                 100,
                 100,
-                flags,
-                &mut QueuePump
+                flags
             ),
             Ok(())
         );
@@ -10094,7 +10189,7 @@ mod tests {
     /// saturated.
     #[test]
     fn a_framed_window_at_i32s_end_has_its_frame() {
-        use crate::win32k::queue::{rig, QueuePump};
+        use crate::win32k::queue::{rig, QueueSession};
         let (m, atom) = rig::manager();
         let t = rig::thread(m, 1, 0x10);
         let h = rig::window_at(m, atom, t, WS_OVERLAPPEDWINDOW, 0, 0, 0, 200, 100);
@@ -10102,7 +10197,15 @@ mod tests {
         let near = m.windows.client_rect(w);
         let at = 0x7FFF_FFF0;
         assert_eq!(
-            m.move_window(h, at, at, 300, 200, true, &mut QueuePump),
+            WindowManager::move_window(
+                &mut QueueSession::new(&mut m.windows, &mut m.classes),
+                h,
+                at,
+                at,
+                300,
+                200,
+                true
+            ),
             Ok(())
         );
         assert_eq!(
@@ -10167,13 +10270,21 @@ mod tests {
     /// right edge is moved with it, its rectangle saturated at i32::MAX.
     #[test]
     fn children_moved_past_i32s_end_saturate() {
-        use crate::win32k::queue::{rig, QueuePump};
+        use crate::win32k::queue::{rig, QueueSession};
         let (m, atom) = rig::manager();
         let t = rig::thread(m, 1, 0x10);
         let parent = rig::window_at(m, atom, t, WS_POPUP, 0, 0, 0, 100, 100);
         let child = rig::window_at(m, atom, t, WS_CHILD, parent, 300, 0, 50, 10);
         assert_eq!(
-            m.move_window(parent, 0x7FFF_FF00, 0, 100, 100, true, &mut QueuePump),
+            WindowManager::move_window(
+                &mut QueueSession::new(&mut m.windows, &mut m.classes),
+                parent,
+                0x7FFF_FF00,
+                0,
+                100,
+                100,
+                true
+            ),
             Ok(())
         );
         let child = m.windows.window_of(child).unwrap();
@@ -10192,14 +10303,22 @@ mod tests {
     /// would be CW_USEDEFAULT): its place in the parent's client coordinates, exact.
     #[test]
     fn a_child_at_i32s_start_has_its_placement() {
-        use crate::win32k::queue::{rig, QueuePump};
+        use crate::win32k::queue::{rig, QueueSession};
         let (m, atom) = rig::manager();
         let t = rig::thread(m, 1, 0x10);
         let parent = rig::window_at(m, atom, t, WS_POPUP, 0, 0, 0, 100, 100);
         let child = rig::window_at(m, atom, t, WS_CHILD, parent, 10, 20, 30, 40);
         let (min, size) = (i32::MIN, 100);
         assert_eq!(
-            m.move_window(parent, min, min, size, size, true, &mut QueuePump),
+            WindowManager::move_window(
+                &mut QueueSession::new(&mut m.windows, &mut m.classes),
+                parent,
+                min,
+                min,
+                size,
+                size,
+                true
+            ),
             Ok(())
         );
         assert_eq!(
@@ -10217,7 +10336,7 @@ mod tests {
     /// the window at the start.
     #[test]
     fn set_window_placement_saturates_an_extreme_rectangle() {
-        use crate::win32k::queue::{rig, QueuePump};
+        use crate::win32k::queue::{rig, QueueSession};
         let (m, atom) = rig::manager();
         let t = rig::thread(m, 1, 0x10);
         let h = rig::popup(m, atom, t);
@@ -10237,7 +10356,11 @@ mod tests {
             },
         };
         assert_eq!(
-            m.set_window_placement(h, &placement, &mut QueuePump),
+            WindowManager::set_window_placement(
+                &mut QueueSession::new(&mut m.windows, &mut m.classes),
+                h,
+                &placement
+            ),
             Ok(())
         );
         let w = m.windows.window_of(h).unwrap();
@@ -10258,7 +10381,7 @@ mod tests {
     fn minimized_and_maximized_positions_at_i32s_end_saturate() {
         use rtl::window::WPF_SETMINPOSITION;
 
-        use crate::win32k::queue::{rig, QueuePump};
+        use crate::win32k::queue::{rig, QueueSession};
         let (m, atom) = rig::manager();
         let t = rig::thread(m, 1, 0x10);
         let h = rig::window_at(m, atom, t, WS_OVERLAPPEDWINDOW, 0, 0, 0, 200, 100);
@@ -10279,7 +10402,11 @@ mod tests {
             },
         };
         assert_eq!(
-            m.set_window_placement(h, &placement, &mut QueuePump),
+            WindowManager::set_window_placement(
+                &mut QueueSession::new(&mut m.windows, &mut m.classes),
+                h,
+                &placement
+            ),
             Ok(())
         );
         let w = m.windows.window_of(h).unwrap();
@@ -10289,9 +10416,19 @@ mod tests {
             right: i32::MAX,
             bottom: i32::MAX,
         };
-        assert!(m.show_window(h, SW_MINIMIZE, &mut QueuePump).is_ok());
+        assert!(WindowManager::show_window(
+            &mut QueueSession::new(&mut m.windows, &mut m.classes),
+            h,
+            SW_MINIMIZE
+        )
+        .is_ok());
         assert_eq!(m.windows.window_rect(w), far);
-        assert!(m.show_window(h, SW_SHOWMAXIMIZED, &mut QueuePump).is_ok());
+        assert!(WindowManager::show_window(
+            &mut QueueSession::new(&mut m.windows, &mut m.classes),
+            h,
+            SW_SHOWMAXIMIZED
+        )
+        .is_ok());
         assert_eq!(m.windows.window_rect(w), far);
     }
 
@@ -10299,14 +10436,22 @@ mod tests {
     /// saturate.
     #[test]
     fn a_deferred_batch_across_i32_saturates() {
-        use crate::win32k::queue::{rig, QueuePump};
+        use crate::win32k::queue::{rig, QueueSession};
         let (m, atom) = rig::manager();
         let t = rig::thread(m, 1, 0x10);
         let h = rig::window_at(m, atom, t, WS_POPUP, 0, 0, 0, 100, 100);
         rig::window_at(m, atom, t, WS_CHILD, h, 10, 10, 20, 20);
         let (min, size) = (i32::MIN, 100);
         assert_eq!(
-            m.move_window(h, min, min, size, size, true, &mut QueuePump),
+            WindowManager::move_window(
+                &mut QueueSession::new(&mut m.windows, &mut m.classes),
+                h,
+                min,
+                min,
+                size,
+                size,
+                true
+            ),
             Ok(())
         );
         let at = i32::MAX - 200;
@@ -10319,7 +10464,13 @@ mod tests {
             cy: 100,
             flags: SWP_NOZORDER,
         };
-        assert_eq!(m.end_defer_window_pos(&[pos, pos], &mut QueuePump), Ok(()));
+        assert_eq!(
+            WindowManager::end_defer_window_pos(
+                &mut QueueSession::new(&mut m.windows, &mut m.classes),
+                &[pos, pos]
+            ),
+            Ok(())
+        );
         let w = m.windows.window_of(h).unwrap();
         assert_eq!(
             m.windows.window_rect(w),

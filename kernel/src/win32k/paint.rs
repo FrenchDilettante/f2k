@@ -386,6 +386,7 @@ mod services {
     use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
     use crate::status::*;
     use crate::win32k::queue::with_manager;
+    use crate::win32k::window::Session;
     use crate::win32k::winsta::gui_thread;
 
     /// The window a handle names; STATUS_INVALID_HANDLE for none.
@@ -514,27 +515,15 @@ mod services {
     /// for another routine.
     pub fn call_hwnd_lock(call: &mut NtCall, window: Handle, routine: u32) -> NtResult {
         let caller = gui_thread(call)?.thread;
-        with_manager(call.passive(), |m| {
-            let id = window_of(&m.windows, window)?;
+        crate::win32k::queue::with_session(call.passive(), |s| {
+            let id = window_of(s.windows(), window)?;
             match routine {
                 HWND_LOCK_UPDATE_WINDOW => {
-                    update_window(&mut m.windows, id);
+                    update_window(s.windows(), id);
                     Ok(())
                 }
-                _ => {
-                    let crate::win32k::window::WindowManager {
-                        windows, classes, ..
-                    } = m;
-                    crate::win32k::focus::call_hwnd_lock(
-                        windows,
-                        classes,
-                        caller,
-                        id,
-                        routine,
-                        &mut crate::win32k::queue::QueuePump,
-                    )
-                    .unwrap_or(Err(STATUS_INVALID_PARAMETER))
-                }
+                _ => crate::win32k::focus::call_hwnd_lock(s, caller, id, routine)
+                    .unwrap_or(Err(STATUS_INVALID_PARAMETER)),
             }
         })?;
         Ok(STATUS_SUCCESS)
@@ -593,7 +582,7 @@ mod tests {
     use super::*;
     use crate::win32k::class;
     use crate::win32k::queue::rig::*;
-    use crate::win32k::queue::{QueuePump, Taken};
+    use crate::win32k::queue::{QueueSession, Taken};
     use crate::win32k::window::{WindowManager, WS_CHILD, WS_POPUP};
 
     /// A shown 320x200 popup at (`x`, `y`): its id and handle, its creation messages delivered.
@@ -847,9 +836,7 @@ mod tests {
         let WindowManager {
             windows, classes, ..
         } = &mut *m;
-        windows
-            .destroy_window_handle(classes, t, h, &mut QueuePump)
-            .unwrap();
+        Windows::destroy_window_handle(&mut QueueSession::new(windows, classes), t, h).unwrap();
         deliver(m, t);
         assert_eq!(
             update_of(&m.windows, other),
@@ -899,7 +886,15 @@ mod tests {
         let (w, h) = shown(m, atom, t, 0, 0);
         let min = i32::MIN;
         assert_eq!(
-            m.move_window(h, min, min, 320, 200, false, &mut QueuePump),
+            WindowManager::move_window(
+                &mut QueueSession::new(&mut m.windows, &mut m.classes),
+                h,
+                min,
+                min,
+                320,
+                200,
+                false
+            ),
             Ok(())
         );
         invalidate(&mut m.windows, w, None, true);

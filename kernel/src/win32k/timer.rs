@@ -334,7 +334,7 @@ mod tests {
 
     use super::*;
     use crate::win32k::queue::rig::*;
-    use crate::win32k::queue::{post, take, Taken};
+    use crate::win32k::queue::{post, take, QueueSession, Taken};
     use crate::win32k::window::WindowManager;
 
     /// A millisecond of interrupt time.
@@ -430,9 +430,7 @@ mod tests {
         let WindowManager {
             windows, classes, ..
         } = &mut *m;
-        windows
-            .destroy_window_handle(classes, t, h, &mut crate::win32k::queue::QueuePump)
-            .unwrap();
+        Windows::destroy_window_handle(&mut QueueSession::new(windows, classes), t, h).unwrap();
         deliver(m, t);
         assert_eq!(read(m, t, &all(), 100 * MS), Taken::Nothing { due: None });
     }

@@ -275,6 +275,13 @@ impl<T> ShortLock<T> {
     /// the second acquisition would wait for itself.
     pub fn lock<'a>(&'a self, passive: &'a mut At<Passive>) -> ShortGuard<'a, T> {
         let apc = passive.raise::<Apc>();
+        self.acquire();
+        ShortGuard { lock: self, apc }
+    }
+
+    /// Take the lock at the APC level, waiting while another thread holds it, and build the value
+    /// if a build is pending.
+    fn acquire(&self) {
         let me = holder_identity();
         debug_assert!(
             me == 0 || self.owner.load(Ordering::SeqCst) != me,
@@ -293,7 +300,6 @@ impl<T> ShortLock<T> {
                 write((*self.value.get()).as_mut_ptr());
             }
         }
-        ShortGuard { lock: self, apc }
     }
 
     /// Whether nobody holds the lock.
@@ -432,6 +438,19 @@ impl<T> ShortGuard<'_, T> {
     pub fn apc(&mut self) -> &mut At<Apc> {
         &mut self.apc
     }
+
+    /// Let the lock go for `f`, at the passive level with the passive token the guard borrowed,
+    /// then take it again, waiting while another thread holds it: the window manager's lock around
+    /// a call back to user mode, as Windows 2000's win32k leaves its critical section. The guard is
+    /// borrowed meanwhile, so nothing borrowed from the value lives across `f`; another thread may
+    /// change the value while `f` runs.
+    #[cfg_attr(not(test), allow(dead_code))] // Until a send calls back to user mode.
+    pub fn unlocked<R>(&mut self, f: impl FnOnce(&mut At<Passive>) -> R) -> R {
+        self.lock.release();
+        let result = self.apc.lowered(f);
+        self.lock.acquire();
+        result
+    }
 }
 
 impl<T> Deref for ShortGuard<'_, T> {
@@ -531,6 +550,30 @@ mod tests {
         assert!(lock.is_free());
         assert_eq!(*lock.lock(&mut passive), 6);
         assert_eq!(lock.contention(), 0);
+        assert_eq!(pcr().audit(), Ok(()));
+    }
+
+    /// A holder lets the lock go around a call: free and at the passive level inside it, where
+    /// another hold may change the value; held again, at the APC level, after it.
+    #[test]
+    fn a_short_lock_let_go_around_a_call_is_taken_again() {
+        let lock = ShortLock::new(5u32);
+        let mut passive = passive_for_test();
+        let mut guard = lock.lock(&mut passive);
+        *guard += 1;
+        let answer = guard.unlocked(|passive| {
+            assert_eq!(pcr().current(), irql::PASSIVE);
+            assert!(lock.is_free());
+            *lock.lock(passive) += 10;
+            7
+        });
+        assert_eq!(answer, 7);
+        assert_eq!(pcr().current(), irql::APC);
+        assert!(!lock.is_free());
+        assert_eq!(*guard, 16);
+        drop(guard);
+        assert_eq!(pcr().current(), irql::PASSIVE);
+        assert!(lock.is_free());
         assert_eq!(pcr().audit(), Ok(()));
     }
 

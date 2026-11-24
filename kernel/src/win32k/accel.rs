@@ -16,15 +16,16 @@
 //! resource in the module) and its load count in the record, behind the window manager's lock, so
 //! user32 has no process-wide list to lock.
 //!
-//! TranslateAccelerator ([`translate`]) matches the message against the table (rtl::accel's
-//! [`find`](rtl::accel::find), the modifiers from the thread's key state) and sends the window
+//! TranslateAccelerator ([`find_command`], [`translate`]) matches the message against the table
+//! (rtl::accel's [`find`](rtl::accel::find), the modifiers from the thread's key state) and sends the window
 //! WM_COMMAND, its wParam's high word 1, its low word the command. When the window's menu holds an
 //! item of that command, WM_INITMENU and WM_INITMENUPOPUP are sent first, as if the menu were being
 //! opened, and a grayed or disabled item, or a disabled window, gets no WM_COMMAND: the
-//! accelerator is still translated. The messages go through the pump ([`super::queue::QueuePump`]),
-//! queued for the window's thread as every message the window manager sends is; so a
-//! WM_INITMENUPOPUP handler that enables the item comes too late for this translation (the item's
-//! state is read when the decision runs), which Windows 2000's synchronous send would see.
+//! accelerator is still translated. The messages go through the session
+//! ([`super::queue::QueueSession`]), queued for the window's thread as every message the window
+//! manager sends is; so a WM_INITMENUPOPUP handler that enables the item comes too late for this
+//! translation (the item's state is read when the decision runs), which Windows 2000's synchronous
+//! send would see.
 //!
 //! The modifiers are the thread's key state's ([`modifiers`], [`super::input`]). Seam recorded:
 //! the window menu (the system menu), whose commands are sent as WM_SYSCOMMAND: there is none
@@ -50,7 +51,7 @@ use rtl::menu::{MF_DISABLED, MF_GRAYED};
 use super::class::Owner;
 use super::handle::{UserHandles, UserObject};
 use super::menu::ItemRef;
-use super::window::{Message, Payload, Pump, WindowManager};
+use super::window::{Message, Payload, Session, WindowId, WindowManager};
 use crate::sched::thread::ThreadId;
 use crate::status::*;
 
@@ -324,54 +325,52 @@ pub fn modifiers(manager: &WindowManager, thread: ThreadId) -> Modifiers {
     manager.windows.thread(thread).keys.modifiers()
 }
 
-/// TranslateAccelerator's decision: the message `message` (its wParam `key`) on the thread
-/// `thread`, matched against the table `table` for the window `window`; whether it was an
-/// accelerator. A null window translates nothing; a table naming nothing is
+/// TranslateAccelerator's match: the message `message` (its wParam `key`) on the thread `thread`,
+/// matched against the table `table` for the window `window`; the window and the matched entry's
+/// command, none when nothing matched. A null window translates nothing; a table naming nothing is
 /// ERROR_INVALID_ACCEL_HANDLE, checked first (the translate section's capture: a null table is
 /// 1403, a null window answers FALSE with no error).
-pub fn translate(
-    manager: &mut WindowManager,
+pub fn find_command(
+    manager: &WindowManager,
     thread: ThreadId,
     window: u32,
     table: u32,
     message: u32,
     key: u32,
-    pump: &mut dyn Pump,
-) -> Result<bool, Failure> {
+) -> Result<Option<(WindowId, u32)>, Failure> {
     let table = manager.accels.table_of(&manager.windows.handles, table)?;
     if window == 0 {
-        return Ok(false);
+        return Ok(None);
     }
     let target = manager
         .windows
         .window_from_handle(window)
         .ok_or(Failure::InvalidWindowHandle)?;
     let modifiers = modifiers(manager, thread);
-    let Some(entry) = rtl::accel::find(manager.accels.entries(table), message, key, modifiers)
-    else {
-        return Ok(false);
+    Ok(
+        rtl::accel::find(manager.accels.entries(table), message, key, modifiers)
+            .map(|entry| (target, u32::from(entry.cmd))),
+    )
+}
+
+/// TranslateAccelerator's decision once an entry matched ([`find_command`]): the command `command`
+/// sent to the window `target`, its menu's messages first when it holds an item of the command.
+pub fn translate(s: &mut dyn Session, target: WindowId, command: u32) {
+    let send = |s: &mut dyn Session, message: u32, wparam: u32, lparam: i32| {
+        s.send(
+            target,
+            &mut Message {
+                message,
+                wparam,
+                lparam,
+                payload: Payload::None,
+            },
+        );
     };
-    let command = u32::from(entry.cmd);
-    let WindowManager {
-        windows, classes, ..
-    } = manager;
-    let mut send =
-        |windows: &mut super::window::Windows, message: u32, wparam: u32, lparam: i32| {
-            pump.send(
-                windows,
-                classes,
-                target,
-                &mut Message {
-                    message,
-                    wparam,
-                    lparam,
-                    payload: Payload::None,
-                },
-            );
-        };
 
     // The window's menu, when it holds an item of the command: opened, as far as its messages go.
     let mut enabled = true;
+    let windows = s.windows();
     let bar = windows.window_menu(target);
     if !windows.window_is_child(target) && bar != 0 {
         if let Ok(bar_id) = windows.menu_of(bar) {
@@ -386,17 +385,17 @@ pub fn translate(
                     let index = windows.menus.position_in(bar_id, holder).unwrap_or(0);
                     (windows.menus.handle_of(holder), index)
                 });
-                send(windows, WM_INITMENU, bar, 0);
+                send(s, WM_INITMENU, bar, 0);
                 if let Some((popup, index)) = popup {
-                    send(windows, WM_INITMENUPOPUP, popup, index as i32);
+                    send(s, WM_INITMENUPOPUP, popup, index as i32);
                 }
             }
         }
     }
-    if enabled && windows.window_style(target) & WS_DISABLED == 0 {
-        send(windows, WM_COMMAND, (1 << 16) | command, 0);
+    let windows = s.windows();
+    if enabled && windows.is_live(target) && windows.window_style(target) & WS_DISABLED == 0 {
+        send(s, WM_COMMAND, (1 << 16) | command, 0);
     }
-    Ok(true)
 }
 
 // --- The services
@@ -408,7 +407,7 @@ mod services {
 
     use super::*;
     use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
-    use crate::win32k::queue::{with_manager, QueuePump};
+    use crate::win32k::queue::{with_manager, with_session};
     use crate::win32k::winsta::gui_thread;
 
     /// The entries copied in or out at a time, through a buffer on the stack.
@@ -551,16 +550,20 @@ mod services {
     ) -> NtResult {
         let caller = gui_thread(call)?.thread;
         let msg = msg.cast::<Msg>().read()?;
-        let answer = with_manager(call.passive(), |m| {
-            translate(
-                m,
+        let answer = with_session(call.passive(), |s| {
+            let found = find_command(
+                s.manager(),
                 caller,
                 window.raw(),
                 table.raw(),
                 msg.message,
                 msg.wparam,
-                &mut QueuePump,
-            )
+            )?;
+            let Some((target, command)) = found else {
+                return Ok(false);
+            };
+            translate(s, target, command);
+            Ok(true)
         })
         .map_err(Failure::status)?;
         translated.write(answer as u32)?;

@@ -1,6 +1,6 @@
 //! Message queues: each thread's queue of posted messages, of the messages sent to its windows,
-//! and its WM_QUIT; the reads that take them in Windows 2000's documented order; and the pump the
-//! window manager's decisions send their messages through ([`QueuePump`]).
+//! and its WM_QUIT; the reads that take them in Windows 2000's documented order; and the session
+//! the window manager's decisions send their messages through ([`QueueSession`]).
 //!
 //! A queue is a record of the window manager's ([`Queues`], in the window registry, behind its
 //! one lock), one per thread record ([`window::Thread`]), made when a thread connects (its first
@@ -27,7 +27,7 @@
 //! KeUserModeCallback). Every message the window manager's decisions send to a window with a
 //! client-side procedure — the creation's WM_NCCREATE to WM_MOVE, the destruction's WM_DESTROY and
 //! WM_NCDESTROY, what showing and moving send — is queued for the window's thread as a sent
-//! message ([`QueuePump`]), and the decision goes on with the default procedure's answer (1 to
+//! message ([`QueueSession`]), and the decision goes on with the default procedure's answer (1 to
 //! WM_NCCREATE, 0 to the rest). The thread's next read hands it out first, before anything posted,
 //! with the procedure to call and a copy of the structure the message points at
 //! ([`rtl::user::Receipt`]); user32 calls the procedure and hands the answer back
@@ -124,15 +124,18 @@ use super::window::{
     self,
     ClassArg,
     CreateParams,
+    Hold,
     Hwnd,
     LParam,
     LResult,
+    Locked,
     Message,
     Payload,
-    Pump,
+    Session,
     ThreadKey,
     WParam,
     WindowId,
+    WindowManager,
     Windows,
     THREADS,
 };
@@ -2053,21 +2056,37 @@ pub fn window_gone(windows: &mut Windows, window: WindowId) {
     queues.updates.window_gone(window);
 }
 
-/// The pump the services run the window manager's decisions with: every message to a window with a
-/// client-side procedure is queued for its thread ([`defer`]) and answered as the default procedure
-/// answers; a window's end takes its posted messages, timers and update region with it; the
-/// activation and the destroy's focus check are [`super::focus`]'s. The other window-manager calls
-/// are [`Pump`]'s defaults.
-pub struct QueuePump;
+/// The session the services run the window manager's decisions in: every message to a window
+/// with a client-side procedure is queued for its thread ([`defer`]) and answered as the default
+/// procedure answers; a window's end takes its posted messages, timers and update region with it;
+/// the activation and the destroy's focus check are [`super::focus`]'s. The other window-manager
+/// calls are [`Session`]'s defaults. The services hold it by the window manager's lock
+/// ([`with_session`]), which a send may let go of; the host tests by the registries.
+pub struct QueueSession<H: Hold>(pub H);
 
-impl Pump for QueuePump {
-    fn send(
-        &mut self,
-        windows: &mut Windows,
-        classes: &mut class::Registry,
-        target: WindowId,
-        message: &mut Message,
-    ) -> LResult {
+#[cfg(test)]
+impl<'a> QueueSession<window::Split<'a>> {
+    /// A session over the two registries.
+    pub fn new(windows: &'a mut Windows, classes: &'a mut class::Registry) -> Self {
+        QueueSession((windows, classes))
+    }
+}
+
+impl QueueSession<Locked<'_>> {
+    /// The whole window manager, borrowed until the next send: the state beside the registries
+    /// (the clipboard, the accelerator tables, the properties).
+    pub fn manager(&mut self) -> &mut WindowManager {
+        &mut self.0
+    }
+}
+
+impl<H: Hold> Session for QueueSession<H> {
+    fn parts(&mut self) -> (&mut Windows, &mut class::Registry) {
+        self.0.parts()
+    }
+
+    fn send(&mut self, target: WindowId, message: &mut Message) -> LResult {
+        let (windows, classes) = self.parts();
         let class_atom = match message.payload {
             Payload::Create(_) => windows
                 .class_window(windows.handle_of(target))
@@ -2078,31 +2097,20 @@ impl Pump for QueuePump {
         default_answer(message.message)
     }
 
-    fn activate(
-        &mut self,
-        windows: &mut Windows,
-        classes: &mut class::Registry,
-        target: WindowId,
-        command: window::Activate,
-    ) -> bool {
-        super::focus::activate(windows, classes, target, command, self)
+    fn activate(&mut self, target: WindowId, command: window::Activate) -> bool {
+        super::focus::activate(self, target, command)
     }
 
-    fn check_focus(
-        &mut self,
-        windows: &mut Windows,
-        classes: &mut class::Registry,
-        target: WindowId,
-    ) {
-        super::focus::check_focus(windows, classes, target, self);
+    fn check_focus(&mut self, target: WindowId) {
+        super::focus::check_focus(self, target);
     }
 
-    fn window_teardown(&mut self, windows: &mut Windows, target: WindowId) {
-        window_gone(windows, target);
+    fn window_teardown(&mut self, target: WindowId) {
+        window_gone(self.windows(), target);
     }
 
-    fn disown_clipboard(&mut self, windows: &mut Windows, target: WindowId) {
-        crate::win32k::clipboard::disown(windows, target);
+    fn disown_clipboard(&mut self, target: WindowId) {
+        crate::win32k::clipboard::disown(self.windows(), target);
     }
 }
 
@@ -2117,7 +2125,6 @@ mod target {
     use crate::level::{At, Dispatch, Passive};
     use crate::sched::event::{Event, EventKind, EVENT_WAKE_INCREMENT};
     use crate::sched::wait::{self, WaitMode, WaitReason, WaitableId};
-    use crate::win32k::window::WindowManager;
 
     /// Each queue's event: a synchronization event, set whenever its queue is given something
     /// (see [`Queues::take_wakes`]), waited on by the queue's thread alone. They are named by their
@@ -2188,9 +2195,20 @@ mod target {
         passive: &mut At<Passive>,
         f: impl FnOnce(&mut WindowManager) -> R,
     ) -> R {
+        with_session(passive, |session| f(session.manager()))
+    }
+
+    /// Run `f` in a session over the locked window manager ([`QueueSession`]), the window
+    /// manager's decisions' way in, then set the events of the queues it gave something, once the
+    /// lock is let go.
+    pub fn with_session<R>(
+        passive: &mut At<Passive>,
+        f: impl FnOnce(&mut QueueSession<Locked<'_>>) -> R,
+    ) -> R {
         let (result, wakes, server) = {
-            let mut manager = crate::win32k::window::lock(passive);
-            let result = f(&mut manager);
+            let mut session = QueueSession(crate::win32k::window::lock(passive));
+            let result = f(&mut session);
+            let manager = session.manager();
             crate::win32k::input::publish(&manager.windows);
             let queues = &mut manager.windows.queues;
             (result, queues.take_wakes(), queues.take_server_wake())
@@ -2318,6 +2336,7 @@ pub use target::{
     wait_on_objects_or_queue,
     wait_on_queue,
     with_manager,
+    with_session,
 };
 
 #[cfg(target_arch = "x86")]
@@ -2989,7 +3008,7 @@ mod services {
 }
 
 /// The message layer's test rig: a window manager with the boot's desktop, a registered class,
-/// threads with their queues, and windows of the class made through the queue's pump.
+/// threads with their queues, and windows of the class made through the queue's session.
 #[cfg(test)]
 pub(crate) mod rig {
     use rtl::gdi::Rect;
@@ -3092,7 +3111,7 @@ pub(crate) mod rig {
     }
 
     /// A window of the class, `style` at (`x`, `y`) `cx` by `cy`, child of `parent` (0: a
-    /// top-level window), made by `t` through the queue's pump: its handle.
+    /// top-level window), made by `t` through the queue's session: its handle.
     #[allow(clippy::too_many_arguments)]
     pub fn window_at(
         m: &mut WindowManager,
@@ -3122,8 +3141,13 @@ pub(crate) mod rig {
             params: 0x1234,
             version: 0x0005_0000,
         };
-        m.create_window(t, parent, &mut args, &mut QueuePump)
-            .unwrap()
+        WindowManager::create_window(
+            &mut QueueSession::new(&mut m.windows, &mut m.classes),
+            t,
+            parent,
+            &mut args,
+        )
+        .unwrap()
     }
 
     /// A hidden 320x200 popup at (0, 0), as the fixtures make theirs.
@@ -3272,9 +3296,7 @@ mod tests {
         let WindowManager {
             windows, classes, ..
         } = &mut *m;
-        windows
-            .destroy_window_handle(classes, t, h, &mut QueuePump)
-            .unwrap();
+        Windows::destroy_window_handle(&mut QueueSession::new(windows, classes), t, h).unwrap();
         assert!(m.windows.window_from_handle(h).is_none());
         assert_eq!(deliver(m, t), vec![(h, WM_DESTROY), (h, WM_NCDESTROY)]);
         let msg = msg_of(read(m, t, &all(), 0));
@@ -3298,9 +3320,17 @@ mod tests {
             windows, classes, ..
         } = &mut *m;
         let flags = window::SWP_NOSIZE | window::SWP_NOZORDER | window::SWP_NOACTIVATE;
-        windows
-            .set_window_pos_handle(classes, h, 0, 7, 8, 0, 0, flags, &mut QueuePump)
-            .unwrap();
+        Windows::set_window_pos_handle(
+            &mut QueueSession::new(windows, classes),
+            h,
+            0,
+            7,
+            8,
+            0,
+            0,
+            flags,
+        )
+        .unwrap();
         let only_sent = Filter::new(0, 0, 0, rtl::user::PM_QS_SENDMESSAGE);
         let mut changed = None;
         while let Taken::Sent(id) = read(m, t, &only_sent, 0) {
@@ -3736,9 +3766,7 @@ mod tests {
         let WindowManager {
             windows, classes, ..
         } = &mut *m;
-        windows
-            .destroy_window_handle(classes, b, hb, &mut QueuePump)
-            .unwrap();
+        Windows::destroy_window_handle(&mut QueueSession::new(windows, classes), b, hb).unwrap();
         assert_eq!(deliver(m, b), vec![(hb, WM_DESTROY), (hb, WM_NCDESTROY)]);
         assert_eq!(collect_reply(&mut m.windows, a, id), Some(0));
 
@@ -3862,9 +3890,7 @@ mod tests {
         let WindowManager {
             windows, classes, ..
         } = &mut *m;
-        windows
-            .destroy_window_handle(classes, b, hb, &mut QueuePump)
-            .unwrap();
+        Windows::destroy_window_handle(&mut QueueSession::new(windows, classes), b, hb).unwrap();
         assert_eq!(deliver(m, b), vec![(hb, WM_DESTROY), (hb, WM_NCDESTROY)]);
         assert!(m.windows.queues.take_server_wake());
         assert_eq!(server_reply(&mut m.windows, id), Some(ServerReply::Dropped));
@@ -4204,9 +4230,7 @@ mod tests {
         let WindowManager {
             windows, classes, ..
         } = &mut *m;
-        windows
-            .destroy_window_handle(classes, b, hb, &mut QueuePump)
-            .unwrap();
+        Windows::destroy_window_handle(&mut QueueSession::new(windows, classes), b, hb).unwrap();
         assert_eq!(deliver(m, b), vec![(hb, WM_DESTROY), (hb, WM_NCDESTROY)]);
         assert_eq!(live_sends(m), base);
     }

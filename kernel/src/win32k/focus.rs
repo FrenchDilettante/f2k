@@ -1,7 +1,7 @@
 //! Focus, enabling and activation: each thread's queue's focus window and active window, the
 //! foreground thread, and the decisions that move them — SetFocus, SetActiveWindow,
 //! SetForegroundWindow, EnableWindow, the activation the show, position and destroy paths ask for
-//! ([`Pump::activate`]), and the focus check of the destroy cascade ([`Pump::check_focus`]).
+//! ([`Session::activate`]), and the focus check of the destroy cascade ([`Session::check_focus`]).
 //!
 //! The state lives in the window registry's thread records ([`super::window::Thread`]'s `active`
 //! and `focus`, one queue a thread: F2K shares no input state between threads yet) and in the
@@ -23,12 +23,13 @@
 //! ([`set_focus`]) refuses a window that is disabled or has a disabled ancestor, and activates the
 //! window's top-level window first when it is not the active one.
 //!
-//! The messages go through the pump: the services' pump queues them for the window's thread, which
-//! receives them once the service returns, before the call does ([`super::queue`]). So a window
-//! procedure's answer reaches none of these decisions, and what the default procedure does with
-//! WM_ACTIVATE happens after the activation's other messages are queued, not inside it: SetFocus
-//! to a window of an inactive top-level window queues its focus messages before the activation's
-//! default WM_ACTIVATE runs, which then leaves the focus where it is, inside the window activated.
+//! The messages go through the session: the services' session queues them for the window's
+//! thread, which receives them once the service returns, before the call does ([`super::queue`]).
+//! So a window procedure's answer reaches none of these decisions, and what the default procedure
+//! does with WM_ACTIVATE happens after the activation's other messages are queued, not inside it:
+//! SetFocus to a window of an inactive top-level window queues its focus messages before the
+//! activation's default WM_ACTIVATE runs, which then leaves the focus where it is, inside the
+//! window activated.
 //!
 //! The services, user32's calls (F2K's argument lists, see [`crate::win32k`]; Windows 2000's
 //! numbers):
@@ -54,13 +55,12 @@ use rtl::user::{
     WM_SETFOCUS,
 };
 
-use super::class;
 use super::window::{
     Activate,
     InsertAfter,
     Message,
     Payload,
-    Pump,
+    Session,
     WParam,
     WindowId,
     Windows,
@@ -132,18 +132,8 @@ fn is_within(windows: &Windows, window: WindowId, ancestor: WindowId) -> bool {
 }
 
 /// A message with no payload sent to `target`.
-fn send(
-    windows: &mut Windows,
-    classes: &mut class::Registry,
-    pump: &mut dyn Pump,
-    target: WindowId,
-    message: u32,
-    wparam: WParam,
-    lparam: u32,
-) {
-    pump.send(
-        windows,
-        classes,
+fn send(s: &mut dyn Session, target: WindowId, message: u32, wparam: WParam, lparam: u32) {
+    s.send(
         target,
         &mut Message {
             message,
@@ -158,13 +148,8 @@ fn send(
 
 /// Move the thread's focus to `new` (none: no window has it), unchecked: WM_KILLFOCUS to the
 /// window that had it, then WM_SETFOCUS to `new`. Nothing when the focus is there already.
-pub fn move_focus(
-    windows: &mut Windows,
-    classes: &mut class::Registry,
-    thread: ThreadId,
-    new: Option<WindowId>,
-    pump: &mut dyn Pump,
-) {
+pub fn move_focus(s: &mut dyn Session, thread: ThreadId, new: Option<WindowId>) {
+    let windows = s.windows();
     let old = focus_window(windows, thread);
     if old == new {
         return;
@@ -172,12 +157,13 @@ pub fn move_focus(
     windows.thread_mut(thread).focus = new;
     if let Some(old) = old {
         let to = handle(windows, new);
-        send(windows, classes, pump, old, WM_KILLFOCUS, to, 0);
+        send(s, old, WM_KILLFOCUS, to, 0);
     }
+    let windows = s.windows();
     if let Some(new) = new {
         if windows.is_live(new) && windows.thread(thread).focus == Some(new) {
             let from = handle(windows, old);
-            send(windows, classes, pump, new, WM_SETFOCUS, from, 0);
+            send(s, new, WM_SETFOCUS, from, 0);
         }
     }
 }
@@ -190,17 +176,17 @@ pub fn move_focus(
 /// without a message, once the checks pass. A window whose top-level window is not the thread's
 /// active window has it activated first. A hidden window takes the focus (the focus capture).
 pub fn set_focus(
-    windows: &mut Windows,
-    classes: &mut class::Registry,
+    s: &mut dyn Session,
     caller: ThreadId,
     target: Option<WindowId>,
-    pump: &mut dyn Pump,
 ) -> Option<WindowId> {
+    let windows = s.windows();
     let previous = focus_window(windows, caller);
     let Some(window) = target else {
-        move_focus(windows, classes, caller, None, pump);
+        move_focus(s, caller, None);
         return previous;
     };
+    let windows = s.windows();
     if windows.window_thread(window) != caller {
         return None;
     }
@@ -218,24 +204,21 @@ pub fn set_focus(
     }
     let top = top_level(windows, window);
     if active_window(windows, caller) != Some(top) {
-        activate_this(windows, classes, caller, Some(top), pump);
+        activate_this(s, caller, Some(top));
+        let windows = s.windows();
         if !windows.is_live(window) || active_window(windows, caller) != Some(top) {
             return None;
         }
     }
-    move_focus(windows, classes, caller, Some(window), pump);
+    move_focus(s, caller, Some(window));
     previous
 }
 
 /// The default window procedure's WM_ACTIVATE for a window being activated: the focus to it, when
 /// it is still its thread's active window, is not minimized, and neither it nor one of its
 /// descendants has the focus already. No enabled check (see the module notes).
-pub fn activate_focus(
-    windows: &mut Windows,
-    classes: &mut class::Registry,
-    window: WindowId,
-    pump: &mut dyn Pump,
-) {
+pub fn activate_focus(s: &mut dyn Session, window: WindowId) {
+    let windows = s.windows();
     let thread = windows.window_thread(window);
     if active_window(windows, thread) != Some(window)
         || windows.window_style(window) & WS_MINIMIZE != 0
@@ -245,18 +228,14 @@ pub fn activate_focus(
     if focus_window(windows, thread).is_some_and(|f| is_within(windows, f, window)) {
         return;
     }
-    move_focus(windows, classes, thread, Some(window), pump);
+    move_focus(s, thread, Some(window));
 }
 
 /// The destroy cascade's focus check of `window`, before its WM_DESTROY and after its children's:
 /// when it has its thread's focus, the focus goes to its parent (a child window, as SetFocus
 /// would move it there: the focus capture's destroy block) or to no window (a top-level window).
-pub fn check_focus(
-    windows: &mut Windows,
-    classes: &mut class::Registry,
-    window: WindowId,
-    pump: &mut dyn Pump,
-) {
+pub fn check_focus(s: &mut dyn Session, window: WindowId) {
+    let windows = s.windows();
     let thread = windows.window_thread(window);
     if focus_window(windows, thread) != Some(window) {
         return;
@@ -264,9 +243,9 @@ pub fn check_focus(
     let parent = windows.parent_of(window);
     match parent {
         Some(parent) if windows.window_style(window) & WS_CHILD != 0 => {
-            set_focus(windows, classes, thread, Some(parent), pump);
+            set_focus(s, thread, Some(parent));
         }
-        _ => move_focus(windows, classes, thread, None, pump),
+        _ => move_focus(s, thread, None),
     }
 }
 
@@ -277,32 +256,29 @@ pub fn check_focus(
 /// focus inside a disabled ancestor stays); a window that was enabled is marked WS_DISABLED and
 /// sent WM_ENABLE (FALSE). Enabling a disabled window clears the mark and sends WM_ENABLE (TRUE).
 /// Nothing else is sent (the focus capture's enable block).
-pub fn enable_window(
-    windows: &mut Windows,
-    classes: &mut class::Registry,
-    window: WindowId,
-    enable: bool,
-    pump: &mut dyn Pump,
-) -> bool {
+pub fn enable_window(s: &mut dyn Session, window: WindowId, enable: bool) -> bool {
+    let windows = s.windows();
     let was_disabled = windows.window_style(window) & WS_DISABLED != 0;
     if enable {
         if was_disabled {
             windows.set_disabled(window, false);
-            send(windows, classes, pump, window, WM_ENABLE, 1, 0);
+            send(s, window, WM_ENABLE, 1, 0);
         }
         return was_disabled;
     }
-    send(windows, classes, pump, window, WM_CANCELMODE, 0, 0);
+    send(s, window, WM_CANCELMODE, 0, 0);
+    let windows = s.windows();
     if !windows.is_live(window) {
         return was_disabled;
     }
     let thread = windows.window_thread(window);
     if focus_window(windows, thread) == Some(window) {
-        move_focus(windows, classes, thread, None, pump);
+        move_focus(s, thread, None);
     }
+    let windows = s.windows();
     if !was_disabled && windows.is_live(window) {
         windows.set_disabled(window, true);
-        send(windows, classes, pump, window, WM_ENABLE, 0, 0);
+        send(s, window, WM_ENABLE, 0, 0);
     }
     was_disabled
 }
@@ -317,45 +293,27 @@ fn activate_wparam(windows: &Windows, window: WindowId, state: u32) -> WParam {
 
 /// WM_ACTIVATEAPP (`active`) to each top-level window of the thread's, `first` before the others,
 /// the others in z-order. Its lParam names the other thread: 0, as F2K does not name it yet.
-fn activate_app(
-    windows: &mut Windows,
-    classes: &mut class::Registry,
-    thread: ThreadId,
-    first: WindowId,
-    active: bool,
-    pump: &mut dyn Pump,
-) {
-    send(
-        windows,
-        classes,
-        pump,
-        first,
-        WM_ACTIVATEAPP,
-        active as u32,
-        0,
-    );
+fn activate_app(s: &mut dyn Session, thread: ThreadId, first: WindowId, active: bool) {
+    send(s, first, WM_ACTIVATEAPP, active as u32, 0);
+    let windows = s.windows();
     let Some(desktop) = windows.thread_desktop_window(thread) else {
         return;
     };
     let mut current = windows.first_child(desktop);
     while let Some(w) = current {
-        // Read before the send: the pump never runs a procedure, but the list is the registry's.
+        let windows = s.windows();
+        // Read before the send, which may let the lock go: the list is the registry's.
         current = windows.next_sibling(w);
         if w != first && windows.window_thread(w) == thread {
-            send(windows, classes, pump, w, WM_ACTIVATEAPP, active as u32, 0);
+            send(s, w, WM_ACTIVATEAPP, active as u32, 0);
         }
     }
 }
 
 /// Make `new` the thread's active window (none: the thread has none), as Windows 2000's
 /// activation of a window does (see the module notes for the messages). False when `new` is gone.
-pub fn activate_this(
-    windows: &mut Windows,
-    classes: &mut class::Registry,
-    thread: ThreadId,
-    new: Option<WindowId>,
-    pump: &mut dyn Pump,
-) -> bool {
+pub fn activate_this(s: &mut dyn Session, thread: ThreadId, new: Option<WindowId>) -> bool {
+    let windows = s.windows();
     if new.is_some_and(|w| !windows.is_live(w)) {
         return false;
     }
@@ -364,11 +322,13 @@ pub fn activate_this(
         return true;
     }
     if let Some(old) = old {
-        send(windows, classes, pump, old, WM_NCACTIVATE, 0, 0);
+        send(s, old, WM_NCACTIVATE, 0, 0);
+        let windows = s.windows();
         let wparam = activate_wparam(windows, old, WA_INACTIVE);
         let other = handle(windows, new);
-        send(windows, classes, pump, old, WM_ACTIVATE, wparam, other);
+        send(s, old, WM_ACTIVATE, wparam, other);
     }
+    let windows = s.windows();
     {
         let t = windows.thread_mut(thread);
         t.active_prev = old;
@@ -376,18 +336,19 @@ pub fn activate_this(
     }
     let Some(new) = new else {
         if let Some(old) = old {
-            activate_app(windows, classes, thread, old, false, pump);
+            activate_app(s, thread, old, false);
         }
-        move_focus(windows, classes, thread, None, pump);
+        move_focus(s, thread, None);
         return true;
     };
+    let windows = s.windows();
     windows.note_active(new);
     if old.is_none() {
-        activate_app(windows, classes, thread, new, true, pump);
+        activate_app(s, thread, new, true);
     }
     // The window comes to the top of the z-order.
-    let _ = windows.set_window_pos(
-        classes,
+    let _ = Windows::set_window_pos(
+        s,
         new,
         InsertAfter::Top,
         0,
@@ -395,15 +356,16 @@ pub fn activate_this(
         0,
         0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-        pump,
     );
+    let windows = s.windows();
     if !windows.is_live(new) || windows.thread(thread).active != Some(new) {
         return false;
     }
-    send(windows, classes, pump, new, WM_NCACTIVATE, 1, 0);
+    send(s, new, WM_NCACTIVATE, 1, 0);
+    let windows = s.windows();
     let wparam = activate_wparam(windows, new, WA_ACTIVE);
     let other = handle(windows, old);
-    send(windows, classes, pump, new, WM_ACTIVATE, wparam, other);
+    send(s, new, WM_ACTIVATE, wparam, other);
     true
 }
 
@@ -424,20 +386,17 @@ fn may_take_foreground(windows: &Windows, thread: ThreadId) -> bool {
 
 /// The foreground to `thread`, when it may take it: the thread that had it loses its active
 /// window.
-fn take_foreground(
-    windows: &mut Windows,
-    classes: &mut class::Registry,
-    thread: ThreadId,
-    pump: &mut dyn Pump,
-) -> bool {
+fn take_foreground(s: &mut dyn Session, thread: ThreadId) -> bool {
+    let windows = s.windows();
     if !may_take_foreground(windows, thread) {
         return false;
     }
     if let Some(f) = windows.foreground_thread {
         if f != thread && windows.thread(f).live {
-            activate_this(windows, classes, f, None, pump);
+            activate_this(s, f, None);
         }
     }
+    let windows = s.windows();
     windows.foreground_thread = Some(thread);
     true
 }
@@ -457,20 +416,15 @@ fn next_top_window(windows: &Windows, window: WindowId) -> Option<WindowId> {
     None
 }
 
-/// The activation the show, position and destroy paths ask for ([`Pump::activate`]), on the
+/// The activation the show, position and destroy paths ask for ([`Session::activate`]), on the
 /// window's thread. [`Activate::Try`] activates a visible top-level window, and takes the
 /// foreground for its thread when it may. [`Activate::Skip`] activates the next window below it
 /// instead ([`next_top_window`]): of the same thread, as the thread's active window; of another
 /// thread, by giving that thread the foreground when this one had it, this thread left with no
 /// active window; with none, the thread is left with no active window. False when nothing could be
 /// activated as asked.
-pub fn activate(
-    windows: &mut Windows,
-    classes: &mut class::Registry,
-    target: WindowId,
-    command: Activate,
-    pump: &mut dyn Pump,
-) -> bool {
+pub fn activate(s: &mut dyn Session, target: WindowId, command: Activate) -> bool {
+    let windows = s.windows();
     let thread = windows.window_thread(target);
     match command {
         Activate::Try => {
@@ -478,27 +432,28 @@ pub fn activate(
             if style & WS_CHILD != 0 || style & WS_VISIBLE == 0 {
                 return false;
             }
-            let activated = activate_this(windows, classes, thread, Some(target), pump);
+            let activated = activate_this(s, thread, Some(target));
             if activated {
-                take_foreground(windows, classes, thread, pump);
+                take_foreground(s, thread);
             }
             activated
         }
         Activate::Skip => match next_top_window(windows, target) {
             Some(next) if windows.window_thread(next) == thread => {
-                activate_this(windows, classes, thread, Some(next), pump)
+                activate_this(s, thread, Some(next))
             }
             Some(next) => {
                 let other = windows.window_thread(next);
                 let had_foreground = windows.foreground_thread == Some(thread);
-                activate_this(windows, classes, thread, None, pump);
+                activate_this(s, thread, None);
+                let windows = s.windows();
                 if had_foreground {
                     windows.foreground_thread = Some(other);
-                    activate_this(windows, classes, other, Some(next), pump);
+                    activate_this(s, other, Some(next));
                 }
                 true
             }
-            None => activate_this(windows, classes, thread, None, pump),
+            None => activate_this(s, thread, None),
         },
     }
 }
@@ -508,12 +463,11 @@ pub fn activate(
 /// nothing and answers the active window (the focus capture's active block); a top-level window
 /// is activated, disabled or not (the same block), and none deactivates the thread.
 pub fn set_active_window(
-    windows: &mut Windows,
-    classes: &mut class::Registry,
+    s: &mut dyn Session,
     caller: ThreadId,
     target: Option<WindowId>,
-    pump: &mut dyn Pump,
 ) -> Option<WindowId> {
+    let windows = s.windows();
     let previous = active_window(windows, caller);
     if let Some(window) = target {
         if windows.window_thread(window) != caller {
@@ -523,7 +477,7 @@ pub fn set_active_window(
             return previous;
         }
     }
-    activate_this(windows, classes, caller, target, pump);
+    activate_this(s, caller, target);
     previous
 }
 
@@ -531,13 +485,8 @@ pub fn set_active_window(
 /// made its thread's active window, and its thread the foreground one; false when the caller may
 /// not take the foreground (see [`may_take_foreground`]). A window that is the foreground already
 /// is left as it is, in its place in the z-order.
-pub fn set_foreground_window(
-    windows: &mut Windows,
-    classes: &mut class::Registry,
-    caller: ThreadId,
-    window: WindowId,
-    pump: &mut dyn Pump,
-) -> bool {
+pub fn set_foreground_window(s: &mut dyn Session, caller: ThreadId, window: WindowId) -> bool {
+    let windows = s.windows();
     if !may_take_foreground(windows, caller) {
         return false;
     }
@@ -546,12 +495,13 @@ pub fn set_foreground_window(
     if windows.foreground_thread != Some(thread) {
         if let Some(f) = windows.foreground_thread {
             if windows.thread(f).live {
-                activate_this(windows, classes, f, None, pump);
+                activate_this(s, f, None);
             }
         }
+        let windows = s.windows();
         windows.foreground_thread = Some(thread);
     }
-    activate_this(windows, classes, thread, Some(top), pump)
+    activate_this(s, thread, Some(top))
 }
 
 // --- The services --------------------------------------------------------------------------------
@@ -561,24 +511,20 @@ pub fn set_foreground_window(
 /// (STATUS_ACCESS_DENIED when the caller may not take the foreground) and the default procedure's
 /// WM_ACTIVATE ([`activate_focus`]); none for another routine.
 pub fn call_hwnd_lock(
-    windows: &mut Windows,
-    classes: &mut class::Registry,
+    s: &mut dyn Session,
     caller: ThreadId,
     window: WindowId,
     routine: u32,
-    pump: &mut dyn Pump,
 ) -> Option<Result<(), crate::status::NtStatus>> {
     use rtl::user::{HWND_LOCK_ACTIVATE_FOCUS, HWND_LOCK_SET_FOREGROUND_WINDOW};
     match routine {
-        HWND_LOCK_SET_FOREGROUND_WINDOW => Some(
-            if set_foreground_window(windows, classes, caller, window, pump) {
-                Ok(())
-            } else {
-                Err(crate::status::STATUS_ACCESS_DENIED)
-            },
-        ),
+        HWND_LOCK_SET_FOREGROUND_WINDOW => Some(if set_foreground_window(s, caller, window) {
+            Ok(())
+        } else {
+            Err(crate::status::STATUS_ACCESS_DENIED)
+        }),
         HWND_LOCK_ACTIVATE_FOCUS => {
-            activate_focus(windows, classes, window, pump);
+            activate_focus(s, window);
             Some(Ok(()))
         }
         _ => None,
@@ -599,8 +545,7 @@ mod services {
     use super::*;
     use crate::nt::call::{Handle, NtCall, NtResult, UserPtr};
     use crate::status::*;
-    use crate::win32k::queue::{self, with_manager, QueuePump};
-    use crate::win32k::window::WindowManager;
+    use crate::win32k::queue::{self, with_manager, with_session};
     use crate::win32k::winsta::gui_thread;
 
     /// The window a handle names, none for 0; STATUS_INVALID_HANDLE for a handle naming no window.
@@ -618,13 +563,10 @@ mod services {
     /// none, or for a refusal) into `previous`, written once the lock is let go.
     pub fn set_focus(call: &mut NtCall, window: Handle, previous: UserPtr<u32>) -> NtResult {
         let caller = gui_thread(call)?.thread;
-        let answer = with_manager(call.passive(), |m| {
-            let WindowManager {
-                windows, classes, ..
-            } = m;
-            let target = optional_window(windows, window)?;
-            let had = super::set_focus(windows, classes, caller, target, &mut QueuePump);
-            Ok::<_, NtStatus>(handle(windows, had))
+        let answer = with_session(call.passive(), |s| {
+            let target = optional_window(s.windows(), window)?;
+            let had = super::set_focus(s, caller, target);
+            Ok::<_, NtStatus>(handle(s.windows(), had))
         })?;
         previous.write(answer)?;
         Ok(STATUS_SUCCESS)
@@ -638,13 +580,10 @@ mod services {
         previous: UserPtr<u32>,
     ) -> NtResult {
         let caller = gui_thread(call)?.thread;
-        let answer = with_manager(call.passive(), |m| {
-            let WindowManager {
-                windows, classes, ..
-            } = m;
-            let target = optional_window(windows, window)?;
-            let had = super::set_active_window(windows, classes, caller, target, &mut QueuePump);
-            Ok::<_, NtStatus>(handle(windows, had))
+        let answer = with_session(call.passive(), |s| {
+            let target = optional_window(s.windows(), window)?;
+            let had = super::set_active_window(s, caller, target);
+            Ok::<_, NtStatus>(handle(s.windows(), had))
         })?;
         previous.write(answer)?;
         Ok(STATUS_SUCCESS)
@@ -694,20 +633,18 @@ mod services {
         result: UserPtr<u32>,
     ) -> NtResult {
         gui_thread(call)?;
-        let answer = with_manager(call.passive(), |m| {
-            let WindowManager {
-                windows, classes, ..
-            } = m;
-            let id = windows
+        let answer = with_session(call.passive(), |s| {
+            let id = s
+                .windows()
                 .window_from_handle(window.raw())
                 .ok_or(STATUS_INVALID_HANDLE)?;
             match routine {
                 HWND_PARAM_LOCK_ENABLE_WINDOW => {
-                    let was = enable_window(windows, classes, id, param != 0, &mut QueuePump);
+                    let was = enable_window(s, id, param != 0);
                     Ok(if was { WS_DISABLED >> 24 } else { 0 })
                 }
                 HWND_PARAM_LOCK_SET_REDRAW => {
-                    windows.set_redraw(id, param != 0);
+                    s.windows().set_redraw(id, param != 0);
                     Ok(0)
                 }
                 _ => Err(STATUS_INVALID_PARAMETER),
@@ -775,10 +712,13 @@ mod tests {
     use rtl::user::PM_QS_SENDMESSAGE;
 
     use super::*;
+    use crate::sync::ShortLock;
     use crate::win32k::queue::rig::*;
-    use crate::win32k::queue::{end_sent, receipt_head, Filter, QueuePump, Taken};
+    use crate::win32k::queue::{end_sent, receipt_head, Filter, QueueSession, Taken};
     use crate::win32k::window::{
+        Hold,
         Hwnd,
+        Locked,
         WindowManager,
         SW_SHOW,
         SW_SHOWNOACTIVATE,
@@ -835,7 +775,7 @@ mod tests {
                     let WindowManager {
                         windows, classes, ..
                     } = &mut *self.m;
-                    activate_focus(windows, classes, window, &mut QueuePump);
+                    activate_focus(&mut QueueSession::new(windows, classes), window);
                 }
             }
             got
@@ -846,7 +786,7 @@ mod tests {
             let WindowManager {
                 windows, classes, ..
             } = &mut *self.m;
-            let had = set_focus(windows, classes, self.t, target, &mut QueuePump);
+            let had = set_focus(&mut QueueSession::new(windows, classes), self.t, target);
             let had = handle(windows, had);
             (had, self.settle())
         }
@@ -856,7 +796,11 @@ mod tests {
             let WindowManager {
                 windows, classes, ..
             } = &mut *self.m;
-            let had = set_active_window(windows, classes, self.t, Some(target), &mut QueuePump);
+            let had = set_active_window(
+                &mut QueueSession::new(windows, classes),
+                self.t,
+                Some(target),
+            );
             let had = handle(windows, had);
             (had, self.settle())
         }
@@ -866,7 +810,7 @@ mod tests {
             let WindowManager {
                 windows, classes, ..
             } = &mut *self.m;
-            let was = enable_window(windows, classes, target, enable, &mut QueuePump);
+            let was = enable_window(&mut QueueSession::new(windows, classes), target, enable);
             (was, self.settle())
         }
 
@@ -875,7 +819,11 @@ mod tests {
                 windows, classes, ..
             } = &mut *self.m;
             assert_eq!(
-                windows.destroy_window_handle(classes, self.t, target, &mut QueuePump),
+                Windows::destroy_window_handle(
+                    &mut QueueSession::new(windows, classes),
+                    self.t,
+                    target
+                ),
                 Ok(true)
             );
             self.settle()
@@ -917,22 +865,28 @@ mod tests {
         if with_top2 {
             rig.top2 = window_at(rig.m, atom, t, WS_POPUP | WS_CAPTION, 0, 260, 40, 200, 120);
         }
-        rig.m.show_window(top1, SW_SHOW, &mut QueuePump).unwrap();
+        WindowManager::show_window(
+            &mut QueueSession::new(&mut rig.m.windows, &mut rig.m.classes),
+            top1,
+            SW_SHOW,
+        )
+        .unwrap();
         if with_top2 {
-            rig.m
-                .show_window(rig.top2, SW_SHOWNOACTIVATE, &mut QueuePump)
-                .unwrap();
+            WindowManager::show_window(
+                &mut QueueSession::new(&mut rig.m.windows, &mut rig.m.classes),
+                rig.top2,
+                SW_SHOWNOACTIVATE,
+            )
+            .unwrap();
         }
         let id = rig.id(top1);
         let WindowManager {
             windows, classes, ..
         } = &mut *rig.m;
         assert!(set_foreground_window(
-            windows,
-            classes,
+            &mut QueueSession::new(windows, classes),
             t,
-            id,
-            &mut QueuePump
+            id
         ));
         rig.settle();
         assert_eq!(rig.state(), (top1, top1, top1));
@@ -1099,8 +1053,12 @@ mod tests {
         let (top1, top2) = (r.top1, r.top2);
         // top2 is above top1: activate it, so top1 is below.
         r.set_active(top2);
-        r.m.show_window(top2, crate::win32k::window::SW_HIDE, &mut QueuePump)
-            .unwrap();
+        WindowManager::show_window(
+            &mut QueueSession::new(&mut r.m.windows, &mut r.m.classes),
+            top2,
+            crate::win32k::window::SW_HIDE,
+        )
+        .unwrap();
         r.settle();
         assert_eq!(r.state(), (top1, top1, top1));
         let other = thread_of(r.m, 2, 0x200, OTHER_OWNER);
@@ -1109,11 +1067,9 @@ mod tests {
             windows, classes, ..
         } = &mut *r.m;
         assert!(!set_foreground_window(
-            windows,
-            classes,
+            &mut QueueSession::new(windows, classes),
             other,
-            id,
-            &mut QueuePump
+            id
         ));
     }
 
@@ -1138,7 +1094,12 @@ mod tests {
             hidden: 0,
         };
         let last = |r: &Rig, window: Hwnd| r.m.windows.window_links(r.id(window)).last_active;
-        r.m.show_window(owner, SW_SHOW, &mut QueuePump).unwrap();
+        WindowManager::show_window(
+            &mut QueueSession::new(&mut r.m.windows, &mut r.m.classes),
+            owner,
+            SW_SHOW,
+        )
+        .unwrap();
         r.settle();
         assert_eq!(last(&r, owner), owner);
         let p1 = window_at(r.m, atom, t, style, owner, 60, 60, 200, 120);
@@ -1147,11 +1108,21 @@ mod tests {
             owner,
             "a pop-up made hidden is not activated"
         );
-        r.m.show_window(p1, SW_SHOW, &mut QueuePump).unwrap();
+        WindowManager::show_window(
+            &mut QueueSession::new(&mut r.m.windows, &mut r.m.classes),
+            p1,
+            SW_SHOW,
+        )
+        .unwrap();
         r.settle();
         assert_eq!(last(&r, owner), p1);
         let p2 = window_at(r.m, atom, t, style, owner, 80, 80, 200, 120);
-        r.m.show_window(p2, SW_SHOW, &mut QueuePump).unwrap();
+        WindowManager::show_window(
+            &mut QueueSession::new(&mut r.m.windows, &mut r.m.classes),
+            p2,
+            SW_SHOW,
+        )
+        .unwrap();
         r.settle();
         assert_eq!(last(&r, owner), p2);
         assert_eq!(last(&r, p1), p1, "a top-level window starts as its own");
@@ -1159,16 +1130,97 @@ mod tests {
         assert_eq!(last(&r, owner), owner);
         r.set_active(p1);
         assert_eq!(last(&r, owner), p1);
-        r.m.show_window(p1, SW_HIDE, &mut QueuePump).unwrap();
+        WindowManager::show_window(
+            &mut QueueSession::new(&mut r.m.windows, &mut r.m.classes),
+            p1,
+            SW_HIDE,
+        )
+        .unwrap();
         r.settle();
         assert_eq!(r.state().1, owner, "the owner is activated");
         assert_eq!(last(&r, owner), owner);
-        r.m.show_window(p1, SW_SHOW, &mut QueuePump).unwrap();
+        WindowManager::show_window(
+            &mut QueueSession::new(&mut r.m.windows, &mut r.m.classes),
+            p1,
+            SW_SHOW,
+        )
+        .unwrap();
         r.settle();
         assert_eq!(last(&r, owner), p1);
         r.destroy(p1);
         assert_eq!(last(&r, owner), owner);
         r.destroy(p2);
         assert_eq!(last(&r, owner), owner);
+    }
+
+    /// A session over the window manager's lock whose sends let the lock go, as a send that calls
+    /// back to user mode will, and run `during` on the manager through another hold meanwhile: the
+    /// window procedure, or another thread.
+    struct Unlocking<'a, F: FnMut(&mut WindowManager, WindowId, u32)> {
+        guard: Locked<'a>,
+        lock: &'a ShortLock<WindowManager>,
+        during: F,
+    }
+
+    impl<F: FnMut(&mut WindowManager, WindowId, u32)> Session for Unlocking<'_, F> {
+        fn parts(&mut self) -> (&mut Windows, &mut crate::win32k::class::Registry) {
+            self.guard.parts()
+        }
+
+        fn send(&mut self, target: WindowId, message: &mut Message) -> i32 {
+            let (lock, during) = (self.lock, &mut self.during);
+            self.guard
+                .unlocked(|passive| during(&mut lock.lock(passive), target, message.message));
+            0
+        }
+    }
+
+    /// EnableWindow's decision on a window destroyed while its WM_CANCELMODE runs, the lock let go:
+    /// the decision reads the registry again after the send, finds the window gone, and stops.
+    #[test]
+    fn a_window_destroyed_during_an_unlocked_send_stops_the_decision() {
+        let mut lock = Box::<ShortLock<WindowManager>>::new_uninit();
+        // SAFETY: the box is valid and aligned, the lock's final address; `write_empty` writes a
+        // whole window manager at the address it is handed, and takes no lock.
+        unsafe { ShortLock::write_in_place(lock.as_mut_ptr(), WindowManager::write_empty) };
+        // SAFETY: written whole just above.
+        let lock = unsafe { lock.assume_init() };
+        let mut passive = crate::level::passive_for_test();
+        let mut guard = lock.lock(&mut passive);
+        guard
+            .boot_desktop(
+                DESKTOP,
+                rtl::gdi::Rect {
+                    left: 0,
+                    top: 0,
+                    right: 640,
+                    bottom: 480,
+                },
+            )
+            .unwrap();
+        let atom = register(&mut guard, OWNER);
+        let t = thread(&mut guard, 1, 0x10);
+        let h = popup(&mut guard, atom, t);
+        let id = guard.windows.window_from_handle(h).unwrap();
+        let mut sent = Vec::new();
+        let mut session = Unlocking {
+            guard,
+            lock: &lock,
+            during: |m: &mut WindowManager, target, message| {
+                sent.push(message);
+                if message == WM_CANCELMODE {
+                    let WindowManager {
+                        windows, classes, ..
+                    } = m;
+                    let session = &mut QueueSession::new(windows, classes);
+                    assert_eq!(Windows::destroy_window(session, t, target), Ok(true));
+                }
+            },
+        };
+        assert!(!enable_window(&mut session, id, false));
+        assert!(!session.windows().is_live(id));
+        drop(session);
+        assert_eq!(sent, [WM_CANCELMODE]);
+        assert!(lock.is_free());
     }
 }

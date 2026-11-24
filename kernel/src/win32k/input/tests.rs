@@ -17,7 +17,7 @@ use crate::win32k::queue::rig::{
     thread,
     window_at,
 };
-use crate::win32k::queue::{end_sent, take, Filter, QueuePump, Taken};
+use crate::win32k::queue::{end_sent, take, Filter, QueueSession, Taken};
 use crate::win32k::window::{Hwnd, WindowManager, WS_CHILD, WS_VISIBLE};
 
 const DOWN: u32 = 0;
@@ -47,13 +47,11 @@ impl Rig {
             windows, classes, ..
         } = &mut *m;
         assert!(set_foreground_window(
-            windows,
-            classes,
+            &mut QueueSession::new(windows, classes),
             t,
-            id,
-            &mut QueuePump
+            id
         ));
-        set_focus(windows, classes, t, Some(id), &mut QueuePump);
+        set_focus(&mut QueueSession::new(windows, classes), t, Some(id));
         let mut rig = Rig { m, atom, t, window };
         rig.pump();
         assert_eq!(focus_window(&rig.m.windows, t), Some(id));
@@ -136,7 +134,7 @@ impl Rig {
         let WindowManager {
             windows, classes, ..
         } = &mut *self.m;
-        set_focus(windows, classes, self.t, target, &mut QueuePump);
+        set_focus(&mut QueueSession::new(windows, classes), self.t, target);
         deliver(self.m, self.t);
     }
 
@@ -639,9 +637,7 @@ fn a_key_outlives_the_focus_window_it_was_typed_into() {
     let WindowManager {
         windows, classes, ..
     } = &mut *rig.m;
-    windows
-        .destroy_window_handle(classes, rig.t, a, &mut QueuePump)
-        .unwrap();
+    Windows::destroy_window_handle(&mut QueueSession::new(windows, classes), rig.t, a).unwrap();
     let parent = rig.m.windows.window_from_handle(rig.window);
     assert_eq!(focus_window(&rig.m.windows, rig.t), parent);
     assert_eq!(

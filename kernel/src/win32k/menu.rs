@@ -816,9 +816,9 @@ mod services {
 
     use super::*;
     use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
-    use crate::win32k::queue::{with_manager, QueuePump};
+    use crate::win32k::queue::{with_manager, with_session};
     use crate::win32k::window::{
-        WindowManager,
+        Session,
         SWP_FRAMECHANGED,
         SWP_NOACTIVATE,
         SWP_NOMOVE,
@@ -1056,26 +1056,21 @@ mod services {
     /// takes it back), and a shown window's frame is painted with the bar.
     pub fn set_menu(call: &mut NtCall, window: Handle, menu: Handle, _repaint: bool) -> NtResult {
         gui_thread(call)?;
-        with_manager(call.passive(), |m| {
-            m.windows
+        with_session(call.passive(), |s| {
+            s.windows()
                 .set_menu_handle(window.raw(), menu.raw())
                 .map_err(Failure::status)?;
-            let WindowManager {
-                windows, classes, ..
-            } = m;
-            windows
-                .set_window_pos_handle(
-                    classes,
-                    window.raw(),
-                    0,
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
-                    &mut QueuePump,
-                )
-                .map_err(|failure| failure.status())
+            Windows::set_window_pos_handle(
+                s,
+                window.raw(),
+                0,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            )
+            .map_err(|failure| failure.status())
         })?;
         Ok(STATUS_SUCCESS)
     }
