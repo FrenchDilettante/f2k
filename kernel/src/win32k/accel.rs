@@ -17,11 +17,11 @@
 //! user32 has no process-wide list to lock.
 //!
 //! TranslateAccelerator ([`find_command`], [`translate`]) matches the message against the table
-//! (rtl::accel's [`find`](rtl::accel::find), the modifiers from the thread's key state) and sends the window
-//! WM_COMMAND, its wParam's high word 1, its low word the command. When the window's menu holds an
-//! item of that command, WM_INITMENU and WM_INITMENUPOPUP are sent first, as if the menu were being
-//! opened, and a grayed or disabled item, or a disabled window, gets no WM_COMMAND: the
-//! accelerator is still translated. The messages go through the session
+//! (rtl::accel's [`find`](rtl::accel::find), the modifiers from the thread's key state) and sends
+//! the window WM_COMMAND, its wParam's high word 1, its low word the command. When the window's
+//! menu holds an item of that command, WM_INITMENU and WM_INITMENUPOPUP are sent first, as if the
+//! menu were being opened, and a grayed or disabled item, or a disabled window, gets no WM_COMMAND:
+//! the accelerator is still translated. The messages go through the session
 //! ([`super::queue::QueueSession`]), queued for the window's thread as every message the window
 //! manager sends is; so a WM_INITMENUPOPUP handler that enables the item comes too late for this
 //! translation (the item's state is read when the decision runs), which Windows 2000's synchronous

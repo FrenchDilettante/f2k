@@ -24,6 +24,7 @@
 use rtl::pod::Pod;
 use rtl::status::{STATUS_BUFFER_OVERFLOW, STATUS_BUFFER_TOO_SMALL};
 use rtl::winerror::{
+    ERROR_INSUFFICIENT_BUFFER,
     ERROR_INVALID_HANDLE,
     ERROR_INVALID_PARAMETER,
     ERROR_MORE_DATA,
@@ -595,9 +596,15 @@ fn full_class(reply: &Reply) -> &[u16] {
     reply.text(reply.word(KEY_CLASS_OFFSET), reply.word(KEY_CLASS_LENGTH))
 }
 
-/// RegQueryInfoKeyW: `key`'s class with its terminator (its length in units written back), its
-/// subkeys' and values' counts and their longest names, classes and data, and its last write. A
-/// class buffer that does not hold the class and its terminator is ERROR_MORE_DATA.
+/// Room the server's private reply buffer leaves for the class: a longer one changes which error
+/// a short caller's buffer gets.
+const SERVER_CLASS_ROOM: usize = 128;
+
+/// RegQueryInfoKeyW: the class with its terminator (its length in units written back), the counts
+/// and longest sizes (names and classes in characters, data in bytes) and the last write. A class
+/// buffer short of the terminator: the length in characters, nothing written,
+/// ERROR_INSUFFICIENT_BUFFER (ERROR_INVALID_PARAMETER past the server's private buffer); a zero
+/// count reads the length alone.
 ///
 /// # Safety
 ///
@@ -637,11 +644,15 @@ pub unsafe extern "system" fn reg_query_info_key_w(
     code((|| {
         let reply = key_full(key, reserved, !class.is_null(), class_count.as_ref())?;
         let text = full_class(&reply);
-        if !class.is_null() {
-            let room = class_count.as_ref().map_or(0, Out::get) as usize;
+        let room = class_count.as_ref().map_or(0, Out::get) as usize;
+        if !class.is_null() && room != 0 {
             if room <= text.len() {
                 give(class_count.as_mut(), text.len() as u32);
-                return Err(ERROR_MORE_DATA);
+                return Err(if 2 * text.len() > SERVER_CLASS_ROOM {
+                    ERROR_INVALID_PARAMETER
+                } else {
+                    ERROR_INSUFFICIENT_BUFFER
+                });
             }
             // SAFETY: the class buffer holds more units than the class has.
             unsafe { give_wide(class, text) }?;
@@ -652,8 +663,9 @@ pub unsafe extern "system" fn reg_query_info_key_w(
     })())
 }
 
-/// RegQueryInfoKeyA: RegQueryInfoKeyW's class converted, its length in bytes; the other counts
-/// RegQueryInfoKeyW's.
+/// RegQueryInfoKeyA: the class converted, its length in bytes written back; a buffer that does not
+/// hold it gets what fits, terminated, the capacity minus one and ERROR_MORE_DATA; a null buffer or
+/// a zero count reads the length in characters alone. The other counts as RegQueryInfoKeyW's.
 ///
 /// # Safety
 ///
@@ -693,15 +705,22 @@ pub unsafe extern "system" fn reg_query_info_key_a(
     code((|| {
         let reply = key_full(key, reserved, !class.is_null(), class_count.as_ref())?;
         let text = full_class(&reply);
-        let length = if class.is_null() {
-            nt::unicode_to_multi_byte_size(text)
-        } else {
-            let room = class_count.as_ref().map_or(0, Out::get);
+        let room = class_count.as_ref().map_or(0, Out::get);
+        if !class.is_null() && room != 0 {
+            let cap = room.min(0xFFFF);
             // SAFETY: the class buffer holds the bytes its count says.
-            let buffer = unsafe { ansi_buffer(class, room) }?;
-            put_ansi(buffer, text).ok_or(ERROR_MORE_DATA)?
-        };
-        give(class_count.as_mut(), length);
+            let buffer = unsafe { ansi_buffer(class, cap) }?;
+            match put_ansi(buffer, text) {
+                Some(written) => give(class_count.as_mut(), written),
+                None => {
+                    give(class_count.as_mut(), cap - 1);
+                    counts.give(&reply);
+                    return Err(ERROR_MORE_DATA);
+                }
+            }
+        } else {
+            give(class_count.as_mut(), text.len() as u32);
+        }
         counts.give(&reply);
         Ok(())
     })())
@@ -1094,5 +1113,159 @@ mod tests {
             )
         };
         assert_eq!(ret, ERROR_INVALID_PARAMETER);
+    }
+
+    /// A KEY_FULL_INFORMATION reply with the class `class` and the given counts.
+    fn full_info(
+        class: &str,
+        subkeys: u32,
+        max_name: u32,
+        values: u32,
+        max_vname: u32,
+        max_vdata: u32,
+    ) -> Vec<u8> {
+        let class_bytes = utf16_bytes(class);
+        let mut bytes = 0u64.to_le_bytes().to_vec();
+        for value in [
+            0,
+            44,
+            class_bytes.len() as u32,
+            subkeys,
+            max_name,
+            0,
+            values,
+            max_vname,
+            max_vdata,
+        ] {
+            word(&mut bytes, value);
+        }
+        bytes.extend(class_bytes);
+        bytes
+    }
+
+    /// RegQueryInfoKeyW with `room` units of class buffer: the answer, the count, the buffer.
+    fn info_w(room: u32, class: bool) -> (u32, u32, Vec<u16>) {
+        let mut buffer = vec![CC; 128];
+        let mut count = room;
+        // SAFETY: the tests' own buffers.
+        let ret = unsafe {
+            reg_query_info_key_w(
+                KEY,
+                if class {
+                    buffer.as_mut_ptr()
+                } else {
+                    core::ptr::null_mut()
+                },
+                &mut count,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+        (ret, count, buffer)
+    }
+
+    /// RegQueryInfoKeyA, as [`info_w`], the class buffer in bytes.
+    fn info_a(room: u32, class: bool) -> (u32, u32, Vec<u8>) {
+        let mut buffer = vec![0xCCu8; 128];
+        let mut count = room;
+        // SAFETY: the tests' own buffers.
+        let ret = unsafe {
+            reg_query_info_key_a(
+                KEY,
+                if class {
+                    buffer.as_mut_ptr()
+                } else {
+                    core::ptr::null_mut()
+                },
+                &mut count,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+        (ret, count, buffer)
+    }
+
+    /// RegQueryInfoKeyW's class: fits written with its length in units; short of the terminator
+    /// the length in characters, nothing written, ERROR_INSUFFICIENT_BUFFER
+    /// (ERROR_INVALID_PARAMETER past the server's private buffer); zero count or null buffer the
+    /// length alone.
+    #[test]
+    fn query_info_key_w_answers_the_class() {
+        reply(full_info("F2Kclass", 1, 6, 5, 12, 26));
+        let (ret, count, buffer) = info_w(9, true);
+        assert_eq!((ret, count), (0, 8));
+        assert_eq!(&buffer[..9], &rtl::testing::wide_z("F2Kclass")[..]);
+        let (ret, count, buffer) = info_w(8, true);
+        assert_eq!((ret, count), (ERROR_INSUFFICIENT_BUFFER, 8));
+        assert!(buffer.iter().all(|&unit| unit == CC));
+        let (ret, count, buffer) = info_w(0, true);
+        assert_eq!((ret, count), (0, 8));
+        assert!(buffer.iter().all(|&unit| unit == CC));
+        let (ret, count, _) = info_w(64, false);
+        assert_eq!((ret, count), (0, 8));
+        reply(full_info(&"c".repeat(65), 0, 0, 0, 0, 0));
+        let (ret, count, buffer) = info_w(10, true);
+        assert_eq!((ret, count), (ERROR_INVALID_PARAMETER, 65));
+        assert!(buffer.iter().all(|&unit| unit == CC));
+        let (ret, count, buffer) = info_w(66, true);
+        assert_eq!((ret, count), (0, 65));
+        assert_eq!(&buffer[..66], &rtl::testing::wide_z(&"c".repeat(65))[..]);
+        let mut count = 8u32;
+        let mut buffer = [CC; 8];
+        // SAFETY: the tests' own buffers.
+        let ret = unsafe {
+            reg_query_info_key_w(
+                KEY,
+                buffer.as_mut_ptr(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
+        };
+        assert_eq!(ret, ERROR_INVALID_PARAMETER);
+        assert_eq!(count, 8);
+    }
+
+    /// RegQueryInfoKeyA's class: converted with its length in bytes when it fits; what fits of it,
+    /// terminated, the capacity minus one and ERROR_MORE_DATA when not; zero count or null buffer
+    /// the length in characters alone.
+    #[test]
+    fn query_info_key_a_answers_the_class() {
+        reply(full_info("F2Kclass", 1, 6, 5, 12, 26));
+        let (ret, count, buffer) = info_a(9, true);
+        assert_eq!((ret, count), (0, 8));
+        assert_eq!(&buffer[..9], b"F2Kclass\0");
+        let (ret, count, buffer) = info_a(8, true);
+        assert_eq!((ret, count), (ERROR_MORE_DATA, 7));
+        assert_eq!(&buffer[..8], b"F2Kclas\0");
+        let (ret, count, buffer) = info_a(1, true);
+        assert_eq!((ret, count), (ERROR_MORE_DATA, 0));
+        assert_eq!(&buffer[..1], b"\0");
+        let (ret, count, buffer) = info_a(0, true);
+        assert_eq!((ret, count), (0, 8));
+        assert!(buffer.iter().all(|&b| b == 0xCC));
+        let (ret, count, _) = info_a(64, false);
+        assert_eq!((ret, count), (0, 8));
     }
 }
