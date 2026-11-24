@@ -181,9 +181,11 @@ fn load_cursor(entry: &rtl::stub::Entry, instance: usize, raw: usize, id: Option
 
 /// The registration of `class`, its two names already as the service takes them (`name` the class
 /// name's), through the narrow entry point when `ansi` (its procedure takes the narrow forms of the
-/// messages): the atom, the last error ERROR_FILE_NOT_FOUND (as every registration the captures
-/// show leaves it); 0 with the class decision's error. A string menu name goes to the window
-/// manager as the copies the class keeps ([`menu_copies`]), freed when the registration fails.
+/// messages): the atom, the last error ERROR_FILE_NOT_FOUND for a string name (as every such
+/// registration the captures show leaves it; a name written as an integer atom, "#123", leaves it
+/// alone: guiclass `intname`); 0 with the class decision's error. A string menu name goes to the
+/// window manager as the copies the class keeps ([`menu_copies`]), freed when the registration
+/// fails.
 ///
 /// # Safety
 ///
@@ -213,7 +215,11 @@ unsafe fn register(mut class: WndClassEx, name: usize, ansi: bool) -> u16 {
         crate::window_error,
     ) {
         Some(atom) => {
-            imports::set_last_error(ERROR_FILE_NOT_FOUND);
+            // SAFETY: the class name, a NUL-terminated UTF-16 string when no integer (the
+            // caller's).
+            if !unsafe { integer_name(name) } {
+                imports::set_last_error(ERROR_FILE_NOT_FOUND);
+            }
             atom
         }
         None => {
@@ -223,6 +229,23 @@ unsafe fn register(mut class: WndClassEx, name: usize, ansi: bool) -> u16 {
             0
         }
     }
+}
+
+/// Whether the class name `name` is an integer atom, or a string of '#' and decimal digits alone
+/// (an integer atom's written form).
+///
+/// # Safety
+///
+/// `name` is an integer atom or the address of a NUL-terminated UTF-16 string.
+unsafe fn integer_name(name: usize) -> bool {
+    if name >> 16 == 0 {
+        return true;
+    }
+    // SAFETY: the caller's contract: a NUL-terminated string.
+    let units = unsafe { rtl::cstr::units_until_nul(name as *const u16) };
+    matches!(units, [hash, digits @ ..] if *hash == u16::from(b'#')
+        && !digits.is_empty()
+        && digits.iter().all(|&unit| (u16::from(b'0')..=u16::from(b'9')).contains(&unit)))
 }
 
 /// A string menu name's two copies, as a class keeps them in the process: one fixed block holding
@@ -1040,6 +1063,23 @@ mod tests {
             class_name: name.as_ptr() as usize,
             ..WndClass::default()
         }
+    }
+
+    /// An integer atom, or '#' and digits alone, is an integer name; another string is not.
+    #[test]
+    fn integer_names() {
+        let wide = |text: &str| -> std::vec::Vec<u16> { text.encode_utf16().chain([0]).collect() };
+        for (text, integer) in [("#123", true), ("#0", true), ("#", false), ("#12a", false)] {
+            let units = wide(text);
+            // SAFETY: a NUL-terminated string.
+            assert_eq!(
+                unsafe { integer_name(units.as_ptr() as usize) },
+                integer,
+                "{text}"
+            );
+        }
+        // SAFETY: an integer atom, not read.
+        assert!(unsafe { integer_name(123) });
     }
 
     /// The narrow form reaches the kernel wide, its stock cursor as it is; the atom comes back

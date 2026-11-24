@@ -3,9 +3,6 @@ description = "guiclass - window class registration in user32: RegisterClassA/W 
 kind = "sectioned"
 gate = true
 
-[pending]
-intname = "F2K refuses \"#0\" as an invalid name and registers \"#123\" as the integer atom 123, its lookup by the same name finding it; the last errors and GetClassNameA's text are to be confirmed"
-
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
 # calls); scripts/compat.py derives each export's coverage from them.
