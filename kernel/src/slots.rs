@@ -7,24 +7,30 @@
 //!   another pool's.
 //!
 //! Storage is chunks of whole pages ([`Pages`]: the nonpaged pool on target), found through a
-//! chunk directory ([`ChunkDir`]). A chunk is never moved and never given back while its pool
-//! lives (except by [`Slots::reset`]), so a record's address is stable and `&'static T` into a
-//! pool in a static stays memory-safe; a freed slot's record is the next object's, so it stays
-//! logically safe only behind a counted reference or an id its lookup checks.
+//! chunk directory ([`ChunkDir`]): [`Paged`], a tree of pages that deepens as chunks are added, or
+//! [`Inline`], a fixed array. A chunk is never moved and never given back while its pool lives
+//! (except by [`Slots::reset`]), so a record's address is stable and `&'static T` into a pool in a
+//! static stays memory-safe; a freed slot's record is the next object's, so it stays logically
+//! safe only behind a counted reference or an id its lookup checks.
 //!
 //! How an id or handle carries a slot is the pool's [`Codec`], which also sets the index ceiling
 //! (a representation limit: memory runs out first), the reuse order and the uniqueness range.
 //! Every codec shares the uniqueness rule: a fresh slot's count is 1; freeing moves it on, from
 //! the codec's highest back to 1, so it is never 0 nor a wildcard.
 //!
-//! A pool takes no lock: its owner's lock gives the `&mut self` every change needs. Only chunk
-//! publication is atomic (Release stores, Acquire loads), so resolving an address takes no lock.
+//! A pool takes no lock: its owner's lock gives the `&mut self` every change needs. Only chunk and
+//! directory-page publication is atomic (Release stores, Acquire loads), so resolving an address
+//! takes no lock. A reader without the owner's lock cannot borrow the pool while the owner holds
+//! it mutably, so a pool resolved that way is built on a directory kept apart from it
+//! ([`Slots::on`] with a `&'static Paged`), which the reader resolves through alone
+//! ([`Slots::address_in`], [`SideTable::address_in`], [`SideTable::index_at_in`]).
 
 // No pool has moved onto these types yet.
 #![allow(dead_code)]
 
+use core::cell::Cell;
 use core::marker::PhantomData;
-use core::ptr::{addr_of_mut, NonNull};
+use core::ptr::{addr_of_mut, null_mut, NonNull};
 use core::sync::atomic::{AtomicPtr, Ordering};
 
 /// The size of a page, the unit chunks are made of.
@@ -127,11 +133,9 @@ pub enum Unpublished {
 /// # Safety
 ///
 /// [`ChunkDir::chunk`] answers only what [`ChunkDir::publish`] published (Acquire against its
-/// Release), until [`ChunkDir::release`].
+/// Release), until [`ChunkDir::release`]; the directory's own pages come only from the `pages`
+/// [`ChunkDir::publish`] is handed.
 pub unsafe trait ChunkDir {
-    /// A directory naming no chunk, holding no page.
-    #[allow(clippy::declare_interior_mutable_const)]
-    const EMPTY: Self;
     /// How many chunks it can name.
     const CAPACITY: u32;
 
@@ -139,16 +143,58 @@ pub unsafe trait ChunkDir {
     fn chunk(&self, chunk: u32) -> Option<NonNull<u8>>;
 
     /// Publish chunk `chunk`, fully written, at `at` (Release), with a compare-and-swap against
-    /// none, so racing publishers make one chunk; `pages` makes any directory page it needs.
+    /// none, so racing publishers make one chunk. The directory pages it needs come from `pages`,
+    /// one at a time, and those of a lost race go back to it.
     fn publish(&self, chunk: u32, at: NonNull<u8>, pages: &impl Pages) -> Result<(), Unpublished>;
+
+    /// The directory pages publishing chunk `chunk` would take now.
+    fn missing_pages(&self, chunk: u32) -> usize;
+
+    /// The directory pages publishing chunk `chunk` takes when the chunks published are exactly
+    /// `0..chunk`: a [`Slots`]' next chunk, known without the directory.
+    fn next_pages(chunk: u32) -> usize;
 
     /// Give back every published chunk (each `chunk_pages` long) and the directory's own pages,
     /// leaving it empty.
     ///
     /// # Safety
     ///
-    /// Nothing refers to the chunks any more, and every one was taken from `pages`.
-    unsafe fn release(&mut self, chunk_pages: usize, pages: &impl Pages);
+    /// Nothing refers to the chunks any more, nothing resolves through the directory meanwhile,
+    /// and every page was taken from `pages`.
+    unsafe fn release(&self, chunk_pages: usize, pages: &impl Pages);
+}
+
+/// A directory that starts empty in place: one a pool can hold itself.
+pub trait EmptyDir: ChunkDir {
+    /// A directory naming no chunk, holding no page.
+    #[allow(clippy::declare_interior_mutable_const)]
+    const EMPTY: Self;
+}
+
+// SAFETY: every answer is the referenced directory's.
+unsafe impl<D: ChunkDir> ChunkDir for &D {
+    const CAPACITY: u32 = D::CAPACITY;
+
+    fn chunk(&self, chunk: u32) -> Option<NonNull<u8>> {
+        (**self).chunk(chunk)
+    }
+
+    fn publish(&self, chunk: u32, at: NonNull<u8>, pages: &impl Pages) -> Result<(), Unpublished> {
+        (**self).publish(chunk, at, pages)
+    }
+
+    fn missing_pages(&self, chunk: u32) -> usize {
+        (**self).missing_pages(chunk)
+    }
+
+    fn next_pages(chunk: u32) -> usize {
+        D::next_pages(chunk)
+    }
+
+    unsafe fn release(&self, chunk_pages: usize, pages: &impl Pages) {
+        // SAFETY: the caller's contract.
+        unsafe { (**self).release(chunk_pages, pages) }
+    }
 }
 
 /// A fixed directory of `N` chunk pointers: for a table whose Windows ceiling is small and fixed
@@ -158,8 +204,6 @@ pub struct Inline<const N: usize>([AtomicPtr<u8>; N]);
 // SAFETY: `chunk` loads with Acquire what `publish` stored with Release; `release` empties it.
 unsafe impl<const N: usize> ChunkDir for Inline<N> {
     const CAPACITY: u32 = N as u32;
-    #[allow(clippy::declare_interior_mutable_const)]
-    const EMPTY: Self = Inline([const { AtomicPtr::new(core::ptr::null_mut()) }; N]);
 
     fn chunk(&self, chunk: u32) -> Option<NonNull<u8>> {
         NonNull::new(self.0.get(chunk as usize)?.load(Ordering::Acquire))
@@ -168,23 +212,373 @@ unsafe impl<const N: usize> ChunkDir for Inline<N> {
     fn publish(&self, chunk: u32, at: NonNull<u8>, _: &impl Pages) -> Result<(), Unpublished> {
         let entry = self.0.get(chunk as usize).ok_or(Unpublished::Capacity)?;
         entry
-            .compare_exchange(
-                core::ptr::null_mut(),
-                at.as_ptr(),
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            )
+            .compare_exchange(null_mut(), at.as_ptr(), Ordering::AcqRel, Ordering::Acquire)
             .map(|_| ())
             .map_err(|_| Unpublished::Raced)
     }
 
-    unsafe fn release(&mut self, chunk_pages: usize, pages: &impl Pages) {
-        for entry in &mut self.0 {
-            if let Some(at) = NonNull::new(core::mem::take(entry.get_mut())) {
+    fn missing_pages(&self, _: u32) -> usize {
+        0
+    }
+
+    fn next_pages(_: u32) -> usize {
+        0
+    }
+
+    unsafe fn release(&self, chunk_pages: usize, pages: &impl Pages) {
+        for entry in &self.0 {
+            if let Some(at) = NonNull::new(entry.swap(null_mut(), Ordering::AcqRel)) {
                 // SAFETY: the caller's contract: published from `pages`, referred to no more.
                 unsafe { pages.give(at, chunk_pages) };
             }
         }
+    }
+}
+
+impl<const N: usize> EmptyDir for Inline<N> {
+    #[allow(clippy::declare_interior_mutable_const)]
+    const EMPTY: Self = Inline([const { AtomicPtr::new(null_mut()) }; N]);
+}
+
+/// The entries of a full directory page: 1,024 on the target, 512 on a 64-bit host.
+pub const FANOUT: usize = PAGE / core::mem::size_of::<*mut u8>();
+
+/// The growable directory: a tree of pages of `F` entries ([`FANOUT`], fewer only in tests).
+///
+/// The root is chunk 0 itself at height 0 (so a one-chunk pool holds no directory page), a page
+/// of chunk pointers at height 1, and above that a page of pointers to pages one lower. A chunk
+/// past the tree's span deepens it: a new root takes the old one as its entry 0. It names every
+/// u32 chunk (at height 4 for 1,024 entries), so it never sets a pool's limit, and its static
+/// footprint is one pointer.
+///
+/// New pages are written while only their maker sees them, then join the tree with one
+/// compare-and-swap (Release) at the topmost, so the tree is published bottom up: a reader's
+/// Acquire loads, level by level, find whole pages and whole chunks. Under the owner's lock the
+/// swap never fails; between [`SideTable::ensure`]'s racers the loser gives its pages back.
+pub struct Paged<const F: usize = FANOUT> {
+    /// The root's address with its height in the low bits (a page's address has 12 clear); null
+    /// when empty.
+    root: AtomicPtr<u8>,
+}
+
+/// The low bits of [`Paged`]'s root word that hold the height.
+const HEIGHT_BITS: usize = PAGE - 1;
+
+impl<const F: usize> Paged<F> {
+    /// The entries per page as a u64. At least 4, so the height stays within 16 and a
+    /// publication within [`RESERVE`] pages.
+    const FAN: u64 = {
+        assert!(F >= 4 && F * core::mem::size_of::<*mut u8>() <= PAGE);
+        F as u64
+    };
+
+    /// The chunks a tree of `height` spans.
+    const fn span(height: u32) -> u64 {
+        Self::FAN.pow(height)
+    }
+
+    /// The lowest height whose tree spans chunk `chunk`.
+    const fn height(chunk: u32) -> u32 {
+        let mut height = 0;
+        while chunk as u64 >= Self::span(height) {
+            height += 1;
+        }
+        height
+    }
+
+    /// Chunk `chunk`'s entry in its page at `level` (1: the page of chunk pointers).
+    const fn digit(chunk: u32, level: u32) -> usize {
+        ((chunk as u64 / Self::span(level - 1)) % Self::FAN) as usize
+    }
+
+    /// Entry `index` of directory page `page`.
+    ///
+    /// # Safety
+    ///
+    /// `page` is a directory page, taken and not given back while the reference lives.
+    unsafe fn entry<'a>(page: *mut u8, index: usize) -> &'a AtomicPtr<u8> {
+        debug_assert!(index < F);
+        // SAFETY: the caller's contract; a page holds F pointers, zeroed (null) when taken.
+        unsafe { &*page.cast::<AtomicPtr<u8>>().add(index) }
+    }
+
+    fn split(root: *mut u8) -> (*mut u8, u32) {
+        let height = root.addr() & HEIGHT_BITS;
+        (root.wrapping_sub(height), height as u32)
+    }
+
+    fn join(top: *mut u8, height: u32) -> *mut u8 {
+        top.wrapping_add(height as usize)
+    }
+
+    /// The pages that carry chunk `chunk` at `at` down from a page at `height`, made from
+    /// `pages` and unpublished: the top's address (`at` itself at height 0).
+    fn build(
+        chunk: u32,
+        height: u32,
+        at: NonNull<u8>,
+        pages: &impl Pages,
+    ) -> Result<*mut u8, Unpublished> {
+        let mut below = at.as_ptr();
+        for level in 1..=height {
+            let Some(page) = pages.take(1) else {
+                // SAFETY: built just now from `pages`, never published.
+                unsafe { Self::unbuild(chunk, level - 1, below, pages) };
+                return Err(Unpublished::NoPage);
+            };
+            // SAFETY: a page just taken, ours alone.
+            unsafe { Self::entry(page.as_ptr(), Self::digit(chunk, level)) }
+                .store(below, Ordering::Relaxed);
+            below = page.as_ptr();
+        }
+        Ok(below)
+    }
+
+    /// Give back the pages of an unpublished [`Paged::build`], each emptied; the chunk stays.
+    ///
+    /// # Safety
+    ///
+    /// `top` is that build's, for `chunk` and `height`, never published.
+    unsafe fn unbuild(chunk: u32, height: u32, top: *mut u8, pages: &impl Pages) {
+        let mut page = top;
+        for level in (1..=height).rev() {
+            // SAFETY: a page of the build, ours alone.
+            let below = unsafe { Self::entry(page, Self::digit(chunk, level)) }
+                .swap(null_mut(), Ordering::Relaxed);
+            // SAFETY: taken from `pages` by the build, referred to by nothing now.
+            unsafe { pages.give(NonNull::new_unchecked(page), 1) };
+            page = below;
+        }
+    }
+
+    /// Give back the tree at `at` of `height`: its chunks and its pages.
+    ///
+    /// # Safety
+    ///
+    /// As [`ChunkDir::release`]'s; the tree is unpublished.
+    unsafe fn give_tree(at: *mut u8, height: u32, chunk_pages: usize, pages: &impl Pages) {
+        if height > 0 {
+            for index in 0..F {
+                // SAFETY: a page of the tree, ours alone now.
+                let below = unsafe { Self::entry(at, index) }.load(Ordering::Relaxed);
+                if !below.is_null() {
+                    // SAFETY: the caller's contract, one level down.
+                    unsafe { Self::give_tree(below, height - 1, chunk_pages, pages) };
+                }
+            }
+        }
+        let length = if height == 0 { chunk_pages } else { 1 };
+        // SAFETY: the caller's contract: taken from `pages`, referred to no more.
+        unsafe { pages.give(NonNull::new_unchecked(at), length) };
+    }
+}
+
+// SAFETY: every page and chunk joins the tree by a Release compare-and-swap after it is written,
+// and every resolution loads each level with Acquire; pages are given back only by `release`
+// (published ones) or by their maker before publication.
+unsafe impl<const F: usize> ChunkDir for Paged<F> {
+    /// Every u32 chunk but the last, whose number is the capacity check's bound.
+    const CAPACITY: u32 = u32::MAX;
+
+    fn chunk(&self, chunk: u32) -> Option<NonNull<u8>> {
+        let (mut at, height) = Self::split(self.root.load(Ordering::Acquire));
+        if at.is_null() || chunk as u64 >= Self::span(height) {
+            return None;
+        }
+        for level in (1..=height).rev() {
+            // SAFETY: a published page, never given back before `release`.
+            at = unsafe { Self::entry(at, Self::digit(chunk, level)) }.load(Ordering::Acquire);
+            if at.is_null() {
+                return None;
+            }
+        }
+        NonNull::new(at)
+    }
+
+    fn publish(&self, chunk: u32, at: NonNull<u8>, pages: &impl Pages) -> Result<(), Unpublished> {
+        if chunk == Self::CAPACITY {
+            return Err(Unpublished::Capacity);
+        }
+        let wanted = Self::height(chunk);
+        loop {
+            let root = self.root.load(Ordering::Acquire);
+            let (top, height) = Self::split(root);
+            if top.is_null() {
+                let made = Self::build(chunk, wanted, at, pages)?;
+                let joined = Self::join(made, wanted);
+                let swapped =
+                    self.root
+                        .compare_exchange(root, joined, Ordering::AcqRel, Ordering::Acquire);
+                if swapped.is_ok() {
+                    return Ok(());
+                }
+                // SAFETY: the build lost the race, so it is unpublished.
+                unsafe { Self::unbuild(chunk, wanted, made, pages) };
+                continue;
+            }
+            if height < wanted {
+                // One level deeper: a new root whose entry 0 is the old one.
+                let page = pages.take(1).ok_or(Unpublished::NoPage)?;
+                // SAFETY: a page just taken, ours alone.
+                let first = unsafe { Self::entry(page.as_ptr(), 0) };
+                first.store(top, Ordering::Relaxed);
+                let deeper = Self::join(page.as_ptr(), height + 1);
+                let swapped =
+                    self.root
+                        .compare_exchange(root, deeper, Ordering::AcqRel, Ordering::Acquire);
+                if swapped.is_err() {
+                    first.store(null_mut(), Ordering::Relaxed);
+                    // SAFETY: taken above, never published.
+                    unsafe { pages.give(page, 1) };
+                }
+                continue;
+            }
+            if height == 0 {
+                // The root is chunk 0, the one asked for.
+                return Err(Unpublished::Raced);
+            }
+            let (mut page, mut level) = (top, height);
+            loop {
+                // SAFETY: a published page, never given back before `release`.
+                let entry = unsafe { Self::entry(page, Self::digit(chunk, level)) };
+                let below = entry.load(Ordering::Acquire);
+                if !below.is_null() {
+                    if level == 1 {
+                        return Err(Unpublished::Raced);
+                    }
+                    (page, level) = (below, level - 1);
+                    continue;
+                }
+                let made = Self::build(chunk, level - 1, at, pages)?;
+                let swapped =
+                    entry.compare_exchange(null_mut(), made, Ordering::AcqRel, Ordering::Acquire);
+                if swapped.is_ok() {
+                    return Ok(());
+                }
+                // SAFETY: the build lost the race, so it is unpublished; the entry is read again.
+                unsafe { Self::unbuild(chunk, level - 1, made, pages) };
+            }
+        }
+    }
+
+    fn missing_pages(&self, chunk: u32) -> usize {
+        let wanted = Self::height(chunk);
+        let (top, height) = Self::split(self.root.load(Ordering::Acquire));
+        if top.is_null() {
+            return wanted as usize;
+        }
+        if height < wanted {
+            // The new roots, and the chunk's own page at every level it lies past the old tree.
+            let own = (1..wanted).filter(|&level| chunk as u64 >= Self::span(level));
+            return (wanted - height) as usize + own.count();
+        }
+        let (mut page, mut level) = (top, height);
+        while level > 1 {
+            // SAFETY: a published page, never given back before `release`.
+            let below = unsafe { Self::entry(page, Self::digit(chunk, level)) };
+            let below = below.load(Ordering::Acquire);
+            if below.is_null() {
+                return level as usize - 1;
+            }
+            (page, level) = (below, level - 1);
+        }
+        0
+    }
+
+    fn next_pages(chunk: u32) -> usize {
+        if chunk == 0 {
+            return 0;
+        }
+        let (wanted, had) = (Self::height(chunk), Self::height(chunk - 1));
+        // A new root when the tree deepens; a new page at every level the chunk starts.
+        let starts = (1..wanted).filter(|&level| (chunk as u64).is_multiple_of(Self::span(level)));
+        (wanted - had) as usize + starts.count()
+    }
+
+    unsafe fn release(&self, chunk_pages: usize, pages: &impl Pages) {
+        let (top, height) = Self::split(self.root.swap(null_mut(), Ordering::AcqRel));
+        if !top.is_null() {
+            // SAFETY: the caller's contract; the tree is unpublished now.
+            unsafe { Self::give_tree(top, height, chunk_pages, pages) };
+        }
+    }
+}
+
+impl<const F: usize> EmptyDir for Paged<F> {
+    #[allow(clippy::declare_interior_mutable_const)]
+    const EMPTY: Self = {
+        let _ = Self::FAN;
+        Paged {
+            root: AtomicPtr::new(null_mut()),
+        }
+    };
+}
+
+/// The most directory pages one publication takes: at most 16 heights at 4 entries a page, a new
+/// root for each and the chunk's own page below each.
+const RESERVE: usize = 32;
+
+/// Directory pages taken ahead and handed out one at a time, so a publication draws on these
+/// alone: where taking pages is not legal (inside a `LevelCell<High>`), and so a publication that
+/// would fail for want of pages fails before it changes anything.
+struct Reserve {
+    pages: [Cell<*mut u8>; RESERVE],
+    count: Cell<usize>,
+}
+
+impl Reserve {
+    const fn new() -> Self {
+        Reserve {
+            pages: [const { Cell::new(null_mut()) }; RESERVE],
+            count: Cell::new(0),
+        }
+    }
+
+    /// `count` pages from `pages`; none when it has too few, any taken given back.
+    fn take_from(count: usize, pages: &impl Pages) -> Option<Self> {
+        let reserve = Self::new();
+        for _ in 0..count {
+            let Some(page) = pages.take(1) else {
+                reserve.give_back(pages);
+                return None;
+            };
+            reserve.push(page.as_ptr());
+        }
+        Some(reserve)
+    }
+
+    fn push(&self, page: *mut u8) {
+        let count = self.count.get();
+        assert!(count < RESERVE, "a reserve within its capacity");
+        self.pages[count].set(page);
+        self.count.set(count + 1);
+    }
+
+    /// Give every page left back to `pages`, where they came from.
+    fn give_back(&self, pages: &impl Pages) {
+        while let Some(page) = self.take(1) {
+            // SAFETY: taken from `pages` by `take_from`, referred to by nothing.
+            unsafe { pages.give(page, 1) };
+        }
+    }
+}
+
+impl Pages for Reserve {
+    fn take(&self, pages: usize) -> Option<NonNull<u8>> {
+        let count = self.count.get();
+        if pages != 1 || count == 0 {
+            return None;
+        }
+        self.count.set(count - 1);
+        NonNull::new(self.pages[count - 1].get())
+    }
+
+    unsafe fn give(&self, at: NonNull<u8>, pages: usize) {
+        assert_eq!(pages, 1, "a directory page");
+        // SAFETY: the caller's contract: a page of ours, referred to no more. Zeroed, as `take`
+        // hands pages out.
+        unsafe { at.as_ptr().write_bytes(0, PAGE) };
+        self.push(at.as_ptr());
     }
 }
 
@@ -246,7 +640,10 @@ const fn next_uniq(uniq: u16, max: u16) -> u16 {
 }
 
 /// A pool of records of `T`, `PER` to a chunk, named by `C`'s ids, its chunks found through `D`.
-pub struct Slots<T: Record, C: Codec, const PER: usize, D: ChunkDir> {
+///
+/// The pool's bookkeeping touches a slot's fields one at a time through raw pointers, never a
+/// reference to the whole slot, so a reference its owner holds into a record stays valid.
+pub struct Slots<T: Record, C: Codec, const PER: usize, D: ChunkDir = Paged> {
     chunks: D,
     /// Chunks made: the slots `[0, made × PER)` exist.
     made: u32,
@@ -261,6 +658,13 @@ pub struct Slots<T: Record, C: Codec, const PER: usize, D: ChunkDir> {
     _codec: PhantomData<C>,
 }
 
+impl<T: Record, C: Codec, const PER: usize, D: EmptyDir> Slots<T, C, PER, D> {
+    /// An empty pool holding its own directory: no chunk made, no page held.
+    pub const fn new() -> Self {
+        Self::on(D::EMPTY)
+    }
+}
+
 impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
     /// The pages one chunk takes.
     pub const CHUNK_PAGES: usize = {
@@ -271,9 +675,9 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
     };
     /// The highest index this pool can hand out: the codec's, or the directory's if lower.
     const LIMIT: u32 = {
-        let directory = (D::CAPACITY as u64 * PER as u64 - 1) as u32;
-        if directory < C::MAX_INDEX {
-            directory
+        let directory = D::CAPACITY as u64 * PER as u64 - 1;
+        if directory < C::MAX_INDEX as u64 {
+            directory as u32
         } else {
             C::MAX_INDEX
         }
@@ -285,11 +689,13 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
         from + (lane as u32 + lanes - from % lanes) % lanes
     }
 
-    /// An empty pool: no chunk made, no page held.
-    pub const fn new() -> Self {
+    /// An empty pool on `chunks`, an empty directory: its own, or one kept apart (a
+    /// `&'static Paged`) for readers that resolve without the owner's lock
+    /// ([`Slots::address_in`]).
+    pub const fn on(chunks: D) -> Self {
         let _ = Self::CHUNK_PAGES;
         Slots {
-            chunks: D::EMPTY,
+            chunks,
             made: 0,
             fresh: [
                 Self::lane_start(0, C::RESERVED_LOW),
@@ -303,36 +709,71 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
         }
     }
 
-    /// Slot `index`, if its chunk is made.
-    fn slot(&self, index: u32) -> Option<NonNull<Slot<T>>> {
-        let base = self.chunks.chunk(index / PER as u32)?;
+    /// Slot `index` through `chunks`, if its chunk is made.
+    fn slot_in(chunks: &impl ChunkDir, index: u32) -> Option<NonNull<Slot<T>>> {
+        let base = chunks.chunk(index / PER as u32)?;
         let offset = (index as usize % PER) * core::mem::size_of::<Slot<T>>();
         // SAFETY: a published chunk holds PER slots, so the offset lies inside it.
         Some(unsafe { base.add(offset) }.cast())
     }
 
-    /// Slot `index`, whose chunk is made.
-    fn at(&mut self, index: u32) -> &mut Slot<T> {
-        let slot = self.slot(index).expect("a slot of a made chunk");
-        // SAFETY: a made chunk's slots are written whole and the pool's alone; `&mut self` makes
-        // this the only reference.
-        unsafe { &mut *slot.as_ptr() }
+    fn slot(&self, index: u32) -> Option<NonNull<Slot<T>>> {
+        Self::slot_in(&self.chunks, index)
     }
 
-    /// The slot `id` names, live or reserved as `state` asks, with its index.
-    fn find(&self, id: C::Id, state: State) -> Option<(u32, NonNull<Slot<T>>)> {
+    /// Slot `index`, whose chunk is made.
+    fn at(&self, index: u32) -> *mut Slot<T> {
+        self.slot(index).expect("a slot of a made chunk").as_ptr()
+    }
+
+    /// Slot `index`'s uniqueness count and state.
+    fn meta(&self, index: u32) -> (u16, State) {
+        let slot = self.at(index);
+        // SAFETY: a made chunk's slot, written whole; its meta is the pool's alone.
+        unsafe { ((*slot).uniq, (*slot).state) }
+    }
+
+    fn set_uniq(&mut self, index: u32, uniq: u16) {
+        // SAFETY: as in `meta`; `&mut self` keeps every other change away.
+        unsafe { (*self.at(index)).uniq = uniq };
+    }
+
+    fn set_state(&mut self, index: u32, state: State) {
+        // SAFETY: as in `set_uniq`.
+        unsafe { (*self.at(index)).state = state };
+    }
+
+    fn next(&self, index: u32) -> u32 {
+        // SAFETY: as in `meta`.
+        unsafe { (*self.at(index)).next }
+    }
+
+    fn set_next(&mut self, index: u32, next: u32) {
+        // SAFETY: as in `set_uniq`.
+        unsafe { (*self.at(index)).next = next };
+    }
+
+    /// Slot `index`'s record, for the owner.
+    fn value(&mut self, index: u32) -> &mut T {
+        // SAFETY: a made chunk's slot, written whole; `&mut self` makes this the only reference
+        // the pool hands out.
+        unsafe { &mut (*self.at(index)).value }
+    }
+
+    /// The slot `id` names, live or reserved as `state` asks: its index.
+    fn find(&self, id: C::Id, state: State) -> Option<u32> {
         let (index, wanted) = C::decode(id)?;
         if !(C::RESERVED_LOW..=Self::LIMIT).contains(&index) {
             return None;
         }
         let slot = self.slot(index)?;
-        // SAFETY: a made chunk's slots are written whole; only the meta is read.
+        // SAFETY: a made chunk's slot, written whole; only the meta is read.
         let (uniq, current) = unsafe { ((*slot.as_ptr()).uniq, (*slot.as_ptr()).state) };
         let matches = match wanted {
             Match::Exact(asked) => asked == uniq,
             Match::Any => true,
         };
-        (current == state && matches).then_some((index, slot))
+        (current == state && matches).then_some(index)
     }
 
     fn push(&mut self, index: u32) {
@@ -340,7 +781,7 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
         match C::REUSE {
             Reuse::Lifo => {
                 let head = self.free[lane].head;
-                self.at(index).next = head;
+                self.set_next(index, head);
                 self.free[lane].head = index;
                 if head == NONE {
                     self.free[lane].tail = index;
@@ -352,10 +793,10 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
 
     fn push_tail(&mut self, index: u32) {
         let lane = index as usize % C::LANES;
-        self.at(index).next = NONE;
+        self.set_next(index, NONE);
         match self.free[lane].tail {
             NONE => self.free[lane].head = index,
-            tail => self.at(tail).next = index,
+            tail => self.set_next(tail, index),
         }
         self.free[lane].tail = index;
     }
@@ -376,7 +817,7 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
                 index
             }
             head => {
-                let next = self.at(head).next;
+                let next = self.next(head);
                 self.free[lane].head = next;
                 if next == NONE {
                     self.free[lane].tail = NONE;
@@ -384,18 +825,23 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
                 head
             }
         };
-        self.at(index).state = state;
+        self.set_state(index, state);
         self.high = self.high.max(index + 1);
         Ok(index)
+    }
+
+    /// Slot `index`, just taken live: its id and its record.
+    fn taken(&mut self, index: u32) -> (C::Id, &mut T) {
+        self.live += 1;
+        let (uniq, _) = self.meta(index);
+        (C::encode(index, uniq), self.value(index))
     }
 
     /// A slot of `lane`, live: its id and its record, for the owner to renew. Never takes
     /// memory: [`Full::NoChunk`] when the slot's chunk is not made.
     pub fn allocate(&mut self, lane: usize) -> Result<(C::Id, &mut T), Full> {
         let index = self.take(lane, State::Live)?;
-        self.live += 1;
-        let slot = self.at(index);
-        Ok((C::encode(index, slot.uniq), &mut slot.value))
+        Ok(self.taken(index))
     }
 
     /// [`Slots::allocate`], making chunks as it needs them.
@@ -408,11 +854,7 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
             match self.take(lane, State::Live) {
                 Err(Full::NoChunk) => self.grow(pages)?,
                 Err(full) => return Err(full),
-                Ok(index) => {
-                    self.live += 1;
-                    let slot = self.at(index);
-                    return Ok((C::encode(index, slot.uniq), &mut slot.value));
-                }
+                Ok(index) => return Ok(self.taken(index)),
             }
         }
     }
@@ -427,13 +869,13 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
         self.made as u64 * PER as u64 > Self::LIMIT as u64
     }
 
-    /// Make the next chunk, every slot written fresh, and publish it. Only where taking pages is
-    /// legal. On failure the pool is as it was.
+    /// Make the next chunk, every slot written fresh, and publish it with any directory page it
+    /// needs. Only where taking pages is legal. On failure the pool is as it was.
     pub fn grow(&mut self, pages: &impl Pages) -> Result<(), Full> {
         if self.at_limit() {
             return Err(Full::Limit);
         }
-        let chunk = Chunk::<T, PER>::make(self.made, pages).ok_or(Full::NoChunk)?;
+        let chunk = Chunk::<T, PER, D>::make(self.made, pages).ok_or(Full::NoChunk)?;
         self.adopt(chunk, pages)
     }
 
@@ -444,67 +886,69 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
             && self.fresh[lane] / PER as u32 >= self.made
     }
 
-    /// Publish a chunk made outside the owner's lock ([`Chunk::make`]) as the next one. A chunk
-    /// not the next one (another took its place meanwhile, or the pool is at its limit) is given
-    /// back, and the pool is as it was.
-    pub fn adopt(&mut self, chunk: Chunk<T, PER>, pages: &impl Pages) -> Result<(), Full> {
-        let Chunk { number, at, .. } = chunk;
-        if number != self.made || self.at_limit() {
-            // SAFETY: made from `pages` by `Chunk::make`, never published.
-            unsafe { pages.give(at, Self::CHUNK_PAGES) };
-            return Err(if self.at_limit() {
-                Full::Limit
-            } else {
-                Full::NoChunk
-            });
-        }
-        match self.chunks.publish(number, at, pages) {
-            Ok(()) => {
-                self.made += 1;
-                Ok(())
-            }
-            Err(unpublished) => {
-                // SAFETY: as above; the directory did not take it.
-                unsafe { pages.give(at, Self::CHUNK_PAGES) };
-                Err(match unpublished {
+    /// Publish a chunk made outside the owner's lock ([`Chunk::make`]) as the next one, with the
+    /// directory pages it carries: takes no page. A chunk not the next one (another took its
+    /// place meanwhile, or the pool is at its limit) is given back to `pages`, and the pool is as
+    /// it was.
+    pub fn adopt(&mut self, chunk: Chunk<T, PER, D>, pages: &impl Pages) -> Result<(), Full> {
+        let Chunk {
+            number,
+            at,
+            directory,
+            ..
+        } = chunk;
+        let published = if self.at_limit() {
+            Err(Full::Limit)
+        } else if number != self.made {
+            Err(Full::NoChunk)
+        } else {
+            self.chunks
+                .publish(number, at, &directory)
+                .map_err(|unpublished| match unpublished {
                     Unpublished::Capacity => Full::Limit,
                     Unpublished::Raced | Unpublished::NoPage => Full::NoChunk,
                 })
-            }
+        };
+        // None is left after a publication: the chunk carried exactly the pages it needed.
+        directory.give_back(pages);
+        match published {
+            Ok(()) => self.made += 1,
+            // SAFETY: made from `pages` by `Chunk::make`, never published.
+            Err(_) => unsafe { pages.give(at, Self::CHUNK_PAGES) },
         }
+        published
     }
 
     /// The live record `id` names; none for a stale, forged or reserved id.
     pub fn get(&self, id: C::Id) -> Option<&T> {
-        let (_, slot) = self.find(id, State::Live)?;
+        let index = self.find(id, State::Live)?;
         // SAFETY: a made chunk's slot, written whole; `&self` keeps the pool's changes away.
-        Some(unsafe { &(*slot.as_ptr()).value })
+        Some(unsafe { &(*self.at(index)).value })
     }
 
     /// [`Slots::get`], to change.
     pub fn get_mut(&mut self, id: C::Id) -> Option<&mut T> {
-        let (_, slot) = self.find(id, State::Live)?;
-        // SAFETY: as in `get`; `&mut self` makes this the only reference.
-        Some(unsafe { &mut (*slot.as_ptr()).value })
+        let index = self.find(id, State::Live)?;
+        Some(self.value(index))
     }
 
     /// The index `id` names while its slot is live.
     pub fn index_of(&self, id: C::Id) -> Option<u32> {
-        self.find(id, State::Live).map(|(index, _)| index)
+        self.find(id, State::Live)
     }
 
     /// Leave a slot of `index` for the next of its lane, its uniqueness count moved on.
     fn release(&mut self, index: u32) {
-        let slot = self.at(index);
-        slot.uniq = next_uniq(slot.uniq, C::MAX_UNIQ);
-        slot.state = State::Free;
+        let (uniq, _) = self.meta(index);
+        self.set_uniq(index, next_uniq(uniq, C::MAX_UNIQ));
+        self.set_state(index, State::Free);
         self.push(index);
     }
 
     /// Free the live slot `id` names: its record stays in place, its count moves on, so `id`
     /// names nothing more. False when `id` names no live slot.
     pub fn free(&mut self, id: C::Id) -> bool {
-        let Some((index, _)) = self.find(id, State::Live) else {
+        let Some(index) = self.find(id, State::Live) else {
             return false;
         };
         self.live -= 1;
@@ -515,7 +959,7 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
     /// Reserve a slot of `lane`: its id, which names nothing until [`Slots::fill`].
     pub fn reserve(&mut self, lane: usize) -> Result<C::Id, Full> {
         let index = self.take(lane, State::Reserved)?;
-        Ok(C::encode(index, self.at(index).uniq))
+        Ok(C::encode(index, self.meta(index).0))
     }
 
     /// [`Slots::reserve`], making chunks as it needs them.
@@ -530,16 +974,15 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
 
     /// Make the reserved slot `id` live: its record, for the owner to renew.
     pub fn fill(&mut self, id: C::Id) -> Option<&mut T> {
-        let (index, _) = self.find(id, State::Reserved)?;
+        let index = self.find(id, State::Reserved)?;
         self.live += 1;
-        let slot = self.at(index);
-        slot.state = State::Live;
-        Some(&mut slot.value)
+        self.set_state(index, State::Live);
+        Some(self.value(index))
     }
 
     /// Give back the reserved slot `id`, its count moved on; false when `id` names none.
     pub fn unreserve(&mut self, id: C::Id) -> bool {
-        let Some((index, _)) = self.find(id, State::Reserved) else {
+        let Some(index) = self.find(id, State::Reserved) else {
             return false;
         };
         self.release(index);
@@ -556,21 +999,18 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
         while index / PER as u32 >= self.made {
             self.grow(pages)?;
         }
-        let slot = self.at(index);
-        assert_eq!(slot.state, State::Fresh, "a slot placed once");
-        slot.state = State::Live;
-        self.live += 1;
+        assert_eq!(self.meta(index).1, State::Fresh, "a slot placed once");
+        self.set_state(index, State::Live);
         self.high = self.high.max(index + 1);
-        let slot = self.at(index);
-        Ok((C::encode(index, slot.uniq), &mut slot.value))
+        Ok(self.taken(index))
     }
 
     /// End the placing: the slots below the highest placed that were not placed go to their
     /// lanes' free lists, the lowest to be taken first, and each lane's cursor moves past it.
     pub fn seal_placed(&mut self) {
         for index in C::RESERVED_LOW..self.high {
-            if self.at(index).state == State::Fresh {
-                self.at(index).state = State::Free;
+            if self.meta(index).1 == State::Fresh {
+                self.set_state(index, State::Free);
                 self.push_tail(index);
             }
         }
@@ -582,10 +1022,10 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
     /// The live slots' ids and records, in index order.
     pub fn iter(&self) -> impl Iterator<Item = (C::Id, &T)> + '_ {
         (C::RESERVED_LOW..self.high).filter_map(move |index| {
-            let slot = self.slot(index)?;
+            let slot = self.slot(index)?.as_ptr();
             // SAFETY: a made chunk's slot, written whole; `&self` keeps the pool's changes away.
-            let slot = unsafe { &*slot.as_ptr() };
-            (slot.state == State::Live).then(|| (C::encode(index, slot.uniq), &slot.value))
+            let (uniq, state, value) = unsafe { ((*slot).uniq, (*slot).state, &(*slot).value) };
+            (state == State::Live).then(|| (C::encode(index, uniq), value))
         })
     }
 
@@ -593,33 +1033,40 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (C::Id, &mut T)> + '_ {
         let this = &*self;
         (C::RESERVED_LOW..self.high).filter_map(move |index| {
-            let slot = this.slot(index)?;
-            // SAFETY: each index is visited once, so the references are to distinct slots, and
-            // the exclusive borrow of the pool lasts as long as the iterator.
-            let slot = unsafe { &mut *slot.as_ptr() };
-            (slot.state == State::Live).then(|| (C::encode(index, slot.uniq), &mut slot.value))
+            let slot = this.slot(index)?.as_ptr();
+            // SAFETY: each index is visited once, so the records are distinct, and the exclusive
+            // borrow of the pool lasts as long as the iterator.
+            let (uniq, state, value) = unsafe { ((*slot).uniq, (*slot).state, &mut (*slot).value) };
+            (state == State::Live).then(|| (C::encode(index, uniq), value))
         })
+    }
+
+    /// Back to no slot handed out, with `made` chunks.
+    fn restart(&mut self, made: u32) {
+        self.made = made;
+        self.fresh = [
+            Self::lane_start(0, C::RESERVED_LOW),
+            Self::lane_start(1, C::RESERVED_LOW),
+        ];
+        self.free = [FreeList::EMPTY; 2];
+        self.live = 0;
+        self.high = 0;
     }
 
     /// Hand every live record to `f`, then empty the pool: every slot fresh again, its count
     /// moved on if it was live or reserved, the chunks kept.
     pub fn drain(&mut self, mut f: impl FnMut(C::Id, &mut T)) {
         for index in C::RESERVED_LOW..self.high {
-            let slot = self.at(index);
-            if slot.state == State::Live {
-                f(C::encode(index, slot.uniq), &mut slot.value);
+            let (uniq, state) = self.meta(index);
+            if state == State::Live {
+                f(C::encode(index, uniq), self.value(index));
             }
-            let slot = self.at(index);
-            if matches!(slot.state, State::Live | State::Reserved) {
-                slot.uniq = next_uniq(slot.uniq, C::MAX_UNIQ);
+            if matches!(state, State::Live | State::Reserved) {
+                self.set_uniq(index, next_uniq(uniq, C::MAX_UNIQ));
             }
-            slot.state = State::Fresh;
+            self.set_state(index, State::Fresh);
         }
-        let made = self.made;
-        let chunks = core::mem::replace(&mut self.chunks, D::EMPTY);
-        *self = Self::new();
-        self.chunks = chunks;
-        self.made = made;
+        self.restart(self.made);
     }
 
     /// Empty the pool and give back its chunks and directory pages, as a new pool: what a pool
@@ -628,16 +1075,24 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
     ///
     /// # Safety
     ///
-    /// Every chunk was taken from `pages`, and nothing refers to a record any more.
+    /// Every chunk was taken from `pages`, nothing refers to a record any more, and nothing
+    /// resolves through the directory meanwhile.
     pub unsafe fn reset(&mut self, pages: &impl Pages) {
         // SAFETY: the caller's contract.
         unsafe { self.chunks.release(Self::CHUNK_PAGES, pages) };
-        *self = Self::new();
+        self.restart(0);
     }
 
     /// Slot `index`'s record's address, whatever its state; none if its chunk is unmade.
     pub fn address(&self, index: u32) -> Option<NonNull<T>> {
-        let slot = self.slot(index)?;
+        Self::address_in(&self.chunks, index)
+    }
+
+    /// [`Slots::address`] through `chunks`, the directory the pool was built on
+    /// ([`Slots::on`]): no borrow of the pool, so a reader without the owner's lock resolves
+    /// while the owner changes it.
+    pub fn address_in(chunks: &impl ChunkDir, index: u32) -> Option<NonNull<T>> {
+        let slot = Self::slot_in(chunks, index)?;
         // SAFETY: a made chunk's slot; only the address is taken.
         Some(unsafe { NonNull::new_unchecked(addr_of_mut!((*slot.as_ptr()).value)) })
     }
@@ -654,31 +1109,37 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
 
     /// Set slot `index`'s uniqueness count, to reach the wrap without 65K frees.
     #[cfg(test)]
-    fn set_uniq(&mut self, index: u32, uniq: u16) {
-        self.at(index).uniq = uniq;
+    fn force_uniq(&mut self, index: u32, uniq: u16) {
+        self.set_uniq(index, uniq);
     }
 }
 
-impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Default for Slots<T, C, PER, D> {
+impl<T: Record, C: Codec, const PER: usize, D: EmptyDir> Default for Slots<T, C, PER, D> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-/// A chunk of `PER` fresh slots, made outside its pool's owner's lock (where taking pages is not
-/// legal inside it) and handed to [`Slots::adopt`], which publishes it or gives it back.
+/// A chunk of `PER` fresh slots with the directory pages its publication needs, made outside its
+/// pool's owner's lock (where taking pages is not legal inside it) and handed to
+/// [`Slots::adopt`], which publishes it or gives it back.
 #[must_use = "a chunk not adopted holds its pages"]
-pub struct Chunk<T: Record, const PER: usize> {
+pub struct Chunk<T: Record, const PER: usize, D: ChunkDir = Paged> {
     number: u32,
     at: NonNull<u8>,
-    _records: PhantomData<T>,
+    directory: Reserve,
+    _records: PhantomData<(T, D)>,
 }
 
-impl<T: Record, const PER: usize> Chunk<T, PER> {
-    /// Chunk `number` ([`Slots::next_chunk`]), every slot written fresh; none when `pages` has
-    /// none.
+impl<T: Record, const PER: usize, D: ChunkDir> Chunk<T, PER, D> {
+    /// Chunk `number` ([`Slots::next_chunk`]), every slot written fresh, with the directory pages
+    /// publishing it as the next chunk takes; none when `pages` has too few.
     pub fn make(number: u32, pages: &impl Pages) -> Option<Self> {
-        let at = pages.take(pages_of::<Slot<T>>(PER))?;
+        let directory = Reserve::take_from(D::next_pages(number), pages)?;
+        let Some(at) = pages.take(pages_of::<Slot<T>>(PER)) else {
+            directory.give_back(pages);
+            return None;
+        };
         let first = number as usize * PER;
         let slots = at.cast::<Slot<T>>().as_ptr();
         for offset in 0..PER {
@@ -695,6 +1156,7 @@ impl<T: Record, const PER: usize> Chunk<T, PER> {
         Some(Chunk {
             number,
             at,
+            directory,
             _records: PhantomData,
         })
     }
@@ -711,31 +1173,50 @@ pub enum Exhausted {
     Limit,
 }
 
+/// A side table's entry: its index ahead of its record, so an address leads back to its index.
+#[repr(C)]
+struct Entry<T> {
+    index: u32,
+    value: T,
+}
+
 /// Records of `T` by index, `PER` to a chunk, with no allocation of their own: the same index as
 /// another pool's (the dispatcher bodies, per-thread and per-process data).
-pub struct SideTable<T: Record, const PER: usize, D: ChunkDir> {
+pub struct SideTable<T: Record, const PER: usize, D: ChunkDir = Paged> {
     chunks: D,
     _records: PhantomData<T>,
+}
+
+impl<T: Record, const PER: usize, D: EmptyDir> SideTable<T, PER, D> {
+    /// An empty table holding its own directory: no chunk made, no page held.
+    pub const fn new() -> Self {
+        Self::on(D::EMPTY)
+    }
 }
 
 impl<T: Record, const PER: usize, D: ChunkDir> SideTable<T, PER, D> {
     /// The pages one chunk takes.
     pub const CHUNK_PAGES: usize = {
-        assert!(PER > 0 && core::mem::size_of::<T>() > 0 && core::mem::align_of::<T>() <= PAGE);
-        pages_of::<T>(PER)
+        assert!(PER > 0 && core::mem::size_of::<T>() > 0);
+        assert!(core::mem::align_of::<Entry<T>>() <= PAGE);
+        pages_of::<Entry<T>>(PER)
     };
+    /// Where a record lies in its entry.
+    const VALUE: usize = core::mem::offset_of!(Entry<T>, value);
 
-    /// An empty table: no chunk made, no page held.
-    pub const fn new() -> Self {
+    /// An empty table on `chunks`, an empty directory: its own, or one kept apart for readers
+    /// that resolve without the owner's lock ([`SideTable::address_in`]).
+    pub const fn on(chunks: D) -> Self {
         let _ = Self::CHUNK_PAGES;
         SideTable {
-            chunks: D::EMPTY,
+            chunks,
             _records: PhantomData,
         }
     }
 
-    /// Make the chunk holding `index` if it is not made, every record written fresh. Takes no
-    /// lock: racing callers make one chunk, the losers' pages given back.
+    /// Make the chunk holding `index` if it is not made, every record written fresh, with the
+    /// directory pages it needs. Takes no lock: racing callers make one chunk and one page of
+    /// each, the losers' pages given back. On failure the table is as it was.
     pub fn ensure(&self, index: u32, pages: &impl Pages) -> Result<(), Exhausted> {
         let chunk = index / PER as u32;
         if chunk >= D::CAPACITY {
@@ -745,12 +1226,30 @@ impl<T: Record, const PER: usize, D: ChunkDir> SideTable<T, PER, D> {
             return Ok(());
         }
         let at = pages.take(Self::CHUNK_PAGES).ok_or(Exhausted::NoPages)?;
-        let records = at.cast::<T>().as_ptr();
+        let entries = at.cast::<Entry<T>>().as_ptr();
         for offset in 0..PER {
-            // SAFETY: the pages hold PER records, page-aligned, ours alone until published.
-            unsafe { T::write_fresh(records.add(offset), chunk * PER as u32 + offset as u32) };
+            // SAFETY: the pages hold PER entries, page-aligned, ours alone until published.
+            unsafe {
+                let entry = entries.add(offset);
+                let index = chunk * PER as u32 + offset as u32;
+                addr_of_mut!((*entry).index).write(index);
+                T::write_fresh(addr_of_mut!((*entry).value), index);
+            }
         }
-        match self.chunks.publish(chunk, at, pages) {
+        let published = loop {
+            let Some(directory) = Reserve::take_from(self.chunks.missing_pages(chunk), pages)
+            else {
+                break Err(Unpublished::NoPage);
+            };
+            let published = self.chunks.publish(chunk, at, &directory);
+            directory.give_back(pages);
+            // Racers only add pages, which never asks more of this publication, but for the
+            // first: a tree made meanwhile where there was none may. Count again.
+            if published != Err(Unpublished::NoPage) {
+                break published;
+            }
+        };
+        match published {
             Ok(()) => Ok(()),
             Err(unpublished) => {
                 // SAFETY: just taken from `pages`, never published.
@@ -766,9 +1265,45 @@ impl<T: Record, const PER: usize, D: ChunkDir> SideTable<T, PER, D> {
 
     /// Record `index`'s address; none if its chunk is unmade. Takes no lock.
     pub fn address(&self, index: u32) -> Option<NonNull<T>> {
-        let base = self.chunks.chunk(index / PER as u32)?;
-        // SAFETY: a published chunk holds PER records.
-        Some(unsafe { base.cast::<T>().add(index as usize % PER) })
+        Self::address_in(&self.chunks, index)
+    }
+
+    /// [`SideTable::address`] through `chunks`, the directory the table was built on
+    /// ([`SideTable::on`]), for a reader that cannot borrow the table.
+    pub fn address_in(chunks: &impl ChunkDir, index: u32) -> Option<NonNull<T>> {
+        let base = chunks.chunk(index / PER as u32)?;
+        let entry = base.cast::<Entry<T>>();
+        // SAFETY: a published chunk holds PER entries; only the address is taken.
+        Some(unsafe {
+            let entry = entry.add(index as usize % PER).as_ptr();
+            NonNull::new_unchecked(addr_of_mut!((*entry).value))
+        })
+    }
+
+    /// The index of the record at `at`: none for an address that is no record of the table.
+    /// Reads the index its entry carries, then checks the table puts that record at `at`.
+    ///
+    /// # Safety
+    ///
+    /// The u32 where `at`'s entry index would be, [`SideTable::VALUE`] bytes before it, is
+    /// readable through `at`: any address the table handed out, or one at least that far into an
+    /// object `at` was derived from (not a reference to the record alone).
+    pub unsafe fn index_at(&self, at: *const T) -> Option<u32> {
+        // SAFETY: the caller's contract.
+        unsafe { Self::index_at_in(&self.chunks, at) }
+    }
+
+    /// [`SideTable::index_at`] through `chunks`, as [`SideTable::address_in`].
+    ///
+    /// # Safety
+    ///
+    /// As [`SideTable::index_at`]'s.
+    pub unsafe fn index_at_in(chunks: &impl ChunkDir, at: *const T) -> Option<u32> {
+        let index = at.cast::<u8>().wrapping_sub(Self::VALUE).cast::<u32>();
+        // SAFETY: the caller's contract; unaligned for an address that is no record's.
+        let index = unsafe { index.read_unaligned() };
+        let found = Self::address_in(chunks, index)?;
+        (found.as_ptr().cast_const() == at).then_some(index)
     }
 
     /// Record `index`; none if its chunk is unmade.
@@ -784,7 +1319,7 @@ impl<T: Record, const PER: usize, D: ChunkDir> SideTable<T, PER, D> {
     }
 }
 
-impl<T: Record, const PER: usize, D: ChunkDir> Default for SideTable<T, PER, D> {
+impl<T: Record, const PER: usize, D: EmptyDir> Default for SideTable<T, PER, D> {
     fn default() -> Self {
         Self::new()
     }
@@ -1291,6 +1826,7 @@ mod tests {
         }
 
         #[test]
+        #[cfg_attr(miri, ignore)]
         fn windows_take_the_even_slots() {
             let pages = HostPages::new();
             let mut t = boxed(Table::new());
@@ -1326,7 +1862,7 @@ mod tests {
         let pages = HostPages::new();
         let mut user = boxed(Slots::<Rec, UserHandle, 8, Inline<4>>::new());
         let h = user.allocate_or_grow(1, &pages).unwrap().0;
-        user.set_uniq(h & 0xFFFF, 0xFFFE);
+        user.force_uniq(h & 0xFFFF, 0xFFFE);
         let h = (h & 0xFFFF) | 0xFFFE_0000;
         assert!(user.get(h).is_some());
         assert!(user.free(h));
@@ -1336,13 +1872,13 @@ mod tests {
         let mut gdi = boxed(Slots::<Rec, GdiHandle, 8, Inline<4>>::new());
         let g = gdi.allocate_or_grow(0, &pages).unwrap().0;
         assert_eq!(g, 0x0100_0001);
-        gdi.set_uniq(1, 0xFF);
+        gdi.force_uniq(1, 0xFF);
         assert!(gdi.free(0xFF00_0001));
         assert_eq!(gdi.allocate(0).unwrap().0, 0x0100_0001);
 
         let mut kernel = boxed(Kernel::<8, 4>::new());
         let k = kernel.allocate_or_grow(0, &pages).unwrap().0;
-        kernel.set_uniq(k.index as u32, 0xFFFE);
+        kernel.force_uniq(k.index as u32, 0xFFFE);
         assert!(kernel.free(Id::new(k.index, 0xFFFE)));
         assert_eq!(kernel.allocate(0).unwrap().0, Id::new(k.index, 1));
     }
@@ -1385,7 +1921,7 @@ mod tests {
         ];
         edges.into_iter().for_each(&mut probe);
         let mut x: u32 = 0x1234_5678;
-        for _ in 0..1 << 20 {
+        for _ in 0..if cfg!(miri) { 1 << 10 } else { 1 << 20 } {
             x = x.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
             probe(x);
         }
@@ -1572,5 +2108,316 @@ mod tests {
         cid.free(b);
         assert_eq!(cid.allocate(0).unwrap().0, 16, "Lifo");
         assert!(cid.get(12).is_none() && cid.get(16).is_some());
+    }
+
+    // --- The growable directory ---
+
+    /// A directory of 4 entries a page, so a few hundred chunks reach height 5.
+    type Four = Paged<4>;
+
+    /// The directory pages a tree holding `chunks` has: at each level up to the highest chunk's
+    /// height, one per distinct chunk / F^level.
+    fn tree_pages<const F: usize>(chunks: &[u32]) -> usize {
+        let Some(&high) = chunks.iter().max() else {
+            return 0;
+        };
+        (1..=Paged::<F>::height(high))
+            .map(|level| {
+                let mut pages: Vec<u64> = chunks
+                    .iter()
+                    .map(|&chunk| chunk as u64 / Paged::<F>::span(level))
+                    .collect();
+                pages.sort_unstable();
+                pages.dedup();
+                pages.len()
+            })
+            .sum()
+    }
+
+    fn height<const F: usize>(dir: &Paged<F>) -> u32 {
+        Paged::<F>::split(dir.root.load(Ordering::SeqCst)).1
+    }
+
+    /// The root is null until the first chunk, which is the root itself; each later chunk takes
+    /// the directory pages `next_pages` says, the tree deepening at 1, 4, 16, 64 and 256 chunks;
+    /// every record keeps its address; reset gives every page back.
+    #[test]
+    fn a_paged_pool_deepens_as_it_grows() {
+        let pages = HostPages::new();
+        let mut pool = boxed(Slots::<Rec, Small<0xFFFE, false>, 1, Four>::new());
+        assert!(pool.chunks.root.load(Ordering::SeqCst).is_null());
+        assert_eq!(pool.address(0), None);
+        let mut records = Vec::new();
+        for chunk in 0..300u32 {
+            let need = Four::next_pages(chunk);
+            assert_eq!(need, pool.chunks.missing_pages(chunk), "chunk {chunk}");
+            let held = pages.held();
+            let (id, rec) = pool.allocate_or_grow(0, &pages).unwrap();
+            assert_eq!(id.index as u32, chunk);
+            rec.value = chunk + 7;
+            records.push(rec as *mut Rec);
+            assert_eq!(pages.held(), held + 1 + need, "chunk {chunk}");
+            if chunk == 0 {
+                assert_eq!((height(&pool.chunks), pages.held()), (0, 1), "no page");
+            }
+        }
+        let all: Vec<u32> = (0..300).collect();
+        assert_eq!(pages.held(), 300 + tree_pages::<4>(&all));
+        assert_eq!(height(&pool.chunks), 5);
+        for (index, at) in records.into_iter().enumerate() {
+            let index = index as u32;
+            assert_eq!(pool.address(index).unwrap().as_ptr(), at);
+            assert_eq!(pool.get(Id::new(index as u16, 1)).unwrap().value, index + 7);
+        }
+        assert_eq!(pool.address(300), None);
+        assert_eq!(pool.address(5000), None, "past the tree's span");
+        // SAFETY: the chunks are `pages`', and nothing refers to them.
+        unsafe { pool.reset(&pages) };
+        assert_eq!(pages.held(), 0);
+        assert!(pool.chunks.root.load(Ordering::SeqCst).is_null());
+        assert_eq!(pool.allocate(0).err(), Some(Full::NoChunk));
+    }
+
+    /// At full fan-out: past a page of chunk pointers (a second leaf) and past 65,535 indices, an
+    /// NT handle table's records all resolve.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn a_paged_pool_passes_a_leaf_and_the_u16_indices() {
+        let pages = HostPages::new();
+        let mut t = boxed(Slots::<Rec, NtHandle, 64>::new());
+        let mut handles = Vec::new();
+        while handles.len() < 70_000 {
+            let (h, rec) = t.allocate_or_grow(0, &pages).unwrap();
+            rec.value = h;
+            handles.push(h);
+        }
+        let chunks = t.next_chunk();
+        assert!(chunks as usize > FANOUT);
+        assert_eq!(height(&t.chunks), 2);
+        let all: Vec<u32> = (0..chunks).collect();
+        assert_eq!(pages.held(), chunks as usize + tree_pages::<FANOUT>(&all));
+        assert!(handles.iter().all(|&h| t.get(h).unwrap().value == h));
+        assert_eq!(t.get(70_001 << 2).map(|r| r.index), None);
+    }
+
+    /// A grow whose chunk finds pages but a directory page does not leaves the pool as it was,
+    /// whether it lacked a page of the chunk's path or a new root.
+    #[test]
+    fn a_failed_directory_page_leaves_the_pool_unchanged() {
+        let pages = HostPages::with_budget(1);
+        let mut pool = boxed(Slots::<Rec, Small<0xFFFE, false>, 1, Four>::new());
+        pool.grow(&pages).unwrap();
+        let first = pool.address(0);
+        pages.set_budget(1);
+        assert_eq!(
+            pool.grow(&pages),
+            Err(Full::NoChunk),
+            "chunk 1 needs a leaf"
+        );
+        assert_eq!(
+            (pages.held(), pool.next_chunk(), height(&pool.chunks)),
+            (1, 1, 0)
+        );
+        assert_eq!(pool.address(0), first);
+        pages.set_budget(2);
+        pool.grow(&pages).unwrap();
+        pages.set_budget(2);
+        pool.grow(&pages).unwrap();
+        pool.grow(&pages).unwrap();
+        assert_eq!(
+            (pages.held(), pool.next_chunk(), height(&pool.chunks)),
+            (5, 4, 1)
+        );
+        pages.set_budget(2);
+        assert_eq!(
+            pool.grow(&pages),
+            Err(Full::NoChunk),
+            "chunk 4: root, leaf, chunk"
+        );
+        assert_eq!(
+            (pages.held(), pool.next_chunk(), height(&pool.chunks)),
+            (5, 4, 1)
+        );
+        assert_eq!(pages.held(), 5);
+        assert!(Chunk::<Rec, 1, Four>::make(4, &pages).is_none());
+        assert_eq!(pages.held(), 5, "a chunk that cannot be made holds nothing");
+        pages.set_budget(3);
+        pool.grow(&pages).unwrap();
+        assert_eq!((pages.held(), height(&pool.chunks)), (8, 2));
+        assert!((0..5).all(|index| pool.address(index).is_some()));
+    }
+
+    /// A chunk made outside the owner's lock carries its directory pages, so adopting takes none;
+    /// a stale one gives back its chunk and its pages.
+    #[test]
+    fn two_phase_growth_carries_the_directory() {
+        let pages = HostPages::new();
+        let mut t = boxed(Slots::<Rec, Small<0xFFFE, false>, 1, Four>::new());
+        for _ in 0..4 {
+            let chunk = Chunk::make(t.next_chunk(), &pages).unwrap();
+            t.adopt(chunk, &pages).unwrap();
+        }
+        let chunk = Chunk::make(t.next_chunk(), &pages).unwrap();
+        let stale = Chunk::make(t.next_chunk(), &pages).unwrap();
+        let held = pages.held();
+        pages.set_budget(0);
+        t.adopt(chunk, &pages).unwrap();
+        assert_eq!(pages.held(), held, "adopting took no page");
+        assert_eq!(height(&t.chunks), 2);
+        assert_eq!(t.adopt(stale, &pages), Err(Full::NoChunk));
+        assert_eq!(
+            pages.held(),
+            held - 3,
+            "the stale chunk, its root and its leaf given back"
+        );
+        assert_eq!(
+            t.address(4).map(|at| unsafe { (*at.as_ptr()).index }),
+            Some(4)
+        );
+    }
+
+    /// `ensure` in any order builds the same tree: a far index first makes a deep path at once,
+    /// lower ones fill in beside it; an address leads back to its index; a foreign or shifted one
+    /// to none.
+    #[test]
+    fn a_paged_side_table_fills_sparsely() {
+        let pages = HostPages::new();
+        let mut t = boxed(SideTable::<Rec, 2, Four>::new());
+        assert_eq!(t.chunks.missing_pages(500), 5);
+        t.ensure(1000, &pages).unwrap();
+        assert_eq!((pages.held(), height(&t.chunks)), (6, 5));
+        assert_eq!(
+            (t.get(1000).unwrap().index, t.get(1001).unwrap().index),
+            (1000, 1001)
+        );
+        assert!(t.get(999).is_none() && t.get(0).is_none());
+        assert_eq!(t.chunks.missing_pages(0), 4);
+        t.ensure(0, &pages).unwrap();
+        assert_eq!(t.chunks.missing_pages(1), 0);
+        t.ensure(3, &pages).unwrap();
+        t.ensure(2, &pages).unwrap();
+        assert_eq!(pages.held(), 3 + tree_pages::<4>(&[500, 0, 1]));
+        t.get_mut(3).unwrap().value = 9;
+        assert_eq!(t.get(3).unwrap().value, 9);
+        for index in [0, 1, 2, 3, 1000, 1001] {
+            let at = t.address(index).unwrap().as_ptr();
+            // SAFETY: an address the table handed out.
+            assert_eq!(unsafe { t.index_at(at) }, Some(index));
+            assert_eq!(
+                // SAFETY: as above.
+                unsafe { SideTable::<Rec, 2, Four>::index_at_in(&t.chunks, at) },
+                Some(index)
+            );
+            let shifted = at.cast::<u8>().wrapping_add(1).cast::<Rec>();
+            // SAFETY: inside the table's chunk, so readable.
+            assert_eq!(unsafe { t.index_at(shifted) }, None);
+        }
+        for index in [3, 7] {
+            let foreign = Box::into_raw(Box::new(Entry {
+                index,
+                value: Rec { index, value: 0 },
+            }));
+            // SAFETY: derived from the whole entry, so its index is readable through it.
+            let at = unsafe { addr_of_mut!((*foreign).value) };
+            // SAFETY: as above.
+            assert_eq!(unsafe { t.index_at(at) }, None, "not the table's");
+            // SAFETY: made by `Box::into_raw` above.
+            drop(unsafe { Box::from_raw(foreign) });
+        }
+        assert_eq!(
+            SideTable::<Rec, 1, Four>::new().ensure(u32::MAX, &pages),
+            Err(Exhausted::Limit)
+        );
+        let held = pages.held();
+        pages.set_budget(1);
+        assert_eq!(
+            t.ensure(20, &pages),
+            Err(Exhausted::NoPages),
+            "a leaf and a chunk"
+        );
+        assert_eq!((pages.held(), t.chunks.missing_pages(10)), (held, 1));
+    }
+
+    /// Threads ensuring scattered indices at once, a far one deepening the tree under the others,
+    /// make one chunk each and one page of each directory page; the losers give theirs back.
+    #[test]
+    fn paged_ensure_races_make_one_tree() {
+        let rounds = if cfg!(miri) { 2 } else { 50 };
+        for round in 0..rounds {
+            let pages = HostPages::new();
+            let t = SideTable::<Rec, 1, Four>::new();
+            let sets: [&[u32]; 4] = [&[0, 300, 5], &[301, 1, 4000], &[4000, 6, 0], &[2, 302, 70]];
+            std::thread::scope(|scope| {
+                for thread in 0..8 {
+                    let (t, pages) = (&t, &pages);
+                    let set = sets[(thread + round) % 4];
+                    scope.spawn(move || {
+                        for &index in set {
+                            t.ensure(index, pages).unwrap();
+                        }
+                    });
+                }
+            });
+            let mut all: Vec<u32> = sets.concat();
+            all.sort_unstable();
+            all.dedup();
+            assert_eq!(pages.held(), all.len() + tree_pages::<4>(&all));
+            assert!(all
+                .iter()
+                .all(|&index| t.get(index).unwrap().index == index));
+            // SAFETY: the table's pages are `pages`', and nothing refers to them.
+            unsafe {
+                t.chunks
+                    .release(SideTable::<Rec, 1, Four>::CHUNK_PAGES, &pages)
+            };
+            assert_eq!(pages.held(), 0);
+        }
+    }
+
+    /// Readers resolve through a directory kept apart from the pool, without borrowing it, while
+    /// its owner grows it: every chunk they find is whole, and stays.
+    #[test]
+    fn readers_resolve_while_the_owner_grows() {
+        const CHUNKS: u32 = if cfg!(miri) { 40 } else { 600 };
+        type Pool<'d> = Slots<Rec, Small<0xFFFE, false>, 2, &'d Four>;
+        let pages = HostPages::new();
+        let dir = Four::EMPTY;
+        let mut pool = Pool::on(&dir);
+        let done = std::sync::atomic::AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            for _ in 0..3 {
+                let (dir, done) = (&dir, &done);
+                scope.spawn(move || {
+                    let mut seen = 0;
+                    loop {
+                        let finished = done.load(Ordering::Acquire);
+                        let mut index = 0;
+                        while let Some(at) = Pool::address_in(dir, index) {
+                            // SAFETY: a published record, written before its publication and
+                            // not changed since.
+                            assert_eq!(unsafe { (*at.as_ptr()).index }, index);
+                            index += 1;
+                        }
+                        assert!(index >= seen, "a published chunk stays");
+                        seen = index;
+                        if finished {
+                            break;
+                        }
+                    }
+                    assert_eq!(seen, CHUNKS * 2);
+                });
+            }
+            for _ in 0..CHUNKS {
+                pool.grow(&pages).unwrap();
+            }
+            done.store(true, Ordering::Release);
+        });
+        assert_eq!(
+            pool.address(CHUNKS * 2 - 1),
+            Pool::address_in(&dir, CHUNKS * 2 - 1)
+        );
+        // SAFETY: the chunks are `pages`', and the readers are gone.
+        unsafe { pool.reset(&pages) };
+        assert_eq!(pages.held(), 0);
     }
 }
