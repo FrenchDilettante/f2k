@@ -8128,21 +8128,21 @@ mod tests {
     }
 
     /// A destroyed window's handle names no window once its slot names the next one: the slot's
-    /// uniqueness count in the high word moved on. A high word of 0 (a slot's first handle's) or
-    /// 0xFFFF names whatever window the slot holds now.
+    /// uniqueness count in the high word moved on, the first handle's (count 1) too. A high word of
+    /// 0 or 0xFFFF names whatever window the slot holds now.
     #[test]
     fn a_reused_slot_gets_a_new_handle() {
         let (w, c, t, atom, _, _) = setup();
         let mut pump = Rec::new(t);
         let first = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
         let first = w.handle_of(first);
-        assert_eq!(first >> 16, 0, "a slot's first handle is the table's own");
+        assert_eq!(first >> 16, 1, "a slot's first handle has the count 1");
         assert!(w.destroy_window_handle(c, t, first, &mut pump).unwrap());
         let second = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
         let old = w.handle_of(second);
         assert_eq!(
             (old & 0xFFFF, old >> 16),
-            (first, 1),
+            (first & 0xFFFF, 2),
             "the same slot, counted on"
         );
         assert!(w.destroy_window_handle(c, t, old, &mut pump).unwrap());
@@ -8150,8 +8150,17 @@ mod tests {
         let new = w.handle_of(next);
         assert_eq!(new, old + 0x1_0000);
         assert_eq!(w.window_from_handle(old), None);
+        assert_eq!(
+            w.window_from_handle(first),
+            None,
+            "the first handle names nothing"
+        );
         assert_eq!(w.window_from_handle(new), Some(next));
-        assert_eq!(w.window_from_handle(first), Some(next), "the wildcard 0");
+        assert_eq!(
+            w.window_from_handle(first & 0xFFFF),
+            Some(next),
+            "the wildcard 0"
+        );
         assert_eq!(w.window_from_handle(first | 0xFFFF_0000), Some(next));
         assert_eq!(w.window_from_handle(new + 0x1_0000), None);
         assert_eq!(

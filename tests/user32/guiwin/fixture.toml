@@ -5,7 +5,6 @@ gate = true
 
 [pending]
 refuse = "F2K is expected to create the window anyway, since a client procedure's WM_NCCREATE and WM_CREATE answers never reach win32k (no user-mode callback)"
-uniq = "F2K gives a slot's first handle the high word 0, its wildcard, so the destroyed handle is expected to name the next window (IsWindow TRUE, DestroyWindow destroying it)"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup

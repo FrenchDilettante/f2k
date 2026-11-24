@@ -8,7 +8,9 @@
 //! its slot in the low word (the slot's index shifted left two, the shape of F2K's handle tables,
 //! [`crate::sched::object`]) and the slot's uniqueness count in the high word, which moves on by
 //! one each time the slot's handle is closed, so a destroyed object's handle names nothing once
-//! its slot names another. A slot's first handle has a count of 0, the table's own value.
+//! its slot names another. A slot's first handle has a count of 1, and the count runs to 0xFFFE
+//! and wraps to 1: it is never 0 or 0xFFFF, the wildcards, so a live handle's high word always
+//! tells it from the slot's later objects.
 //!
 //! Every lookup is by kind, and checks the type and the count: a window's call on a menu's handle
 //! finds no window, and a handle whose count is not its slot's finds nothing — unless its high
@@ -58,6 +60,12 @@ pub enum UserObject {
 /// A handle's high word that names whatever object its slot holds, besides 0.
 const ANY_UNIQ: u16 = 0xFFFF;
 
+/// A slot's first uniqueness count.
+const FIRST_UNIQ: u16 = 1;
+
+/// The highest uniqueness count; the one after it is [`FIRST_UNIQ`].
+const LAST_UNIQ: u16 = 0xFFFE;
+
 /// The user handle table: the slots, each slot's uniqueness count, the freed slots and the next
 /// slots of either parity never used. Slot 0 is never handed out, so no handle is 0.
 pub struct UserHandles {
@@ -86,7 +94,7 @@ impl UserHandles {
             let freed = addr_of_mut!((*handles).freed) as *mut u16;
             for index in 0..HANDLE_SLOTS {
                 slots.add(index).write(None);
-                uniq.add(index).write(0);
+                uniq.add(index).write(FIRST_UNIQ);
                 freed.add(index).write(0);
             }
             addr_of_mut!((*handles).freed_count).write(0);
@@ -196,12 +204,15 @@ impl UserHandles {
         }
     }
 
-    /// Close `handle`, its slot's count moved on (kept to 15 bits: a handle stays positive, and
-    /// never reaches the wildcard 0xFFFF); what it named.
+    /// Close `handle`, its slot's count moved on (from 0xFFFE back to 1, never to a wildcard);
+    /// what it named.
     pub fn close(&mut self, handle: u32) -> Option<UserObject> {
         let index = self.slot(handle)?;
         let object = self.slots[index].take()?;
-        self.uniq[index] = self.uniq[index].wrapping_add(1) & 0x7FFF;
+        self.uniq[index] = match self.uniq[index] {
+            LAST_UNIQ.. => FIRST_UNIQ,
+            uniq => uniq + 1,
+        };
         self.freed[self.freed_count] = index as u16;
         self.freed_count += 1;
         Some(object)
@@ -243,8 +254,8 @@ mod tests {
         let c = t.insert(CURSOR);
         assert_eq!(
             (m, c),
-            (4, 12),
-            "odd slots, a slot's first handle a count of 0"
+            (0x1_0004, 0x1_000C),
+            "odd slots, a slot's first handle a count of 1"
         );
         assert!(t.menu(m).is_some() && t.cursor(m).is_none() && t.window(m).is_none());
         assert!(t.cursor(c).is_some() && t.menu(c).is_none());
@@ -261,10 +272,11 @@ mod tests {
         assert_eq!(t.close(c), Some(CURSOR));
         assert_eq!(t.close(c), None, "a closed handle closes nothing");
         let m = t.insert(MENU);
-        assert_eq!(m, c | 0x1_0000, "the slot just freed, its count one more");
+        assert_eq!(m, c + 0x1_0000, "the slot just freed, its count one more");
         assert_eq!(t.cursor(c), None);
+        assert_eq!(t.menu(c), None, "the destroyed first handle names nothing");
         assert_eq!(
-            t.menu(c),
+            t.menu(c & 0xFFFF),
             Some(MenuId::for_tests(1)),
             "high word 0 names the live object"
         );
@@ -289,17 +301,21 @@ mod tests {
     fn windows_take_the_even_slots() {
         let mut t = handles();
         let w = t.insert(WINDOW);
-        assert_eq!(w, 2 << HANDLE_SHIFT);
+        assert_eq!(w, 0x1_0000 | 2 << HANDLE_SHIFT);
         t.close(w);
         let m = t.insert(MENU);
-        assert_eq!(m, 1 << HANDLE_SHIFT, "a fresh odd slot, the window's left");
+        assert_eq!(
+            m,
+            0x1_0000 | 1 << HANDLE_SHIFT,
+            "a fresh odd slot, the window's left"
+        );
         t.close(m);
         assert_eq!(
             t.insert(WINDOW),
-            w | 0x1_0000,
+            w + 0x1_0000,
             "the window's, not the menu's"
         );
-        assert_eq!(t.insert(CURSOR), m | 0x1_0000, "the menu's");
+        assert_eq!(t.insert(CURSOR), m + 0x1_0000, "the menu's");
         let mut odd = 0;
         while t.fresh[1] < HANDLE_SLOTS {
             t.insert(MENU);
@@ -308,8 +324,24 @@ mod tests {
         assert_eq!(odd, HANDLE_SLOTS / 2 - 1);
         assert_eq!(
             t.insert(MENU),
-            4 << HANDLE_SHIFT,
+            0x1_0000 | 4 << HANDLE_SHIFT,
             "an even slot once no odd one is left"
         );
+    }
+
+    /// A slot's count runs 1..=0xFFFE: closed at 0xFFFE, its next handle's high word is 1, never 0
+    /// or the wildcard 0xFFFF.
+    #[test]
+    fn the_count_wraps_from_0xfffe_to_1() {
+        let mut t = handles();
+        let m = t.insert(MENU);
+        let index = ((m & 0xFFFF) >> HANDLE_SHIFT) as usize;
+        t.uniq[index] = LAST_UNIQ;
+        let m = (m & 0xFFFF) | (LAST_UNIQ as u32) << 16;
+        assert_eq!(t.menu(m), Some(MenuId::for_tests(1)));
+        assert_eq!(t.close(m), Some(MENU));
+        let again = t.insert(MENU);
+        assert_eq!(again, (m & 0xFFFF) | 0x1_0000, "0xFFFE wraps to 1");
+        assert_eq!(t.menu(m), None, "the closed 0xFFFE handle names nothing");
     }
 }
