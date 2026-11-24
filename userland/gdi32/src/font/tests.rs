@@ -335,7 +335,7 @@ fn glyph_outlines_check_their_arguments() {
             GDI_ERROR,
             "GGO_NATIVE"
         );
-        assert_eq!(last_error(), crate::stub::ERROR_CALL_NOT_IMPLEMENTED);
+        assert_eq!(last_error(), rtl::winerror::ERROR_CALL_NOT_IMPLEMENTED);
     }
 }
 

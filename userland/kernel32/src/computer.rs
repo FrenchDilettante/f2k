@@ -11,8 +11,8 @@ use crate::ntcall::{self, NtStatus};
 
 /// The longest computer name, in characters (winbase.h's MAX_COMPUTERNAME_LENGTH).
 pub const MAX_COMPUTERNAME_LENGTH: usize = 15;
-/// ERROR_BUFFER_OVERFLOW: the caller's buffer cannot hold the name and its terminator.
-const ERROR_BUFFER_OVERFLOW: u32 = 111;
+// ERROR_BUFFER_OVERFLOW: the caller's buffer cannot hold the name and its terminator.
+use rtl::winerror::ERROR_BUFFER_OVERFLOW;
 
 /// The key that holds the name, and its value.
 const KEY: &[u8] =

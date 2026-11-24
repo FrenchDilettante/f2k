@@ -13,15 +13,13 @@ pub const SYSTEM: u32 = 0x04;
 pub const DIRECTORY: u32 = 0x10;
 pub const ARCHIVE: u32 = 0x20;
 
-/// Win32 errors the built-ins tell apart.
-pub const ERROR_FILE_NOT_FOUND: u32 = 2;
-pub const ERROR_PATH_NOT_FOUND: u32 = 3;
-pub const ERROR_ACCESS_DENIED: u32 = 5;
-pub const ERROR_NO_MORE_FILES: u32 = 18;
-pub const ERROR_FILE_EXISTS: u32 = 80;
-pub const ERROR_DIR_NOT_EMPTY: u32 = 145;
-pub const ERROR_ALREADY_EXISTS: u32 = 183;
-pub const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
+// Win32 errors the built-ins' messages tell apart.
+use exe::winerror::{
+    ERROR_ALREADY_EXISTS,
+    ERROR_DIR_NOT_EMPTY,
+    ERROR_FILENAME_EXCED_RANGE,
+    ERROR_FILE_EXISTS,
+};
 
 /// Windows 2000's text for a Win32 error a file built-in reports, CR LF included: the shell's
 /// ([`crate::message`]) and the file system's own. None for one the shell has no text for.

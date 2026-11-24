@@ -1,26 +1,13 @@
-//! The Win32 error codes kernel32's own code sets (winerror.h's documented values), and why a call
-//! failed ([`Failure`]), as the code below the exports returns it up to them: an export answers a
-//! failure with the API's failure value, the failure set as the last error ([`answer`],
+//! Why a call failed ([`Failure`]), as the code below the exports returns it up to them: an export
+//! answers a failure with the API's failure value, the failure set as the last error ([`answer`],
 //! [`bool_answer`]).
+
+// STATUS_UNSUCCESSFUL: the status of a failure that names a Win32 error, not a status.
+use rtl::status::STATUS_UNSUCCESSFUL;
 
 use crate::base::{set_last_error, set_last_nt_error};
 use crate::heap::OutOfMemory;
 use crate::ntcall::{self, NtStatus};
-
-pub const ERROR_INVALID_HANDLE: u32 = 6;
-pub const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
-pub const ERROR_NO_MORE_FILES: u32 = 18;
-pub const ERROR_BAD_LENGTH: u32 = 24;
-pub const ERROR_INVALID_PARAMETER: u32 = 87;
-pub const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
-pub const ERROR_ENVVAR_NOT_FOUND: u32 = 203;
-pub const ERROR_MORE_DATA: u32 = 234;
-pub const ERROR_MR_MID_NOT_FOUND: u32 = 317;
-pub const ERROR_NOACCESS: u32 = 998;
-pub const ERROR_INVALID_FLAGS: u32 = 1004;
-
-// STATUS_UNSUCCESSFUL: the status of a failure that names a Win32 error, not a status.
-use rtl::status::STATUS_UNSUCCESSFUL;
 
 /// Why a call failed: a service's status (its error set through ntdll's mapping,
 /// BaseSetLastNTError), a Win32 error kernel32 sets itself, or a fault the caller takes (the status

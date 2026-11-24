@@ -84,12 +84,14 @@ use rtl::status::{NtStatus, STATUS_INVALID_HANDLE};
 // (tools/exportgen; see `stub`).
 include!(concat!(env!("OUT_DIR"), "/exports.rs"));
 
-/// ERROR_NOT_ENOUGH_MEMORY: a buffer the call needs could not be had.
-pub const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
-/// ERROR_INVALID_PARAMETER: an argument the call does not take.
-pub const ERROR_INVALID_PARAMETER: u32 = 87;
-/// ERROR_INVALID_WINDOW_HANDLE: a handle that names no window.
-pub const ERROR_INVALID_WINDOW_HANDLE: u32 = 1400;
+// ERROR_NOT_ENOUGH_MEMORY: a buffer the call needs could not be had.
+// ERROR_INVALID_PARAMETER: an argument the call does not take.
+// ERROR_INVALID_WINDOW_HANDLE: a handle that names no window.
+use rtl::winerror::{
+    ERROR_INVALID_PARAMETER,
+    ERROR_INVALID_WINDOW_HANDLE,
+    ERROR_NOT_ENOUGH_MEMORY,
+};
 
 /// The Win32 error of a failed window manager service: the Win32 error a decision of its carries
 /// itself (a FACILITY_NTWIN32 status, as win32k's refusals answer: ERROR_CLASS_DOES_NOT_EXIST,

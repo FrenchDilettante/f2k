@@ -7,10 +7,11 @@
 
 // STATUS_BUFFER_TOO_SMALL: the value or expansion did not fit.
 use rtl::status::STATUS_BUFFER_TOO_SMALL;
+use rtl::winerror::ERROR_NOT_ENOUGH_MEMORY;
 
 use crate::base::{set_last_error, unicode_string};
 use crate::edge::{counted, counted_optional, Fit, InStr, InWStr, OutBuf, Text};
-use crate::error::{answer, bool_answer, Failure, ERROR_NOT_ENOUGH_MEMORY};
+use crate::error::{answer, bool_answer, Failure};
 use crate::heap::{HeapArray, HeapString};
 use crate::nt::UnicodeString;
 use crate::ntcall::{self, PebLock};

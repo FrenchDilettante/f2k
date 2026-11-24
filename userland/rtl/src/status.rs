@@ -9,6 +9,7 @@
 //! answering otherwise, `WINDOWS_2000` holds its answer.
 
 use crate::status_table::{ERRORS, RANGES};
+use crate::winerror::ERROR_MR_MID_NOT_FOUND;
 
 /// An NTSTATUS value, as the NT interfaces carry it: a 32-bit code whose top two bits are its
 /// severity (success, informational, warning, error), bit 29 the customer flag, the next twelve
@@ -233,9 +234,6 @@ pub const STATUS_ORDINAL_NOT_FOUND: u32 = 0xC000_0138;
 pub const STATUS_ENTRYPOINT_NOT_FOUND: u32 = 0xC000_0139;
 pub const STATUS_CONTROL_C_EXIT: u32 = 0xC000_013A;
 pub const STATUS_DLL_INIT_FAILED: u32 = 0xC000_0142;
-
-/// ERROR_MR_MID_NOT_FOUND: a status the table does not map.
-pub const ERROR_MR_MID_NOT_FOUND: u32 = 317;
 
 /// Whether a status is a success or an informational one (its severity bits below 2).
 pub const fn nt_success(status: u32) -> bool {

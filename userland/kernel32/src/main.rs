@@ -69,9 +69,8 @@ unsafe extern "C" fn f2k_k32_initialize_critical_section(section: *mut u8) {
     }
 }
 
-/// The Win32 errors kernel32's own heap calls set.
-const ERROR_INVALID_HANDLE: u32 = 6;
-const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
+// The Win32 errors kernel32's own heap calls set.
+use rtl::winerror::{ERROR_INVALID_HANDLE, ERROR_NOT_ENOUGH_MEMORY};
 
 /// HeapCreate: ntdll's RtlCreateHeap — a heap of `maximum` bytes (growable when zero), `initial`
 /// committed; null with ERROR_NOT_ENOUGH_MEMORY when there is no room.

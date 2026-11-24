@@ -21,16 +21,18 @@ const CP_OEMCP: u32 = 1;
 pub const INFINITE: u32 = u32::MAX;
 /// WaitForSingleObject's answer when the object is signaled.
 const WAIT_OBJECT_0: u32 = 0;
-/// ERROR_INVALID_PARAMETER: a command line without its terminator.
-const ERROR_INVALID_PARAMETER: u32 = 87;
-/// ERROR_FILENAME_EXCED_RANGE: a path longer than a buffer of MAX_PATH units holds.
-const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
-/// ERROR_INSUFFICIENT_BUFFER: a value longer than the buffer it is read into.
-const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
-/// ERROR_ENVVAR_NOT_FOUND: no variable goes by the name.
-const ERROR_ENVVAR_NOT_FOUND: u32 = 203;
-/// ERROR_OPERATION_ABORTED: a console read Ctrl+C or Ctrl+Break abandoned.
-const ERROR_OPERATION_ABORTED: u32 = 995;
+// ERROR_INVALID_PARAMETER: a command line without its terminator.
+// ERROR_FILENAME_EXCED_RANGE: a path longer than a buffer of MAX_PATH units holds.
+// ERROR_INSUFFICIENT_BUFFER: a value longer than the buffer it is read into.
+// ERROR_ENVVAR_NOT_FOUND: no variable goes by the name.
+// ERROR_OPERATION_ABORTED: a console read Ctrl+C or Ctrl+Break abandoned.
+use crate::winerror::{
+    ERROR_ENVVAR_NOT_FOUND,
+    ERROR_FILENAME_EXCED_RANGE,
+    ERROR_INSUFFICIENT_BUFFER,
+    ERROR_INVALID_PARAMETER,
+    ERROR_OPERATION_ABORTED,
+};
 /// The control events a console handler is called with for Ctrl+C and Ctrl+Break.
 const CTRL_C_EVENT: u32 = 0;
 const CTRL_BREAK_EVENT: u32 = 1;
@@ -57,8 +59,8 @@ const DUPLICATE_SAME_ACCESS: u32 = 2;
 const CURRENT_PROCESS: usize = usize::MAX;
 /// STARTUPINFO's flag that makes its standard-handle fields the new process's.
 const STARTF_USESTDHANDLES: u32 = 0x100;
-/// ERROR_BROKEN_PIPE: a read of a pipe whose writing end is closed, the input's end.
-const ERROR_BROKEN_PIPE: u32 = 109;
+// ERROR_BROKEN_PIPE: a read of a pipe whose writing end is closed, the input's end.
+use crate::winerror::ERROR_BROKEN_PIPE;
 /// CreateFileW's failure.
 const INVALID_HANDLE_VALUE: usize = usize::MAX;
 /// The units a name [`environment_variable`] reads at most, its terminator included: a command

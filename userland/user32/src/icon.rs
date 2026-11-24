@@ -22,15 +22,11 @@ use rtl::display::{DevModeW, ENUM_CURRENT_SETTINGS};
 use rtl::icon::{best_entry, CursorData, ICON_SIZE, RT_GROUP_ICON, RT_ICON};
 use rtl::pod::Pod;
 use rtl::user::NO_PARAM_CREATE_EMPTY_CURSOR;
+// ERROR_RESOURCE_DATA_NOT_FOUND: a group icon that lists no image.
+use rtl::winerror::ERROR_RESOURCE_DATA_NOT_FOUND;
 
 use crate::imports::{self, ResourceName};
 use crate::{failed, failed_with, spec};
-
-/// ERROR_RESOURCE_DATA_NOT_FOUND: a group icon that lists no image.
-const ERROR_RESOURCE_DATA_NOT_FOUND: u32 = 1812;
-
-/// ERROR_INVALID_CURSOR_HANDLE: a handle naming no cursor or icon.
-pub const ERROR_INVALID_CURSOR_HANDLE: u32 = 1402;
 
 /// LoadIconW: a stock icon (no module, an IDI_ id), or the module's group icon `name` at the
 /// standard icon size; see [`load_icon`].
@@ -192,8 +188,9 @@ pub extern "system" fn destroy_icon(icon: usize) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use rtl::winerror::{ERROR_INVALID_CURSOR_HANDLE, ERROR_RESOURCE_TYPE_NOT_FOUND};
+
     use super::*;
-    use crate::class::ERROR_RESOURCE_TYPE_NOT_FOUND;
     use crate::imports::host::{add_resource, CURSORS, LAST_ERROR, PROGRAM};
 
     /// A group icon of two images, 16 by 16 and 32 by 32, and the second's image.

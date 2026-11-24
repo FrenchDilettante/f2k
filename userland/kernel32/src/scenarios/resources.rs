@@ -20,11 +20,13 @@ use crate::resource::{
 };
 
 const IMAGE: usize = IMAGE_BASE as usize;
-const ERROR_INVALID_PARAMETER: u32 = 87;
-const ERROR_RESOURCE_DATA_NOT_FOUND: u32 = 1812;
-const ERROR_RESOURCE_TYPE_NOT_FOUND: u32 = 1813;
-const ERROR_RESOURCE_NAME_NOT_FOUND: u32 = 1814;
-const ERROR_RESOURCE_LANG_NOT_FOUND: u32 = 1815;
+use rtl::winerror::{
+    ERROR_INVALID_PARAMETER,
+    ERROR_RESOURCE_DATA_NOT_FOUND,
+    ERROR_RESOURCE_LANG_NOT_FOUND,
+    ERROR_RESOURCE_NAME_NOT_FOUND,
+    ERROR_RESOURCE_TYPE_NOT_FOUND,
+};
 /// A last error no call sets: one still there after a call was left untouched.
 const UNTOUCHED: u32 = 0x0F2F_2F2F;
 

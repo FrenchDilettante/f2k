@@ -57,10 +57,9 @@ const LR_MONOCHROME: u32 = 0x0001;
 const LR_LOADFROMFILE: u32 = 0x0010;
 const LR_CREATEDIBSECTION: u32 = 0x2000;
 
-/// ERROR_RESOURCE_NAME_NOT_FOUND: no bitmap of that name.
-const ERROR_RESOURCE_NAME_NOT_FOUND: u32 = 1814;
-/// ERROR_INVALID_DATA: a resource that is no DIB.
-const ERROR_INVALID_DATA: u32 = 13;
+// ERROR_RESOURCE_NAME_NOT_FOUND: no bitmap of that name.
+// ERROR_INVALID_DATA: a resource that is no DIB.
+use rtl::winerror::{ERROR_INVALID_DATA, ERROR_RESOURCE_NAME_NOT_FOUND};
 
 /// LoadBitmapW: the module's bitmap `name` as a device-dependent bitmap of the screen's format, or
 /// with no module the system bitmap `name` names; see the module notes.

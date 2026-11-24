@@ -16,10 +16,9 @@ pub const UOI_NAME: u32 = 2;
 pub const UOI_TYPE: u32 = 3;
 pub const UOI_USER_SID: u32 = 4;
 
-/// ERROR_NOT_ENOUGH_MEMORY: the conversion's buffer could not be had.
-pub const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
-/// ERROR_NOACCESS: a buffer the call cannot reach (a null address with a length).
-pub const ERROR_NOACCESS: u32 = 998;
+// ERROR_NOT_ENOUGH_MEMORY: the conversion's buffer could not be had.
+// ERROR_NOACCESS: a buffer the call cannot reach (a null address with a length).
+use rtl::winerror::{ERROR_NOACCESS, ERROR_NOT_ENOUGH_MEMORY};
 
 /// A service's answer: its value, or none with the failure's status made the last error (through
 /// ntdll's RtlNtStatusToDosError, not [`crate::window_error`]).

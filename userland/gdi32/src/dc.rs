@@ -399,7 +399,7 @@ mod tests {
                 create_dc_w(printer.as_ptr(), core::ptr::null(), core::ptr::null(), 0),
                 0
             );
-            assert_eq!(last_error(), crate::stub::ERROR_CALL_NOT_IMPLEMENTED);
+            assert_eq!(last_error(), rtl::winerror::ERROR_CALL_NOT_IMPLEMENTED);
             assert_eq!(
                 create_dc_w(core::ptr::null(), core::ptr::null(), core::ptr::null(), 0),
                 0
@@ -545,6 +545,6 @@ mod tests {
         assert_eq!(get_device_caps(BAD, HORZRES), 0);
         assert_eq!(last_error(), ERROR_INVALID_HANDLE);
         assert_eq!(get_device_caps(DC, 36), 0);
-        assert_eq!(last_error(), crate::stub::ERROR_CALL_NOT_IMPLEMENTED);
+        assert_eq!(last_error(), rtl::winerror::ERROR_CALL_NOT_IMPLEMENTED);
     }
 }

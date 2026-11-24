@@ -115,10 +115,8 @@ const FILE_TYPE_PIPE: u32 = 3;
 /// The standard handles' ids, descriptors 0 to 2's.
 const STANDARD: [u32; 3] = [-10i32 as u32, -11i32 as u32, -12i32 as u32];
 
-/// Win32 errors the layer tells apart.
-const ERROR_ACCESS_DENIED: u32 = 5;
-const ERROR_NEGATIVE_SEEK: u32 = 131;
-const ERROR_BROKEN_PIPE: u32 = 109;
+// Win32 errors the layer tells apart.
+use rtl::winerror::{ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_NEGATIVE_SEEK};
 
 /// SetFilePointer's origins.
 const FILE_BEGIN: u32 = 0;

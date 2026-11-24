@@ -5,6 +5,9 @@
 //! the file).
 
 use rtl::array_vec::ArrayVec;
+// ERROR_BUFFER_OVERFLOW: a temporary file's name past MAX_PATH.
+// ERROR_DIRECTORY: GetTempFileName's path is not an existing directory.
+use rtl::winerror::{ERROR_BUFFER_OVERFLOW, ERROR_DIRECTORY};
 
 use super::handle::create_file_w;
 use super::names::file_attributes;
@@ -12,11 +15,6 @@ use super::*;
 use crate::base::unicode_string;
 use crate::edge::{OutBuf, Text};
 use crate::error::answer;
-
-/// ERROR_BUFFER_OVERFLOW: a temporary file's name past MAX_PATH.
-const ERROR_BUFFER_OVERFLOW: u32 = 111;
-/// ERROR_DIRECTORY: GetTempFileName's path is not an existing directory.
-const ERROR_DIRECTORY: u32 = 267;
 /// CreateFile's CREATE_NEW, and the attributes the file is made with.
 const CREATE_NEW: u32 = 1;
 const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;

@@ -36,19 +36,6 @@ pub const MAX_PATH: usize = 260;
 
 pub const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
 
-/// The Win32 errors the file calls set themselves.
-pub const ERROR_FILE_NOT_FOUND: u32 = 2;
-pub const ERROR_PATH_NOT_FOUND: u32 = 3;
-pub const ERROR_INVALID_HANDLE: u32 = 6;
-pub const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
-pub const ERROR_BAD_LENGTH: u32 = 24;
-pub const ERROR_FILE_EXISTS: u32 = 80;
-pub const ERROR_INVALID_PARAMETER: u32 = 87;
-pub const ERROR_INVALID_NAME: u32 = 123;
-pub const ERROR_NEGATIVE_SEEK: u32 = 131;
-pub const ERROR_ALREADY_EXISTS: u32 = 183;
-pub const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
-
 // The statuses the file calls tell apart.
 use rtl::status::{
     STATUS_END_OF_FILE,
@@ -60,6 +47,20 @@ use rtl::status::{
     STATUS_OBJECT_PATH_NOT_FOUND,
     STATUS_OBJECT_TYPE_MISMATCH,
     STATUS_PENDING,
+};
+// The Win32 errors the file calls set themselves.
+use rtl::winerror::{
+    ERROR_ALREADY_EXISTS,
+    ERROR_BAD_LENGTH,
+    ERROR_FILENAME_EXCED_RANGE,
+    ERROR_FILE_EXISTS,
+    ERROR_FILE_NOT_FOUND,
+    ERROR_INVALID_HANDLE,
+    ERROR_INVALID_NAME,
+    ERROR_INVALID_PARAMETER,
+    ERROR_NEGATIVE_SEEK,
+    ERROR_NOT_ENOUGH_MEMORY,
+    ERROR_PATH_NOT_FOUND,
 };
 
 /// The file access rights and the generic ones the calls ask for.

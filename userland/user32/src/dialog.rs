@@ -123,10 +123,8 @@ const VK_DOWN: u32 = 0x28;
 /// ShowWindow's command for a dialog shown.
 const SW_SHOWNORMAL: i32 = 1;
 
-/// The errors of the dialog calls (winerror.h).
-const ERROR_INVALID_DATA: u32 = 13;
-pub const ERROR_WINDOW_NOT_DIALOG: u32 = 1420;
-pub const ERROR_CONTROL_ID_NOT_FOUND: u32 = 1421;
+// The errors of the dialog calls (winerror.h).
+use rtl::winerror::{ERROR_CONTROL_ID_NOT_FOUND, ERROR_INVALID_DATA, ERROR_WINDOW_NOT_DIALOG};
 
 /// RT_DIALOG: a dialog template resource.
 const RT_DIALOG: u16 = 5;

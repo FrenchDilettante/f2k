@@ -5,10 +5,10 @@
 //! with ERROR_FILE_NOT_FOUND (an assumption: no public source gives the error WinHelp leaves when
 //! WinHlp32.exe cannot start).
 
-use crate::imports;
+// ERROR_FILE_NOT_FOUND: the help engine's program is not there.
+use rtl::winerror::ERROR_FILE_NOT_FOUND;
 
-/// ERROR_FILE_NOT_FOUND: the help engine's program is not there.
-const ERROR_FILE_NOT_FOUND: u32 = 2;
+use crate::imports;
 
 /// WinHelpW: FALSE with ERROR_FILE_NOT_FOUND, whatever the request (see the module notes).
 #[unsafe(export_name = "f2k_export_WinHelpW")]

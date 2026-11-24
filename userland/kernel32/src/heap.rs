@@ -8,8 +8,9 @@
 use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 
+use rtl::winerror::ERROR_NOT_ENOUGH_MEMORY;
+
 use crate::edge::{InStr, InWStr};
-use crate::error::ERROR_NOT_ENOUGH_MEMORY;
 use crate::nt::{self, UnicodeString};
 use crate::ntcall::{self, NtStatus};
 

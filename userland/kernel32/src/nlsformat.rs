@@ -40,14 +40,10 @@
 //! -. A NUMBERFMT with NumDigits past 9, LeadingZero past 1, NegativeOrder past 4, or a separator
 //! missing, empty or longer than 3 characters is ERROR_INVALID_PARAMETER.
 
+use rtl::winerror::{ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_FLAGS, ERROR_INVALID_PARAMETER};
+
 use crate::edge::{CallerChar, CallerStr, CallerUnits, In, OutBuf, Text};
-use crate::error::{
-    answer,
-    Failure,
-    ERROR_INSUFFICIENT_BUFFER,
-    ERROR_INVALID_FLAGS,
-    ERROR_INVALID_PARAMETER,
-};
+use crate::error::{answer, Failure};
 use crate::heap::HeapVec;
 use crate::locale::room;
 use crate::localeinfo;

@@ -26,9 +26,10 @@ use rtl::edge::{In, InBuf, InStr, InWStr, OutBuf};
 use rtl::menu::*;
 use rtl::pod::Pod;
 use rtl::status::NtStatus;
+use rtl::winerror::ERROR_INVALID_MENU_HANDLE;
 
 use crate::imports;
-use crate::menu::{query, ERROR_INVALID_MENU_HANDLE};
+use crate::menu::query;
 use crate::{failed, failed_with, window_error, ERROR_INVALID_PARAMETER};
 
 /// MENUITEMINFO's sizes: Windows 2000's, and NT 4's (no hbmpItem).

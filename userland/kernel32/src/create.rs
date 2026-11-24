@@ -122,15 +122,16 @@ const OWN_CONSOLE: u32 = DETACHED_PROCESS | CREATE_NEW_CONSOLE;
 /// (STARTF_USEHOTKEY and STARTF_HASSHELLDATA ride in them too).
 const STARTF_STANDARD_FIELDS: u32 = 0x0100 | 0x0200 | 0x0400;
 
-/// The Win32 errors CreateProcess sets itself.
-const ERROR_FILE_NOT_FOUND: u32 = 2;
-const ERROR_PATH_NOT_FOUND: u32 = 3;
-const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
-const ERROR_INVALID_PARAMETER: u32 = 87;
-const ERROR_BAD_EXE_FORMAT: u32 = 193;
-const ERROR_DIRECTORY: u32 = 267;
-
 use rtl::status::STATUS_ACCESS_VIOLATION;
+// The Win32 errors CreateProcess sets itself.
+use rtl::winerror::{
+    ERROR_BAD_EXE_FORMAT,
+    ERROR_DIRECTORY,
+    ERROR_FILE_NOT_FOUND,
+    ERROR_INVALID_PARAMETER,
+    ERROR_NOT_ENOUGH_MEMORY,
+    ERROR_PATH_NOT_FOUND,
+};
 
 /// The section's refusals of a file that is no Windows image: not a PE file at all (no MZ, an NE,
 /// LE or Windows 3.x one), an empty file, a file no image section can be made of.

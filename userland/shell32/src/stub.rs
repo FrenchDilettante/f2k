@@ -12,14 +12,12 @@
 
 use core::ffi::CStr;
 
+use rtl::status::STATUS_NOT_IMPLEMENTED;
 use rtl::stub::{describe, Entry, Fails, Line};
+// ERROR_CALL_NOT_IMPLEMENTED: "This function is not supported on this system."
+use rtl::winerror::ERROR_CALL_NOT_IMPLEMENTED;
 
 use crate::imports::{self, Probed};
-
-/// ERROR_CALL_NOT_IMPLEMENTED: "This function is not supported on this system."
-pub const ERROR_CALL_NOT_IMPLEMENTED: u32 = 120;
-
-use rtl::status::STATUS_NOT_IMPLEMENTED;
 
 /// EXCEPTION_NONCONTINUABLE: what a stub that cannot fail raises STATUS_NOT_IMPLEMENTED as.
 const EXCEPTION_NONCONTINUABLE: u32 = 1;

@@ -14,9 +14,10 @@
 //! and a pointer the caller cannot reach faults the caller there, as on the platform.
 
 pub use rtl::edge::{caller_bytes, In, InBuf, InStr, InWStr, Out, OutBuf};
+use rtl::winerror::ERROR_NOT_ENOUGH_MEMORY;
 
 use crate::base::WideUnits;
-use crate::error::{Failure, ERROR_NOT_ENOUGH_MEMORY};
+use crate::error::Failure;
 use crate::heap::{HeapArray, HeapString};
 use crate::nt::UnicodeString;
 use crate::ntcall;

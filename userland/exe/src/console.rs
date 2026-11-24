@@ -12,8 +12,8 @@ const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
 const ENABLE_PROCESSED_INPUT: u32 = 0x1;
 /// The units a title [`set_title`] takes holds, its terminator included: a console line's and one.
 const TITLE: usize = 1025;
-/// ERROR_FILENAME_EXCED_RANGE: a title longer than [`TITLE`] holds.
-const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
+// ERROR_FILENAME_EXCED_RANGE: a title longer than [`TITLE`] holds.
+use crate::winerror::ERROR_FILENAME_EXCED_RANGE;
 
 /// CONSOLE_SCREEN_BUFFER_INFO: a screen buffer's size, cursor and attributes, its window's
 /// rectangle and largest size.

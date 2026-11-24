@@ -12,16 +12,13 @@
 use rtl::cstr;
 use rtl::nt::Luid;
 use rtl::status::NtStatus;
+// ERROR_IO_PENDING: the last error a successful lookup leaves (see
+// [`lookup_privilege_value`]). ERROR_NOACCESS: a LUID the lookup cannot write.
+// ERROR_NO_SUCH_PRIVILEGE: a name no privilege has.
+use rtl::winerror::{ERROR_IO_PENDING, ERROR_NOACCESS, ERROR_NO_SUCH_PRIVILEGE};
 
 use crate::imports::{self as nt, Counted, Passed};
 use crate::Out;
-
-/// ERROR_IO_PENDING: the last error a successful lookup leaves (see [`lookup_privilege_value`]).
-const ERROR_IO_PENDING: u32 = 997;
-/// ERROR_NOACCESS: a LUID the lookup cannot write.
-const ERROR_NOACCESS: u32 = 998;
-/// ERROR_NO_SUCH_PRIVILEGE: a name no privilege has.
-pub const ERROR_NO_SUCH_PRIVILEGE: u32 = 1313;
 /// RPC_S_SERVER_UNAVAILABLE: a system name other than the local computer's (there is no remote
 /// security authority to ask).
 const RPC_S_SERVER_UNAVAILABLE: u32 = 1722;

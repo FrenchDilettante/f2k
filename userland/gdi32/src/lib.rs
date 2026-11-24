@@ -37,12 +37,10 @@ use rtl::status::NtStatus;
 // (tools/exportgen; see `stub`).
 include!(concat!(env!("OUT_DIR"), "/exports.rs"));
 
-/// ERROR_INVALID_HANDLE: a handle that names no DC, or no object of the kind the call takes.
-pub const ERROR_INVALID_HANDLE: u32 = 6;
-/// ERROR_NOT_ENOUGH_MEMORY: a conversion's buffer could not be had.
-pub const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
-/// ERROR_INVALID_PARAMETER: a count, a mode or a name the call does not take.
-pub const ERROR_INVALID_PARAMETER: u32 = 87;
+// ERROR_INVALID_HANDLE: a handle that names no DC, or no object of the kind the call takes.
+// ERROR_NOT_ENOUGH_MEMORY: a conversion's buffer could not be had.
+// ERROR_INVALID_PARAMETER: a count, a mode or a name the call does not take.
+use rtl::winerror::{ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER, ERROR_NOT_ENOUGH_MEMORY};
 
 /// A service's answer: its value, or none with the failure's status made the last error (rtl's
 /// status table: see [`imports`]).

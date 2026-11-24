@@ -28,6 +28,12 @@
 
 use rtl::codepage::sbcs::CP1252;
 use rtl::cp1252;
+use rtl::winerror::{
+    ERROR_INSUFFICIENT_BUFFER,
+    ERROR_INVALID_FLAGS,
+    ERROR_INVALID_PARAMETER,
+    ERROR_NOT_ENOUGH_MEMORY,
+};
 
 use super::sortkey::{
     self,
@@ -41,14 +47,7 @@ use super::sortkey::{
 use super::{narrow_source, refused, room, wide_source};
 use crate::base::set_last_error;
 use crate::edge::{Counted, OutBuf};
-use crate::error::{
-    answer,
-    Failure,
-    ERROR_INSUFFICIENT_BUFFER,
-    ERROR_INVALID_FLAGS,
-    ERROR_INVALID_PARAMETER,
-    ERROR_NOT_ENOUGH_MEMORY,
-};
+use crate::error::{answer, Failure};
 use crate::heap::HeapVec;
 
 /// The LCMAP_ flags.

@@ -19,10 +19,12 @@
 //! answer for it; a DOS program named `.txt` is one all the same (the name types only a file
 //! without MZ).
 
+use rtl::winerror::ERROR_PATH_NOT_FOUND;
+
 use crate::create::{OPEN_ACCESS, OPEN_OPTIONS, OPEN_SHARE};
 use crate::edge::{InStr, InWStr, Out};
 use crate::error::{bool_answer, Failure};
-use crate::files::{self, NtPath, Wide, ERROR_PATH_NOT_FOUND};
+use crate::files::{self, NtPath, Wide};
 use crate::heap::Owned;
 use crate::ntcall::{self, NtStatus, SectionImageInformation};
 
@@ -34,7 +36,7 @@ pub const SCS_PIF_BINARY: u32 = 3;
 pub const SCS_POSIX_BINARY: u32 = 4;
 pub const SCS_OS216_BINARY: u32 = 5;
 
-pub const ERROR_BAD_EXE_FORMAT: u32 = 193;
+use rtl::winerror::ERROR_BAD_EXE_FORMAT;
 
 /// What an image's description says (its file header's characteristics, its machine, its
 /// subsystem): an executable, a DLL, an i386 image, the POSIX subsystem.

@@ -30,9 +30,6 @@ const RT_ACCELERATOR: u16 = 9;
 /// The most entries a table holds (the kernel's).
 const MAX_ENTRIES: usize = 128;
 
-/// ERROR_INVALID_ACCEL_HANDLE.
-pub const ERROR_INVALID_ACCEL_HANDLE: u32 = 1403;
-
 /// The UTF-16 unit of an ANSI character (the ANSI code page's, through ntdll).
 fn wide_of(byte: u8) -> u16 {
     let mut unit = [0u16; 1];
@@ -306,6 +303,8 @@ fn translate(window: usize, table: usize, msg: &Msg) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use rtl::winerror::ERROR_INVALID_ACCEL_HANDLE;
+
     use super::*;
     use crate::imports::host::{add_resource, LAST_ERROR, PROGRAM, TRANSLATED};
 

@@ -143,8 +143,8 @@ use crate::status::*;
 /// USERPostMessageLimit, 10,000 by default. A post past it fails (guimsg `quota`), the input
 /// messages aside, which it does not count.
 pub const POSTED_LIMIT: u32 = 10_000;
-/// ERROR_NOT_ENOUGH_QUOTA: the post past [`POSTED_LIMIT`]'s refusal, as win32k carries it.
-pub const ERROR_NOT_ENOUGH_QUOTA: u32 = 1816;
+// ERROR_NOT_ENOUGH_QUOTA: the post past [`POSTED_LIMIT`]'s refusal, as win32k carries it.
+use rtl::winerror::{ERROR_INVALID_THREAD_ID, ERROR_MESSAGE_SYNC_ONLY, ERROR_NOT_ENOUGH_QUOTA};
 /// How many sent messages can be on their way at once.
 pub const SENT: usize = 128;
 /// How many sent creation messages, each with its create parameters, can be on their way at once.
@@ -1711,11 +1711,11 @@ pub fn send_carrying(
 
 /// ERROR_MESSAGE_SYNC_ONLY (1159), the Win32 error itself in a FACILITY_NTWIN32 status: a message
 /// whose pointer cannot go to another thread ([`rtl::user::sync_only`]).
-pub const MESSAGE_SYNC_ONLY: NtStatus = NtStatus::from_win32(1159);
+pub const MESSAGE_SYNC_ONLY: NtStatus = NtStatus::from_win32(ERROR_MESSAGE_SYNC_ONLY);
 
 /// ERROR_INVALID_THREAD_ID (1444), carried as [`MESSAGE_SYNC_ONLY`] is: a thread id no thread with
 /// a queue has.
-pub const INVALID_THREAD_ID: NtStatus = NtStatus::from_win32(1444);
+pub const INVALID_THREAD_ID: NtStatus = NtStatus::from_win32(ERROR_INVALID_THREAD_ID);
 
 /// SendNotifyMessage's step: a window of the caller's own thread is called as SendMessage calls
 /// it ([`Sending::Call`]); a window whose procedure is the window manager's answered; another

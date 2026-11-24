@@ -10,8 +10,8 @@ use crate::sys::MAX_PATH;
 const TH32CS_SNAPPROCESS: u32 = 0x0000_0002;
 /// INVALID_HANDLE_VALUE: CreateToolhelp32Snapshot's failure.
 const INVALID_HANDLE_VALUE: usize = usize::MAX;
-/// ERROR_NO_MORE_FILES: a walk past its last entry.
-const ERROR_NO_MORE_FILES: u32 = 18;
+// ERROR_NO_MORE_FILES: a walk past its last entry.
+use crate::winerror::ERROR_NO_MORE_FILES;
 
 /// PROCESSENTRY32W (tlhelp32.h).
 #[repr(C)]

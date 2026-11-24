@@ -6,14 +6,14 @@
 //! errors it sets, as the fixture's capture has them.
 
 use rtl::pod::Pod;
-
-use super::last_error;
-use crate::error::{
+use rtl::winerror::{
     ERROR_BAD_LENGTH,
     ERROR_INVALID_HANDLE,
     ERROR_INVALID_PARAMETER,
     ERROR_NO_MORE_FILES,
 };
+
+use super::last_error;
 use crate::nt::host::{LAST_SECTION, LAST_VM};
 use crate::nt::toolhelp::{install, ListedProcess, ListedThread};
 use crate::toolhelp::{

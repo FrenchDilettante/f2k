@@ -27,9 +27,10 @@
 use core::iter::Peekable;
 
 use rtl::codepage::{self, Page};
+use rtl::winerror::{ERROR_INVALID_FLAGS, ERROR_INVALID_PARAMETER};
 
 use crate::edge::{Counted, OutBuf};
-use crate::error::{answer, Failure, ERROR_INVALID_FLAGS, ERROR_INVALID_PARAMETER};
+use crate::error::{answer, Failure};
 use crate::heap::HeapVec;
 use crate::locale::{check_destination, room, Produced};
 

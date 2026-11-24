@@ -127,10 +127,12 @@ const DATA_MARK: usize = 0x4D4B_3246;
 
 /// The Win32 errors the calls report (NO_ERROR: LocalUnlock's of the last lock).
 pub const NO_ERROR: u32 = 0;
-pub const ERROR_INVALID_HANDLE: u32 = 6;
-pub const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
-pub const ERROR_DISCARDED: u32 = 157;
-pub const ERROR_NOT_LOCKED: u32 = 158;
+use crate::winerror::{
+    ERROR_DISCARDED,
+    ERROR_INVALID_HANDLE,
+    ERROR_NOT_ENOUGH_MEMORY,
+    ERROR_NOT_LOCKED,
+};
 
 /// A call's return value, and the last error it sets (none: the last error stays).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

@@ -21,7 +21,13 @@ use cmd::builtins::dir::{
     Wide,
     WideName,
 };
-use cmd::builtins::files::{self as paths, DIRECTORY, ERROR_FILE_NOT_FOUND, ERROR_NO_MORE_FILES};
+use cmd::builtins::files::{self as paths, DIRECTORY};
+use exe::winerror::{
+    ERROR_FILENAME_EXCED_RANGE,
+    ERROR_FILE_NOT_FOUND,
+    ERROR_NO_MORE_FILES,
+    ERROR_PATH_NOT_FOUND,
+};
 use exe::MAX_PATH;
 
 use super::{report, wide};
@@ -33,7 +39,7 @@ const STAR: &[u16] = &[b'*' as u16];
 const SCREEN_COLUMNS: usize = 80;
 
 /// The error a path too long for a buffer is.
-const TOO_LONG: exe::Error = exe::Error(paths::ERROR_FILENAME_EXCED_RANGE);
+const TOO_LONG: exe::Error = exe::Error(ERROR_FILENAME_EXCED_RANGE);
 
 /// `dir`: the DIRCMD variable's switches, then the argument's, then each name listed (the current
 /// directory without one). A name that matches nothing prints `File Not Found` on the standard
@@ -150,7 +156,7 @@ impl<'a> Listing<'a> {
             }
         };
         if !exe::attributes(full).is_ok_and(|attributes| attributes & DIRECTORY != 0) {
-            report(exe::Error(paths::ERROR_PATH_NOT_FOUND));
+            report(exe::Error(ERROR_PATH_NOT_FOUND));
             return false;
         }
         if !self.switches.bare && !self.heading {

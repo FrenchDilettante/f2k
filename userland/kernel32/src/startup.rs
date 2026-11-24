@@ -29,8 +29,8 @@ own_data! {
 /// VER_PLATFORM_WIN32_NT.
 const PLATFORM_WIN32_NT: u32 = 2;
 
-const ERROR_INSUFFICIENT_BUFFER: u32 = 122;
 use rtl::status::STATUS_NO_MEMORY;
+use rtl::winerror::ERROR_INSUFFICIENT_BUFFER;
 
 /// The UTF-16 units of a counted string narrowed through the ANSI code page into a new
 /// NUL-terminated block on the process heap (ntdll's RtlUnicodeStringToAnsiString, its allocating
@@ -309,9 +309,8 @@ pub struct OsVersionInfoExA {
 
 const _: () = assert!(size_of::<OsVersionInfoExA>() == OSVERSIONINFOEXA_SIZE as usize);
 
-const ERROR_BAD_ARGUMENTS: u32 = 160;
-const ERROR_OLD_WIN_VERSION: u32 = 1150;
 use rtl::status::{STATUS_INVALID_PARAMETER, STATUS_REVISION_MISMATCH};
+use rtl::winerror::{ERROR_BAD_ARGUMENTS, ERROR_OLD_WIN_VERSION};
 
 /// VerifyVersionInfo's work, either form: ntdll's RtlVerifyVersionInfo, its refusals mapped as
 /// Windows 2000's kernel32 maps them (no type ERROR_BAD_ARGUMENTS, a version the conditions refuse

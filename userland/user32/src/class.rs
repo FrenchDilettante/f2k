@@ -109,16 +109,12 @@ pub const REGISTER_ANSI_PROC: u32 = 0x10;
 /// and an integer atom's digits.
 const CLASS_NAME_UNITS: usize = 130;
 
-/// ERROR_FILE_NOT_FOUND: what a registration leaves as the last error.
-pub const ERROR_FILE_NOT_FOUND: u32 = 2;
-/// ERROR_NOACCESS: a buffer the call cannot reach.
-pub const ERROR_NOACCESS: u32 = 998;
-/// The class decisions' errors (winerror.h).
-pub const ERROR_CLASS_ALREADY_EXISTS: u32 = 1410;
-pub const ERROR_CLASS_DOES_NOT_EXIST: u32 = 1411;
-pub const ERROR_CLASS_HAS_WINDOWS: u32 = 1412;
-/// ERROR_RESOURCE_TYPE_NOT_FOUND: LoadCursor's answer for a stock cursor id there is none of.
-pub const ERROR_RESOURCE_TYPE_NOT_FOUND: u32 = 1813;
+// ERROR_FILE_NOT_FOUND: what a registration leaves as the last error.
+use rtl::winerror::ERROR_FILE_NOT_FOUND;
+// ERROR_NOACCESS: a buffer the call cannot reach.
+use rtl::winerror::ERROR_NOACCESS;
+// ERROR_RESOURCE_TYPE_NOT_FOUND: LoadCursor's answer for a stock cursor id there is none of.
+use rtl::winerror::ERROR_RESOURCE_TYPE_NOT_FOUND;
 
 // --- The stock cursors ---------------------------------------------------------------------------
 
@@ -1036,6 +1032,12 @@ fn class_name_a(window: usize, buffer: Option<&mut [u8]>) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    use rtl::winerror::{
+        ERROR_CLASS_ALREADY_EXISTS,
+        ERROR_CLASS_DOES_NOT_EXIST,
+        ERROR_CLASS_HAS_WINDOWS,
+    };
+
     use super::*;
     use crate::imports::host::{procedure, wm, LAST_ERROR};
 
@@ -1362,6 +1364,6 @@ mod tests {
         assert_eq!(unsafe { load_cursor_a(0, 32767 as *const u8) }, 0);
         assert_eq!(last_error(), ERROR_RESOURCE_TYPE_NOT_FOUND);
         assert_eq!(load_cursor_w(0x40_0000, 1 as *const u16), 0);
-        assert_eq!(last_error(), crate::stub::ERROR_CALL_NOT_IMPLEMENTED);
+        assert_eq!(last_error(), rtl::winerror::ERROR_CALL_NOT_IMPLEMENTED);
     }
 }

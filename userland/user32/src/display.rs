@@ -360,8 +360,8 @@ pub const MONITOR_DEFAULTTONEAREST: u32 = 2;
 /// MONITORINFO's dwFlags: the primary monitor.
 pub const MONITORINFOF_PRIMARY: u32 = 1;
 
-/// ERROR_INVALID_MONITOR_HANDLE: a handle that names no monitor.
-pub const ERROR_INVALID_MONITOR_HANDLE: u32 = 1461;
+// ERROR_INVALID_MONITOR_HANDLE: a handle that names no monitor.
+use rtl::winerror::ERROR_INVALID_MONITOR_HANDLE;
 
 /// MONITORINFOEXA (72 bytes): MONITORINFO (40 bytes: its size, the monitor's rectangle, its work
 /// area, its flags) and the display's name.
@@ -1092,7 +1092,7 @@ mod tests {
         assert_eq!(get_system_metrics(1000), 0);
         assert_eq!(
             LAST_ERROR.with(|error| error.get()),
-            crate::stub::ERROR_CALL_NOT_IMPLEMENTED
+            rtl::winerror::ERROR_CALL_NOT_IMPLEMENTED
         );
         let mut work = Rect::default();
         let address = &mut work as *mut Rect as usize;

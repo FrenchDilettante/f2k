@@ -36,6 +36,12 @@ pub mod ini;
 
 use ini::Fit;
 use rtl::status::{STATUS_END_OF_FILE, STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND};
+use rtl::winerror::{
+    ERROR_FILENAME_EXCED_RANGE,
+    ERROR_FILE_NOT_FOUND,
+    ERROR_INVALID_PARAMETER,
+    ERROR_NOT_ENOUGH_MEMORY,
+};
 
 use crate::base::set_last_error;
 use crate::edge::{
@@ -48,7 +54,7 @@ use crate::edge::{
     OutBuf,
     Text,
 };
-use crate::error::{answer, bool_answer, Failure, ERROR_INVALID_PARAMETER};
+use crate::error::{answer, bool_answer, Failure};
 use crate::files::{
     self,
     close,
@@ -56,9 +62,6 @@ use crate::files::{
     set,
     NtPath,
     Wide,
-    ERROR_FILENAME_EXCED_RANGE,
-    ERROR_FILE_NOT_FOUND,
-    ERROR_NOT_ENOUGH_MEMORY,
     FILE_ALLOCATION_INFORMATION,
     FILE_END_OF_FILE_INFORMATION,
     FILE_NON_DIRECTORY_FILE,

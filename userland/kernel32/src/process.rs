@@ -29,8 +29,7 @@ const PROCESS_DEFAULT_HARD_ERROR_MODE: u32 = 12;
 const PROCESS_PRIORITY_CLASS: u32 = 18;
 const PROCESS_AFFINITY_MASK: u32 = 21;
 
-const ERROR_INVALID_HANDLE: u32 = 6;
-const ERROR_INVALID_PARAMETER: u32 = 87;
+use rtl::winerror::{ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER};
 
 /// The *_PRIORITY_CLASS flags, in the order Windows 2000's SetPriorityClass tests them (the first
 /// one a value carries wins), with the PROCESS_PRIORITY_CLASS_* value each names.
@@ -193,8 +192,8 @@ const PAGE_EXECUTE_READWRITE: u32 = 0x40;
 /// The protection's modifiers (PAGE_GUARD, PAGE_NOCACHE), set beside its kind.
 const PROTECTION_KIND: u32 = 0xFF;
 
-/// ERROR_NOACCESS: what a write into read-only memory is.
-const ERROR_NOACCESS: u32 = 998;
+// ERROR_NOACCESS: what a write into read-only memory is.
+use rtl::winerror::ERROR_NOACCESS;
 
 /// WriteProcessMemory, as Windows 2000's: the range made writable first (NtProtectVirtualMemory to
 /// PAGE_EXECUTE_READWRITE: its refusal's error is the call's — a range not all allocated, a

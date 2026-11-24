@@ -19,8 +19,10 @@
 //! text then goes into the caller's buffer, or into a block it allocates
 //! (FORMAT_MESSAGE_ALLOCATE_BUFFER), an A call's narrowed through the ANSI code page.
 
+use rtl::winerror::ERROR_INSUFFICIENT_BUFFER;
+
 use crate::edge::{CallerChar, CallerStr, InStr, InWStr, Out, OutBuf, Text};
-use crate::error::{answer, Failure, ERROR_INSUFFICIENT_BUFFER};
+use crate::error::{answer, Failure};
 use crate::heap::{HeapArray, HeapString, OutOfMemory};
 use crate::ntcall::{self, MessageArguments, MessageLayout, MessageText, NtStatus};
 
@@ -344,7 +346,7 @@ mod tests {
         assert_eq!(system(5, 0, 0).as_deref(), Ok("Access is denied.\r\n"));
         assert_eq!(
             system(0x0123_4567, 0, 0),
-            Err(crate::error::ERROR_MR_MID_NOT_FOUND)
+            Err(rtl::winerror::ERROR_MR_MID_NOT_FOUND)
         );
     }
 
@@ -366,7 +368,7 @@ mod tests {
         assert!(system(2, 0x0400, 0).is_ok());
         assert_eq!(
             rtl::status::dos_error(rtl::status::STATUS_MESSAGE_NOT_FOUND),
-            crate::error::ERROR_MR_MID_NOT_FOUND
+            rtl::winerror::ERROR_MR_MID_NOT_FOUND
         );
     }
 

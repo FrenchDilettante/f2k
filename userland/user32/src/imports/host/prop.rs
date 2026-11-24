@@ -7,13 +7,11 @@ use std::vec::Vec;
 
 use rtl::status::*;
 use rtl::window::PropSet;
+// ERROR_FILE_NOT_FOUND, ERROR_INVALID_NAME and ERROR_INVALID_PARAMETER, kernel32's atom
+// errors.
+use rtl::winerror::{ERROR_FILE_NOT_FOUND, ERROR_INVALID_NAME, ERROR_INVALID_PARAMETER};
 
 use super::{wm, LAST_ERROR};
-
-/// ERROR_FILE_NOT_FOUND, ERROR_INVALID_NAME and ERROR_INVALID_PARAMETER, kernel32's atom errors.
-const ERROR_FILE_NOT_FOUND: u32 = 2;
-const ERROR_INVALID_NAME: u32 = 123;
-const ERROR_INVALID_PARAMETER: u32 = 87;
 
 /// The first string atom.
 const FIRST_STRING_ATOM: u16 = 0xC000;

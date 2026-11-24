@@ -6,9 +6,8 @@ use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 
 use crate::output::Error;
-
-/// ERROR_NOT_ENOUGH_MEMORY: what a buffer the heap cannot give fails with.
-const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
+// ERROR_NOT_ENOUGH_MEMORY: what a buffer the heap cannot give fails with.
+use crate::winerror::ERROR_NOT_ENOUGH_MEMORY;
 
 /// The alignment the process heap gives every block: 8 bytes, on x86.
 const HEAP_ALIGNMENT: usize = 8;

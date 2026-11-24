@@ -6,10 +6,9 @@
 
 use crate::output::Error;
 use crate::sys::MAX_PATH;
+// ERROR_FILENAME_EXCED_RANGE: a path longer than a buffer of MAX_PATH units holds.
+use crate::winerror::ERROR_FILENAME_EXCED_RANGE;
 use crate::SystemTime;
-
-/// ERROR_FILENAME_EXCED_RANGE: a path longer than a buffer of MAX_PATH units holds.
-const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
 /// GetFileAttributesW's failure.
 const INVALID_FILE_ATTRIBUTES: u32 = u32::MAX;
 /// CreateFileW's and FindFirstFileW's failure.

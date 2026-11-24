@@ -19,11 +19,10 @@ use core::ffi::CStr;
 use core::fmt::Display;
 
 use rtl::stub::{describe, Entry, Fails, Kind, Line, Logged};
+// ERROR_CALL_NOT_IMPLEMENTED: "This function is not supported on this system."
+use rtl::winerror::ERROR_CALL_NOT_IMPLEMENTED;
 
 use crate::imports::{self, Probed};
-
-/// ERROR_CALL_NOT_IMPLEMENTED: "This function is not supported on this system."
-pub const ERROR_CALL_NOT_IMPLEMENTED: u32 = 120;
 
 /// Log the call to `entry` with `args` (one value per argument, in order) and `reason`, then fail
 /// as `entry` fails.

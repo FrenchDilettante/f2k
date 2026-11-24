@@ -23,8 +23,8 @@
 //! - LoadStringA with an nBufferMax of 0 writes nothing and answers -1.
 
 use rtl::edge::{Out, OutBuf};
+use rtl::winerror::ERROR_NOACCESS;
 
-use crate::class::ERROR_NOACCESS;
 use crate::imports;
 use crate::{caller_bytes_mut, failed};
 

@@ -20,8 +20,8 @@ use crate::thread::{set_dos_error, set_doserrno, set_errno, EACCES, ENOMEM, ERAN
 /// `_MAX_PATH`: the characters a path holds, its NUL included.
 const MAX_PATH: usize = 260;
 
-/// ERROR_INVALID_DRIVE.
-const ERROR_INVALID_DRIVE: u32 = 15;
+// ERROR_INVALID_DRIVE.
+use rtl::winerror::ERROR_INVALID_DRIVE;
 
 /// GetDriveType's answer for a root that does not exist.
 const DRIVE_NO_ROOT_DIR: u32 = 1;

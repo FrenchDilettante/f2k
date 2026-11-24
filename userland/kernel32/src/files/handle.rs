@@ -401,8 +401,8 @@ fn write_to(
     bool_answer(transferred(status, &io_status, written.as_mut()))
 }
 
-/// The Win32 error of a request not yet complete.
-const ERROR_IO_INCOMPLETE: u32 = 996;
+// The Win32 error of a request not yet complete.
+use rtl::winerror::ERROR_IO_INCOMPLETE;
 
 /// GetOverlappedResult, Windows 2000's: a request whose OVERLAPPED's Internal still reads
 /// STATUS_PENDING is waited for (WaitForSingleObject, without a timeout) on its event, or on the

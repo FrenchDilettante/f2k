@@ -16,17 +16,15 @@
 //! raises STATUS_NOT_IMPLEMENTED instead.
 
 use rtl::pod::Pod;
+// STATUS_NOT_IMPLEMENTED: what a stub that cannot fail raises.
+use rtl::status::STATUS_NOT_IMPLEMENTED;
 use rtl::stub::{describe, Entry, Fails, Line, Memory};
+// ERROR_CALL_NOT_IMPLEMENTED: "This function is not supported on this system."
+use rtl::winerror::ERROR_CALL_NOT_IMPLEMENTED;
 
 use crate::base::{set_last_error, CURRENT_PROCESS};
 use crate::nt;
 use crate::ntcall::{self, Destination};
-
-/// ERROR_CALL_NOT_IMPLEMENTED: "This function is not supported on this system."
-pub const ERROR_CALL_NOT_IMPLEMENTED: u32 = 120;
-
-// STATUS_NOT_IMPLEMENTED: what a stub that cannot fail raises.
-use rtl::status::STATUS_NOT_IMPLEMENTED;
 
 /// The calling process's memory, as NtQueryVirtualMemory describes it: a page can be read when it
 /// is committed and accessible. The lowest 64 KiB are never mapped.

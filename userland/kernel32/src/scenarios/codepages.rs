@@ -16,7 +16,7 @@ const WC_COMPOSITECHECK: u32 = 0x200;
 const WC_NO_BEST_FIT_CHARS: u32 = 0x400;
 const MB_PRECOMPOSED: u32 = 0x1;
 const MB_ERR_INVALID_CHARS: u32 = 0x8;
-const ERROR_NO_UNICODE_TRANSLATION: u32 = 1113;
+use rtl::winerror::ERROR_NO_UNICODE_TRANSLATION;
 
 /// MultiByteToWideChar(code page, flags) of `bytes` into 16 units: the count and the units, or 0
 /// and the last error.

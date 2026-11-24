@@ -39,12 +39,7 @@ use crate::{failed, failed_with, window_error};
 /// RT_MENU: a menu template's resource type.
 const RT_MENU: u16 = 4;
 
-/// ERROR_INVALID_MENU_HANDLE, ERROR_CHILD_WINDOW_MENU, ERROR_MENU_ITEM_NOT_FOUND,
-/// ERROR_INVALID_DATA.
-pub const ERROR_INVALID_MENU_HANDLE: u32 = 1401;
-pub const ERROR_CHILD_WINDOW_MENU: u32 = 1436;
-pub const ERROR_MENU_ITEM_NOT_FOUND: u32 = 1456;
-const ERROR_INVALID_DATA: u32 = 13;
+use rtl::winerror::{ERROR_INVALID_DATA, ERROR_MENU_ITEM_NOT_FOUND};
 
 /// The popups a template nests at most (a deeper one is refused as bad data).
 const MAX_DEPTH: u32 = 16;
@@ -951,6 +946,7 @@ mod tests {
     use std::vec::Vec;
 
     use rtl::testing::utf16_bytes_z;
+    use rtl::winerror::ERROR_INVALID_MENU_HANDLE;
 
     use super::*;
     use crate::imports::host::{add_resource, LAST_ERROR, PROGRAM};

@@ -1510,7 +1510,7 @@ mod tests {
         assert_eq!(track_popup_menu(0, TPM_RETURNCMD, 10, 10, 0, window, 0), 0);
         assert_eq!(
             crate::imports::host::LAST_ERROR.with(|error| error.get()),
-            crate::menu::ERROR_INVALID_MENU_HANDLE
+            rtl::winerror::ERROR_INVALID_MENU_HANDLE
         );
         assert_eq!(track_popup_menu(view, TPM_RETURNCMD, 10, 10, 0, 0, 0), 0);
         assert_eq!(

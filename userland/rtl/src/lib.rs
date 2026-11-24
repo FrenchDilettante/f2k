@@ -110,6 +110,7 @@ pub mod truetype;
 pub mod user;
 pub mod version;
 pub mod window;
+pub mod winerror;
 
 // What the compiler expects of an MSVC environment without its CRT: the 64-bit division helpers,
 // the stack probe and the `_fltused` marker, linked into every DLL with this library.

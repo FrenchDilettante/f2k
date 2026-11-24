@@ -14,6 +14,15 @@
 //! down to fit (which would make a name with a tail past MAX_PATH find kernel32).
 
 use rtl::peb::{LdrDataTableEntry, PebLdrData};
+use rtl::status::{STATUS_ENTRYPOINT_NOT_FOUND, STATUS_ORDINAL_NOT_FOUND};
+use rtl::winerror::{
+    ERROR_BAD_EXE_FORMAT,
+    ERROR_FILENAME_EXCED_RANGE,
+    ERROR_INVALID_PARAMETER,
+    ERROR_MOD_NOT_FOUND,
+    ERROR_NOT_ENOUGH_MEMORY,
+    ERROR_PATH_NOT_FOUND,
+};
 
 use crate::base::{last_error, set_last_error, unicode_string, CURRENT_PROCESS};
 use crate::edge::{ansi_into, counted, wide_units, CallerChar, CallerStr, InStr, OutBuf, Text};
@@ -23,12 +32,6 @@ use crate::files::{self, NtPath, Wide};
 use crate::heap::Owned;
 use crate::nt::{AnsiString, UnicodeString};
 use crate::ntcall::{self, LoaderLock, NtStatus, View};
-
-const ERROR_INVALID_PARAMETER: u32 = 87;
-const ERROR_MOD_NOT_FOUND: u32 = 126;
-const ERROR_BAD_EXE_FORMAT: u32 = 193;
-const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
-use rtl::status::{STATUS_ENTRYPOINT_NOT_FOUND, STATUS_ORDINAL_NOT_FOUND};
 
 /// The ANSI path limit: a module name's longest, in characters.
 const MAX_PATH: usize = 260;
@@ -207,7 +210,7 @@ fn load_as_datafile(name: Name<'_>) -> Result<u32, Failure> {
             &converted[..length]
         }
         CallerStr::Wide(name) => {
-            copied = wide_units(&name).ok_or(Failure::Error(files::ERROR_NOT_ENOUGH_MEMORY))?;
+            copied = wide_units(&name).ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY))?;
             &copied
         }
     };
@@ -234,7 +237,7 @@ const VIEW_SHARE: u32 = 1;
 /// are closed: the view holds the section.
 #[inline(never)]
 fn map_datafile(path: &Wide) -> Result<usize, Failure> {
-    let path = NtPath::of(path.terminated()).ok_or(Failure::Error(files::ERROR_PATH_NOT_FOUND))?;
+    let path = NtPath::of(path.terminated()).ok_or(Failure::Error(ERROR_PATH_NOT_FOUND))?;
     let file = Owned(
         files::open(&path, DATAFILE_ACCESS, DATAFILE_SHARE, DATAFILE_OPTIONS)
             .map_err(Failure::Status)?,

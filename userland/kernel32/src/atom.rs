@@ -18,14 +18,10 @@
 //! a buffer too short for the name and its terminator takes what fits, terminated, and the call
 //! answers 0 with ERROR_MORE_DATA (the atom fixture's capture).
 
+use rtl::winerror::{ERROR_INVALID_PARAMETER, ERROR_MORE_DATA, ERROR_NOT_ENOUGH_MEMORY};
+
 use crate::edge::{InStr, InWStr, OutBuf};
-use crate::error::{
-    answer,
-    Failure,
-    ERROR_INVALID_PARAMETER,
-    ERROR_MORE_DATA,
-    ERROR_NOT_ENOUGH_MEMORY,
-};
+use crate::error::{answer, Failure};
 use crate::ntcall::{self, MAX_ATOM_NAME};
 
 /// The first string atom (MAXINTATOM): every integer atom is below it.

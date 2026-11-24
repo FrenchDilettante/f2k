@@ -80,7 +80,7 @@ const MEM_RESERVE: u32 = 0x2000;
 const PAGE_READWRITE: u32 = 0x04;
 const PAGE_GUARD: u32 = 0x100;
 
-const ERROR_INVALID_HANDLE: u32 = 6;
+use rtl::winerror::ERROR_INVALID_HANDLE;
 
 /// A child thread's stack reservation for CreateThread's `size` and `flags`, as Windows 2000 sizes
 /// it: a reservation rounds up to the allocation granularity (three pages at least); a commit size

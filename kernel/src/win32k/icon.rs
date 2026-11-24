@@ -45,7 +45,8 @@ pub const CURSORS: usize = 128;
 
 /// A handle naming no cursor or icon: ERROR_INVALID_CURSOR_HANDLE (1402), the Win32 error itself
 /// in a FACILITY_NTWIN32 status, which user32 hands to GetLastError as is.
-pub const INVALID_CURSOR_HANDLE: NtStatus = NtStatus::from_win32(1402);
+pub const INVALID_CURSOR_HANDLE: NtStatus =
+    NtStatus::from_win32(rtl::winerror::ERROR_INVALID_CURSOR_HANDLE);
 
 /// A cursor or icon's id: its record in the pool and the record's generation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -26,9 +26,6 @@ use rtl::user::ONE_PARAM_ENUM_CLIPBOARD_FORMATS;
 use crate::imports::{self, GlobalLocked, UserBuffer};
 use crate::{failed_with, message, window_error};
 
-/// ERROR_CLIPBOARD_NOT_OPEN: the calling thread does not have the clipboard open.
-pub const ERROR_CLIPBOARD_NOT_OPEN: u32 = 1418;
-
 /// GlobalAlloc's flags for a block GetClipboardData makes: movable, and shareable as clipboard
 /// data is (GMEM_MOVEABLE | GMEM_DDESHARE).
 const GMEM_CLIPBOARD: u32 = 0x0002 | 0x2000;
@@ -341,6 +338,8 @@ pub unsafe extern "system" fn get_clipboard_format_name_a(
 
 #[cfg(test)]
 mod tests {
+    use rtl::winerror::ERROR_CLIPBOARD_NOT_OPEN;
+
     use super::*;
     use crate::imports::host::{live_globals, LAST_ERROR};
 

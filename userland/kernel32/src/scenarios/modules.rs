@@ -3,6 +3,13 @@
 //! (the stand-in lists: the image, ntdll and kernel32, as ntdll lays them out).
 
 use rtl::testing::wide_z;
+use rtl::winerror::{
+    ERROR_FILENAME_EXCED_RANGE,
+    ERROR_INVALID_ORDINAL,
+    ERROR_INVALID_PARAMETER,
+    ERROR_MOD_NOT_FOUND,
+    ERROR_PROC_NOT_FOUND,
+};
 
 use super::{last_error, UNREAD};
 use crate::base::set_last_error;
@@ -29,12 +36,6 @@ use crate::nt::{
     NO_THREAD_CALLS,
     NTDLL,
 };
-
-const ERROR_INVALID_PARAMETER: u32 = 87;
-const ERROR_MOD_NOT_FOUND: u32 = 126;
-const ERROR_PROC_NOT_FOUND: u32 = 127;
-const ERROR_INVALID_ORDINAL: u32 = 182;
-const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
 
 /// A NUL-terminated copy of `text`.
 fn c(text: &[u8]) -> std::vec::Vec<u8> {

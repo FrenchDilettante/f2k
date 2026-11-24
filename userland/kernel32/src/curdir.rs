@@ -5,15 +5,17 @@
 //! that size), and hand theirs back narrowed ([`Text`]). The Windows and system directories, which
 //! never change, are here too.
 
+use rtl::winerror::ERROR_NOT_ENOUGH_MEMORY;
+
 use crate::base::unicode_string;
 use crate::edge::{ansi_into, wide_units, InStr, InWStr, OutBuf, Text};
-use crate::error::{answer, bool_answer, Failure, ERROR_NOT_ENOUGH_MEMORY};
+use crate::error::{answer, bool_answer, Failure};
 use crate::ntcall;
 
 /// The ANSI path limit, terminator included.
 const MAX_PATH: usize = 260;
-/// ERROR_FILENAME_EXCED_RANGE: a path past MAX_PATH.
-const ERROR_FILENAME_EXCED_RANGE: u32 = 206;
+// ERROR_FILENAME_EXCED_RANGE: a path past MAX_PATH.
+use rtl::winerror::ERROR_FILENAME_EXCED_RANGE;
 
 /// GetCurrentDirectoryW's work: the current directory (no trailing separator but a root's) into
 /// the caller's buffer: its length when it fits with its terminator; otherwise the size it needs,

@@ -5,9 +5,10 @@
 //! local time's setting (NtSetSystemTime).
 
 use rtl::time::SystemTime;
+use rtl::winerror::ERROR_INVALID_PARAMETER;
 
 use crate::edge::{In, Out, OutBuf};
-use crate::error::{answer, bool_answer, Failure, ERROR_INVALID_PARAMETER};
+use crate::error::{answer, bool_answer, Failure};
 use crate::ntcall;
 use crate::shared;
 

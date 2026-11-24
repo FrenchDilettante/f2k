@@ -27,9 +27,10 @@
 
 use rtl::nt::info::{SystemProcessInformation, SystemThreadInformation};
 use rtl::pod::Pod;
+use rtl::winerror::{ERROR_BAD_LENGTH, ERROR_NO_MORE_FILES};
 
 use crate::edge::Out;
-use crate::error::{answer, bool_answer, Failure, ERROR_BAD_LENGTH, ERROR_NO_MORE_FILES};
+use crate::error::{answer, bool_answer, Failure};
 use crate::heap::{HeapArray, Owned};
 use crate::ntcall::{self, MappedView};
 

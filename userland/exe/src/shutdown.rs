@@ -29,14 +29,14 @@ pub const EWX_FORCE: u32 = 0x04;
 const CURRENT_PROCESS: usize = usize::MAX;
 /// A privilege's attribute that enables it.
 const SE_PRIVILEGE_ENABLED: u32 = 0x2;
-/// AdjustTokenPrivileges' last error when the token does not hold a privilege it was asked to
-/// change: the call returns TRUE all the same.
-const ERROR_NOT_ALL_ASSIGNED: u32 = 1300;
+// AdjustTokenPrivileges' last error when the token does not hold a privilege it was asked to
+// change: the call returns TRUE all the same.
+use crate::winerror::ERROR_NOT_ALL_ASSIGNED;
 /// The units a privilege's name is copied into, its terminator included (winnt.h's longest is 31
 /// characters).
 const PRIVILEGE_NAME: usize = 64;
-/// ERROR_INVALID_PARAMETER: a privilege name too long for that buffer.
-const ERROR_INVALID_PARAMETER: u32 = 87;
+// ERROR_INVALID_PARAMETER: a privilege name too long for that buffer.
+use crate::winerror::ERROR_INVALID_PARAMETER;
 
 /// A LUID: how the system names a privilege on this computer.
 #[repr(C)]

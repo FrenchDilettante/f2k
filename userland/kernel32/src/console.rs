@@ -56,8 +56,7 @@ use crate::nt::{self, ApiMessage};
 use crate::ntcall::FastPebLock;
 
 const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
-const ERROR_INVALID_PARAMETER: u32 = 87;
-const ERROR_OPERATION_ABORTED: u32 = 995;
+use rtl::winerror::{ERROR_INVALID_PARAMETER, ERROR_OPERATION_ABORTED};
 const GENERIC_READ: u32 = 0x8000_0000;
 const GENERIC_WRITE: u32 = 0x4000_0000;
 

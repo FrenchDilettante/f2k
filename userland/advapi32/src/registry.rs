@@ -32,18 +32,19 @@ use rtl::status::{
     STATUS_NO_MEMORY,
     STATUS_OBJECT_NAME_NOT_FOUND,
 };
+use rtl::winerror::{
+    ERROR_FILE_NOT_FOUND,
+    ERROR_INVALID_DATA,
+    ERROR_INVALID_HANDLE,
+    ERROR_INVALID_PARAMETER,
+    ERROR_MORE_DATA,
+    ERROR_NOACCESS,
+    ERROR_NOT_ENOUGH_MEMORY,
+    ERROR_SUCCESS,
+};
 
 use crate::imports::{self as nt, Counted, HeapBlock, KeyAttributes, Wide};
 use crate::{caller_bytes, caller_bytes_mut, Out};
-
-pub const ERROR_SUCCESS: u32 = 0;
-pub const ERROR_FILE_NOT_FOUND: u32 = 2;
-pub const ERROR_INVALID_HANDLE: u32 = 6;
-pub const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
-pub const ERROR_INVALID_DATA: u32 = 13;
-pub const ERROR_INVALID_PARAMETER: u32 = 87;
-pub const ERROR_MORE_DATA: u32 = 234;
-pub const ERROR_NOACCESS: u32 = 998;
 
 /// OBJECT_ATTRIBUTES' attributes: the handle inherited, the name compared case-insensitively.
 const OBJ_INHERIT: u32 = 0x02;

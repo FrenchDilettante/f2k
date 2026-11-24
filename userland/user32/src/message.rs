@@ -55,9 +55,6 @@ use crate::{
     Out,
 };
 
-/// ERROR_INVALID_THREAD_ID: PostThreadMessage to a thread there is none of.
-pub const ERROR_INVALID_THREAD_ID: u32 = 1444;
-
 /// The units of a carried text's buffer on the stack; a longer one is a block of the process heap.
 const RECEIVED_UNITS: usize = 260;
 
@@ -383,9 +380,9 @@ pub extern "system" fn post_message_w(
     )
 }
 
-/// ERROR_NOT_ENOUGH_QUOTA: win32k's refusal of a post to a queue that holds its 10,000 posted
-/// messages already.
-const ERROR_NOT_ENOUGH_QUOTA: u32 = 1816;
+// ERROR_NOT_ENOUGH_QUOTA: win32k's refusal of a post to a queue that holds its 10,000 posted
+// messages already.
+use rtl::winerror::ERROR_NOT_ENOUGH_QUOTA;
 
 /// A post's answer: TRUE, or FALSE with the failure's Win32 error (`error` maps it) made the last
 /// error; but a full queue's refusal (ERROR_NOT_ENOUGH_QUOTA) leaves the last error as it was, as
@@ -621,10 +618,6 @@ fn send_timeout(
     answer.is_some() as i32
 }
 
-/// ERROR_MESSAGE_SYNC_ONLY: SendNotifyMessage of a message whose pointer cannot go to another
-/// thread.
-pub const ERROR_MESSAGE_SYNC_ONLY: u32 = 1159;
-
 /// SendNotifyMessageW: the message sent to the window without waiting for its answer: a window
 /// of the calling thread's has its procedure called before the return, as SendMessage calls it;
 /// another thread's has it queued for its thread, which handles it on its next read. TRUE; FALSE
@@ -770,7 +763,7 @@ fn msg_wait(
                 )
             };
         }
-        imports::set_last_error(crate::stub::ERROR_CALL_NOT_IMPLEMENTED);
+        imports::set_last_error(rtl::winerror::ERROR_CALL_NOT_IMPLEMENTED);
         return WAIT_FAILED;
     }
     let wait = MsgWait {
@@ -1218,8 +1211,8 @@ const WM_SETICON: u32 = 0x0080;
 /// (Alt+Tab's).
 const ICON_SMALL: u32 = 0;
 const ICON_BIG: u32 = 1;
-/// ERROR_INVALID_HANDLE: the small icon a big one's WM_SETICON makes could not be made.
-const ERROR_INVALID_HANDLE: u32 = 6;
+// ERROR_INVALID_HANDLE: the small icon a big one's WM_SETICON makes could not be made.
+use rtl::winerror::ERROR_INVALID_HANDLE;
 
 /// DefWindowProc's WM_CONTEXTMENU: a child hands it to its parent, as it came, its answer
 /// dropped (guimsg `ctxmenu`: the parent's procedure answers 5, the child's send 0); a top-level
@@ -1654,6 +1647,8 @@ mod tests {
     use core::cell::RefCell;
     use core::ptr::null_mut;
 
+    use rtl::winerror::ERROR_INVALID_THREAD_ID;
+
     use super::*;
     use crate::class::{register_class_a, WndClass};
     use crate::imports::host::{procedure, wm, LAST_ERROR, THREAD_ID};
@@ -2022,13 +2017,13 @@ mod tests {
                 msg_wait_for_multiple_objects(0, core::ptr::null(), 1, 0, 0xFF),
                 WAIT_FAILED
             );
-            assert_eq!(last_error(), crate::stub::ERROR_CALL_NOT_IMPLEMENTED);
+            assert_eq!(last_error(), rtl::winerror::ERROR_CALL_NOT_IMPLEMENTED);
             arm();
             assert_eq!(
                 msg_wait_for_multiple_objects_ex(0, core::ptr::null(), 0, 0xFF, MWMO_ALERTABLE),
                 WAIT_FAILED
             );
-            assert_eq!(last_error(), crate::stub::ERROR_CALL_NOT_IMPLEMENTED);
+            assert_eq!(last_error(), rtl::winerror::ERROR_CALL_NOT_IMPLEMENTED);
         }
         assert_eq!(
             crate::imports::host::SERVICES.with(|count| count.get()),

@@ -13,18 +13,16 @@
 use rtl::codepage::sbcs::SingleByte;
 use rtl::codepage::{self, Page};
 use rtl::cp1252;
-
-use crate::base::set_last_error;
-use crate::edge::{wide_units_of, Counted, In, InBuf, Out, OutBuf};
-use crate::error::{
-    answer,
-    bool_answer,
-    Failure,
+use rtl::winerror::{
     ERROR_INSUFFICIENT_BUFFER,
     ERROR_INVALID_FLAGS,
     ERROR_INVALID_PARAMETER,
     ERROR_NOT_ENOUGH_MEMORY,
 };
+
+use crate::base::set_last_error;
+use crate::edge::{wide_units_of, Counted, In, InBuf, Out, OutBuf};
+use crate::error::{answer, bool_answer, Failure};
 
 mod lcmap;
 pub mod sortkey;
@@ -219,8 +217,8 @@ pub unsafe extern "system" fn multi_byte_to_wide_char(
     answer(to_wide(cp, flags, src, out, capacity), 0)
 }
 
-/// ERROR_NO_UNICODE_TRANSLATION: a string the code page cannot convert.
-const ERROR_NO_UNICODE_TRANSLATION: u32 = 1113;
+// ERROR_NO_UNICODE_TRANSLATION: a string the code page cannot convert.
+use rtl::winerror::ERROR_NO_UNICODE_TRANSLATION;
 
 /// MultiByteToWideChar's flags.
 const MB_USEGLYPHCHARS: u32 = 0x4;

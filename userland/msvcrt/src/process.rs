@@ -87,8 +87,7 @@ const EXTENSIONS: [&[u8]; 4] = [b".com", b".exe", b".bat", b".cmd"];
 const DETACHED_PROCESS: u32 = 0x8;
 const INFINITE: u32 = 0xFFFF_FFFF;
 const WAIT_OBJECT_0: u32 = 0;
-const ERROR_INVALID_HANDLE: u32 = 6;
-const ERROR_FILE_NOT_FOUND: u32 = 2;
+use rtl::winerror::{ERROR_FILE_NOT_FOUND, ERROR_INVALID_HANDLE};
 
 /// Bytes of the C runtime's heap, freed when dropped.
 struct Buffer {

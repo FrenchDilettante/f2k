@@ -17,14 +17,17 @@ use cmd::builtins::files::{
     Tokens,
     Written,
     DIRECTORY,
+    READONLY,
+};
+use cmd::Text;
+use exe::winerror::{
     ERROR_ALREADY_EXISTS,
     ERROR_FILENAME_EXCED_RANGE,
     ERROR_FILE_EXISTS,
     ERROR_FILE_NOT_FOUND,
+    ERROR_NO_MORE_FILES,
     ERROR_PATH_NOT_FOUND,
-    READONLY,
 };
-use cmd::Text;
 use exe::MAX_PATH;
 
 use super::{ask, ask_overwrite, report, wide};
@@ -604,7 +607,7 @@ fn copy_each(
 /// FindFirstFileW's errors for a name matching nothing, as `copy` reports them: a file not found.
 fn not_found(error: exe::Error) -> exe::Error {
     match error.0 {
-        rules::ERROR_NO_MORE_FILES => exe::Error(ERROR_FILE_NOT_FOUND),
+        ERROR_NO_MORE_FILES => exe::Error(ERROR_FILE_NOT_FOUND),
         _ => error,
     }
 }
