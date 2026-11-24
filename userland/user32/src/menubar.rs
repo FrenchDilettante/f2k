@@ -38,10 +38,11 @@
 //! [`item_height`] pixels high (a separator [`SEPARATOR`]): the check mark (Marlett's, or a radio
 //! item's bullet) in its first column, the text, the accelerator text after its tab
 //! right-aligned, the arrow of a nested popup in its last column; the selected item in
-//! COLOR_HIGHLIGHT. The mnemonics' underlines show while the keyboard menu loop runs, hidden
-//! otherwise, as SPI_GETKEYBOARDCUES (FALSE, Windows 2000's default: menus `cues`) asks; calc.exe's
-//! bar on Windows 2000 shows none. That the loop shows them is inferred, the capture's `underline`
-//! measurement finding no menu ink at all.
+//! COLOR_HIGHLIGHT. With SPI_GETKEYBOARDCUES off (Windows 2000's default: menus `cues`) the
+//! mnemonics' underlines are hidden, whatever the window's UISF_HIDEACCEL, but while Alt is held
+//! (the bar of the window the default procedure is handed Alt's WM_SYSKEYDOWN for, redrawn as Alt
+//! goes down and again as it comes up, as Windows 2000's xxxDrawMenuBarUnderlines does: menus
+//! `underline`) and while the keyboard menu loop runs (inferred).
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -178,6 +179,23 @@ static BAR_SELECTED: AtomicU32 = AtomicU32::new(u32::MAX);
 static BAR_OPEN: AtomicU32 = AtomicU32::new(0);
 static END_MENU: AtomicU32 = AtomicU32::new(0);
 
+/// The window whose bar shows its mnemonics' underlines while Alt is held, 0 for none.
+static ALT_HELD: AtomicU32 = AtomicU32::new(0);
+
+/// Alt gone down (`held`) or up for the window `window`: its bar's underlines shown or hidden
+/// again, the bar redrawn when that changes them.
+pub fn alt_held(window: usize, held: bool) {
+    let shown = if held { window as u32 } else { 0 };
+    let before = ALT_HELD.swap(shown, Ordering::AcqRel);
+    if before != shown {
+        for changed in [before, shown] {
+            if changed != 0 && window::is_window_alive(changed as usize) {
+                redraw_bar(changed as usize);
+            }
+        }
+    }
+}
+
 /// The window whose menu loop runs in this process, 0 for none.
 pub fn loop_owner() -> usize {
     OWNER.load(Ordering::Acquire) as usize
@@ -267,12 +285,17 @@ fn select_menu_font(dc: usize) -> Option<usize> {
 }
 
 /// DT_HIDEPREFIX while the mnemonics' underlines are hidden: the keyboard cues off
-/// (SPI_GETKEYBOARDCUES) and no keyboard menu loop running in the process; 0 otherwise.
+/// (SPI_GETKEYBOARDCUES), Alt not held over a bar and no keyboard menu loop running in the
+/// process; 0 otherwise.
 fn hidden_prefixes() -> u32 {
-    prefixes_for(crate::display::keyboard_cues(), loop_owner())
+    prefixes_for(
+        crate::display::keyboard_cues(),
+        loop_owner() | ALT_HELD.load(Ordering::Acquire) as usize,
+    )
 }
 
-/// [`hidden_prefixes`]'s rule, for the keyboard cues `cues` and the loop's owner `owner`.
+/// [`hidden_prefixes`]'s rule, for the keyboard cues `cues` and `owner`, the loop's owner or the
+/// window Alt is held over.
 fn prefixes_for(cues: bool, owner: usize) -> u32 {
     if !cues && owner == 0 {
         draw::DT_HIDEPREFIX

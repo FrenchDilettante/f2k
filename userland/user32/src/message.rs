@@ -1010,7 +1010,7 @@ pub fn default_procedure(window: usize, message: u32, wparam: u32, lparam: i32, 
             (window, message, wparam, lparam),
         ),
         WM_NCACTIVATE => nonclient::activate(window, wparam),
-        WM_SYSKEYDOWN | WM_SYSKEYUP | WM_KEYDOWN | WM_SYSCHAR => {
+        WM_SYSKEYDOWN | WM_SYSKEYUP | WM_KEYDOWN | WM_KEYUP | WM_SYSCHAR => {
             system_key(window, message, wparam, lparam, ansi);
             0
         }
@@ -1409,6 +1409,9 @@ fn system_key(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool)
         WM_SYSKEYDOWN if wparam == VK_MENU || wparam == VK_F10 => {
             if lparam & KEY_PREVIOUS == 0 {
                 MENU_KEY_ALONE.store(wparam, Ordering::Relaxed);
+                if wparam == VK_MENU {
+                    menubar::alt_held(top_level(window), true);
+                }
             }
         }
         WM_SYSKEYDOWN => {
@@ -1417,7 +1420,14 @@ fn system_key(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool)
                 send_command(SC_CLOSE, 0);
             }
         }
-        WM_SYSKEYUP if wparam == VK_MENU || wparam == VK_F10 => {
+        WM_SYSKEYUP | WM_KEYUP if wparam == VK_MENU => {
+            menubar::alt_held(top_level(window), false);
+            let alone = MENU_KEY_ALONE.swap(0, Ordering::Relaxed) == wparam;
+            if message == WM_SYSKEYUP && alone {
+                send_command(menubar::SC_KEYMENU, 0);
+            }
+        }
+        WM_SYSKEYUP if wparam == VK_F10 => {
             if MENU_KEY_ALONE.swap(0, Ordering::Relaxed) == wparam {
                 send_command(menubar::SC_KEYMENU, 0);
             }
