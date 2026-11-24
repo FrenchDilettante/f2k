@@ -7,16 +7,6 @@ description = "editctl - the built-in Edit control, single-line and ES_MULTILINE
 kind = "sectioned"
 gate = true
 
-[pending]
-# Sections added ahead of the next real-machine capture: editctl.exe is to be rebuilt (tests/build.bat
-# editctl) and the blocks captured (tests/capture.bat editctl).
-wantret = "F2K's Edit has no ES_WANTRETURN: a multiline edit answers WM_GETDLGCODE with DLGC_WANTALLKEYS for Enter too, so Enter inserts a line where Windows 2000 presses the default button"
-autovscroll = "F2K's Edit never reads ES_AUTOVSCROLL: it takes lines past the visible ones where Windows 2000 refuses them with EN_MAXTEXT"
-margins = "F2K's Edit only logs EM_SETMARGINS and answers EM_GETMARGINS 0: no margins"
-linescroll = "F2K's Edit only logs EM_LINESCROLL and EM_SCROLL and answers 0, and never scrolls a line"
-password = "F2K's EM_SETPASSWORDCHAR and EM_GETPASSWORDCHAR take and answer UTF-16 from SendMessageA too (cp1252's 0x95 kept as U+0095) and never set ES_PASSWORD"
-gethandle = "F2K's EM_GETHANDLE hands an ANSI edit a UTF-16 block"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only the exports a section calls itself and observes: the control is reached through

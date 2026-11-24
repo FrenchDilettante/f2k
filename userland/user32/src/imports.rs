@@ -1051,6 +1051,12 @@ impl LocalLocked {
         // SAFETY: as for `units`, borrowed mutably once.
         unsafe { core::slice::from_raw_parts_mut(self.at.as_ptr(), self.units) }
     }
+
+    /// The block's bytes (as many as its units take), to write.
+    pub fn bytes_mut(&mut self) -> &mut [u8] {
+        // SAFETY: as for `units_mut`.
+        unsafe { core::slice::from_raw_parts_mut(self.at.as_ptr().cast(), 2 * self.units) }
+    }
 }
 
 impl Drop for LocalLocked {

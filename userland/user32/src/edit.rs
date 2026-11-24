@@ -42,7 +42,23 @@
 //! - EM_GETLINE copies a line with no terminator, a single-line edit's with one when there is room,
 //!   and answers 0 with ERROR_INVALID_PARAMETER for a line past the last, as EM_LINEINDEX answers
 //!   -1; EM_LINELENGTH(-1) is the length of the caret's line less the selection's part of it, or
-//!   for a selection over several lines what its first and last lines hold outside it.
+//!   for a selection over several lines what its first and last lines hold outside it;
+//! - a multiline edit IsDialogMessage asked WM_GETDLGCODE of is in a dialog: without ES_WANTRETURN
+//!   its Enter gives the dialog's default button the focus (WM_NEXTDLGCTL) and the key, and a typed
+//!   CR is ignored (WM_CHAR answers 1);
+//! - a multiline edit without ES_AUTOVSCROLL takes no more lines than it shows whole: a change past
+//!   them is undone (EN_UPDATE, EN_CHANGE, then EN_MAXTEXT) and the undo record emptied;
+//!   WM_SETTEXT's text is taken whole;
+//! - EM_SETMARGINS sets the margins its flags name (EC_USEFONTINFO: the system font's, none),
+//!   answering 0; EM_LINESCROLL and EM_SCROLL scroll a multiline edit's lines, its first line shown
+//!   kept from 0 to the one that shows the last line at the bottom (a page is the lines shown less
+//!   one), EM_SCROLL answering TRUE in the high word and the lines moved in the low; a single-line
+//!   edit answers 0 to both;
+//! - EM_SETPASSWORDCHAR sets ES_PASSWORD with a character and clears it with 0, a multiline edit's
+//!   too (which shows its text as it is); EM_GETPASSWORDCHAR answers the character unconverted;
+//! - EM_GETHANDLE answers 0 for a single-line edit; an ANSI edit's (one whose procedure is the
+//!   narrow one) is a block of its own holding the text narrow, written anew at each EM_GETHANDLE
+//!   (what is written into it is not read back).
 //!
 //! The caret is the thread's ([`crate::caret`]): made at WM_SETFOCUS (a border's width, a line's
 //! height) and shown, destroyed at WM_KILLFOCUS, then EN_SETFOCUS or EN_KILLFOCUS. Each change of
@@ -65,7 +81,8 @@
 //! WM_CUT, WM_COPY and WM_PASTE (Ctrl+X, Ctrl+C, Ctrl+V, Shift+Delete, Ctrl+Insert, Shift+Insert)
 //! go through the clipboard's CF_UNICODETEXT. What is not served logs through the debug port and
 //! answers 0: the scroll bars (WS_HSCROLL, WS_VSCROLL), a multiline edit's word wrap (one without
-//! ES_AUTOHSCROLL), the EM_ messages not listed here, the mouse (F2K has none), IME.
+//! ES_AUTOHSCROLL), EM_LINESCROLL's sideways scroll, the EM_ messages not listed here, the mouse
+//! (F2K has none), IME.
 
 use core::ffi::CStr;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
@@ -95,13 +112,16 @@ use rtl::user::{
 use rtl::window::{GWL_EXSTYLE, GWL_STYLE};
 
 use crate::dialog::{
+    DC_HASDEFID,
     DLGC_HASSETSEL,
     DLGC_WANTALLKEYS,
     DLGC_WANTARROWS,
     DLGC_WANTCHARS,
+    DM_GETDEFID,
     WM_COMMAND,
     WM_GETDLGCODE,
     WM_GETFONT,
+    WM_NEXTDLGCTL,
     WM_SETFONT,
     WS_CHILD,
     WS_DISABLED,
@@ -114,6 +134,8 @@ use crate::{caret, clipboard, message, paint, procedure, window};
 pub const EM_GETSEL: u32 = 0x00B0;
 pub const EM_SETSEL: u32 = 0x00B1;
 pub const EM_GETRECT: u32 = 0x00B2;
+pub const EM_SCROLL: u32 = 0x00B5;
+pub const EM_LINESCROLL: u32 = 0x00B6;
 pub const EM_SCROLLCARET: u32 = 0x00B7;
 pub const EM_GETMODIFY: u32 = 0x00B8;
 pub const EM_SETMODIFY: u32 = 0x00B9;
@@ -132,6 +154,8 @@ pub const EM_EMPTYUNDOBUFFER: u32 = 0x00CD;
 pub const EM_GETFIRSTVISIBLELINE: u32 = 0x00CE;
 pub const EM_SETREADONLY: u32 = 0x00CF;
 pub const EM_GETPASSWORDCHAR: u32 = 0x00D2;
+pub const EM_SETMARGINS: u32 = 0x00D3;
+pub const EM_GETMARGINS: u32 = 0x00D4;
 pub const EM_GETLIMITTEXT: u32 = 0x00D5;
 pub const EM_POSFROMCHAR: u32 = 0x00D6;
 /// The edit messages' range, EM_GETSEL to EM_GETIMESTATUS: one not served is logged.
@@ -150,6 +174,7 @@ pub const ES_AUTOVSCROLL: u32 = 0x0040;
 pub const ES_AUTOHSCROLL: u32 = 0x0080;
 pub const ES_NOHIDESEL: u32 = 0x0100;
 pub const ES_READONLY: u32 = 0x0800;
+pub const ES_WANTRETURN: u32 = 0x1000;
 pub const ES_NUMBER: u32 = 0x2000;
 const ES_ALIGN: u32 = ES_CENTER | ES_RIGHT;
 
@@ -172,6 +197,16 @@ pub const WM_UNDO: u32 = 0x0304;
 const WS_HSCROLL: u32 = 0x0010_0000;
 const WS_VSCROLL: u32 = 0x0020_0000;
 
+/// EM_SETMARGINS's flags (winuser.h's EC_*).
+const EC_LEFTMARGIN: u32 = 0x1;
+const EC_RIGHTMARGIN: u32 = 0x2;
+
+/// EM_SCROLL's commands (winuser.h's SB_*).
+const SB_LINEUP: u32 = 0;
+const SB_LINEDOWN: u32 = 1;
+const SB_PAGEUP: u32 = 2;
+const SB_PAGEDOWN: u32 = 3;
+
 /// The text limit an edit starts with, and EM_LIMITTEXT(0)'s for each kind (the capture's).
 const DEFAULT_LIMIT: u32 = 30000;
 const SINGLE_MOST: u32 = 0x7FFF_FFFE;
@@ -193,6 +228,7 @@ const SPACE: u16 = 0x20;
 
 /// The keys an edit acts on (winuser.h's VK_*).
 const VK_TAB: u32 = 0x09;
+const VK_RETURN: u32 = 0x0D;
 const VK_SHIFT: i32 = 0x10;
 const VK_CONTROL: i32 = 0x11;
 const VK_ESCAPE: u32 = 0x1B;
@@ -222,10 +258,12 @@ const SWP_FRAME_ONLY: u32 = 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020;
 
 // --- The state -----------------------------------------------------------------------------------
 
-/// [`State::flags`]: the edit is multiline (its style at creation), has the focus, was modified.
+/// [`State::flags`]: the edit is multiline (its style at creation), has the focus, was modified,
+/// is in a dialog (IsDialogMessage asked its WM_GETDLGCODE).
 const MULTILINE: u32 = 0x1;
 const FOCUSED: u32 = 0x2;
 const MODIFIED: u32 = 0x4;
+const IN_DIALOG: u32 = 0x8;
 
 /// An edit's state (Windows 2000's PED, F2K's layout).
 #[repr(C)]
@@ -239,6 +277,8 @@ struct State {
     deleted: usize,
     /// WM_SETFONT's font (0: the system font).
     font: usize,
+    /// An ANSI edit's EM_GETHANDLE block: a movable local block of its text narrow (0: none yet).
+    narrow: usize,
     length: u32,
     lines: u32,
     /// The selection, and the end of it the caret is at.
@@ -247,8 +287,12 @@ struct State {
     caret: u32,
     limit: u32,
     flags: u32,
-    /// The character ES_PASSWORD shows (0: the text as it is).
+    /// The character ES_PASSWORD shows (0: the text as it is); a multiline edit keeps one but
+    /// shows its text.
     password: u32,
+    /// EM_SETMARGINS's margins, in pixels.
+    left_margin: u32,
+    right_margin: u32,
     /// How far the lines are scrolled sideways, in pixels, and the first line shown.
     scroll_x: i32,
     top_line: u32,
@@ -260,7 +304,7 @@ struct State {
     deleted_length: u32,
 }
 
-// SAFETY: integers only, with no padding: the four words first, then fourteen 32-bit fields (an
+// SAFETY: integers only, with no padding: the five words first, then sixteen 32-bit fields (an
 // even count, which ends at a word's boundary).
 unsafe impl Pod for State {}
 
@@ -271,6 +315,15 @@ impl State {
 
     fn focused(&self) -> bool {
         self.flags & FOCUSED != 0
+    }
+
+    /// The character the text shows as (0: itself).
+    fn mask(&self) -> u32 {
+        if self.multiline() {
+            0
+        } else {
+            self.password
+        }
     }
 
     fn can_undo(&self) -> bool {
@@ -690,8 +743,8 @@ impl Measure {
         if units.is_empty() {
             return 0;
         }
-        if s.password != 0 {
-            let one = imports::text_width(self.dc, &[s.password as u16]).unwrap_or(0);
+        if s.mask() != 0 {
+            let one = imports::text_width(self.dc, &[s.mask() as u16]).unwrap_or(0);
             return one * units.len() as i32;
         }
         imports::text_width(self.dc, units).unwrap_or(0)
@@ -725,12 +778,14 @@ struct Layout {
 }
 
 impl Layout {
-    fn of(window: usize, measure: &Measure) -> Layout {
+    /// The layout of the edit `window` whose state is `s` (its margins inside the rectangle's).
+    fn of(window: usize, s: &State, measure: &Measure) -> Layout {
         let client = window::client_rect(window).unwrap_or_default();
+        let left = client.left + MARGIN + s.left_margin as i32;
         Layout {
-            left: client.left + MARGIN,
+            left,
             top: client.top + MARGIN,
-            right: (client.right - MARGIN).max(client.left + MARGIN),
+            right: (client.right - MARGIN - s.right_margin as i32).max(left),
             bottom: client.bottom,
             line: measure.line_height(),
         }
@@ -830,16 +885,16 @@ fn invalidate(window: usize) {
     let _ = imports::invalidate_rect(window, 0, false);
 }
 
-/// The caret moved to the selection's caret end, the edit scrolled to show it (the text read when
-/// it has any, as Windows 2000's caret placement reads it: the capture's err=0).
-fn place_caret(window: usize, s: &mut State) {
+/// The caret moved to the selection's caret end, the edit scrolled to show it when `follow` (the
+/// text read when it has any, as Windows 2000's caret placement reads it: the capture's err=0).
+fn place_caret(window: usize, s: &mut State, follow: bool) {
     let Some(measure) = Measure::new(window, s.font) else {
         return;
     };
-    let layout = Layout::of(window, &measure);
+    let layout = Layout::of(window, s, &measure);
     let style = style(window);
     let at = s.caret;
-    let point = if s.length == 0 {
+    let point = if s.length == 0 && follow {
         let origin = layout.origin(style, 0);
         s.scroll_x = 0;
         s.top_line = 0;
@@ -847,7 +902,7 @@ fn place_caret(window: usize, s: &mut State) {
     } else {
         let mut state = *s;
         let point = with_text(s, |text| {
-            point_of(&mut state, style, &measure, &layout, text, at, true)
+            point_of(&mut state, style, &measure, &layout, text, at, follow)
         });
         s.scroll_x = state.scroll_x;
         s.top_line = state.top_line;
@@ -859,15 +914,43 @@ fn place_caret(window: usize, s: &mut State) {
 /// The view brought to the state: the caret hidden, placed (when the edit has the focus), the
 /// control redrawn, the caret shown (see the module notes on an edit without the focus).
 fn update_view(window: usize) {
+    refresh(window, true);
+}
+
+/// [`update_view`], the edit scrolled to show the caret when `follow`.
+fn refresh(window: usize, follow: bool) {
     caret::show_or_hide(window, false);
     if let Some(mut s) = load(window) {
         if s.focused() {
-            place_caret(window, &mut s);
+            place_caret(window, &mut s, follow);
             store(window, &s);
         }
     }
     invalidate(window);
     caret::show_or_hide(window, true);
+}
+
+/// The lines the edit shows whole; none when it has no DC to measure them with.
+fn visible_lines(window: usize, s: &State) -> Option<u32> {
+    let measure = Measure::new(window, s.font)?;
+    Some(Layout::of(window, s, &measure).visible_lines())
+}
+
+/// A multiline edit's lines scrolled by `lines` (EM_LINESCROLL, EM_SCROLL), its first line shown
+/// kept from 0 to the one that shows the last line at the bottom; the lines it moved.
+fn scroll_lines(window: usize, s: &mut State, lines: i32) -> i32 {
+    let Some(shown) = visible_lines(window, s) else {
+        return 0;
+    };
+    let most = i64::from(s.line_count().saturating_sub(shown));
+    let top = (i64::from(s.top_line) + i64::from(lines)).clamp(0, most);
+    let moved = (top - i64::from(s.top_line)) as i32;
+    if moved != 0 {
+        s.top_line = top as u32;
+        store(window, s);
+        refresh(window, false);
+    }
+    moved
 }
 
 /// The edit's parent: the window its notifications go to (0 for none).
@@ -905,15 +988,20 @@ fn changed(window: usize, change: Change) {
         update_view(window);
         notify(window, EN_CHANGE);
     }
+    if change.refused {
+        notify(window, EN_MAXTEXT);
+    }
 }
 
 // --- Changes -------------------------------------------------------------------------------------
 
-/// What a change did: whether it was cut short (EN_MAXTEXT), whether it changed the text.
+/// What a change did: whether it was cut short (EN_MAXTEXT), whether it changed the text, whether
+/// it was undone for taking more lines than show (EN_MAXTEXT after EN_CHANGE).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Change {
     cut: bool,
     done: bool,
+    refused: bool,
 }
 
 /// How many of `new`'s units fit in place of `taken` units of a text `length` long under `limit`
@@ -939,12 +1027,20 @@ fn replace(window: usize, s: &mut State, new: &[u16], undoable: bool, coalesce: 
     }
     let cut = fit < new.len();
     if start == end && fit == 0 {
-        return Change { cut, done: false };
+        return Change {
+            cut,
+            ..Change::default()
+        };
     }
     let taken = if end > start {
         match with_text(s, |text| keep_units(&text[start as usize..end as usize])).flatten() {
             Some(block) => block,
-            None => return Change { cut, done: false },
+            None => {
+                return Change {
+                    cut,
+                    ..Change::default()
+                }
+            }
         }
     } else {
         0
@@ -954,7 +1050,33 @@ fn replace(window: usize, s: &mut State, new: &[u16], undoable: bool, coalesce: 
             imports::local_free(taken);
         }
         notify(window, EN_ERRSPACE);
-        return Change { cut, done: false };
+        return Change {
+            cut,
+            ..Change::default()
+        };
+    }
+    if fit > 0
+        && s.multiline()
+        && style(window) & ES_AUTOVSCROLL == 0
+        && visible_lines(window, s).is_some_and(|shown| s.line_count() > shown)
+    {
+        // Without ES_AUTOVSCROLL an insertion leaves no more lines than show: the change undone,
+        // the undo record emptied.
+        let held = State {
+            deleted: taken,
+            deleted_length: end - start,
+            ..*s
+        };
+        with_deleted(&held, |old| splice(s, start, start + fit as u32, old));
+        if taken != 0 {
+            imports::local_free(taken);
+        }
+        empty_undo(s);
+        return Change {
+            cut,
+            done: true,
+            refused: true,
+        };
     }
     if undoable {
         record(s, start, taken, end - start, fit as u32, coalesce);
@@ -969,7 +1091,11 @@ fn replace(window: usize, s: &mut State, new: &[u16], undoable: bool, coalesce: 
     s.sel_max = at;
     s.caret = at;
     s.flags |= MODIFIED;
-    Change { cut, done: true }
+    Change {
+        cut,
+        done: true,
+        refused: false,
+    }
 }
 
 /// How many of `new`'s units fit the single-line edit's width in place of its text from `start` to
@@ -978,7 +1104,7 @@ fn fitting_width(window: usize, s: &State, start: u32, end: u32, new: &[u16]) ->
     let Some(measure) = Measure::new(window, s.font) else {
         return new.len();
     };
-    let room = Layout::of(window, &measure).width();
+    let room = Layout::of(window, s, &measure).width();
     let kept = with_text(s, |text| {
         measure.width(s, &text[..start as usize]) + measure.width(s, &text[end as usize..])
     })
@@ -1099,8 +1225,8 @@ fn undo(window: usize) -> i32 {
     changed(
         window,
         Change {
-            cut: false,
             done: true,
+            ..Change::default()
         },
     );
     1
@@ -1202,7 +1328,7 @@ fn same_column(window: usize, s: &State, line: u32) -> u32 {
     let Some(measure) = Measure::new(window, s.font) else {
         return line_start(s, line);
     };
-    let layout = Layout::of(window, &measure);
+    let layout = Layout::of(window, s, &measure);
     let style = style(window);
     with_text(s, |text| {
         let mut state = *s;
@@ -1277,10 +1403,39 @@ fn key(window: usize, vk: u32) -> bool {
             copy(window);
             return true;
         }
+        VK_RETURN if wants_no_return(window, &s) && !control => {
+            enter_to_default(window);
+            return true;
+        }
         _ => return false,
     };
     move_caret(window, &mut s, to, shift);
     true
+}
+
+/// Whether the edit is a multiline one in a dialog without ES_WANTRETURN: its Enter is the
+/// dialog's.
+fn wants_no_return(window: usize, s: &State) -> bool {
+    s.multiline() && s.flags & IN_DIALOG != 0 && style(window) & ES_WANTRETURN == 0
+}
+
+/// Enter in a multiline edit that does not want it: the dialog's default button given the focus
+/// (WM_NEXTDLGCTL) and the key posted to it.
+fn enter_to_default(window: usize) {
+    let dialog = parent_of(window);
+    if dialog == 0 {
+        return;
+    }
+    let default = message::send(dialog, DM_GETDEFID, 0, 0).unwrap_or(0) as u32;
+    if default >> 16 != DC_HASDEFID {
+        return;
+    }
+    let button = crate::dialog::get_dlg_item(dialog, (default & 0xFFFF) as i32);
+    if button == 0 {
+        return;
+    }
+    let _ = message::send(dialog, WM_NEXTDLGCTL, button as u32, 1);
+    let _ = imports::post_message(button, WM_KEYDOWN, VK_RETURN, 0);
 }
 
 /// WM_CHAR: a typed character (see the module notes); Backspace; Ctrl+Z, Ctrl+X, Ctrl+C and
@@ -1311,6 +1466,9 @@ fn typed(window: usize, unit: u16) {
             (before, s.caret)
         };
         delete(window, start, end, true);
+        return;
+    }
+    if unit == CR && wants_no_return(window, &s) {
         return;
     }
     let crlf = [CR, LF];
@@ -1434,7 +1592,7 @@ fn draw_edit(window: usize, dc: usize) {
         .flatten();
     imports::set_bk_mode(dc, TRANSPARENT);
     let measure = Measure::lent(window, dc);
-    let layout = Layout::of(window, &measure);
+    let layout = Layout::of(window, &s, &measure);
     let show_selection = s.sel_min != s.sel_max && (s.focused() || style & ES_NOHIDESEL != 0);
     let _ = with_text(&s, |text| {
         let mut line = s.top_line;
@@ -1518,11 +1676,11 @@ fn draw_units(
     rect: Option<&Rect>,
     units: &[u16],
 ) {
-    if s.password == 0 {
+    if s.mask() == 0 {
         imports::ext_text_out(dc, x, y, options, rect, units);
         return;
     }
-    let stars = [s.password as u16; 64];
+    let stars = [s.mask() as u16; 64];
     let one = imports::text_width(dc, &stars[..1]).unwrap_or(0);
     let mut pen = x;
     for chunk in units.chunks(stars.len()) {
@@ -1586,7 +1744,7 @@ fn create(window: usize) -> bool {
 /// WM_NCDESTROY: the edit's state and its blocks freed.
 fn destroy(window: usize) {
     if let Some(s) = load(window) {
-        for block in [s.text, s.starts, s.deleted] {
+        for block in [s.text, s.starts, s.deleted, s.narrow] {
             if block != 0 {
                 imports::local_free(block);
             }
@@ -1749,7 +1907,13 @@ fn edit_control(window: usize, message: u32, wparam: u32, lparam: i32, ansi: boo
             0
         }
         _ if state.is_none() => message::default_procedure(window, message, wparam, lparam, ansi),
-        WM_GETDLGCODE => dialog_code(state, lp) as i32,
+        WM_GETDLGCODE => {
+            if let Some(mut s) = state.filter(|s| lp != 0 && s.flags & IN_DIALOG == 0) {
+                s.flags |= IN_DIALOG;
+                store(window, &s);
+            }
+            dialog_code(state, lp) as i32
+        }
         WM_SETTEXT => {
             with_param_text(lp, ansi, |units| set_text(window, units)).unwrap_or(false) as i32
         }
@@ -1799,7 +1963,7 @@ fn edit_control(window: usize, message: u32, wparam: u32, lparam: i32, ansi: boo
                 wparam as u16
             };
             typed(window, unit);
-            0
+            1
         }
         WM_KEYDOWN => {
             if key(window, wparam) {
@@ -1862,10 +2026,36 @@ fn focus_gained(window: usize) {
     let height = Measure::new(window, s.font).map_or(16, |measure| measure.line_height());
     let width = crate::display::get_system_metrics(SM_CXBORDER);
     caret::create_caret(window, 0, width, height);
-    place_caret(window, &mut s);
+    place_caret(window, &mut s, true);
     store(window, &s);
     caret::show_or_hide(window, true);
     invalidate(window);
+}
+
+/// An ANSI edit's EM_GETHANDLE: its text narrow and terminated, in a movable block of its own,
+/// the same block each time, written anew (the edit keeps its text wide); 0 when there is no room.
+fn narrow_handle(window: usize, s: &mut State) -> usize {
+    let wanted = 2 * s.length as usize + 2;
+    let block = if s.narrow == 0 {
+        imports::local_alloc(LMEM_MOVEABLE | LMEM_ZEROINIT, wanted)
+    } else if imports::local_size(s.narrow) < wanted {
+        imports::local_realloc(s.narrow, wanted, LMEM_MOVEABLE | LMEM_ZEROINIT)
+    } else {
+        Some(s.narrow)
+    };
+    let Some(block) = block else {
+        return 0;
+    };
+    s.narrow = block;
+    store(window, s);
+    if let Some(mut locked) = LocalLocked::new(block) {
+        let bytes = locked.bytes_mut();
+        let _ = with_text(s, |text| {
+            let length = imports::unicode_to_multi_byte(&mut bytes[..wanted - 1], text);
+            bytes[length] = 0;
+        });
+    }
+    block
 }
 
 /// The EM_ messages (and the rest, to the default procedure).
@@ -1973,19 +2163,82 @@ fn edit_message(
             1
         }
         EM_SETPASSWORDCHAR => {
+            let unit = if ansi {
+                procedure::char_to_wide(EM_SETPASSWORDCHAR, wparam)
+            } else {
+                wparam
+            };
+            s.password = unit & 0xFFFF;
+            store(window, &s);
+            let style = style(window);
+            let style = if s.password != 0 {
+                style | ES_PASSWORD
+            } else {
+                style & !ES_PASSWORD
+            };
+            let _ = imports::set_window_long(window, GWL_STYLE, style, false);
+            invalidate(window);
+            1
+        }
+        EM_GETPASSWORDCHAR if ansi => {
+            procedure::char_to_narrow(EM_SETPASSWORDCHAR, s.password) as i32
+        }
+        EM_GETPASSWORDCHAR => s.password as i32,
+        EM_SETMARGINS => {
+            // EC_USEFONTINFO (any negative value): the font's overhang past its cells, as far as
+            // half a character; a raster font, as the system font is, has none.
+            let margin = |value: u32| {
+                if value as u16 as i16 >= 0 {
+                    value & 0xFFFF
+                } else {
+                    0
+                }
+            };
+            if wparam & EC_LEFTMARGIN != 0 {
+                s.left_margin = margin(lparam as u32);
+            }
+            if wparam & EC_RIGHTMARGIN != 0 {
+                s.right_margin = margin(lparam as u32 >> 16);
+            }
+            store(window, &s);
+            invalidate(window);
+            0
+        }
+        EM_GETMARGINS => (s.right_margin << 16 | s.left_margin) as i32,
+        EM_LINESCROLL => {
             if !s.multiline() {
-                s.password = wparam & 0xFFFF;
-                store(window, &s);
-                invalidate(window);
+                return 0;
+            }
+            if wparam != 0 {
+                unsupported(c"user32 Edit: EM_LINESCROLL sideways not yet implemented\n");
+            }
+            if lparam != 0 {
+                scroll_lines(window, &mut s, lparam);
             }
             1
         }
-        EM_GETPASSWORDCHAR => s.password as i32,
+        EM_SCROLL => {
+            if !s.multiline() {
+                return 0;
+            }
+            let page = visible_lines(window, &s).map_or(1, |shown| shown.saturating_sub(1).max(1));
+            let lines = match wparam {
+                SB_LINEUP => -1,
+                SB_LINEDOWN => 1,
+                SB_PAGEUP => -(page as i32),
+                SB_PAGEDOWN => page as i32,
+                _ => return 0,
+            };
+            let moved = scroll_lines(window, &mut s, lines);
+            (1 << 16 | (moved as u32 & 0xFFFF)) as i32
+        }
         EM_GETFIRSTVISIBLELINE => s.top_line as i32,
         EM_SCROLLCARET => {
             update_view(window);
             1
         }
+        EM_GETHANDLE if !s.multiline() => 0,
+        EM_GETHANDLE if ansi => narrow_handle(window, &mut s) as i32,
         EM_GETHANDLE => {
             // The text's block, terminated past its text, as Windows 2000 hands it over.
             let length = s.length;
@@ -1998,7 +2251,7 @@ fn edit_message(
         EM_GETRECT => {
             if lp != 0 {
                 let rect = Measure::new(window, s.font).map(|measure| {
-                    let layout = Layout::of(window, &measure);
+                    let layout = Layout::of(window, &s, &measure);
                     Rect {
                         left: layout.left,
                         top: layout.top,
@@ -2018,7 +2271,7 @@ fn edit_message(
             if wparam > s.length {
                 return -1;
             }
-            let layout = Layout::of(window, &measure);
+            let layout = Layout::of(window, &s, &measure);
             let style = style(window);
             let point = with_text(&s, |text| {
                 let mut state = s;
@@ -2189,6 +2442,77 @@ mod tests {
         assert_eq!(load(window).unwrap().line_count(), 1);
         assert_eq!(undo(window), 1, "the Backspaces are one record");
         assert_eq!(text_of(window), "ab\r\ncd");
+        destroy(window);
+    }
+
+    /// EM_SETMARGINS sets the margins its flags name, a negative value (EC_USEFONTINFO) as the
+    /// system font's (none); EM_GETMARGINS answers both (the editctl capture's margins block).
+    #[test]
+    fn margins_are_set_by_their_flags() {
+        let window = 0x7_0040;
+        edit_with(window, "Hello");
+        let ask = |message, wparam, lparam| {
+            edit_message(
+                window,
+                load(window).unwrap(),
+                message,
+                wparam,
+                lparam,
+                false,
+            )
+        };
+        assert_eq!(ask(EM_GETMARGINS, 0, 0), 0);
+        assert_eq!(
+            ask(EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, 5 << 16 | 3),
+            0
+        );
+        assert_eq!(ask(EM_GETMARGINS, 0, 0), 0x0005_0003);
+        ask(EM_SETMARGINS, EC_LEFTMARGIN, 9 << 16 | 7);
+        ask(EM_SETMARGINS, EC_RIGHTMARGIN, 13 << 16 | 11);
+        ask(EM_SETMARGINS, 0, 1 << 16 | 1);
+        assert_eq!(ask(EM_GETMARGINS, 0, 0), 0x000D_0007);
+        ask(EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, -1);
+        assert_eq!(ask(EM_GETMARGINS, 0, 0), 0);
+        destroy(window);
+    }
+
+    /// A narrow EM_SETPASSWORDCHAR's character is taken through the ANSI code page; a narrow
+    /// EM_GETPASSWORDCHAR of a wide edit answers it wide (the editctl capture's password block).
+    #[test]
+    fn a_narrow_password_character_is_converted() {
+        let window = 0x7_0050;
+        edit_with(window, "secret");
+        let s = load(window).unwrap();
+        assert_eq!(
+            edit_message(window, s, EM_SETPASSWORDCHAR, 0x95, 0, true),
+            1
+        );
+        assert_eq!(load(window).unwrap().password, 0x2022);
+        let s = load(window).unwrap();
+        assert_eq!(
+            edit_message(window, s, EM_GETPASSWORDCHAR, 0, 0, false),
+            0x2022
+        );
+        destroy(window);
+    }
+
+    /// Enter typed into a multiline edit a dialog asked about (no ES_WANTRETURN) is the dialog's,
+    /// not a line; outside a dialog it is a line.
+    #[test]
+    fn enter_in_a_dialog_is_no_line() {
+        let window = 0x7_0060;
+        assert!(create(window));
+        let mut s = load(window).unwrap();
+        s.flags |= MULTILINE;
+        store(window, &s);
+        typed(window, u16::from(b'a'));
+        typed(window, CR);
+        assert_eq!(text_of(window), "a\r\n");
+        let mut s = load(window).unwrap();
+        s.flags |= IN_DIALOG;
+        store(window, &s);
+        typed(window, CR);
+        assert_eq!(text_of(window), "a\r\n");
         destroy(window);
     }
 
