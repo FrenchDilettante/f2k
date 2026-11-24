@@ -14,8 +14,6 @@ system_fonts = true
 # Sections added ahead of the next real-machine capture: dialog.exe is to be rebuilt (tests/build.bat
 # dialog) and the blocks captured (tests/capture.bat dialog).
 radiotab = "F2K's BM_SETCHECK on a radio button only stores the check: it never moves WS_TABSTOP to the checked radio, so Tab lands on the group's first radio, checks it and sends BN_CLICKED"
-nested = "F2K's Tab, arrows and mnemonics walk the dialog's direct children only, never into a DS_CONTROL / WS_EX_CONTROLPARENT child dialog"
-nofail = "F2K fails the whole dialog when one control's class is unknown, DS_NOFAILCREATE or not"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

@@ -960,28 +960,23 @@ pub fn create(reader: &mut Reader, request: Request, show: bool) -> Option<usize
         let control = match create_control(dialog, &item, request, (ux, uy)) {
             Ok(control) => control,
             Err(missing) => {
+                // Windows 2000 makes a DS_NOFAILCREATE dialog without the control (the creation's
+                // last error kept); without the flag the dialog fails.
                 let no_fail = header.style & DS_NOFAILCREATE != 0;
-                match missing {
-                    Some((name, what)) => {
-                        let kept = if no_fail {
-                            " (DS_NOFAILCREATE, which keeps the dialog, is not yet implemented)"
-                        } else {
-                            ""
-                        };
-                        request.call.unhandled(format_args!(
-                            "the dialog's control {} of class {name} could not be made, so the \
-                             dialog fails{kept}: {what} is not yet implemented",
-                            item.id
-                        ));
-                    }
-                    // Windows 2000 keeps a DS_NOFAILCREATE dialog whose control fails; F2K's
-                    // fails with it.
-                    None if no_fail => request.call.unhandled(format_args!(
-                        "the dialog's control {} could not be made, so the dialog fails: \
-                         DS_NOFAILCREATE, which keeps the dialog, is not yet implemented",
+                if let Some((name, what)) = missing {
+                    let outcome = if no_fail {
+                        "the dialog is made without it (DS_NOFAILCREATE)"
+                    } else {
+                        "the dialog fails"
+                    };
+                    request.call.unhandled(format_args!(
+                        "the dialog's control {} of class {name} could not be made, so {outcome}: \
+                         {what} is not yet implemented",
                         item.id
-                    )),
-                    None => {}
+                    ));
+                }
+                if no_fail {
+                    continue;
                 }
                 window::destroy_window(dialog);
                 return None;
@@ -1603,13 +1598,46 @@ pub fn child_by_id(dialog: usize, id: u32) -> usize {
         .unwrap_or(0)
 }
 
-/// How many controls the walks take: a dialog's children past these are not visited.
+/// How many controls the walks take: a dialog's controls past these are not visited.
 const MOST_CONTROLS: usize = 256;
 
-/// The dialog's children, from the top of the z-order, into `out`: how many.
-fn child_list(dialog: usize, out: &mut [usize; MOST_CONTROLS]) -> usize {
+/// How deep the walks descend into control parents inside control parents.
+const MOST_NESTING: usize = 8;
+
+/// Whether the walks descend into `window`: a visible, enabled WS_EX_CONTROLPARENT window (a
+/// DS_CONTROL child dialog), whose controls stand in its place among its siblings.
+fn control_parent(window: usize) -> bool {
+    window::window_info(window).is_ok_and(|info| {
+        info.ex_style & WS_EX_CONTROLPARENT != 0
+            && info.style & (WS_VISIBLE | WS_DISABLED) == WS_VISIBLE
+    })
+}
+
+/// The controls below `parent`, from the top of the z-order, into `out`: how many. A control
+/// parent among them gives its own controls in its place, depth first.
+fn control_list(parent: usize, out: &mut [usize; MOST_CONTROLS]) -> usize {
+    fn gather(parent: usize, out: &mut [usize; MOST_CONTROLS], count: &mut usize, depth: usize) {
+        for child in window::children(parent) {
+            if *count == MOST_CONTROLS {
+                return;
+            }
+            if depth < MOST_NESTING && control_parent(child) {
+                gather(child, out, count, depth + 1);
+            } else {
+                out[*count] = child;
+                *count += 1;
+            }
+        }
+    }
     let mut count = 0;
-    for child in window::children(dialog).take(MOST_CONTROLS) {
+    gather(parent, out, &mut count, 0);
+    count
+}
+
+/// The window's direct children, from the top of the z-order, into `out`: how many.
+fn child_list(parent: usize, out: &mut [usize; MOST_CONTROLS]) -> usize {
+    let mut count = 0;
+    for child in window::children(parent).take(MOST_CONTROLS) {
         out[count] = child;
         count += 1;
     }
@@ -1625,13 +1653,16 @@ fn takes_focus(control: usize, tab: bool) -> bool {
 /// GetNextDlgTabItem's walk: the control after `from` (before it with `previous`) in the dialog's
 /// z-order that is a visible, enabled tab stop, round the end; the first one from the top (the
 /// last with `previous`) for no `from`; `from` itself when no other is one, 0 when no control is.
+/// The walk descends into control parents (see [`control_list`]).
 pub fn next_tab_item(dialog: usize, from: usize, previous: bool) -> usize {
-    let mut children = [0usize; MOST_CONTROLS];
-    let count = child_list(dialog, &mut children);
+    let mut controls = [0usize; MOST_CONTROLS];
+    let count = control_list(dialog, &mut controls);
     if count == 0 {
         return 0;
     }
-    let start = children[..count].iter().position(|&child| child == from);
+    let start = controls[..count]
+        .iter()
+        .position(|&control| control == from);
     for step in 1..=count {
         let index = match (start, previous) {
             (Some(at), false) => (at + step) % count,
@@ -1639,8 +1670,8 @@ pub fn next_tab_item(dialog: usize, from: usize, previous: bool) -> usize {
             (None, false) => step - 1,
             (None, true) => count - step,
         };
-        if takes_focus(children[index], true) {
-            return children[index];
+        if takes_focus(controls[index], true) {
+            return controls[index];
         }
     }
     if start.is_some() {
@@ -1650,34 +1681,61 @@ pub fn next_tab_item(dialog: usize, from: usize, previous: bool) -> usize {
     }
 }
 
-/// GetNextDlgGroupItem's walk: within `from`'s group (from the control with WS_GROUP at or before
-/// it to the next one with WS_GROUP), the visible, enabled control after it (before it with
-/// `previous`), round the group's end; `from` itself when there is no other.
-pub fn next_group_item(dialog: usize, from: usize, previous: bool) -> usize {
-    let mut children = [0usize; MOST_CONTROLS];
-    let count = child_list(dialog, &mut children);
-    let Some(at) = children[..count].iter().position(|&child| child == from) else {
-        return from;
-    };
+/// The group around `children[at]`: from the child with WS_GROUP at or before it to the next one
+/// with WS_GROUP, that one excluded, as a range of indices.
+fn group_range(children: &[usize], at: usize) -> core::ops::Range<usize> {
     let group = |child: usize| window::style_of(child).is_some_and(|style| style & WS_GROUP != 0);
     let first = (0..=at)
         .rev()
         .find(|&index| group(children[index]))
         .unwrap_or(0);
-    let end = (at + 1..count)
+    let end = (at + 1..children.len())
         .find(|&index| group(children[index]))
-        .unwrap_or(count);
-    let size = end - first;
+        .unwrap_or(children.len());
+    first..end
+}
+
+/// GetNextDlgGroupItem's walk: within `from`'s group among its siblings (its parent the dialog or
+/// a control parent inside it), the visible, enabled control after it (before it with
+/// `previous`), round the group's end; a control parent in the group gives its first such control
+/// (its last with `previous`). `from` itself when there is no other.
+pub fn next_group_item(dialog: usize, from: usize, previous: bool) -> usize {
+    let parent = window::links(from).map_or(0, |links| links.parent as usize);
+    if parent == 0 || !is_descendant(dialog, parent) {
+        return from;
+    }
+    let mut children = [0usize; MOST_CONTROLS];
+    let count = child_list(parent, &mut children);
+    let Some(at) = children[..count].iter().position(|&child| child == from) else {
+        return from;
+    };
+    let range = group_range(&children[..count], at);
+    let size = range.len();
+    let offset = at - range.start;
     for step in 1..size {
-        let offset = at - first;
-        let index = first
+        let child = children[range.start
             + if previous {
                 (offset + size - step) % size
             } else {
                 (offset + step) % size
+            }];
+        let control = if control_parent(child) {
+            let mut inner = [0usize; MOST_CONTROLS];
+            let inner_count = control_list(child, &mut inner);
+            let mut candidates = inner[..inner_count].iter().copied();
+            let found = if previous {
+                candidates.rfind(|&control| takes_focus(control, false))
+            } else {
+                candidates.find(|&control| takes_focus(control, false))
             };
-        if takes_focus(children[index], false) {
-            return children[index];
+            found.unwrap_or(0)
+        } else if takes_focus(child, false) {
+            child
+        } else {
+            0
+        };
+        if control != 0 {
+            return control;
         }
     }
     from
@@ -1691,15 +1749,12 @@ pub fn next_group_item_any(parent: usize, from: usize) -> usize {
     let Some(at) = children[..count].iter().position(|&child| child == from) else {
         return from;
     };
-    let group = |child: usize| window::style_of(child).is_some_and(|style| style & WS_GROUP != 0);
-    let first = (0..=at)
-        .rev()
-        .find(|&index| group(children[index]))
-        .unwrap_or(0);
-    let end = (at + 1..count)
-        .find(|&index| group(children[index]))
-        .unwrap_or(count);
-    let next = if at + 1 < end { at + 1 } else { first };
+    let range = group_range(&children[..count], at);
+    let next = if at + 1 < range.end {
+        at + 1
+    } else {
+        range.start
+    };
     children[next]
 }
 
@@ -2134,9 +2189,11 @@ fn press(dialog: usize, id: u32, control: usize) {
 const BM_CLICK: u32 = 0x00F5;
 
 /// IsDialogMessage's WM_CHAR and WM_SYSCHAR: whether the dialog handled the character (a control
-/// that wants characters gets them; Tab, Enter and Esc are the keys' own; a mnemonic presses its
-/// control: a button clicked, a static's next control focused, another control focused). A narrow
-/// (`ansi`) message's character is matched in its wide form.
+/// that wants characters gets them; Tab, Enter and Esc are the keys' own; a mnemonic presses the
+/// first control after the focus that has it, round the end and control parents' controls
+/// included: a push button's command sent to its parent, the focus left where it is; another
+/// button clicked, a static's next control focused, another control focused). A
+/// narrow (`ansi`) message's character is matched in its wide form.
 fn character(dialog: usize, msg: &Msg, ansi: bool) -> bool {
     let code = dialog_code(msg.hwnd as usize, msg as *const Msg as usize);
     if msg.message == WM_CHAR {
@@ -2153,9 +2210,15 @@ fn character(dialog: usize, msg: &Msg, ansi: bool) -> bool {
         msg.wparam
     };
     let wanted = rtl::cp1252::map_case(unit as u16, true);
-    let mut children = [0usize; MOST_CONTROLS];
-    let count = child_list(dialog, &mut children);
-    for &control in &children[..count] {
+    let mut controls = [0usize; MOST_CONTROLS];
+    let count = control_list(dialog, &mut controls);
+    let focus = focus::get_focus();
+    let start = controls[..count]
+        .iter()
+        .position(|&control| control == focus)
+        .map_or(0, |at| at + 1);
+    for step in 0..count {
+        let control = controls[(start + step) % count];
         if !takes_focus(control, false) || mnemonic(control) != Some(wanted) {
             continue;
         }
@@ -2165,6 +2228,9 @@ fn character(dialog: usize, msg: &Msg, ansi: bool) -> bool {
             if next != 0 && next != control {
                 set_dialog_focus(dialog, next);
             }
+        } else if kind & (DLGC_DEFPUSHBUTTON | DLGC_UNDEFPUSHBUTTON) != 0 {
+            let parent = window::links(control).map_or(dialog, |links| links.parent as usize);
+            press(parent, get_dlg_ctrl_id_quiet(control), control);
         } else if kind & DLGC_BUTTON != 0 {
             let _ = message::send(control, BM_CLICK, 0, 0);
         } else {
@@ -2440,5 +2506,123 @@ mod tests {
         // (as the kernel does, at the cascade); converted from dialog units it would be
         // 0x8000 * 8 / 4 = 65536 pixels out.
         assert_eq!((rect.left, rect.top), (0, 0));
+    }
+
+    /// A template of `style` with no font, menu or title, the dialog class, and the controls
+    /// (each its style, id and class ordinal), DWORD-aligned as a template is.
+    fn button_template(style: u32, controls: &[(u32, u16, u16)]) -> std::vec::Vec<u32> {
+        let mut words: std::vec::Vec<u16> = std::vec::Vec::new();
+        let dword = |words: &mut std::vec::Vec<u16>, value: u32| {
+            words.push(value as u16);
+            words.push((value >> 16) as u16);
+        };
+        dword(&mut words, style);
+        dword(&mut words, 0);
+        words.extend([controls.len() as u16, 0, 0, 100, 60, 0, 0xFFFF, 0x8002, 0]);
+        for &(style, id, class) in controls {
+            if words.len() % 2 != 0 {
+                words.push(0);
+            }
+            dword(&mut words, style);
+            dword(&mut words, 0);
+            words.extend([4, 4, 40, 14, id, 0xFFFF, class, 0, 0]);
+        }
+        words
+            .chunks(2)
+            .map(|pair| u32::from(pair[0]) | u32::from(*pair.get(1).unwrap_or(&0)) << 16)
+            .collect()
+    }
+
+    /// The dialog capture's nested pair: an outer dialog (OK 1 and Gamma 3, each starting a group)
+    /// and a DS_CONTROL child dialog in it (Alpha 201 starting a group, Beta 202 in it), made
+    /// last, so at the bottom of the outer one's z-order.
+    fn nested_dialogs() -> (usize, usize) {
+        crate::class::SYSTEM_CLASSES_WANTED.with(|wanted| wanted.set(true));
+        let control = WS_CHILD | WS_VISIBLE | WS_TABSTOP;
+        let outer = button_template(
+            WS_POPUP | WS_VISIBLE,
+            &[(control | WS_GROUP, 1, 0x80), (control | WS_GROUP, 3, 0x80)],
+        );
+        let inner = button_template(
+            WS_CHILD | WS_VISIBLE | DS_CONTROL,
+            &[(control | WS_GROUP, 201, 0x80), (control, 202, 0x80)],
+        );
+        // SAFETY: the templates above, whole.
+        let outer =
+            unsafe { create_dialog_indirect_param_w(0x40_0000, outer.as_ptr().cast(), 0, 0, 0) };
+        assert_ne!(outer, 0);
+        // SAFETY: as above.
+        let inner = unsafe {
+            create_dialog_indirect_param_w(0x40_0000, inner.as_ptr().cast(), outer, 0, 0)
+        };
+        assert_ne!(inner, 0);
+        (outer, inner)
+    }
+
+    /// Tab walks into a DS_CONTROL child dialog's controls in its place in the z-order, and out
+    /// of it again, round the end both ways.
+    #[test]
+    fn tab_walks_through_a_nested_control_parent() {
+        let (outer, inner) = nested_dialogs();
+        let id = |control: usize| get_dlg_ctrl_id_quiet(control);
+        let ok = child_by_id(outer, 1);
+        let alpha = child_by_id(inner, 201);
+        assert_ne!(alpha, 0);
+        let mut forward = std::vec::Vec::new();
+        let mut at = ok;
+        for _ in 0..4 {
+            at = next_tab_item(outer, at, false);
+            forward.push(id(at));
+        }
+        assert_eq!(forward, [3, 201, 202, 1]);
+        let mut back = std::vec::Vec::new();
+        for _ in 0..4 {
+            at = next_tab_item(outer, at, true);
+            back.push(id(at));
+        }
+        assert_eq!(back, [202, 201, 3, 1]);
+        assert_eq!(next_tab_item(outer, 0, false), ok);
+    }
+
+    /// The arrows' walk stays in the nested dialog's group, round its end both ways.
+    #[test]
+    fn arrows_walk_a_nested_control_parents_group() {
+        let (outer, inner) = nested_dialogs();
+        let alpha = child_by_id(inner, 201);
+        let beta = child_by_id(inner, 202);
+        assert_eq!(next_group_item(outer, alpha, false), beta);
+        assert_eq!(next_group_item(outer, beta, false), alpha);
+        assert_eq!(next_group_item(outer, alpha, true), beta);
+    }
+
+    /// With DS_NOFAILCREATE, a control whose class F2K lacks is left out (its line says so) and
+    /// the dialog is made with the others.
+    #[test]
+    fn a_no_fail_dialog_is_made_without_its_missing_control() {
+        use crate::imports::host::DEBUG_PRINTS;
+        crate::class::SYSTEM_CLASSES_WANTED.with(|wanted| wanted.set(true));
+        // A ListBox (class ordinal 0x83), then a Button (0x80).
+        let template = button_template(
+            WS_POPUP | DS_NOFAILCREATE,
+            &[
+                (WS_CHILD | WS_VISIBLE, 1, 0x83),
+                (WS_CHILD | WS_VISIBLE, 2, 0x80),
+            ],
+        );
+        DEBUG_PRINTS.with(|prints| prints.borrow_mut().clear());
+        // SAFETY: the template above, whole.
+        let dialog =
+            unsafe { create_dialog_indirect_param_w(0x40_0000, template.as_ptr().cast(), 0, 0, 0) };
+        assert_ne!(dialog, 0);
+        assert_eq!(child_by_id(dialog, 1), 0);
+        assert_ne!(child_by_id(dialog, 2), 0);
+        let printed = DEBUG_PRINTS.with(|prints| prints.borrow().clone());
+        assert!(
+            printed.iter().any(|line| line.contains(
+                "the dialog's control 1 of class ListBox could not be made, so the dialog is made \
+                 without it (DS_NOFAILCREATE)"
+            )),
+            "{printed:?}"
+        );
     }
 }
