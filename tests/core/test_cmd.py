@@ -10,7 +10,7 @@ draws on the VGA text screen, which is read through QMP while QEMU runs.
 The prompt is `C:\\WINNT\\system32>` (the first process's current directory is its image's, in the
 case the command line gives it). A boot types its lines step by step, each step's keys pressed
 once (through QMP) when the screen's last line reads what the step waits for, on a row or with a
-text the step before did not see; the boot stops once a prompt shows below the last step's, and
+text the step before did not see (paced by their echo: see `Typist`); the boot stops once a prompt shows below the last step's, and
 the text screen must then read, row by row, its trailing blanks dropped, as each test says, the
 rest of it blank.
 
@@ -77,6 +77,7 @@ the return code, and `^&`; and `echo ver| cmd`, a shell reading its commands fro
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import Callable
 
@@ -140,6 +141,32 @@ def keys_of(text: str) -> list[str]:
     return keys
 
 
+# What each chord keys_of gives echoes, the other way round.
+ECHOES = {chord: character for character, chord in QCODES.items()}
+# QEMU's PS/2 keyboard queues 16 bytes (hw/input/ps2.c, PS2_QUEUE_SIZE) and drops what comes while
+# it is full: a QEMU whose vCPU waits for a host core while its QMP is answered loses keys. So the
+# bytes typed and not yet echoed stay within it, each key counted at its most, an extended key's
+# make and break (E0 xx, E0 xx|80).
+KEYBOARD_QUEUE = 16
+KEY_BYTES = 4
+
+
+def echo_of(chord: str) -> str | None:
+    """The character `chord` echoes at a prompt, None for another chord (Return, Ctrl+C)."""
+    if chord in ECHOES:
+        return ECHOES[chord]
+    if len(chord) == 1 and chord.isascii() and chord.isalnum():
+        return chord
+    if chord.startswith("shift-") and len(chord) == 7 and chord[6].isascii() and chord[6].islower():
+        return chord[6].upper()
+    return None
+
+
+def chord_bytes(chord: str) -> int:
+    """The bytes the keyboard queues for `chord` at most: each key's make and break."""
+    return KEY_BYTES * len(chord.split("-"))
+
+
 def line_of(text: str) -> list[str]:
     """The chords that type `text`, then Return."""
     return keys_of(text) + ["ret"]
@@ -159,9 +186,12 @@ class Typist:
     """The boot's `during` step: `steps`, each a wait on the screen's last line (its text, or a
     test of it) and the chords then pressed and released in turn, taken one after another; a
     step's wait is met only by a last line on another row or with another text than the step before
-    met. The last screen read is kept (`last`). Once the steps are done (`done`), with `then_prompt`
-    a prompt on a row below the last step's ends the boot, its screen kept (`screen`); without it
-    the screen is no longer read."""
+    met. A step's chords are paced by their echo: no more go than KEYBOARD_QUEUE holds beyond the
+    last the screen shows (the echo ending the screen's text), so none is dropped; a chord that
+    echoes nothing (Return, Ctrl+C) waits for every chord before it to show. The last screen read
+    is kept (`last`). Once the steps are done (`done`), with `then_prompt` a prompt on a row below
+    the last step's ends the boot, its screen kept (`screen`); without it the screen is no longer
+    read."""
 
     def __init__(self, steps: list[tuple[str | Callable[[str], bool], list[str]]], *,
                  then_prompt: bool = True) -> None:
@@ -171,15 +201,24 @@ class Typist:
         self.met: tuple[int, str] | None = None
         self.screen: f2kboot.TextScreen | None = None
         self.last: f2kboot.TextScreen | None = None
+        # The step being typed: its chords, how many are sent, how many have shown, and where the
+        # echo now being followed starts (after the last chord that echoes nothing).
+        self.typing: list[str] | None = None
+        self.sent = 0
+        self.shown = 0
+        self.echo_from = 0
 
     def done(self) -> bool:
-        return self.taken == len(self.steps)
+        return self.taken == len(self.steps) and self.typing is None
 
     def __call__(self, socket: Path, log: str) -> None:
         if self.screen is not None or (self.done() and not self.then_prompt):
             return
         screen = f2kboot.read_text_screen(socket)
         self.last = screen
+        if self.typing is not None:
+            self.type(socket, screen)
+            return
         rows = rows_of(screen)
         row = last_row(rows)
         if row is None:
@@ -193,9 +232,49 @@ class Typist:
         met = wait(rows[row]) if callable(wait) else rows[row] == wait
         if not met or line == self.met:
             return
-        f2kboot.press(socket, keys)
         self.taken += 1
         self.met = line
+        self.typing, self.sent, self.shown, self.echo_from = list(keys), 0, 0, 0
+        self.type(socket, screen)
+
+    def type(self, socket: Path, screen: f2kboot.TextScreen) -> None:
+        """Send the step's chords the queue has room for, reading the screen between, until all
+        are sent or the echo stalls for a while (the next look carries on)."""
+        chords = self.typing
+        stalled = time.monotonic() + 1.0
+        while True:
+            self.follow(screen)
+            while self.sent < len(chords) and self.room(chords[self.sent]):
+                chord = chords[self.sent]
+                f2kboot.press(socket, [chord])
+                self.sent += 1
+                if echo_of(chord) is None:
+                    self.echo_from = self.sent
+            if self.sent == len(chords):
+                self.typing = None
+                return
+            if time.monotonic() > stalled:
+                return
+            screen = f2kboot.read_text_screen(socket)
+            self.last = screen
+
+    def room(self, chord: str) -> bool:
+        """Whether `chord` may go: the chords sent and not shown leave the queue room for it, and
+        one that echoes nothing goes once every chord before it has shown."""
+        if echo_of(chord) is None and self.shown < self.sent:
+            return False
+        pending = sum(chord_bytes(each) for each in self.typing[self.shown:self.sent])
+        return pending + chord_bytes(chord) <= KEYBOARD_QUEUE
+
+    def follow(self, screen: f2kboot.TextScreen) -> None:
+        """Count the chords the screen shows: those up to the last character of the echo followed
+        that ends the screen's text (a blank shows only with what comes after it)."""
+        text = "".join(screen.text(row) for row in range(f2kboot.ROWS)).rstrip(" \0")
+        echo = "".join(echo_of(chord) or "" for chord in self.typing[self.echo_from:self.sent])
+        for end in range(len(echo), 0, -1):
+            if echo[end - 1] != " " and text.endswith(echo[:end]):
+                self.shown = max(self.shown, self.echo_from + end)
+                return
 
 
 def shown(screen: f2kboot.TextScreen | None) -> str:
