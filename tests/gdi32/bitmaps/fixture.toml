@@ -9,8 +9,6 @@ gate = true
 [pending]
 objtype = "F2K's gdi32 has no pens (CreatePen, ExtCreatePen), hatch brushes (CreateHatchBrush) or regions (CreateRectRgn) yet: GetObjectType of each answers 0 with ERROR_INVALID_HANDLE; every other object's line matches"
 
-obm = "F2K's LoadBitmap knows only OBM_CLOSE and OBM_CHECK, whose shapes were drawn without a capture: OBM_CHECKBOXES and the arrows are refused"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only the exports a section observes, not the helpers it calls around them (the canvases'

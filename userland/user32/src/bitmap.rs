@@ -15,13 +15,10 @@
 //!
 //! A resource the module lacks is NULL with FindResourceEx's last error
 //! (ERROR_RESOURCE_NAME_NOT_FOUND). With no module, the name is a system bitmap's id (winuser.h's
-//! OBM_*, under OEMRESOURCE): Windows 2000 loads them from user32's own resources, which F2K's
-//! user32 has none of, so it draws the two the corpus loads, each a new bitmap at each call (as
-//! Windows 2000's are): OBM_CHECK, the menus' check mark, a 13 by 13 monochrome bitmap with the
-//! check in black on white; OBM_CLOSE, a bitmap of the screen's format holding a caption's close
-//! button as DrawFrameControl draws it (16 by 14: Windows 2000's own image of it is not captured,
-//! only that it is one of the screen's format). Another system bitmap is NULL with
-//! ERROR_RESOURCE_NAME_NOT_FOUND.
+//! OBM_*, under OEMRESOURCE), loaded as a module's is from the packed DIB [`crate::obm`] holds, a
+//! new bitmap at each call (as Windows 2000's are); one it does not hold is NULL with
+//! ERROR_RESOURCE_NAME_NOT_FOUND. A monochrome DIB (its two colors black and white) is loaded as a
+//! monochrome bitmap, as Windows 2000's OBM_CHECK is.
 //!
 //! The other image types (IMAGE_ICON, IMAGE_CURSOR) and LR_LOADFROMFILE go to the stub routine.
 
@@ -43,7 +40,6 @@ use rtl::dib::{
     HEADER_SIZE,
     MONO_COLORS,
 };
-use rtl::gdi::Rect;
 use rtl::pod::Pod;
 
 use crate::imports::{self, HeapBlock, ResourceName};
@@ -60,10 +56,6 @@ const IMAGE_BITMAP: u32 = 0;
 const LR_MONOCHROME: u32 = 0x0001;
 const LR_LOADFROMFILE: u32 = 0x0010;
 const LR_CREATEDIBSECTION: u32 = 0x2000;
-
-/// The system bitmaps F2K draws (winuser.h's OBM_*).
-pub const OBM_CLOSE: u16 = 32754;
-pub const OBM_CHECK: u16 = 32760;
 
 /// ERROR_RESOURCE_NAME_NOT_FOUND: no bitmap of that name.
 const ERROR_RESOURCE_NAME_NOT_FOUND: u32 = 1814;
@@ -175,10 +167,17 @@ pub unsafe extern "system" fn load_image_a(
 /// A string name is the address of a NUL-terminated string the call may read.
 unsafe fn load(instance: usize, name: ResourceName, cx: i32, cy: i32, flags: u32) -> usize {
     if instance == 0 {
-        let drawn = name.id().and_then(system_bitmap);
-        return drawn
-            .or_else(|| failed(ERROR_RESOURCE_NAME_NOT_FOUND))
-            .unwrap_or(0);
+        let Some(art) = name.id().and_then(crate::obm::find) else {
+            return failed(ERROR_RESOURCE_NAME_NOT_FOUND).unwrap_or(0);
+        };
+        let Some(mut block) = HeapBlock::new(art.packed_size()) else {
+            return 0;
+        };
+        art.write_packed(block.bytes_mut());
+        let Some(dib) = Packed::parse(block.bytes()) else {
+            return 0;
+        };
+        return made_of(&dib, cx, cy, flags);
     }
     // SAFETY: the caller's name (the contract).
     let Some(resource) = (unsafe { imports::find_named_resource(instance, RT_BITMAP, name) })
@@ -191,12 +190,19 @@ unsafe fn load(instance: usize, name: ResourceName, cx: i32, cy: i32, flags: u32
     let Some(dib) = Packed::parse(data) else {
         return failed(ERROR_INVALID_DATA).unwrap_or(0);
     };
+    made_of(&dib, cx, cy, flags)
+}
+
+/// The bitmap `flags` ask of `dib` at `cx` by `cy` (0: its own); NULL when none is made.
+fn made_of(dib: &Packed, cx: i32, cy: i32, flags: u32) -> usize {
     let width = if cx > 0 { cx } else { dib.width() };
     let height = if cy > 0 { cy } else { dib.height() };
-    let made = if flags & LR_MONOCHROME != 0 {
-        monochrome(&dib, width, height)
+    let made = if flags & LR_MONOCHROME != 0
+        || (flags & LR_CREATEDIBSECTION == 0 && dib.is_monochrome())
+    {
+        monochrome(dib, width, height)
     } else {
-        stretched(&dib, width, height, |info, rows| {
+        stretched(dib, width, height, |info, rows| {
             if flags & LR_CREATEDIBSECTION != 0 {
                 let (section, bits) = imports::create_dib_section(info)?;
                 // SAFETY: the section's rows, `rows.len()` bytes of them (its header's), ours.
@@ -272,6 +278,12 @@ impl<'a> Packed<'a> {
             self.height() - 1 - y
         };
         &self.rows[stride * stored as usize..stride * (stored as usize + 1)]
+    }
+
+    /// Whether it is monochrome: one bit a pixel, its two colors black and white.
+    fn is_monochrome(&self) -> bool {
+        let (table, _) = self.colors();
+        self.bpp() == 1 && table[..2] == MONO_COLORS
     }
 
     /// Its colors: its table, or its masks.
@@ -369,64 +381,6 @@ fn monochrome(dib: &Packed, width: i32, height: i32) -> Option<usize> {
         }
     }
     imports::create_bitmap(width, height, 1, Some(rows))
-}
-
-/// The check mark's rows (bit 7 the leftmost pixel; a set bit its black): Marlett's check as
-/// Windows 2000 draws a menu's, its 7 by 7 pixels at (3, 3) of the 13 by 13 bitmap.
-const CHECK: [u8; 7] = [0x02, 0x06, 0x8E, 0xDC, 0xF8, 0x70, 0x20];
-
-/// The system bitmap `id` drawn anew (see the module notes); none for one F2K does not draw.
-fn system_bitmap(id: u16) -> Option<usize> {
-    match id {
-        OBM_CHECK => {
-            const SIZE: i32 = 13;
-            let stride = word_stride(SIZE, 1) as usize;
-            let mut rows = [0xFFu8; 2 * 13];
-            for (index, &bits) in CHECK.iter().enumerate() {
-                // The glyph's bit 7 is the row's column 3: bit 12 of the row's big-endian word.
-                let white = !((bits as u16) << 5);
-                let row = &mut rows[stride * (index + 3)..stride * (index + 4)];
-                row.copy_from_slice(&white.to_be_bytes());
-            }
-            imports::create_bitmap(SIZE, SIZE, 1, Some(&rows))
-        }
-        OBM_CLOSE => {
-            let rect = Rect {
-                left: 0,
-                top: 0,
-                right: 16,
-                bottom: 14,
-            };
-            let screen = imports::get_dc(0).ok()? as usize;
-            let bitmap = imports::create_compatible_bitmap(screen, rect.right, rect.bottom);
-            let memory = imports::create_compatible_dc(screen);
-            let _ = imports::close(screen);
-            let (bitmap, memory) = match (bitmap, memory) {
-                (Some(bitmap), Some(memory)) => (bitmap, memory),
-                (bitmap, memory) => {
-                    if let Some(bitmap) = bitmap {
-                        imports::delete_object(bitmap);
-                    }
-                    if let Some(memory) = memory {
-                        imports::delete_dc(memory);
-                    }
-                    return None;
-                }
-            };
-            let previous = imports::select_object(memory, bitmap);
-            crate::frame_control::draw_caption_in(
-                memory,
-                rect,
-                crate::frame_control::DFCS_CAPTIONCLOSE,
-            );
-            if let Some(previous) = previous {
-                imports::select_object(memory, previous);
-            }
-            imports::delete_dc(memory);
-            Some(bitmap)
-        }
-        _ => None,
-    }
 }
 
 #[cfg(test)]

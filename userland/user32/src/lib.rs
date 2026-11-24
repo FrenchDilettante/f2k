@@ -60,6 +60,7 @@ pub mod menuinfo;
 pub mod message;
 pub mod msgbox;
 pub mod nonclient;
+pub mod obm;
 pub mod paint;
 pub mod procedure;
 pub mod prop;
