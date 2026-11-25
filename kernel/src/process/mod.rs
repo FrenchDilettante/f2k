@@ -399,29 +399,6 @@ impl Process {
         }
     }
 
-    /// Write a record no process holds at `record`, part by part: the in-place form of
-    /// [`Process::empty`], for a record made at its final address (by value it would pass through
-    /// the caller's stack, which is smaller than it). The handle table, the address space and the
-    /// working set are built in place at their locks' first acquisitions.
-    ///
-    /// # Safety
-    ///
-    /// `record` is valid for writes and aligned; its previous contents are overwritten, not
-    /// dropped.
-    #[cfg(target_arch = "x86")]
-    pub(super) unsafe fn write_empty(record: *mut Process) {
-        use core::ptr::addr_of_mut;
-        // SAFETY: the caller's contract; every field is written, the three large ones in place.
-        unsafe {
-            addr_of_mut!((*record).sched).write(PinnedProcess::new(0, crate::sched::NORMAL_BASE));
-            addr_of_mut!((*record).identity).write(IdentityCell::new(Identity::NONE));
-            addr_of_mut!((*record).state).write(ShortLock::new(ProcessState::fresh()));
-            ShortLock::write_in_place(addr_of_mut!((*record).handles), HandleTable::write_empty);
-            ShortLock::write_in_place(addr_of_mut!((*record).space), AddressSpace::write_empty);
-            ShortLock::write_in_place(addr_of_mut!((*record).working_set), WorkingSet::write_empty);
-        }
-    }
-
     /// Take this record, whose process object `object` the directory has just made (so nothing
     /// names it yet), for a new process: named `name`, its client id fresh, created by the process
     /// whose client id is `parent_id` (zero: none), running as leg `leg` (none for a child), over
@@ -912,6 +889,28 @@ impl Process {
     #[cfg(target_arch = "x86")]
     pub fn signal_end(&self, end: exit::ProcessEnd) {
         crate::ob::signal_process_end(self.object(), end.exit_status());
+    }
+}
+
+// SAFETY: `write_fresh` writes every field of the record.
+#[cfg(target_arch = "x86")]
+unsafe impl crate::slots::Record for Process {
+    /// Write a record no process holds at `record`, part by part: the in-place form of
+    /// [`Process::empty`], for a record made at its final address in the process pool's side
+    /// table (by value it would pass through the caller's stack, which is smaller than it). The
+    /// handle table, the address space and the working set are built in place at their locks'
+    /// first acquisitions.
+    unsafe fn write_fresh(record: *mut Process, _: u32) {
+        use core::ptr::addr_of_mut;
+        // SAFETY: the caller's contract; every field is written, the three large ones in place.
+        unsafe {
+            addr_of_mut!((*record).sched).write(PinnedProcess::new(0, crate::sched::NORMAL_BASE));
+            addr_of_mut!((*record).identity).write(IdentityCell::new(Identity::NONE));
+            addr_of_mut!((*record).state).write(ShortLock::new(ProcessState::fresh()));
+            ShortLock::write_in_place(addr_of_mut!((*record).handles), HandleTable::write_empty);
+            ShortLock::write_in_place(addr_of_mut!((*record).space), AddressSpace::write_empty);
+            ShortLock::write_in_place(addr_of_mut!((*record).working_set), WorkingSet::write_empty);
+        }
     }
 }
 
@@ -1414,14 +1413,13 @@ fn release_record(process: &Process) {
 static BASELINE_FRAMES: crate::sync::InitOnce<u32> = crate::sync::InitOnce::new();
 
 /// The free frames as the teardown audits count them: the frame database's, with the frames the
-/// process records hold — permanent allocations made as the pool grows (see [`pool`]), which no
-/// process's end gives back — the slot pools' chunks, kept at their peak in the same way (see
-/// [`crate::slots::chunk_frames`]), and the registry's storage's, which outlive the process that
-/// made them (see [`crate::cm`]).
+/// slot pools' chunks and directory pages hold — permanent allocations made as the pools grow,
+/// kept at their peak, which no process's end gives back: the process records among them (see
+/// [`pool`] and [`crate::slots::chunk_frames`]) — and the registry's storage's, which outlive the
+/// process that made them (see [`crate::cm`]).
 #[cfg(target_arch = "x86")]
 fn audited_frames() -> u32 {
     crate::mem::bootmem::with_frame_db(|db| db.available())
-        + pool::record_frames()
         + crate::slots::chunk_frames()
         + crate::cm::held_frames()
 }

@@ -25,7 +25,8 @@
 //! ([`Slots::on`] with a `&'static Paged`), which the reader resolves through alone
 //! ([`Slots::address_in`], [`SideTable::address_in`], [`SideTable::index_at_in`]).
 
-// No pool has moved onto these types yet.
+// Only the process records (a `SideTable`) have moved onto these types; the rest waits for its
+// consumers.
 #![allow(dead_code)]
 
 use core::cell::Cell;

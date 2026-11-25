@@ -4,9 +4,10 @@
 //! A record is in use while its process object lives ([`crate::ob`]'s process pool, same index):
 //! the object is created with the record and holds the process's own reference until its deletion,
 //! so a handle to the process keeps its record and its address space, as Windows 2000's keeps
-//! the process until its object's deletion. The pool grows: a record is made in the nonpaged pool
-//! ([`crate::mem::pool`]) the first time a process takes its index, and kept for the kernel's life,
-//! reused by every later process at that index, so it never moves (Windows 2000 takes its
+//! the process until its object's deletion. The pool grows: the records are a side table
+//! ([`crate::slots::SideTable`]) keyed by the object's index, whose record is made in the nonpaged
+//! pool ([`crate::mem::pool`]) the first time a process takes its index, and kept for the kernel's
+//! life, reused by every later process at that index, so it never moves (Windows 2000 takes its
 //! EPROCESS from the nonpaged pool too). A record costs some 40 KiB: built into the kernel's image,
 //! [`MAX_PROCESSES`] of them would not fit its window. The capacity is [`MAX_PROCESSES`]: a process
 //! created while every index is in use, or whose record the pool has no room for, is refused
@@ -26,61 +27,35 @@
 //! address space — takes it explicitly.
 
 use core::sync::atomic::{AtomicBool, Ordering};
-#[cfg(target_arch = "x86")]
-use core::sync::atomic::{AtomicPtr, AtomicU32};
 
 #[cfg(target_arch = "x86")]
 use super::Process;
+#[cfg(target_arch = "x86")]
+use crate::slots::{NonpagedPages, SideTable};
 
 /// How many processes can exist at once, across the system.
 pub const MAX_PROCESSES: usize = 64;
 
-/// The process records, by pool index: none until a process first takes the index, then the
-/// record made for it, at its final address (see the module notes).
+/// The process records, by pool index: a record is made, with its chunk, the first time a process
+/// takes its index, and kept at that address for the kernel's life (see the module notes). Readers
+/// take no lock: the table resolves through its directory alone, and is only ever ensured, never
+/// borrowed mutably, so it holds its own directory. Its chunks and directory pages count among the
+/// slot pools' permanent frames ([`crate::slots::chunk_frames`]), which the teardown audits add to
+/// the free frames.
 #[cfg(target_arch = "x86")]
-static POOL: [AtomicPtr<Process>; MAX_PROCESSES] =
-    [const { AtomicPtr::new(core::ptr::null_mut()) }; MAX_PROCESSES];
-
-/// How many frames the records hold: the pool's permanent allocations, which the teardown audits
-/// count with the free frames (see [`crate::process::frames_against_baseline`]).
-#[cfg(target_arch = "x86")]
-static RECORD_FRAMES: AtomicU32 = AtomicU32::new(0);
-
-/// How many frames the process records hold (see [`RECORD_FRAMES`]).
-#[cfg(target_arch = "x86")]
-pub fn record_frames() -> u32 {
-    RECORD_FRAMES.load(Ordering::Relaxed)
-}
+static RECORDS: SideTable<Process, 1> = SideTable::new();
 
 /// The record at pool `index`, if one was made.
 #[cfg(target_arch = "x86")]
-fn made(index: usize) -> Option<&'static Process> {
-    let record = POOL[index].load(Ordering::Acquire);
-    // SAFETY: a published record is a whole `Process`, at its final address, never freed.
-    (!record.is_null()).then(|| unsafe { &*record })
+fn made(index: u16) -> Option<&'static Process> {
+    RECORDS.get(index.into())
 }
 
 /// The record at pool `index`, made in the nonpaged pool when none was yet: none when the pool
-/// has no room for it. Only the creator of the process object at `index` calls it, so no two makes
-/// of one index meet.
+/// has no room for it.
 #[cfg(target_arch = "x86")]
-fn make(index: usize) -> Option<&'static Process> {
-    if let Some(record) = made(index) {
-        return Some(record);
-    }
-    let block = crate::mem::pool::allocate(core::mem::size_of::<Process>())?;
-    let record = block.virtual_address() as *mut Process;
-    // Kept for the kernel's life: the record never goes, so its references are `'static`.
-    core::mem::forget(block);
-    // SAFETY: the block is page-aligned, mapped in every address space, ours alone and large
-    // enough. The record is written in place, part by part: by value it would pass through the
-    // stack, which is smaller than it.
-    unsafe { Process::write_empty(record) };
-    RECORD_FRAMES.fetch_add(
-        crate::mem::pool::pages_for(core::mem::size_of::<Process>()) as u32,
-        Ordering::Relaxed,
-    );
-    POOL[index].store(record, Ordering::Release);
+fn make(index: u16) -> Option<&'static Process> {
+    RECORDS.ensure(index.into(), &NonpagedPages).ok()?;
     made(index)
 }
 
@@ -91,7 +66,7 @@ fn make(index: usize) -> Option<&'static Process> {
 /// No process ever took `index`.
 #[cfg(target_arch = "x86")]
 pub fn record(index: u16) -> &'static Process {
-    made(index as usize).expect("a process record taken by a live process")
+    made(index).expect("a process record taken by a live process")
 }
 
 /// The process objects that live now, by pool index, as one hold of the directory finds them.
@@ -109,7 +84,7 @@ fn live() -> impl Iterator<Item = (&'static Process, crate::ob::ObjectId)> {
         .into_iter()
         .enumerate()
         .filter_map(|(index, id)| {
-            let (process, id) = (made(index)?, id?);
+            let (process, id) = (made(index as u16)?, id?);
             (process.object() == id).then_some((process, id))
         })
 }
@@ -141,7 +116,7 @@ pub(super) fn create(
 ) -> Result<&'static Process, crate::status::NtStatus> {
     let object = crate::ob::locked(|directory| directory.create_process())
         .ok_or(crate::status::STATUS_INSUFFICIENT_RESOURCES)?;
-    let Some(process) = make(object.index as usize) else {
+    let Some(process) = make(object.index) else {
         // Nothing names the object yet, and nothing ran on it: its creator's reference was its
         // only one, and a process object's deletion leaves nothing to finish.
         let left = crate::ob::locked(|directory| directory.dereference(object));
