@@ -1,6 +1,6 @@
 //! The object manager: every kernel object a handle can name, with its lifetime.
 //!
-//! Objects live in typed pools of fixed capacity, global to the kernel rather than to a process:
+//! Objects live in typed pools, global to the kernel rather than to a process:
 //! every process's objects share them, and a process's end deletes only what its own references
 //! held (the leak sweep waits for quiescence, when no process is left to hold one). An object
 //! is named by an [`ObjectId`] — its kind, its pool index and the generation of that record — never
@@ -49,7 +49,12 @@
 //! accessor from the bodies' table; what the deletion leaves outside the directory is a
 //! [`Followup`] variant.
 //!
-//! The capacities are fixed (a create past them fails as the platform's out-of-memory would).
+//! Most kinds live in slot pools ([`crate::slots`]) that grow a page at a time from the nonpaged
+//! pool and keep their peak, so a record never moves; their only bound is the u16 index, and a
+//! create that finds no page fails as the platform's out-of-memory would. The dispatcher objects
+//! and the processes keep fixed pools until they move too (a create past one fails the same way).
+//! A slot pool's first generation is 1 and moves on at the delete, so no live object's id carries
+//! generation 0.
 
 pub mod access;
 
@@ -62,6 +67,7 @@ use crate::sched::mutex::MutexId;
 use crate::sched::thread::ThreadId;
 use crate::sched::timer::TimerId;
 use crate::sched::wait::{WaitableId, MAXIMUM_WAIT_OBJECTS};
+use crate::slots::{per_page, Id, KernelId, Record, Slots};
 
 /// Run `f` on the dispatcher database, where the dispatcher objects' bodies live: the kernel's one
 /// dispatcher (on the host, the test thread's). The directory holds no token: it raises to the
@@ -204,17 +210,10 @@ pub const MUTEXES: usize = 64;
 /// create (STATUS_INSUFFICIENT_RESOURCES, Windows 2000's answer when its pool has no room for the
 /// object).
 pub const TIMERS: usize = 256;
-/// How many sections can exist at once, across every process: two for each process record. An
-/// image section can be closed once its view is mapped (the view holds the image's segment), so a
-/// program's DLLs take segments, not sections. A full table refuses a create
-/// (STATUS_INSUFFICIENT_RESOURCES).
-pub const SECTIONS: usize = 2 * PROCESSES;
-/// How many image segments can exist at once: one per image file mapped, shared by every process
-/// that maps it (see [`ImageSegment`]); two for each process record. A full table refuses an image
-/// section's create (STATUS_INSUFFICIENT_RESOURCES).
+/// How many image segments may be live before a new one makes room by purging the least recently
+/// cached ([`Directory::make_room_for_segment`]): the bound on the image cache, two for each
+/// process record. Not a cap: while every segment is active, a new one is made all the same.
 pub const SEGMENTS: usize = 2 * PROCESSES;
-/// How many file objects can exist at once.
-pub const FILES: usize = crate::fs::file::OPEN_FILES;
 /// How many thread records exist, across every process: any process's thread takes any free
 /// record, main thread or created. A record's index is not its thread's ordinal (the process's own
 /// numbering, which places its TEB: see [`crate::process::ordinals`]). Room for two processes at
@@ -223,39 +222,35 @@ pub const THREADS: usize = 128;
 /// How many processes can exist at once: the process pool's records ([`crate::process::pool`]),
 /// one process object each.
 pub const PROCESSES: usize = crate::process::MAX_PROCESSES;
-/// How many object directories exist: `\BaseNamedObjects`, the named objects' (permanent: made
-/// at its first open, it is never deleted).
-pub const DIRECTORIES: usize = 1;
-/// How many window stations exist: WinSta0, the interactive one (permanent: made at boot).
-pub const WINDOW_STATIONS: usize = 1;
-/// How many desktops exist: WinSta0's Default (permanent: made at boot).
-pub const DESKTOPS: usize = 1;
-/// How many key objects (opens of registry keys) can exist at once.
-pub const KEY_OBJECTS: usize = 256;
-/// How many device contexts can exist at once.
-pub const DCS: usize = 64;
-/// How many brushes can exist at once (the global brushes are none of them).
-pub const BRUSHES: usize = 128;
-/// How many bitmaps can exist at once (the default bitmap is none of them).
-pub const BITMAPS: usize = 256;
-/// How many font objects can exist at once.
-pub const FONTS: usize = 128;
-/// How many tokens can exist at once: one per process that opened its own, and those whose
-/// handles outlive their process.
-pub const TOKENS: usize = 64;
-/// How many names can be bound at once, across every process (one namespace): a full table
-/// refuses a named create (STATUS_INSUFFICIENT_RESOURCES), the object made for it going again.
-pub const NAMES: usize = 256;
 /// The longest object name: MAX_PATH.
 pub const MAX_NAME: usize = 260;
 
-/// One record's header: whether it holds a live object, its generation, and the object's counts.
+/// An object's counts: every reference (the pointer count), and the handles among them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Counts {
+    pointers: u32,
+    handles: u32,
+}
+
+impl Counts {
+    /// A new object's: its creator's reference, no handle.
+    const CREATED: Counts = Counts {
+        pointers: 1,
+        handles: 0,
+    };
+    const NONE: Counts = Counts {
+        pointers: 0,
+        handles: 0,
+    };
+}
+
+/// One record's header in a fixed pool (the dispatcher objects' and the processes'): whether it
+/// holds a live object, its generation, and the object's counts.
 #[derive(Clone, Copy, Debug)]
 pub struct Header {
     live: bool,
     generation: u16,
-    pointers: u32,
-    handles: u32,
+    counts: Counts,
 }
 
 impl Header {
@@ -263,8 +258,7 @@ impl Header {
         Header {
             live: false,
             generation: 0,
-            pointers: 0,
-            handles: 0,
+            counts: Counts::NONE,
         }
     }
 
@@ -282,14 +276,13 @@ fn allocate(headers: &mut [Header], range: core::ops::Range<usize>) -> Option<u1
     let index = (range.start..end).find(|&index| !headers[index].live)?;
     let header = &mut headers[index];
     header.live = true;
-    header.pointers = 1;
-    header.handles = 0;
+    header.counts = Counts::CREATED;
     Some(index as u16)
 }
 
-/// A fixed pool of records of one kind, each behind its header. Records stay at their addresses for
-/// the kernel's life (a file object's lock event is named by its address). The dispatcher objects'
-/// pools hold headers alone (`T` is `()`): their bodies are the dispatcher database's.
+/// A fixed pool of records of one kind, each behind its header: the dispatcher objects' (headers
+/// alone, `T` is `()`: their bodies are the dispatcher database's) and the processes', until they
+/// move onto slot pools as the other kinds have ([`ObSlots`]).
 pub struct Pool<T, const N: usize> {
     headers: [Header; N],
     records: [T; N],
@@ -325,11 +318,95 @@ impl<T, const N: usize> Pool<T, N> {
         self.headers[index as usize].live
     }
 
+    // The untyped paths' view of the pool: the counts of the live object `index` and
+    // `generation` name, the lowest live record, a record's generation, and a record's death.
+
+    fn counts(&mut self, index: u16, generation: u16) -> Option<&mut Counts> {
+        let header = self.headers.get_mut(index as usize)?;
+        header.names(generation).then_some(&mut header.counts)
+    }
+
+    fn lowest_live(&self) -> Option<u16> {
+        let index = self.headers.iter().position(|header| header.live)?;
+        Some(index as u16)
+    }
+
+    fn generation_at(&self, index: u16) -> u16 {
+        self.headers[index as usize].generation
+    }
+
+    fn kill(&mut self, index: u16) {
+        let header = &mut self.headers[index as usize];
+        header.live = false;
+        header.counts = Counts::NONE;
+        header.generation = header.generation.wrapping_add(1);
+    }
+
     /// How many records hold a live object.
     #[cfg(test)]
     fn live(&self) -> usize {
         self.headers.iter().filter(|header| header.live).count()
     }
+}
+
+/// An object's record in its kind's slot pool: its counts and its body. The pool's slot holds the
+/// liveness and the generation (the slot's uniqueness count: 1 first, moved on at the delete, never
+/// 0), and its chunk keeps the record at its address for the kernel's life (a file object's lock
+/// event is named by its address).
+pub struct ObRecord<B> {
+    counts: Counts,
+    body: B,
+}
+
+/// A kind's slot pool: a page of records at a time, from the nonpaged pool, made as the kind
+/// needs them and kept at its peak. Its only bound is the u16 index (65,535 objects of the kind),
+/// a representation limit memory reaches first; a create that finds no page fails as a full pool
+/// did (STATUS_INSUFFICIENT_RESOURCES).
+type ObSlots<B, const PER: usize> = Slots<ObRecord<B>, KernelId<B>, PER>;
+
+/// The ob id of the slot `id` of a pool of `kind`.
+fn object_id<B>(kind: ObjectType, id: Id<B>) -> ObjectId {
+    ObjectId {
+        kind,
+        index: id.index,
+        generation: id.uniq,
+    }
+}
+
+/// The slot id an ob id names in its kind's pool.
+fn slot_id<B>(id: ObjectId) -> Id<B> {
+    Id::new(id.index, id.generation)
+}
+
+/// The slot id a segment id names in the segments' pool.
+fn segment_slot(id: SegmentId) -> Id<ImageSegment> {
+    Id::new(id.index, id.generation)
+}
+
+/// The pages the slot pools grow from: the kernel's ([`crate::slots::KERNEL_PAGES`]), or a
+/// test's own.
+#[cfg(not(test))]
+fn pages() -> &'static impl crate::slots::Pages {
+    &crate::slots::KERNEL_PAGES
+}
+
+#[cfg(test)]
+fn pages() -> &'static crate::slots::HostPages {
+    tests::pages()
+}
+
+/// A new object's record in `pool`, holding its creator's reference: its id and its record, for
+/// the caller to fill. None when no page is left for the pool to grow (or its u16 index is spent).
+fn allocate_record<B, const PER: usize>(
+    pool: &mut ObSlots<B, PER>,
+    kind: ObjectType,
+) -> Option<(ObjectId, &mut ObRecord<B>)>
+where
+    ObRecord<B>: Record,
+{
+    let (id, record) = pool.allocate_or_grow(0, pages()).ok()?;
+    record.counts = Counts::CREATED;
+    Some((object_id(kind, id), record))
 }
 
 /// A section object's body: the mapping itself. A data section is its own segment: its frames are
@@ -493,6 +570,10 @@ impl DesktopObject {
     }
 }
 
+/// The named objects' directory's body: none (`\BaseNamedObjects` is the one there is).
+#[derive(Clone, Copy)]
+pub struct DirectoryObject;
+
 /// What a caller must finish once an object's last handle or last reference went: the work outside
 /// the object manager's reach, finished once the directory's lock is released ([`finish`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -627,12 +708,23 @@ impl NameEntry {
     }
 }
 
+// SAFETY: writes a whole entry.
+unsafe impl Record for NameEntry {
+    unsafe fn write_fresh(at: *mut Self, _: u32) {
+        // SAFETY: the caller's contract.
+        unsafe { at.write(NameEntry::free()) };
+    }
+}
+
+/// The names' pool: one namespace, a page of entries at a time.
+type Names = Slots<NameEntry, KernelId<NameEntry>, { per_page::<NameEntry>() }>;
+
 /// Why a name could not be bound.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum NameError {
     /// The name is longer than an object name may be.
     TooLong,
-    /// The name table is full.
+    /// No page was left for the name table to grow.
     Full,
 }
 
@@ -650,21 +742,42 @@ impl WaitReferences {
     }
 }
 
-/// The kinds' pools, one row each: the kind, its pool's field, its body (`()` for a dispatcher
-/// object: the body is the dispatcher database's, at the same index; a process keeps its thread
-/// ordinals here, since which of them are free is its thread objects' lives), how a fresh record is
-/// made, and the capacity. The table makes the [`Directory`]'s pools, its in-place builder, and the
-/// one match the untyped paths (a header by id, the counts, the sweep) reach a kind's headers
-/// through.
+/// The kinds' pools, in two tables. The fixed pools' rows (the dispatcher objects and the
+/// processes): the kind, its pool's field, its body (`()` for a dispatcher object: the body is the
+/// dispatcher database's, at the same index; a process keeps its thread ordinals here, since which
+/// of them are free is its thread objects' lives), how a fresh record is made, and the capacity.
+/// The slot pools' rows: the kind, its pool's field, its body and how a fresh body is made; the
+/// pool holds a page of records a chunk. The tables make the [`Directory`]'s pools, its in-place
+/// builder, and the matches the untyped paths (an object's counts by id, its deletion, the sweep)
+/// reach a kind's pool through.
 macro_rules! pools {
-    ($($kind:ident => $pool:ident: $body:ty = $fresh:expr, $capacity:expr;)*) => {
+    (
+        fixed { $($kind:ident => $pool:ident: $body:ty = $fresh:expr, $capacity:expr;)* }
+        slots { $($skind:ident => $spool:ident: $sbody:ty = $sfresh:expr;)* }
+    ) => {
+        $(
+            // SAFETY: writes a whole record.
+            unsafe impl Record for ObRecord<$sbody> {
+                unsafe fn write_fresh(at: *mut Self, _: u32) {
+                    // SAFETY: the caller's contract.
+                    unsafe {
+                        at.write(ObRecord {
+                            counts: Counts::NONE,
+                            body: $sfresh,
+                        })
+                    };
+                }
+            }
+        )*
+
         /// Every object, by kind, with the image segments, the namespace and the waits'
         /// references. The dispatcher objects' pools are their headers alone: the bodies are the
         /// dispatcher database's, at the same index.
         pub struct Directory {
             $($pool: Pool<$body, $capacity>,)*
-            segments: Pool<ImageSegment, SEGMENTS>,
-            names: [NameEntry; NAMES],
+            $($spool: ObSlots<$sbody, { per_page::<ObRecord<$sbody>>() }>,)*
+            segments: ObSlots<ImageSegment, { per_page::<ObRecord<ImageSegment>>() }>,
+            names: Names,
             waits: [WaitReferences; THREADS],
         }
 
@@ -680,11 +793,9 @@ macro_rules! pools {
                 // SAFETY: the caller's contract; every field is written.
                 unsafe {
                     $(Pool::write_empty(addr_of_mut!((*directory).$pool), $fresh);)*
-                    Pool::write_empty(addr_of_mut!((*directory).segments), ImageSegment::none);
-                    let names = addr_of_mut!((*directory).names) as *mut NameEntry;
-                    for index in 0..NAMES {
-                        names.add(index).write(NameEntry::free());
-                    }
+                    $(addr_of_mut!((*directory).$spool).write(Slots::new());)*
+                    addr_of_mut!((*directory).segments).write(Slots::new());
+                    addr_of_mut!((*directory).names).write(Slots::new());
                     let waits = addr_of_mut!((*directory).waits) as *mut WaitReferences;
                     for index in 0..THREADS {
                         waits.add(index).write(WaitReferences::none());
@@ -692,57 +803,126 @@ macro_rules! pools {
                 }
             }
 
-            /// The headers of `kind`'s pool.
-            fn headers(&mut self, kind: ObjectType) -> &mut [Header] {
+            /// The counts of the live object `id` names; none for an id that names nothing.
+            fn header(&mut self, id: ObjectId) -> Option<&mut Counts> {
+                match id.kind {
+                    $(ObjectType::$kind => self.$pool.counts(id.index, id.generation),)*
+                    $(ObjectType::$skind => self
+                        .$spool
+                        .get_mut(slot_id(id))
+                        .map(|record| &mut record.counts),)*
+                }
+            }
+
+            /// The id of the record at `index` of a fixed pool's `kind`, live or not.
+            ///
+            /// # Panics
+            ///
+            /// `kind`'s pool is a slot pool (its dead records have no id).
+            fn id(&mut self, kind: ObjectType, index: u16) -> ObjectId {
+                let generation = match kind {
+                    $(ObjectType::$kind => self.$pool.generation_at(index),)*
+                    _ => unreachable!("a fixed pool's kind"),
+                };
+                ObjectId {
+                    kind,
+                    index,
+                    generation,
+                }
+            }
+
+            /// The lowest live object of `kind`.
+            fn lowest_live(&mut self, kind: ObjectType) -> Option<ObjectId> {
                 match kind {
-                    $(ObjectType::$kind => &mut self.$pool.headers,)*
+                    $(ObjectType::$kind => {
+                        let index = self.$pool.lowest_live()?;
+                        Some(self.id(kind, index))
+                    })*
+                    $(ObjectType::$skind => self
+                        .$spool
+                        .iter()
+                        .next()
+                        .map(|(id, _)| object_id(kind, id)),)*
+                }
+            }
+
+            /// The live object `id` names is gone: its record is free, its id stale.
+            fn kill(&mut self, id: ObjectId) {
+                match id.kind {
+                    $(ObjectType::$kind => self.$pool.kill(id.index),)*
+                    $(ObjectType::$skind => {
+                        let freed = self.$spool.free(slot_id(id));
+                        debug_assert!(freed, "a live object's record");
+                    })*
                 }
             }
 
             /// How many objects are live, of every kind.
             #[cfg(test)]
             pub fn live_objects(&self) -> usize {
-                0 $(+ self.$pool.live())*
+                0 $(+ self.$pool.live())* $(+ self.$spool.live() as usize)*
             }
         }
     };
 }
 
 pools! {
-    Event => events: () = || (), EVENTS;
-    Semaphore => semaphores: () = || (), SEMAPHORES;
-    Mutex => mutexes: () = || (), MUTEXES;
-    Timer => timers: () = || (), TIMERS;
-    Thread => threads: () = || (), THREADS;
-    Process => processes: crate::process::ordinals::Ordinals =
-        crate::process::ordinals::Ordinals::empty, PROCESSES;
-    Section => sections: SectionObject = SectionObject::none, SECTIONS;
-    File => files: crate::fs::file::FileObject = crate::fs::file::FileObject::none, FILES;
-    Directory => directories: () = || (), DIRECTORIES;
-    WindowStation => window_stations: WindowStationObject = WindowStationObject::none,
-        WINDOW_STATIONS;
-    Desktop => desktops: DesktopObject = DesktopObject::none, DESKTOPS;
-    Key => keys: crate::cm::KeyBody = crate::cm::KeyBody::none, KEY_OBJECTS;
-    Dc => dcs: crate::win32k::dc::Dc = crate::win32k::dc::Dc::none, DCS;
-    Brush => brushes: crate::win32k::brush::Brush = crate::win32k::brush::Brush::none, BRUSHES;
-    Bitmap => bitmaps: crate::win32k::bitmap::Bitmap = crate::win32k::bitmap::Bitmap::none, BITMAPS;
-    Font => fonts: crate::win32k::fonts::FontObject = crate::win32k::fonts::FontObject::none, FONTS;
-    Token => tokens: crate::se::TokenBody = crate::se::TokenBody::none, TOKENS;
+    fixed {
+        Event => events: () = || (), EVENTS;
+        Semaphore => semaphores: () = || (), SEMAPHORES;
+        Mutex => mutexes: () = || (), MUTEXES;
+        Timer => timers: () = || (), TIMERS;
+        Thread => threads: () = || (), THREADS;
+        Process => processes: crate::process::ordinals::Ordinals =
+            crate::process::ordinals::Ordinals::empty, PROCESSES;
+    }
+    slots {
+        Section => sections: SectionObject = SectionObject::none();
+        File => files: crate::fs::file::FileObject = crate::fs::file::FileObject::none();
+        Directory => directories: DirectoryObject = DirectoryObject;
+        WindowStation => window_stations: WindowStationObject = WindowStationObject::none();
+        Desktop => desktops: DesktopObject = DesktopObject::none();
+        Key => keys: crate::cm::KeyBody = crate::cm::KeyBody::none();
+        Dc => dcs: crate::win32k::dc::Dc = crate::win32k::dc::Dc::none();
+        Brush => brushes: crate::win32k::brush::Brush = crate::win32k::brush::Brush::none();
+        Bitmap => bitmaps: crate::win32k::bitmap::Bitmap = crate::win32k::bitmap::Bitmap::none();
+        Font => fonts: crate::win32k::fonts::FontObject =
+            crate::win32k::fonts::FontObject::none();
+        Token => tokens: crate::se::TokenBody = crate::se::TokenBody::none();
+    }
+}
+
+// SAFETY: writes a whole record.
+unsafe impl Record for ObRecord<ImageSegment> {
+    unsafe fn write_fresh(at: *mut Self, _: u32) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            at.write(ObRecord {
+                counts: Counts::NONE,
+                body: ImageSegment::none(),
+            })
+        };
+    }
 }
 
 // SAFETY: the directory's raw pointers are the links of the file objects' embedded lock headers,
 // which name waitable headers and threads of the dispatcher database, reached there only with the
-// dispatch token. One processor, and the directory is reached only through its lock, so whichever
-// kernel thread holds it is the only one reaching its records.
+// dispatch token, and the slot pools' chunk pointers, which only the directory's holder follows.
+// One processor, and the directory is reached only through its lock, so whichever kernel thread
+// holds it is the only one reaching its records.
 unsafe impl Send for Directory {}
 
-/// A kind whose body the directory holds (no dispatcher object's): its kind, and its pool's headers
-/// and records.
+/// A kind whose body the directory holds in a slot pool (no dispatcher object's, nor a
+/// process's): its kind, and its pool's records.
 pub trait Body: Sized {
     const KIND: ObjectType;
 
-    /// The kind's pool in `directory`, as its headers and its records.
-    fn pool(directory: &mut Directory) -> (&mut [Header], &mut [Self]);
+    /// The record of the live object of the kind `id` names in `directory`.
+    fn record(directory: &mut Directory, id: ObjectId) -> Option<&mut ObRecord<Self>>;
+
+    /// A new object's record in `directory`, holding its creator's reference (see
+    /// [`allocate_record`]).
+    fn allocate(directory: &mut Directory) -> Option<(ObjectId, &mut ObRecord<Self>)>;
 }
 
 /// The bodies' table: each body type, its kind, its pool, and the name of its typed accessor.
@@ -752,8 +932,12 @@ macro_rules! bodies {
             impl Body for $body {
                 const KIND: ObjectType = ObjectType::$kind;
 
-                fn pool(directory: &mut Directory) -> (&mut [Header], &mut [Self]) {
-                    (&mut directory.$pool.headers, &mut directory.$pool.records)
+                fn record(directory: &mut Directory, id: ObjectId) -> Option<&mut ObRecord<Self>> {
+                    directory.$pool.get_mut(slot_id(id))
+                }
+
+                fn allocate(directory: &mut Directory) -> Option<(ObjectId, &mut ObRecord<Self>)> {
+                    allocate_record(&mut directory.$pool, Self::KIND)
                 }
             }
         )*
@@ -770,7 +954,6 @@ macro_rules! bodies {
 }
 
 bodies! {
-    crate::process::ordinals::Ordinals => Process, processes, ordinals;
     SectionObject => Section, sections, section;
     crate::fs::file::FileObject => File, files, file;
     WindowStationObject => WindowStation, window_stations, window_station;
@@ -784,19 +967,6 @@ bodies! {
 }
 
 impl Directory {
-    fn header(&mut self, id: ObjectId) -> Option<&mut Header> {
-        let header = self.headers(id.kind).get_mut(id.index as usize)?;
-        header.names(id.generation).then_some(header)
-    }
-
-    fn id(&mut self, kind: ObjectType, index: u16) -> ObjectId {
-        ObjectId {
-            kind,
-            index,
-            generation: self.headers(kind)[index as usize].generation,
-        }
-    }
-
     /// Whether `id` names a live object.
     pub fn is_live(&mut self, id: ObjectId) -> bool {
         self.header(id).is_some()
@@ -812,8 +982,8 @@ impl Directory {
             return false;
         }
         match self.header(id) {
-            Some(header) if header.pointers == 1 && header.handles == 0 => {
-                header.pointers += 1;
+            Some(counts) if counts.pointers == 1 && counts.handles == 0 => {
+                counts.pointers += 1;
                 true
             }
             _ => false,
@@ -836,7 +1006,7 @@ impl Directory {
     /// An object's (pointer, handle) counts; none for an id that names nothing.
     pub fn counts(&mut self, id: ObjectId) -> Option<(u32, u32)> {
         self.header(id)
-            .map(|header| (header.pointers, header.handles))
+            .map(|counts| (counts.pointers, counts.handles))
     }
 
     /// The body of the live object `id` names, when it is of `T`'s kind.
@@ -844,21 +1014,15 @@ impl Directory {
         if id.kind != T::KIND {
             return None;
         }
-        let (headers, records) = T::pool(self);
-        let header = headers.get(id.index as usize)?;
-        header
-            .names(id.generation)
-            .then(|| &mut records[id.index as usize])
+        T::record(self, id).map(|record| &mut record.body)
     }
 
-    /// A new object of `T`'s kind holding `body`, with its creator's reference; none when the pool
-    /// is exhausted.
+    /// A new object of `T`'s kind holding `body`, with its creator's reference; none when no page
+    /// is left for its pool to grow.
     fn insert<T: Body>(&mut self, body: T) -> Option<ObjectId> {
-        let (headers, records) = T::pool(self);
-        let all = 0..headers.len();
-        let index = allocate(headers, all)?;
-        records[index as usize] = body;
-        Some(self.id(T::KIND, index))
+        let (id, record) = T::allocate(self)?;
+        record.body = body;
+        Some(id)
     }
 
     // --- Creation ----------------------------------------------------------------------------
@@ -951,29 +1115,29 @@ impl Directory {
     }
 
     /// An image segment holding `segment`, with one reference: its creator's (the image section
-    /// made with it). None when the pool is exhausted.
+    /// made with it). None when no page is left for the pool to grow.
     pub fn create_segment(&mut self, segment: ImageSegment) -> Option<SegmentId> {
-        let index = self.segments.allocate_in(0..SEGMENTS)?;
-        self.segments.records[index as usize] = segment;
+        let (id, record) = self.segments.allocate_or_grow(0, pages()).ok()?;
+        record.counts = Counts::CREATED;
+        record.body = segment;
         Some(SegmentId {
-            index,
-            generation: self.segments.headers[index as usize].generation,
+            index: id.index,
+            generation: id.uniq,
         })
     }
 
     /// The live image segment `id` names.
     pub fn segment(&mut self, id: SegmentId) -> Option<&mut ImageSegment> {
-        let header = self.segments.headers.get(id.index as usize)?;
-        header
-            .names(id.generation)
-            .then(|| &mut self.segments.records[id.index as usize])
+        self.segments
+            .get_mut(segment_slot(id))
+            .map(|record| &mut record.body)
     }
 
     /// Take a reference on the image segment `id`; false when it names nothing.
     pub fn reference_segment(&mut self, id: SegmentId) -> bool {
         match self.segment_header(id) {
-            Some(header) => {
-                header.pointers += 1;
+            Some(counts) => {
+                counts.pointers += 1;
                 true
             }
             None => false,
@@ -984,34 +1148,37 @@ impl Directory {
     /// the caller to park ([`Followup::Park`]); a detached segment's deletes it, its frames and the
     /// file object it held left to the caller.
     pub fn dereference_segment(&mut self, id: SegmentId) -> Option<Followup> {
-        let header = self.segment_header(id)?;
-        header.pointers -= 1;
-        if header.pointers != 0 {
+        let counts = self.segment_header(id)?;
+        counts.pointers -= 1;
+        if counts.pointers != 0 {
             return None;
         }
-        if self.segments.records[id.index as usize].detached {
-            return Some(self.delete_segment(id.index));
+        if self.segment(id)?.detached {
+            return Some(self.delete_segment(id));
         }
         let cached_at = self.cached_segments().map(|(_, at)| at + 1).max();
-        self.segments.records[id.index as usize].cached_at = cached_at.unwrap_or(0);
+        self.segment(id)?.cached_at = cached_at.unwrap_or(0);
         Some(Followup::Park(id))
     }
 
-    /// The cached segments (live, no reference): their pool index and when they were cached.
-    fn cached_segments(&self) -> impl Iterator<Item = (u16, u32)> + '_ {
+    /// The cached segments (live, no reference): their ids and when they were cached.
+    fn cached_segments(&self) -> impl Iterator<Item = (SegmentId, u32)> + '_ {
         self.segments
-            .headers
             .iter()
-            .zip(self.segments.records.iter())
-            .enumerate()
-            .filter(|(_, (header, _))| header.live && header.pointers == 0)
-            .map(|(index, (_, record))| (index as u16, record.cached_at))
+            .filter(|(_, record)| record.counts.pointers == 0)
+            .map(|(id, record)| {
+                let id = SegmentId {
+                    index: id.index,
+                    generation: id.uniq,
+                };
+                (id, record.body.cached_at)
+            })
     }
 
     /// Whether `id` names a cached segment: its file's still, no reference holding it.
     pub fn segment_cached(&mut self, id: SegmentId) -> bool {
         self.segment_header(id)
-            .is_some_and(|header| header.pointers == 0)
+            .is_some_and(|counts| counts.pointers == 0)
     }
 
     /// Purge the image segment `id` because its file changes (Windows 2000's
@@ -1019,41 +1186,41 @@ impl Directory {
     /// active one is detached from its file, deleted with its last reference (see
     /// [`ImageSegment`]).
     pub fn purge_segment(&mut self, id: SegmentId) -> Option<Followup> {
-        let header = self.segment_header(id)?;
-        if header.pointers == 0 {
-            return Some(self.delete_segment(id.index));
+        let counts = self.segment_header(id)?;
+        if counts.pointers == 0 {
+            return Some(self.delete_segment(id));
         }
-        self.segments.records[id.index as usize].detached = true;
+        self.segment(id)?.detached = true;
         None
     }
 
     /// Purge the next cached segment (at quiescence, or a volume's end), none once none is left.
     pub fn purge_next_cached(&mut self) -> Option<Followup> {
-        let (index, _) = self.cached_segments().next()?;
-        Some(self.delete_segment(index))
+        let (id, _) = self.cached_segments().next()?;
+        Some(self.delete_segment(id))
     }
 
-    /// Make room for a new segment when the table is full: the least recently cached segment is
-    /// purged, its frames and file left to the caller. None when there is room already, or when
-    /// every segment is active (the create is then refused).
+    /// Make room for a new segment once [`SEGMENTS`] are live, the image cache's bound: the least
+    /// recently cached segment is purged, its frames and file left to the caller. None while
+    /// fewer are live, or when every segment is active (the new one is made all the same: the
+    /// pool grows).
     pub fn make_room_for_segment(&mut self) -> Option<Followup> {
-        if self.segments.headers.iter().any(|header| !header.live) {
+        if (self.segments.live() as usize) < SEGMENTS {
             return None;
         }
-        let (index, _) = self.cached_segments().min_by_key(|&(_, at)| at)?;
-        Some(self.delete_segment(index))
+        let (id, _) = self.cached_segments().min_by_key(|&(_, at)| at)?;
+        Some(self.delete_segment(id))
     }
 
-    /// Delete the image segment at pool `index`: its record is dead and its ids stale.
-    fn delete_segment(&mut self, index: u16) -> Followup {
-        let segment = core::mem::replace(
-            &mut self.segments.records[index as usize],
-            ImageSegment::none(),
-        );
-        let header = &mut self.segments.headers[index as usize];
-        header.live = false;
-        header.pointers = 0;
-        header.generation = header.generation.wrapping_add(1);
+    /// Delete the live image segment `id`: its record is free and its ids stale.
+    fn delete_segment(&mut self, id: SegmentId) -> Followup {
+        let record = self
+            .segments
+            .get_mut(segment_slot(id))
+            .expect("deleting a live segment");
+        let segment = core::mem::replace(&mut record.body, ImageSegment::none());
+        record.counts = Counts::NONE;
+        self.segments.free(segment_slot(id));
         Followup::Section {
             frames: segment.frames,
             file_object: Some(segment.file_object),
@@ -1061,9 +1228,10 @@ impl Directory {
         }
     }
 
-    fn segment_header(&mut self, id: SegmentId) -> Option<&mut Header> {
-        let header = self.segments.headers.get_mut(id.index as usize)?;
-        header.names(id.generation).then_some(header)
+    fn segment_header(&mut self, id: SegmentId) -> Option<&mut Counts> {
+        self.segments
+            .get_mut(segment_slot(id))
+            .map(|record| &mut record.counts)
     }
 
     /// A view went: drop its reference on what it mapped (the last one deletes it).
@@ -1124,10 +1292,9 @@ impl Directory {
 
     /// Whether a live DC other than `except` holds the bitmap `bitmap` selected.
     pub fn bitmap_selected(&mut self, bitmap: ObjectId, except: Option<ObjectId>) -> bool {
-        (0..DCS).any(|index| {
-            self.dcs.headers[index].live
-                && except.is_none_or(|dc| dc.index as usize != index)
-                && self.dcs.records[index].bitmap_object == Some(bitmap)
+        self.dcs.iter().any(|(dc, record)| {
+            except.is_none_or(|except| except.index != dc.index)
+                && record.body.bitmap_object == Some(bitmap)
         })
     }
 
@@ -1136,15 +1303,21 @@ impl Directory {
         self.insert(body)
     }
 
+    /// The token the process `process` names holds, if any.
+    fn held_token(&self, process: ObjectId) -> Option<ObjectId> {
+        self.tokens
+            .iter()
+            .find(|(_, record)| record.body.owner == Some(process))
+            .map(|(id, _)| object_id(ObjectType::Token, id))
+    }
+
     /// The token of the process `process` names: the one it holds, or a new one made for it (none
-    /// when the pool is exhausted). A new token's creator's reference is the process's, which it
-    /// holds until it lets go of the token ([`Directory::take_process_token`]).
+    /// when no page is left for the pool to grow). A new token's creator's reference is the
+    /// process's, which it holds until it lets go of the token
+    /// ([`Directory::take_process_token`]).
     pub fn process_token(&mut self, process: ObjectId) -> Option<ObjectId> {
-        let held = (0..TOKENS).find(|&index| {
-            self.tokens.headers[index].live && self.tokens.records[index].owner == Some(process)
-        });
-        match held {
-            Some(index) => Some(self.id(ObjectType::Token, index as u16)),
+        match self.held_token(process) {
+            Some(id) => Some(id),
             None => self.insert(crate::se::TokenBody::of(process)),
         }
     }
@@ -1159,11 +1332,9 @@ impl Directory {
     /// names it, and the process's reference on it is the caller's to drop (the token lives on
     /// while handles to it are open).
     pub fn take_process_token(&mut self, process: ObjectId) -> Option<ObjectId> {
-        let index = (0..TOKENS).find(|&index| {
-            self.tokens.headers[index].live && self.tokens.records[index].owner == Some(process)
-        })?;
-        self.tokens.records[index].owner = None;
-        Some(self.id(ObjectType::Token, index as u16))
+        let id = self.held_token(process)?;
+        self.token(id).expect("a live token").owner = None;
+        Some(id)
     }
 
     // --- Typed access ------------------------------------------------------------------------
@@ -1211,6 +1382,12 @@ impl Directory {
     /// The process object's body: its index in the dispatcher's process-object pool.
     pub fn process(&mut self, id: ObjectId) -> Option<u16> {
         self.body_index(id, ObjectType::Process)
+    }
+
+    /// The live process object's thread ordinals.
+    pub fn ordinals(&mut self, id: ObjectId) -> Option<&mut crate::process::ordinals::Ordinals> {
+        let index = self.body_index(id, ObjectType::Process)?;
+        Some(&mut self.processes.records[index as usize])
     }
 
     /// The ordinal the next created thread of the process `process` names takes (see
@@ -1304,8 +1481,8 @@ impl Directory {
     /// Take a reference on `id`; false when it names nothing.
     pub fn reference(&mut self, id: ObjectId) -> bool {
         match self.header(id) {
-            Some(header) => {
-                header.pointers += 1;
+            Some(counts) => {
+                counts.pointers += 1;
                 true
             }
             None => false,
@@ -1315,13 +1492,13 @@ impl Directory {
     /// Drop a reference on `id`; the last one deletes the object. Returns what the caller must
     /// finish for a deleted object.
     pub fn dereference(&mut self, id: ObjectId) -> Option<Followup> {
-        let header = self.header(id)?;
+        let counts = self.header(id)?;
         debug_assert!(
-            header.pointers > header.handles,
+            counts.pointers > counts.handles,
             "a reference beyond the handles' is held"
         );
-        header.pointers -= 1;
-        if header.pointers == 0 {
+        counts.pointers -= 1;
+        if counts.pointers == 0 {
             return self.delete(id);
         }
         None
@@ -1330,9 +1507,9 @@ impl Directory {
     /// A handle to `id` was inserted: one handle more, and its reference.
     pub fn handle_opened(&mut self, id: ObjectId) -> bool {
         match self.header(id) {
-            Some(header) => {
-                header.handles += 1;
-                header.pointers += 1;
+            Some(counts) => {
+                counts.handles += 1;
+                counts.pointers += 1;
                 true
             }
             None => false,
@@ -1344,12 +1521,12 @@ impl Directory {
     /// Returns what the caller must finish, in order.
     pub fn handle_closed(&mut self, id: ObjectId) -> Followups {
         let mut followups = Followups::none();
-        let Some(header) = self.header(id) else {
+        let Some(counts) = self.header(id) else {
             return followups;
         };
-        debug_assert!(header.handles > 0, "a handle closes once");
-        header.handles -= 1;
-        if header.handles == 0 {
+        debug_assert!(counts.handles > 0, "a handle closes once");
+        counts.handles -= 1;
+        if counts.handles == 0 {
             self.forget_name(id);
             if let Some(file) = self.file(id) {
                 followups.push(Some(Followup::FileCleanup {
@@ -1417,11 +1594,9 @@ impl Directory {
             | ObjectType::Token => None,
         };
         self.forget_name(id);
-        let header = self.header(id).expect("deleting a live object");
-        header.live = false;
-        header.pointers = 0;
-        header.handles = 0;
-        header.generation = header.generation.wrapping_add(1);
+        let counts = self.header(id).expect("deleting a live object");
+        *counts = Counts::NONE;
+        self.kill(id);
         followup
     }
 
@@ -1431,7 +1606,7 @@ impl Directory {
     /// exactly or, `case_insensitive` (OBJ_CASE_INSENSITIVE), folded (see [`same_name`]).
     pub fn lookup_name(&self, name: &[u16], case_insensitive: bool) -> Option<ObjectId> {
         let name = namespace_name(name);
-        self.names.iter().find_map(|entry| {
+        self.names.iter().find_map(|(_, entry)| {
             entry
                 .object
                 .filter(|_| same_name(entry.name(), name, case_insensitive))
@@ -1443,8 +1618,8 @@ impl Directory {
     pub fn name_of(&self, id: ObjectId) -> Option<&[u16]> {
         self.names
             .iter()
-            .find(|entry| entry.object == Some(id))
-            .map(NameEntry::name)
+            .find(|(_, entry)| entry.object == Some(id))
+            .map(|(_, entry)| entry.name())
     }
 
     /// Bind `name` to `id` (its session prefix aside).
@@ -1453,11 +1628,10 @@ impl Directory {
         if name.len() > MAX_NAME {
             return Err(NameError::TooLong);
         }
-        let entry = self
+        let (_, entry) = self
             .names
-            .iter_mut()
-            .find(|entry| entry.object.is_none())
-            .ok_or(NameError::Full)?;
+            .allocate_or_grow(0, pages())
+            .map_err(|_| NameError::Full)?;
         entry.object = Some(id);
         entry.length = name.len() as u16;
         entry.units[..name.len()].copy_from_slice(name);
@@ -1466,10 +1640,16 @@ impl Directory {
 
     /// Forget the name bound to `id`, if any.
     fn forget_name(&mut self, id: ObjectId) {
-        for entry in self.names.iter_mut() {
-            if entry.object == Some(id) {
-                *entry = NameEntry::free();
-            }
+        loop {
+            let bound = self
+                .names
+                .iter()
+                .find(|(_, entry)| entry.object == Some(id))
+                .map(|(name, _)| name);
+            match bound {
+                Some(name) => self.names.free(name),
+                None => break,
+            };
         }
     }
 
@@ -1589,12 +1769,10 @@ impl Directory {
             ObjectType::Font,
             ObjectType::Token,
         ] {
-            let live = self.headers(kind).iter().position(|header| header.live);
-            if let Some(index) = live {
-                let id = self.id(kind, index as u16);
+            if let Some(id) = self.lowest_live(kind) {
                 // A leaked image section's segment goes with it, not into the cache.
                 let followup = match self.delete(id) {
-                    Some(Followup::Park(segment)) => Some(self.delete_segment(segment.index)),
+                    Some(Followup::Park(segment)) => Some(self.delete_segment(segment)),
                     followup => followup,
                 };
                 return Some(Leak { followup });
@@ -1602,13 +1780,13 @@ impl Directory {
         }
         // The image sections went above, and every view with its process: a segment left is a
         // leak too.
-        let index = self
-            .segments
-            .headers
-            .iter()
-            .position(|header| header.live)?;
+        let (segment, _) = self.segments.iter().next()?;
+        let segment = SegmentId {
+            index: segment.index,
+            generation: segment.uniq,
+        };
         Some(Leak {
-            followup: Some(self.delete_segment(index as u16)),
+            followup: Some(self.delete_segment(segment)),
         })
     }
 
@@ -1621,18 +1799,16 @@ impl Directory {
                 *waits = WaitReferences::none();
             }
         });
-        for entry in self.names.iter_mut() {
-            *entry = NameEntry::free();
-        }
+        self.names.drain(|_, _| ());
     }
 
     /// `\BaseNamedObjects`, the named objects' directory: made at its first open and permanent
     /// (its creator's reference is never dropped, so no process's end deletes it).
     pub fn named_objects(&mut self) -> Option<ObjectId> {
-        if !self.directories.headers[0].live {
-            self.directories.allocate_in(0..DIRECTORIES)?;
+        if let Some((id, _)) = self.directories.iter().next() {
+            return Some(object_id(ObjectType::Directory, id));
         }
-        Some(self.id(ObjectType::Directory, 0))
+        allocate_record(&mut self.directories, ObjectType::Directory).map(|(id, _)| id)
     }
 }
 
@@ -2028,6 +2204,29 @@ mod tests {
         text.encode_utf16().collect()
     }
 
+    thread_local! {
+        /// The pages this test thread's slot pools grow from.
+        static PAGES: core::cell::Cell<&'static crate::slots::HostPages> =
+            core::cell::Cell::new(&crate::slots::KERNEL_PAGES);
+    }
+
+    /// The pages the directory's slot pools grow from, on this test thread.
+    pub(super) fn pages() -> &'static crate::slots::HostPages {
+        PAGES.with(core::cell::Cell::get)
+    }
+
+    /// From now on, this thread's slot pools grow from `budget` pages only: a pool past its made
+    /// chunks then refuses as when the nonpaged pool is spent.
+    fn page_budget(budget: usize) {
+        let pages = Box::leak(Box::new(crate::slots::HostPages::with_budget(budget)));
+        PAGES.with(|cell| cell.set(pages));
+    }
+
+    /// Everything `make` makes until its first refusal.
+    fn until_refused<T>(mut make: impl FnMut() -> Option<T>) -> Vec<T> {
+        core::iter::from_fn(|| make()).collect()
+    }
+
     fn directory() -> &'static mut Directory {
         crate::sched::testkit::dispatcher();
         let mut directory = Box::<Directory>::new_uninit();
@@ -2243,7 +2442,8 @@ mod tests {
         );
     }
 
-    /// The name table refuses an over-long name and fills at its capacity.
+    /// The name table refuses an over-long name, grows past the 256 names it once held, and
+    /// refuses a name only when no page is left for it.
     #[test]
     fn the_name_table_bounds() {
         let directory = directory();
@@ -2254,9 +2454,21 @@ mod tests {
             directory.bind_name(&[u16::from(b'x'); MAX_NAME + 1], id),
             Err(NameError::TooLong)
         );
-        for index in 0..NAMES {
+        for index in 0..1000 {
             directory.bind_name(&w(&format!("n{index}")), id).unwrap();
         }
+        for index in 0..1000 {
+            assert_eq!(
+                directory.lookup_name(&w(&format!("n{index}")), false),
+                Some(id)
+            );
+        }
+        page_budget(0);
+        let more = until_refused(|| directory.bind_name(&w("more"), id).ok());
+        assert!(
+            more.len() < per_page::<NameEntry>(),
+            "the made chunk's rest"
+        );
         assert_eq!(
             directory.bind_name(&w("one more"), id),
             Err(NameError::Full)
@@ -2272,11 +2484,20 @@ mod tests {
             .create_event(EventKind::Notification, false)
             .unwrap();
         let second = directory.create_mutex().unwrap();
-        for index in 0..NAMES - 1 {
+        for index in 0..300 {
             directory
                 .bind_name(&w(&format!("n{index}")), first)
                 .unwrap();
         }
+        page_budget(0);
+        until_refused(|| directory.bind_name(&w("n"), first).ok());
+        assert_eq!(
+            directory.bind_name(&w("second"), second),
+            Err(NameError::Full)
+        );
+        // One name's room, for the second object.
+        let freed = directory.names.iter().next().map(|(name, _)| name).unwrap();
+        assert!(directory.names.free(freed));
         directory.bind_name(&w("second"), second).unwrap();
         assert_eq!(
             directory.bind_name(&w("refused"), second),
@@ -2609,22 +2830,26 @@ mod tests {
         assert_eq!(directory.create_process(), None, "full again");
     }
 
-    /// The section table fills at its capacity — a create is refused, nothing made — and a deleted
-    /// section's record serves the next create.
+    /// The section table grows past the 128 it once held, refuses a create only when no page is
+    /// left for it — nothing made — and a deleted section's record serves the next create.
     #[test]
     fn the_section_table_fills_and_reuses() {
         let directory = directory();
-        let sections: Vec<_> = (0..SECTIONS)
+        let mut sections: Vec<_> = (0..300)
             .map(|_| directory.create_section(SectionObject::none()).unwrap())
             .collect();
+        page_budget(0);
+        sections.extend(until_refused(|| {
+            directory.create_section(SectionObject::none())
+        }));
         assert_eq!(directory.create_section(SectionObject::none()), None);
         assert_eq!(
             directory.live_objects(),
-            SECTIONS,
+            sections.len(),
             "the refusal made nothing"
         );
 
-        let freed = sections[SECTIONS / 2];
+        let freed = sections[150];
         assert!(directory.dereference(freed).is_some(), "its frames go back");
         let reused = directory.create_section(SectionObject::none()).unwrap();
         assert_eq!(reused.index, freed.index, "the freed record is reused");
@@ -2632,9 +2857,8 @@ mod tests {
         assert_eq!(directory.create_section(SectionObject::none()), None);
     }
 
-    /// The image segment table fills at its capacity — another image file's section is refused
-    /// while every segment is active — and a cached segment gives its record up to the next, the
-    /// least recently cached first.
+    /// Past the image cache's bound, a cached segment gives its record up to the next, the least
+    /// recently cached first; an active one never does.
     #[test]
     fn the_segment_table_fills_and_reuses() {
         let directory = directory();
@@ -2652,16 +2876,7 @@ mod tests {
         let segments: Vec<_> = (0..SEGMENTS as u16)
             .map(|index| directory.create_segment(segment(index)).unwrap())
             .collect();
-        assert_eq!(
-            directory.create_segment(segment(0)),
-            None,
-            "the table is full"
-        );
-        assert_eq!(
-            directory.segments.live(),
-            SEGMENTS,
-            "the refusal made nothing"
-        );
+        assert_eq!(directory.segments.live() as usize, SEGMENTS);
 
         assert_eq!(
             directory.make_room_for_segment(),
@@ -2680,11 +2895,6 @@ mod tests {
             Some(Followup::Park(newer))
         );
         assert!(directory.segment_cached(older) && directory.segment_cached(newer));
-        assert_eq!(
-            directory.create_segment(segment(0)),
-            None,
-            "a cached segment keeps its record"
-        );
         // Room is made from the least recently cached.
         let evicted = directory.make_room_for_segment();
         assert_eq!(
@@ -2699,7 +2909,6 @@ mod tests {
         assert!(directory.segment(older).is_none(), "its id is stale");
         let reused = directory.create_segment(segment(0)).unwrap();
         assert_eq!(reused.index, older.index, "the evicted record is reused");
-        assert_eq!(directory.create_segment(segment(1)), None, "full again");
         assert!(directory.segment_cached(newer), "the newer stays cached");
         assert_eq!(
             directory.make_room_for_segment().map(|_| ()),
@@ -2714,8 +2923,49 @@ mod tests {
         );
     }
 
-    /// The file-object table fills at its capacity — an open is refused, nothing made — and a file
-    /// object's close frees its record for the next open.
+    /// While every segment is active, a new one is made past the image cache's bound all the
+    /// same (the table grows); once one is cached, it is the one room is made from, and only a
+    /// pool with no page left refuses a segment.
+    #[test]
+    fn the_segment_table_grows_past_the_cache_bound() {
+        let directory = directory();
+        let segment = |index: u16| {
+            ImageSegment::new(
+                ObjectId {
+                    kind: ObjectType::File,
+                    index,
+                    generation: 1,
+                },
+                0x1000_0000,
+                0x1000,
+            )
+        };
+        let segments: Vec<_> = (0..SEGMENTS as u16 + 40)
+            .map(|index| {
+                assert_eq!(directory.make_room_for_segment(), None, "all active");
+                directory.create_segment(segment(index)).unwrap()
+            })
+            .collect();
+        assert_eq!(directory.segments.live() as usize, SEGMENTS + 40);
+        let cached = segments[7];
+        assert_eq!(
+            directory.dereference_segment(cached),
+            Some(Followup::Park(cached))
+        );
+        assert!(directory.make_room_for_segment().is_some());
+        assert!(directory.segment(cached).is_none(), "the cached one went");
+        assert_eq!(directory.make_room_for_segment(), None, "all active again");
+        page_budget(0);
+        let more = until_refused(|| directory.create_segment(segment(0)));
+        assert!(directory.create_segment(segment(0)).is_none(), "no page");
+        assert_eq!(
+            directory.segments.live() as usize,
+            SEGMENTS + 39 + more.len()
+        );
+    }
+
+    /// The file-object table grows past the 512 it once held, refuses an open only when no page is
+    /// left for it — nothing made — and a file object's close frees its record for the next open.
     #[test]
     fn the_file_object_table_fills_and_reuses() {
         use crate::fs::file::{Context, FileRecordId, ACCESS_READ, SHARE_ALL};
@@ -2728,13 +2978,19 @@ mod tests {
                 SHARE_ALL,
             )
         };
-        let files: Vec<_> = (0..FILES as u16)
+        let mut files: Vec<_> = (0..600)
             .map(|record| open(directory, record).unwrap())
             .collect();
+        page_budget(0);
+        files.extend(until_refused(|| open(directory, 0)));
         assert_eq!(open(directory, 0), None, "the table is full");
-        assert_eq!(directory.live_objects(), FILES, "the refusal made nothing");
+        assert_eq!(
+            directory.live_objects(),
+            files.len(),
+            "the refusal made nothing"
+        );
 
-        let freed = files[FILES / 2];
+        let freed = files[300];
         published(directory, freed);
         assert_eq!(
             closed(directory, freed).len(),
@@ -2745,6 +3001,63 @@ mod tests {
         assert_eq!(reused.index, freed.index, "the freed record is reused");
         assert!(directory.file(freed).is_none(), "under a new generation");
         assert_eq!(open(directory, 1), None, "full again");
+    }
+
+    /// Every kind on a slot pool: a new object's generation is 1, never 0; an id never handed out
+    /// (generation 0, or an index past every made record) names nothing; the deletion makes the
+    /// id stale at once, and the record serves the kind's next create under the next generation.
+    #[test]
+    fn slot_kinds_name_only_their_live_objects() {
+        use crate::fs::file::{Context, FileRecordId};
+        let directory = directory();
+        let makers: [fn(&mut Directory) -> Option<ObjectId>; 10] = [
+            |d| d.create_section(SectionObject::none()),
+            |d| d.create_file(Context::Disk(FileRecordId::at(1)), 0, 0, 0),
+            |d| d.create_window_station("W", 0),
+            |d| d.create_desktop("D", 0),
+            |d| d.create_key(crate::cm::KeyBody::none()),
+            |d| d.create_dc(crate::win32k::dc::Dc::none()),
+            |d| d.create_brush(crate::win32k::brush::Brush::none()),
+            |d| d.create_bitmap(crate::win32k::bitmap::Bitmap::none()),
+            |d| d.create_font(crate::win32k::fonts::FontObject::none()),
+            |d| d.create_token(crate::se::TokenBody::none()),
+        ];
+        for make in makers {
+            let first = make(directory).unwrap();
+            assert_eq!(first.generation, 1, "{:?}'s first", first.kind);
+            assert!(directory.is_live(first));
+            let never = [
+                ObjectId {
+                    generation: 0,
+                    ..first
+                },
+                ObjectId {
+                    generation: 2,
+                    ..first
+                },
+                ObjectId {
+                    index: first.index + 5000,
+                    ..first
+                },
+            ];
+            for id in never {
+                assert!(!directory.reference(id), "{id:?} was never handed out");
+                assert_eq!(directory.counts(id), None);
+            }
+            let _ = directory.dereference(first);
+            assert!(!directory.is_live(first), "{:?}'s id is stale", first.kind);
+            assert!(!directory.reference(first));
+            let second = make(directory).unwrap();
+            assert_eq!(
+                second.index, first.index,
+                "{:?}'s record reused",
+                first.kind
+            );
+            assert_eq!(second.generation, 2);
+            assert!(!directory.is_live(first));
+            let _ = directory.dereference(second);
+        }
+        assert_eq!(directory.live_objects(), 0);
     }
 
     /// A deleted mutex its owner still held leaves the owner's list: the owner's end then has
@@ -2796,7 +3109,9 @@ mod tests {
         assert!(directory.desktop(station).is_none(), "typed");
         assert_eq!(directory.waitable(station), None);
         assert_eq!(directory.waitable(desktop), None);
-        assert_eq!(directory.create_window_station("Other", 0), None, "one");
+        let other = directory.create_window_station("Other", 0).unwrap();
+        assert_ne!(other, station, "another is its own object");
+        assert_eq!(directory.dereference(other), None);
         for id in [station, desktop] {
             assert!(directory.handle_opened(id));
             assert_eq!(closed(directory, id), vec![]);
@@ -2808,7 +3123,7 @@ mod tests {
 
     /// A device context, as win32k's services make one: typed, never waited on, its state the
     /// body's; its handle's close deletes it, its id going stale; one a process left behind is a
-    /// leak the sweep takes; the pool refuses a DC past its capacity.
+    /// leak the sweep takes; the pool refuses a DC only when no page is left for it.
     #[test]
     fn a_dc_lives_while_its_handle_does() {
         use crate::win32k::dc::Dc;
@@ -2839,9 +3154,11 @@ mod tests {
         assert_eq!(sweep(directory), (1, vec![]), "a DC left behind is a leak");
         assert!(!directory.is_live(leaked));
 
-        let made: Vec<_> = (0..DCS)
+        let mut made: Vec<_> = (0..100)
             .map(|_| directory.create_dc(Dc::screen(1, 1)).unwrap())
             .collect();
+        page_budget(0);
+        made.extend(until_refused(|| directory.create_dc(Dc::screen(1, 1))));
         assert_eq!(
             directory.create_dc(Dc::screen(1, 1)),
             None,
@@ -3156,10 +3473,10 @@ mod tests {
                 parked: None,
             })
         );
-        assert_eq!(
-            directory.sections.records[id.index as usize].size, 0,
-            "the record holds no mapping any more"
-        );
+        let record = directory.sections.address(id.index.into()).unwrap();
+        // SAFETY: a made chunk's record, which nothing changes meanwhile.
+        let size = unsafe { record.as_ref() }.body.size;
+        assert_eq!(size, 0, "the record holds no mapping any more");
     }
 
     /// An image section of `segment`, as NtCreateSection makes one and publishes it (one handle).

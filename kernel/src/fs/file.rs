@@ -45,11 +45,6 @@ use crate::sched::event::{Event, EventKind};
 use crate::sched::thread::ThreadId;
 use crate::sched::wait::{ClockStamp, WaitDisposition, WaitMode, WaitReason, WaitableId};
 
-/// How many file objects can exist at once (across processes). Exhaustion is a program-visible
-/// failure (the open returns no handle: STATUS_INSUFFICIENT_RESOURCES, Windows 2000's answer when
-/// its pool has no room for the object), not a bug.
-pub const OPEN_FILES: usize = 512;
-
 /// How many files can be open at once (across processes): one record per file, whatever its opens.
 /// Exhaustion refuses an open of a file not open yet (STATUS_INSUFFICIENT_RESOURCES, FastFat's
 /// answer when its pool has no room for the FCB).

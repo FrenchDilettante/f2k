@@ -25,8 +25,9 @@
 //! ([`Slots::on`] with a `&'static Paged`), which the reader resolves through alone
 //! ([`Slots::address_in`], [`SideTable::address_in`], [`SideTable::index_at_in`]).
 
-// Only the process records (a `SideTable`) and win32k's menus, menu items, accelerator tables and
-// sent messages (`Slots`) have moved onto these types; the rest waits for its consumers.
+// Only the process records (a `SideTable`), win32k's menus, menu items, accelerator tables and
+// sent messages, and ob's non-dispatcher kinds, image segments and names (`Slots`) have moved onto
+// these types; the rest waits for its consumers.
 #![allow(dead_code)]
 
 use core::cell::Cell;
