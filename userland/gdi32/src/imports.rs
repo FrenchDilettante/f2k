@@ -1365,9 +1365,9 @@ pub mod host {
     pub const FONT_FILE: &str = "f2ktahom.ttf";
     /// Its handle while open.
     pub const FILE_HANDLE: usize = 0x5C;
-    /// The first font object's handle: the font kind's bits over a handle-table handle, as the
-    /// kernel hands one out (rtl::gdi's `object_handle`).
-    pub const FIRST_FONT: usize = object_handle(OBJ_FONT, 0x100) as usize;
+    /// The first font object's handle: the font kind's bits over a GDI table handle (a slot and
+    /// its uniqueness), as the kernel hands one out (rtl::gdi's `object_handle`).
+    pub const FIRST_FONT: usize = object_handle(OBJ_FONT, 0x0100_0100) as usize;
 
     /// The font calls' state: the names CreateFileW was given, how many opens are not closed,
     /// the loads of the file (public and private), the font objects made (their LOGFONTs, by

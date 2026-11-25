@@ -56,9 +56,10 @@ pub const DC_BRUSH: u32 = 18;
 pub const DC_PEN: u32 = 19;
 
 /// The stock objects' handles: F2K's own constant per index, the kind of object in bits 16-18 and
-/// the stock bit (bit 23) above them, the index in the low bits. No handle-table handle reaches
-/// that high, so gdi32 and win32k tell a stock object from a DC by its value alone, as Windows
-/// 2000's GDI handles carry their type and their stock bit in their own bits.
+/// the stock bit (bit 23) above them, the index in the low bits. No GDI table handle has the stock
+/// bit (see [`object_handle`]), so gdi32 and win32k tell a stock object from a process's object by
+/// its value alone, as Windows 2000's GDI handles carry their type and their stock bit in their
+/// own bits.
 const STOCK_BIT: u32 = 0x0080_0000;
 const KIND_SHIFT: u32 = 16;
 const KIND_MASK: u32 = 0x7;
@@ -167,26 +168,29 @@ pub const fn global_object_kind(handle: u32) -> Option<u32> {
     }
 }
 
-/// The handles of the process's GDI objects (a brush CreateSolidBrush made) are the kernel's
-/// handle-table handles, below 0x10000, with the object's kind in bits 16-18 and no stock bit, as
-/// Windows 2000's GDI handles carry their type in their high word: a program's handle never
-/// collides with the small values FillRect takes as COLOR_* + 1, and gdi32 reads an object's kind
-/// from its handle. (A DC's handle is the handle table's own, its kind bits clear.)
-const TABLE_MASK: u32 = 0xFFFF;
+/// The handles of the process's GDI objects (a brush CreateSolidBrush made) are win32k's GDI
+/// handle table's, Windows 2000's shape: the table's slot in the low word (from 1), the object's
+/// kind in bits 16-18, the stock bit (23) clear, and the slot's uniqueness (from 1) in bits 24-31.
+/// The uniqueness keeps a program's handle above the small values FillRect takes as COLOR_* + 1,
+/// and gdi32 reads an object's kind from its handle. (A DC's handle has its kind bits clear.)
+/// Bits 19-23 (the rest of Windows' type field, and the stock bit) are clear in every such handle.
+const TYPE_BITS: u32 = 0xFF << KIND_SHIFT;
 
-/// The handle of the object of `kind` the handle table's `table` names.
+/// The handle of the object of `kind` whose GDI table handle (its slot and uniqueness, its type
+/// bits clear) is `table`.
 pub const fn object_handle(kind: u32, table: u32) -> u32 {
-    (kind << KIND_SHIFT) | (table & TABLE_MASK)
+    (kind << KIND_SHIFT) | (table & !TYPE_BITS)
 }
 
-/// The kind of the object an object's handle names, and its handle-table handle; none for a
-/// handle with no kind bits (a DC's), a global object's, or one past the shape.
+/// The kind of the object an object's handle names, and its GDI table handle (the kind's bits
+/// taken off); none for a handle with no kind bits (a DC's), a global object's, or one with other
+/// type bits set.
 pub const fn object_of(handle: u32) -> Option<(u32, u32)> {
     let kind = (handle >> KIND_SHIFT) & KIND_MASK;
-    if kind == 0 || handle >> (KIND_SHIFT + 3) != 0 {
+    if kind == 0 || handle & TYPE_BITS != kind << KIND_SHIFT {
         return None;
     }
-    Some((kind, handle & TABLE_MASK))
+    Some((kind, handle & !TYPE_BITS))
 }
 
 /// The kind of object a handle's own bits say it names: a global object's, or a process's
@@ -1054,27 +1058,30 @@ mod tests {
     /// back; a DC's bare handle, a global object's and a value past the shape carry none.
     #[test]
     fn object_handles_carry_their_kind() {
-        let brush = object_handle(OBJ_BRUSH, 0x1C);
-        assert_eq!(brush, 0x0002_001C);
+        let brush = object_handle(OBJ_BRUSH, 0x0100_001C);
+        assert_eq!(brush, 0x0102_001C);
         assert!(
             brush as usize > crate::display::SYSTEM_COLORS,
             "no COLOR_* + 1"
         );
-        assert_eq!(object_of(brush), Some((OBJ_BRUSH, 0x1C)));
+        assert_eq!(object_of(brush), Some((OBJ_BRUSH, 0x0100_001C)));
         assert_eq!(object_kind(brush), Some(OBJ_BRUSH));
         assert_eq!(
-            object_of(object_handle(OBJ_FONT, 0xFFC)),
-            Some((OBJ_FONT, 0xFFC))
+            object_of(object_handle(OBJ_FONT, 0xFF00_3FFF)),
+            Some((OBJ_FONT, 0xFF00_3FFF)),
+            "every uniqueness"
         );
-        assert_eq!(object_of(0x1C), None, "a DC's handle");
-        assert_eq!(object_kind(0x1C), None);
+        assert_eq!(object_of(0x0100_001C), None, "a DC's handle");
+        assert_eq!(object_kind(0x0100_001C), None);
         assert_eq!(object_of(stock_handle(WHITE_BRUSH).unwrap()), None);
         assert_eq!(
             object_kind(stock_handle(WHITE_BRUSH).unwrap()),
             Some(OBJ_BRUSH)
         );
         assert_eq!(object_of(HALFTONE_BRUSH), None);
-        assert_eq!(object_of(0x0102_001C), None);
+        assert_eq!(object_of(DEFAULT_BITMAP), None);
+        assert_eq!(object_of(0x010A_001C), None, "a type bit past the kind's");
+        assert_eq!(object_of(0x0182_001C), None, "the stock bit");
     }
 
     /// The raster operations PatBlt takes evaluate as their names say, bit by bit; a source's
