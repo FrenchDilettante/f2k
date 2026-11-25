@@ -2,9 +2,10 @@
 //! through. Data only: user32 draws the menu bar in the non-client area and runs the keyboard menu
 //! loop from these records, as its queries read them (Windows 2000's win32k does both itself).
 //!
-//! A menu is a record in the menu pool ([`Menus`]), named by a generation-tagged id ([`MenuId`]),
-//! the object manager's pattern, with a handle into the user handle table ([`super::handle`]). A
-//! menu holds its items in order: indexes into the item pool, each item its type (MFT_*), its state
+//! A menu is a record in the menu pool ([`Menus`], a slot pool: [`crate::slots`]), named by an id
+//! with a uniqueness count ([`MenuId`]), with a handle into the user handle table
+//! ([`super::handle`]). A menu holds its items in order: ids into the item pool (another slot
+//! pool), each item its type (MFT_*), its state
 //! (MFS_*, the enabling bits MF_GRAYED and MF_DISABLED kept apart, as EnableMenuItem's answer shows
 //! them), its command id, the popup it opens (a menu's id: a popup destroyed meanwhile is none),
 //! its application data and its text. A menu belongs to the process that made it, and goes at its
@@ -12,9 +13,12 @@
 //!
 //! Windows 2000 keeps a menu in the desktop heap, its items an array of the menu's own; F2K's
 //! records are fixed-size, so a menu holds at most [`MAX_MENU_ITEMS`] items and an item's text is
-//! cut at [`MENU_ITEM_TEXT`] units. The pools sit in the window registry ([`Windows::menus`]),
-//! behind the window manager's lock, as a window's menu is the window record's: setting a menu,
-//! destroying it with its window, and destroying a window's menu all hold the one lock.
+//! cut at [`MENU_ITEM_TEXT`] units. The pools grow a chunk of the nonpaged pool at a time, as menus
+//! and items are made, and keep their peak; only memory bounds them. They sit in the window
+//! registry ([`Windows::menus`]), behind the window manager's lock, as a window's menu is the
+//! window record's: setting a menu, destroying it with its window, and destroying a window's menu
+//! all hold the one lock. An id a menu was destroyed under, or one naming no slot at all, finds
+//! nothing: the calls that take an id answer ERROR_INVALID_MENU_HANDLE (or nothing) for it.
 //!
 //! An item is named by its position in a menu (MF_BYPOSITION) or by its command (MF_BYCOMMAND):
 //! the first item of that id, the menu's items searched in order and a popup's items right after
@@ -83,11 +87,9 @@ use rtl::menu::{
 use super::class::Owner;
 use super::handle::{UserHandles, UserObject};
 use super::window::Windows;
+use crate::slots::{Id, KernelId, Record, Slots, KERNEL_PAGES, PAGE};
 use crate::status::*;
 
-/// How many menus can exist at once, and how many items between them.
-pub const MENUS: usize = 256;
-pub const ITEMS: usize = 1024;
 /// How many items one menu holds.
 pub const MAX_MENU_ITEMS: usize = 64;
 
@@ -98,7 +100,7 @@ const MAX_DEPTH: u32 = 16;
 /// Why a menu operation failed: the Win32 error code (winerror.h) the decision reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Failure {
-    /// ERROR_NOT_ENOUGH_MEMORY (8): the pools are full.
+    /// ERROR_NOT_ENOUGH_MEMORY (8): the pools could not grow, or the menu holds its most items.
     NotEnoughMemory,
     /// ERROR_INVALID_WINDOW_HANDLE (1400).
     InvalidWindowHandle,
@@ -129,23 +131,36 @@ impl Failure {
     }
 }
 
-/// A menu's id: its record in the pool and the record's generation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct MenuId {
-    index: u16,
-    generation: u16,
-}
+/// The menu pool's kind of id.
+pub enum MenuTag {}
+
+/// The item pool's kind of id.
+pub enum ItemTag {}
+
+/// A menu's id: its slot in the menu pool and the slot's uniqueness count.
+pub type MenuId = Id<MenuTag>;
+
+/// An item's id: its slot in the item pool and the slot's uniqueness count.
+type ItemId = Id<ItemTag>;
 
 impl MenuId {
-    /// The id of the record `index`, its first generation (the handle table's tests).
+    /// The id of the slot `index`, its first count (the handle table's tests).
     #[cfg(test)]
     pub const fn for_tests(index: u16) -> Self {
-        MenuId {
-            index,
-            generation: 0,
-        }
+        Id::new(index, 1)
     }
 }
+
+/// Menu records to a chunk: one page's worth, a slot being its record and 8 bytes.
+const MENUS_PER_CHUNK: usize = PAGE / (core::mem::size_of::<MenuRecord>() + 8);
+/// Items to a chunk: four pages' worth.
+const ITEMS_PER_CHUNK: usize = 4 * PAGE / (core::mem::size_of::<Item>() + 8);
+
+// Measured (272-byte menus, 164-byte items); the records hold no pointer, so these are the target's
+// and the host's alike.
+const _: () = assert!(MENUS_PER_CHUNK == 14 && ITEMS_PER_CHUNK == 95);
+const _: () = assert!(Slots::<MenuRecord, KernelId<MenuTag>, MENUS_PER_CHUNK>::CHUNK_PAGES == 1);
+const _: () = assert!(Slots::<Item, KernelId<ItemTag>, ITEMS_PER_CHUNK>::CHUNK_PAGES == 4);
 
 /// An item, as a call names it: by position in a menu, or by command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -201,35 +216,40 @@ impl<'a> ItemInfo<'a> {
 }
 
 /// One menu's record.
-#[derive(Clone, Copy)]
 struct MenuRecord {
-    live: bool,
-    generation: u16,
     handle: u32,
     owner: Owner,
+    /// Set while the menu's destruction goes down its popups: a popup opening one of its own
+    /// ancestors ends there.
+    destroying: bool,
     /// The window whose system menu this menu is (its handle; 0 for none).
     system_of: u32,
     count: u16,
-    /// The items, by position: indexes into the item pool.
-    items: [u16; MAX_MENU_ITEMS],
+    /// The items, by position: ids into the item pool.
+    items: [ItemId; MAX_MENU_ITEMS],
 }
 
 impl MenuRecord {
-    const DEAD: Self = MenuRecord {
-        live: false,
-        generation: 0,
+    const EMPTY: Self = MenuRecord {
         handle: 0,
         owner: 0,
+        destroying: false,
         system_of: 0,
         count: 0,
-        items: [0; MAX_MENU_ITEMS],
+        items: [Id::new(0, 0); MAX_MENU_ITEMS],
     };
 }
 
+// SAFETY: `write_fresh` writes a whole record.
+unsafe impl Record for MenuRecord {
+    unsafe fn write_fresh(at: *mut Self, _: u32) {
+        // SAFETY: the caller's contract.
+        unsafe { at.write(Self::EMPTY) };
+    }
+}
+
 /// One item's record.
-#[derive(Clone, Copy)]
 struct Item {
-    used: bool,
     item_type: u32,
     state: u32,
     id: u32,
@@ -244,7 +264,6 @@ struct Item {
 
 impl Item {
     const EMPTY: Self = Item {
-        used: false,
         item_type: 0,
         state: 0,
         id: 0,
@@ -258,86 +277,90 @@ impl Item {
     };
 }
 
+// SAFETY: `write_fresh` writes a whole record.
+unsafe impl Record for Item {
+    unsafe fn write_fresh(at: *mut Self, _: u32) {
+        // SAFETY: the caller's contract.
+        unsafe { at.write(Self::EMPTY) };
+    }
+}
+
 /// The menu registry: the menu pool and the item pool. Their handles are the user handle table's
 /// ([`UserHandles`], the window registry's), which the calls that make, find or destroy a menu are
 /// lent.
 pub struct Menus {
-    menus: [MenuRecord; MENUS],
-    items: [Item; ITEMS],
+    menus: Slots<MenuRecord, KernelId<MenuTag>, MENUS_PER_CHUNK>,
+    items: Slots<Item, KernelId<ItemTag>, ITEMS_PER_CHUNK>,
 }
 
 impl Menus {
-    /// Write an empty registry at `menus`, element by element (by value it would pass through the
-    /// stack, which is smaller than it).
+    /// An empty registry: no menu, no chunk made.
+    pub const fn new() -> Self {
+        Menus {
+            menus: Slots::new(),
+            items: Slots::new(),
+        }
+    }
+
+    /// Write an empty registry at `menus`.
     ///
     /// # Safety
     ///
     /// `menus` is valid for writes and aligned; its previous contents are overwritten, not
     /// dropped.
     pub unsafe fn write_empty(menus: *mut Menus) {
-        use core::ptr::addr_of_mut;
-        // SAFETY: the caller's contract; every field is written, the arrays element by element.
-        unsafe {
-            let records = addr_of_mut!((*menus).menus) as *mut MenuRecord;
-            for index in 0..MENUS {
-                records.add(index).write(MenuRecord::DEAD);
-            }
-            let items = addr_of_mut!((*menus).items) as *mut Item;
-            for index in 0..ITEMS {
-                items.add(index).write(Item::EMPTY);
-            }
-        }
+        // SAFETY: the caller's contract.
+        unsafe { menus.write(Self::new()) };
     }
 
-    fn at(&self, id: MenuId) -> &MenuRecord {
-        &self.menus[id.index as usize]
+    /// The live menu `id` names; none for a destroyed or forged id.
+    fn at(&self, id: MenuId) -> Option<&MenuRecord> {
+        self.menus.get(id)
     }
 
-    fn at_mut(&mut self, id: MenuId) -> &mut MenuRecord {
-        &mut self.menus[id.index as usize]
+    fn at_mut(&mut self, id: MenuId) -> Option<&mut MenuRecord> {
+        self.menus.get_mut(id)
+    }
+
+    /// The live menu `id` names, or ERROR_INVALID_MENU_HANDLE.
+    fn record(&self, id: MenuId) -> Result<&MenuRecord, Failure> {
+        self.at(id).ok_or(Failure::InvalidMenuHandle)
     }
 
     fn is_live(&self, id: MenuId) -> bool {
-        let record = &self.menus[id.index as usize];
-        record.live && record.generation == id.generation
+        self.at(id).is_some()
     }
 
-    /// The item at `position` of `menu`.
-    fn item(&self, menu: MenuId, position: usize) -> &Item {
-        &self.items[self.at(menu).items[position] as usize]
+    /// The item at `position` of `menu`, when `menu` is live and holds one there.
+    fn item(&self, menu: MenuId, position: usize) -> Option<&Item> {
+        let record = self.at(menu)?;
+        let id = *record.items[..record.count as usize].get(position)?;
+        self.items.get(id)
     }
 
-    fn item_mut(&mut self, menu: MenuId, position: usize) -> &mut Item {
-        let index = self.at(menu).items[position] as usize;
-        &mut self.items[index]
+    fn item_mut(&mut self, menu: MenuId, position: usize) -> Option<&mut Item> {
+        let record = self.menus.get(menu)?;
+        let id = *record.items[..record.count as usize].get(position)?;
+        self.items.get_mut(id)
     }
 
     /// A new menu of the process `owner`; its handle. A popup (CreatePopupMenu's) and a menu bar
     /// (CreateMenu's) are the same record until the menu bar's drawing and the menus' tracking
     /// tell them apart.
     pub fn create(&mut self, handles: &mut UserHandles, owner: Owner) -> Result<u32, Failure> {
-        let index = self
-            .menus
-            .iter()
-            .position(|m| !m.live)
-            .ok_or(Failure::NotEnoughMemory)?;
         if handles.is_full() {
             return Err(Failure::NotEnoughMemory);
         }
-        let id = MenuId {
-            index: index as u16,
-            generation: self.menus[index].generation,
-        };
+        let (id, record) = self
+            .menus
+            .allocate_or_grow(0, &KERNEL_PAGES)
+            .map_err(|_| Failure::NotEnoughMemory)?;
         let handle = handles.insert(UserObject::Menu(id));
-        self.menus[index] = MenuRecord {
-            live: true,
-            generation: id.generation,
-            handle,
-            owner,
-            system_of: 0,
-            count: 0,
-            items: [0; MAX_MENU_ITEMS],
-        };
+        record.handle = handle;
+        record.owner = owner;
+        record.destroying = false;
+        record.system_of = 0;
+        record.count = 0;
         Ok(handle)
     }
 
@@ -350,26 +373,26 @@ impl Menus {
         }
     }
 
-    /// The handle of `id`.
+    /// The handle of `id` (0 when it names no live menu).
     pub fn handle_of(&self, id: MenuId) -> u32 {
-        self.at(id).handle
+        self.at(id).map_or(0, |record| record.handle)
     }
 
-    /// How many items `menu` holds.
+    /// How many items `menu` holds (none when it names no live menu).
     pub fn count(&self, menu: MenuId) -> usize {
-        self.at(menu).count as usize
+        self.at(menu).map_or(0, |record| record.count as usize)
     }
 
     /// The popup the item at `position` of `menu` opens, when it is still live.
     fn submenu(&self, menu: MenuId, position: usize) -> Option<MenuId> {
-        self.item(menu, position)
+        self.item(menu, position)?
             .submenu
             .filter(|&sub| self.is_live(sub))
     }
 
     /// The item `item` names in `menu`: the menu holding it and its position there. By position,
     /// an item of `menu` itself; by command, the first item of the id, a popup's items searched
-    /// right after the item that opens it.
+    /// right after the item that opens it. None for a menu naming nothing.
     pub fn find(&self, menu: MenuId, item: ItemRef) -> Option<(MenuId, usize)> {
         match item {
             ItemRef::Position(position) => {
@@ -384,7 +407,7 @@ impl Menus {
             return None;
         }
         for position in 0..self.count(menu) {
-            if self.item(menu, position).id == id {
+            if self.item(menu, position)?.id == id {
                 return Some((menu, position));
             }
             if let Some(sub) = self.submenu(menu, position) {
@@ -430,32 +453,31 @@ impl Menus {
         before: ItemRef,
         info: &ItemInfo<'_>,
     ) -> Result<(), Failure> {
+        let count = self.record(menu)?.count as usize;
         let (holder, position) = match before {
-            ItemRef::Position(position) => (menu, (position as usize).min(self.count(menu))),
-            ItemRef::Command(_) => self.find(menu, before).unwrap_or((menu, self.count(menu))),
+            ItemRef::Position(position) => (menu, (position as usize).min(count)),
+            ItemRef::Command(_) => self.find(menu, before).unwrap_or((menu, count)),
         };
         let submenu = self.submenu_of(handles, info)?;
-        if self.count(holder) >= MAX_MENU_ITEMS {
+        let record = self
+            .menus
+            .get_mut(holder)
+            .ok_or(Failure::InvalidMenuHandle)?;
+        let count = record.count as usize;
+        if count >= MAX_MENU_ITEMS {
             return Err(Failure::NotEnoughMemory);
         }
-        let slot = self
+        let (id, item) = self
             .items
-            .iter()
-            .position(|item| !item.used)
-            .ok_or(Failure::NotEnoughMemory)?;
-        let mut item = Item {
-            used: true,
-            ..Item::EMPTY
-        };
-        apply(&mut item, info, submenu);
+            .allocate_or_grow(0, &KERNEL_PAGES)
+            .map_err(|_| Failure::NotEnoughMemory)?;
+        *item = Item::EMPTY;
+        apply(item, info, submenu);
         if item.item_type & MFT_SEPARATOR != 0 {
             item.state |= MFS_GRAYED;
         }
-        self.items[slot] = item;
-        let record = self.at_mut(holder);
-        let count = record.count as usize;
         record.items.copy_within(position..count, position + 1);
-        record.items[position] = slot as u16;
+        record.items[position] = id;
         record.count += 1;
         Ok(())
     }
@@ -469,24 +491,32 @@ impl Menus {
         item: ItemRef,
         info: &ItemInfo<'_>,
     ) -> Result<Option<MenuId>, Failure> {
+        self.record(menu)?;
         let (holder, position) = self.find(menu, item).ok_or(Failure::ItemNotFound)?;
         let submenu = self.submenu_of(handles, info)?;
         let previous = self.submenu(holder, position);
-        apply(self.item_mut(holder, position), info, submenu);
+        let target = self
+            .item_mut(holder, position)
+            .ok_or(Failure::ItemNotFound)?;
+        apply(target, info, submenu);
         Ok(previous.filter(|&old| info.mask & MIIM_SUBMENU != 0 && Some(old) != submenu))
     }
 
     /// Take the item `item` names out of the menu holding it (RemoveMenu, DeleteMenu): the popup
     /// it opened, which the caller keeps or destroys.
     pub fn remove(&mut self, menu: MenuId, item: ItemRef) -> Result<Option<MenuId>, Failure> {
+        self.record(menu)?;
         let (holder, position) = self.find(menu, item).ok_or(Failure::ItemNotFound)?;
         let popup = self.submenu(holder, position);
-        let record = self.at_mut(holder);
+        let record = self
+            .menus
+            .get_mut(holder)
+            .ok_or(Failure::InvalidMenuHandle)?;
         let count = record.count as usize;
-        let slot = record.items[position] as usize;
+        let id = record.items[position];
         record.items.copy_within(position + 1..count, position);
         record.count -= 1;
-        self.items[slot] = Item::EMPTY;
+        self.items.free(id);
         Ok(popup)
     }
 
@@ -501,27 +531,29 @@ impl Menus {
         item: u32,
         by_position: bool,
     ) -> Result<(), Failure> {
-        let count = self.count(menu);
+        let count = self.record(menu)?.count as usize;
         let target = if item == u32::MAX {
             None
         } else {
             let position = if by_position {
                 ((item as usize) < count).then_some(item as usize)
             } else {
-                (0..count).find(|&position| self.item(menu, position).id == item)
+                (0..count).find(|&position| self.item(menu, position).is_some_and(|i| i.id == item))
             };
             let position = position.ok_or(Failure::ItemNotFound)?;
-            if self.item(menu, position).item_type & MFT_SEPARATOR != 0 {
+            let found = self.item(menu, position).ok_or(Failure::ItemNotFound)?;
+            if found.item_type & MFT_SEPARATOR != 0 {
                 return Err(Failure::ItemNotFound);
             }
             Some(position)
         };
         for position in 0..count {
-            let item = self.item_mut(menu, position);
-            if Some(position) == target {
-                item.state |= MFS_DEFAULT;
-            } else {
-                item.state &= !MFS_DEFAULT;
+            if let Some(item) = self.item_mut(menu, position) {
+                if Some(position) == target {
+                    item.state |= MFS_DEFAULT;
+                } else {
+                    item.state &= !MFS_DEFAULT;
+                }
             }
         }
         Ok(())
@@ -529,14 +561,13 @@ impl Menus {
 
     /// The system menu of the window `window` (its handle), when it has one.
     pub fn system_menu_of(&self, window: u32) -> Option<MenuId> {
-        let index = self
-            .menus
+        if window == 0 {
+            return None;
+        }
+        self.menus
             .iter()
-            .position(|m| m.live && m.system_of == window && window != 0)?;
-        Some(MenuId {
-            index: index as u16,
-            generation: self.menus[index].generation,
-        })
+            .find(|(_, record)| record.system_of == window)
+            .map(|(id, _)| id)
     }
 
     /// The popup an insertion or a change names, when its mask names one: a live menu, or none.
@@ -562,8 +593,9 @@ impl Menus {
 
     /// The item `item` names, as F2K's menu query answers it.
     pub fn query_item(&self, menu: MenuId, item: ItemRef) -> Result<MenuItemAnswer, Failure> {
+        self.record(menu)?;
         let (holder, position) = self.find(menu, item).ok_or(Failure::ItemNotFound)?;
-        let record = self.item(holder, position);
+        let record = self.item(holder, position).ok_or(Failure::ItemNotFound)?;
         let submenu = self.submenu(holder, position);
         let mut answer = MenuItemAnswer {
             count: self.count(holder) as u32,
@@ -585,11 +617,18 @@ impl Menus {
         Ok(answer)
     }
 
+    /// The item `item` names, to change: ERROR_INVALID_MENU_HANDLE for a menu naming nothing,
+    /// ERROR_MENU_ITEM_NOT_FOUND for no such item.
+    fn found_mut(&mut self, menu: MenuId, item: ItemRef) -> Result<&mut Item, Failure> {
+        self.record(menu)?;
+        let (holder, position) = self.find(menu, item).ok_or(Failure::ItemNotFound)?;
+        self.item_mut(holder, position).ok_or(Failure::ItemNotFound)
+    }
+
     /// CheckMenuItem: the item's check set or cleared (MF_CHECKED in `flags`); its previous check
     /// (MF_CHECKED or 0).
     pub fn check(&mut self, menu: MenuId, item: ItemRef, flags: u32) -> Result<u32, Failure> {
-        let (holder, position) = self.find(menu, item).ok_or(Failure::ItemNotFound)?;
-        let item = self.item_mut(holder, position);
+        let item = self.found_mut(menu, item)?;
         let previous = item.state & MF_CHECKED;
         item.state = item.state & !MF_CHECKED | flags & MF_CHECKED;
         Ok(previous)
@@ -598,8 +637,7 @@ impl Menus {
     /// EnableMenuItem: the item's MF_GRAYED and MF_DISABLED bits set to `flags`'; its previous
     /// ones.
     pub fn enable(&mut self, menu: MenuId, item: ItemRef, flags: u32) -> Result<u32, Failure> {
-        let (holder, position) = self.find(menu, item).ok_or(Failure::ItemNotFound)?;
-        let item = self.item_mut(holder, position);
+        let item = self.found_mut(menu, item)?;
         let bits = MF_GRAYED | MF_DISABLED;
         let previous = item.state & bits;
         item.state = item.state & !bits | flags & bits;
@@ -607,49 +645,58 @@ impl Menus {
     }
 
     /// Destroy `menu` and the popups its items open, their items with them: DestroyMenu, which
-    /// Windows documents as recursive.
+    /// Windows documents as recursive. Nothing for a menu naming nothing.
     pub fn destroy(&mut self, handles: &mut UserHandles, menu: MenuId) {
         self.destroy_at(handles, menu, 0);
     }
 
     fn destroy_at(&mut self, handles: &mut UserHandles, menu: MenuId, depth: u32) {
-        if !self.is_live(menu) {
+        // The record is read in place, not copied: a copy per popup level would cross the stack.
+        let Some(record) = self.menus.get_mut(menu) else {
+            return;
+        };
+        if record.destroying {
             return;
         }
-        let record = *self.at(menu);
+        record.destroying = true;
+        let count = record.count as usize;
         handles.close(record.handle);
-        let slot = self.at_mut(menu);
-        slot.live = false;
-        slot.generation = slot.generation.wrapping_add(1);
-        slot.count = 0;
-        for &index in &record.items[..record.count as usize] {
-            let sub = self.items[index as usize].submenu;
-            self.items[index as usize] = Item::EMPTY;
+        for position in 0..count {
+            let Some(record) = self.menus.get(menu) else {
+                break;
+            };
+            let id = record.items[position];
+            let sub = self.items.get(id).and_then(|item| item.submenu);
+            self.items.free(id);
             if let Some(sub) = sub {
                 if depth < MAX_DEPTH {
                     self.destroy_at(handles, sub, depth + 1);
                 }
             }
         }
+        self.menus.free(menu);
     }
 
     /// Destroy every menu of the process `owner`, at its end.
     pub fn destroy_owner(&mut self, handles: &mut UserHandles, owner: Owner) {
-        for index in 0..MENUS {
-            let record = &self.menus[index];
-            if record.live && record.owner == owner {
-                let id = MenuId {
-                    index: index as u16,
-                    generation: record.generation,
-                };
-                self.destroy(handles, id);
-            }
+        let mut from = 0;
+        loop {
+            let next = self
+                .menus
+                .iter()
+                .find(|(id, record)| id.index >= from && record.owner == owner)
+                .map(|(id, _)| id);
+            let Some(id) = next else {
+                break;
+            };
+            self.destroy(handles, id);
+            from = id.index;
         }
     }
 
     /// How many menus are live.
     pub fn live(&self) -> usize {
-        self.menus.iter().filter(|m| m.live).count()
+        self.menus.live() as usize
     }
 }
 
@@ -771,7 +818,9 @@ impl Windows {
             return Ok(0);
         }
         let menu = self.menu_of(made)?;
-        self.menus.at_mut(menu).system_of = window;
+        if let Some(record) = self.menus.at_mut(menu) {
+            record.system_of = window;
+        }
         Ok(self.menus.handle_of(menu))
     }
 
@@ -1497,7 +1546,7 @@ mod tests {
         let menu = m.create(OWNER).unwrap();
         let id = m.menu_of(menu).unwrap();
         assert_eq!(m.system_menu_of(0x1234), None);
-        m.at_mut(id).system_of = 0x1234;
+        m.at_mut(id).unwrap().system_of = 0x1234;
         assert_eq!(m.system_menu_of(0x1234), Some(id));
         assert_eq!(m.system_menu_of(0), None);
         m.destroy(id);
@@ -1517,7 +1566,7 @@ mod tests {
             assert_eq!(m.menu_of(handle), Err(Failure::InvalidMenuHandle));
         }
         assert_eq!(m.live(), 0);
-        assert!(m.items.iter().all(|item| !item.used));
+        assert_eq!(m.items.live(), 0);
         menu_200(&mut m);
         let other = m.create(OWNER + 1).unwrap();
         m.destroy_owner(OWNER);
@@ -1528,5 +1577,139 @@ mod tests {
             Err(Failure::InvalidMenuHandle),
             "a slot holding nothing"
         );
+    }
+
+    /// A destroyed menu's id names nothing: every call taking it answers
+    /// ERROR_INVALID_MENU_HANDLE or nothing, and none reads the record its slot holds now.
+    #[test]
+    fn a_destroyed_menus_id_names_nothing() {
+        let mut m = menus();
+        let (bar, _, _, _) = menu_200(&mut m);
+        let bar_id = m.menu_of(bar).unwrap();
+        m.destroy(bar_id);
+        let text = wide("Late");
+        let info = ItemInfo {
+            mask: MIIM_ID | MIIM_STRING,
+            item_type: 0,
+            state: 0,
+            id: 400,
+            submenu: 0,
+            item_data: 0,
+            checked: 0,
+            unchecked: 0,
+            bitmap: 0,
+            text: &text,
+        };
+        assert_eq!(m.count(bar_id), 0);
+        assert_eq!(m.handle_of(bar_id), 0);
+        assert_eq!(m.find(bar_id, ItemRef::Command(205)), None);
+        assert_eq!(
+            m.query_item(bar_id, ItemRef::Position(0)),
+            Err(Failure::InvalidMenuHandle)
+        );
+        assert_eq!(
+            m.menus
+                .insert(&m.handles, bar_id, ItemRef::Position(0), &info),
+            Err(Failure::InvalidMenuHandle)
+        );
+        assert_eq!(
+            m.menus.set(&m.handles, bar_id, ItemRef::Position(0), &info),
+            Err(Failure::InvalidMenuHandle)
+        );
+        assert_eq!(
+            m.remove(bar_id, ItemRef::Position(0)),
+            Err(Failure::InvalidMenuHandle)
+        );
+        assert_eq!(
+            m.check(bar_id, ItemRef::Position(0), MF_CHECKED),
+            Err(Failure::InvalidMenuHandle)
+        );
+        assert_eq!(
+            m.enable(bar_id, ItemRef::Position(0), MF_GRAYED),
+            Err(Failure::InvalidMenuHandle)
+        );
+        assert_eq!(
+            m.set_default(bar_id, 0, true),
+            Err(Failure::InvalidMenuHandle)
+        );
+        assert_eq!(m.query_menu(bar_id).count, 0);
+        m.destroy(bar_id);
+        assert_eq!(m.live(), 0);
+    }
+
+    /// An id past every slot made, or a handle whose table entry names one, finds nothing and
+    /// panics nowhere (the old fixed array was indexed unchecked).
+    #[test]
+    fn an_id_past_the_pool_names_nothing() {
+        let mut m = menus();
+        let menu = m.create(OWNER).unwrap();
+        for forged in [MenuId::for_tests(500), Id::new(0xFFFF, 1), Id::new(0, 0)] {
+            assert_eq!(m.count(forged), 0);
+            assert_eq!(
+                m.query_item(forged, ItemRef::Position(0)),
+                Err(Failure::InvalidMenuHandle)
+            );
+            m.destroy(forged);
+            let handle = m.handles.insert(UserObject::Menu(forged));
+            assert_eq!(m.menu_of(handle), Err(Failure::InvalidMenuHandle));
+            m.handles.close(handle);
+        }
+        assert!(m.menu_of(menu).is_ok());
+        assert_eq!(m.live(), 1);
+    }
+
+    /// A destroyed menu's slot and its items' are taken again, the old id and handle naming
+    /// nothing; the pools grow past a chunk and keep their peak.
+    #[test]
+    fn slots_are_reused_and_the_pools_grow() {
+        let mut m = menus();
+        let first = m.create(OWNER).unwrap();
+        let first_id = m.menu_of(first).unwrap();
+        add(&mut m, first, 0, 0, 1, 0, "One");
+        m.destroy(first_id);
+        let second = m.create(OWNER).unwrap();
+        let second_id = m.menu_of(second).unwrap();
+        assert_eq!(second_id.index, first_id.index, "the freed slot taken");
+        assert_eq!(second_id.uniq, first_id.uniq + 1);
+        assert_eq!(m.menu_of(first), Err(Failure::InvalidMenuHandle));
+        assert_eq!(m.count(first_id), 0);
+        assert_eq!(m.count(second_id), 0, "a fresh menu holds no item");
+        add(&mut m, second, 0, 0, 2, 0, "Two");
+        assert_eq!(m.items.high_water(), 1, "the freed item taken");
+
+        // Past one chunk of menus and one of items.
+        let mut handles = std::vec::Vec::new();
+        for _ in 0..3 * MENUS_PER_CHUNK {
+            let menu = m.create(OWNER + 1).unwrap();
+            for id in 0..8 {
+                add(&mut m, menu, 0, 0, id, 0, "Item");
+            }
+            handles.push(menu);
+        }
+        assert_eq!(m.live(), 1 + 3 * MENUS_PER_CHUNK);
+        assert!(m.items.live() as usize > ITEMS_PER_CHUNK);
+        for &menu in &handles {
+            let id = m.menu_of(menu).unwrap();
+            assert_eq!(m.count(id), 8);
+        }
+        m.destroy_owner(OWNER + 1);
+        assert_eq!(m.live(), 1);
+        assert_eq!(m.items.live(), 1);
+    }
+
+    /// A popup inserted into itself, or into its own popup, ends its destruction there.
+    #[test]
+    fn a_popup_cycle_is_destroyed_once() {
+        let mut m = menus();
+        let a = m.create(OWNER).unwrap();
+        let b = m.create(OWNER).unwrap();
+        add(&mut m, a, 0, 0, b, b, "B");
+        add(&mut m, b, 0, 0, a, a, "A");
+        add(&mut m, a, 0, 0, a, a, "Self");
+        let a_id = m.menu_of(a).unwrap();
+        m.destroy(a_id);
+        assert_eq!(m.live(), 0);
+        assert_eq!(m.items.live(), 0);
+        assert_eq!(m.menu_of(b), Err(Failure::InvalidMenuHandle));
     }
 }

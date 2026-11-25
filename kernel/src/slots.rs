@@ -25,8 +25,8 @@
 //! ([`Slots::on`] with a `&'static Paged`), which the reader resolves through alone
 //! ([`Slots::address_in`], [`SideTable::address_in`], [`SideTable::index_at_in`]).
 
-// Only the process records (a `SideTable`) have moved onto these types; the rest waits for its
-// consumers.
+// Only the process records (a `SideTable`) and win32k's menus, menu items and accelerator tables
+// (`Slots`) have moved onto these types; the rest waits for its consumers.
 #![allow(dead_code)]
 
 use core::cell::Cell;
@@ -1526,8 +1526,9 @@ impl Pages for NonpagedPages {
     }
 }
 
-/// Pages from the host allocator, counted, with a budget a test lowers to make `take` fail.
-#[cfg(test)]
+/// Pages from the host allocator, counted, with a budget a test lowers to make `take` fail: the
+/// host builds' [`KERNEL_PAGES`], and the pools' own tests'.
+#[cfg(not(target_arch = "x86"))]
 pub struct HostPages {
     /// How many more pages `take` hands out.
     budget: core::sync::atomic::AtomicUsize,
@@ -1535,7 +1536,7 @@ pub struct HostPages {
     held: core::sync::atomic::AtomicUsize,
 }
 
-#[cfg(test)]
+#[cfg(not(target_arch = "x86"))]
 impl HostPages {
     pub const fn new() -> Self {
         Self::with_budget(usize::MAX)
@@ -1561,14 +1562,14 @@ impl HostPages {
     }
 }
 
-#[cfg(test)]
+#[cfg(not(target_arch = "x86"))]
 impl Default for HostPages {
     fn default() -> Self {
         Self::new()
     }
 }
 
-#[cfg(test)]
+#[cfg(not(target_arch = "x86"))]
 impl Pages for HostPages {
     fn take(&self, pages: usize) -> Option<NonNull<u8>> {
         let mut left = self.budget.load(Ordering::SeqCst);
@@ -1594,6 +1595,15 @@ impl Pages for HostPages {
         self.held.fetch_sub(pages, Ordering::SeqCst);
     }
 }
+
+/// The pages the kernel's own pools grow from: the nonpaged pool on target.
+#[cfg(target_arch = "x86")]
+pub static KERNEL_PAGES: NonpagedPages = NonpagedPages;
+
+/// The pages the kernel's own pools grow from: the host allocator in the host builds, where the
+/// owners' tests run.
+#[cfg(not(target_arch = "x86"))]
+pub static KERNEL_PAGES: HostPages = HostPages::new();
 
 #[cfg(test)]
 mod tests {
