@@ -553,6 +553,13 @@ const SM_CYFULLSCREEN: i32 = 17;
 const SM_CXVIRTUALSCREEN: i32 = 78;
 const SM_CYVIRTUALSCREEN: i32 = 79;
 const SM_CMONITORS: i32 = 80;
+const SM_CXMAXTRACK: i32 = 59;
+const SM_CYMAXTRACK: i32 = 60;
+
+/// SM_CXMAXTRACK and SM_CYMAXTRACK past the virtual screen's extent: a sizing border and an edge on
+/// each side (Windows 2000's at 1024x768 is 1036 by 780 by this reckoning; win32k seeds
+/// WM_GETMINMAXINFO's ptMaxTrackSize the same).
+const MAX_TRACK_SLACK: i32 = 2 * (nonclient::FRAME + nonclient::EDGE);
 
 /// The caption's height, SM_CYCAPTION (the guidisp capture's).
 const CAPTION: i32 = nonclient::CAPTION;
@@ -613,7 +620,8 @@ const METRICS: [(i32, i32); 46] = [
 ];
 
 /// The metric `index`: the screen's (the primary monitor's rectangle), the work area's, the
-/// monitors' count, or a constant ([`METRICS`]); none for an index outside the served set.
+/// monitors' count, the largest tracking size (the screen's, [`MAX_TRACK_SLACK`] wider and
+/// taller), or a constant ([`METRICS`]); none for an index outside the served set.
 fn metric(index: i32) -> Option<i32> {
     let screen = || primary().map_or(Rect::default(), |(_, rect)| rect);
     let work = || {
@@ -629,6 +637,8 @@ fn metric(index: i32) -> Option<i32> {
         SM_CXFULLSCREEN => width(work()),
         SM_CYFULLSCREEN => height(work()) - CAPTION,
         SM_CMONITORS => monitors(0).1 as i32,
+        SM_CXMAXTRACK => width(screen()) + MAX_TRACK_SLACK,
+        SM_CYMAXTRACK => height(screen()) + MAX_TRACK_SLACK,
         _ => METRICS.iter().find(|(i, _)| *i == index)?.1,
     })
 }
@@ -1089,6 +1099,9 @@ mod tests {
         assert_eq!(get_system_metrics(43), 0);
         assert_eq!(get_system_metrics(17), 480 - 19);
         assert_eq!(get_system_metrics(80), 1);
+        // SM_CXMAXTRACK and SM_CYMAXTRACK: the screen with a border and an edge each side.
+        assert_eq!(get_system_metrics(59), 652);
+        assert_eq!(get_system_metrics(60), 492);
         assert_eq!(get_system_metrics(1000), 0);
         assert_eq!(
             LAST_ERROR.with(|error| error.get()),

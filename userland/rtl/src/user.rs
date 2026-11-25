@@ -139,12 +139,12 @@ pub fn sync_only(message: u32) -> bool {
         WM_CREATE
             | WM_SETTEXT
             | WM_GETTEXT
-            | 0x0024 // WM_GETMINMAXINFO
+            | WM_GETMINMAXINFO
             | 0x002B // WM_DRAWITEM
             | 0x002C // WM_MEASUREITEM
             | 0x002D // WM_DELETEITEM
             | 0x0039 // WM_COMPAREITEM
-            | 0x0046 // WM_WINDOWPOSCHANGING
+            | WM_WINDOWPOSCHANGING
             | WM_WINDOWPOSCHANGED
             | 0x004A // WM_COPYDATA
             | 0x004E // WM_NOTIFY
@@ -230,6 +230,31 @@ pub struct StyleStruct {
 
 // SAFETY: integers only.
 unsafe impl Pod for StyleStruct {}
+
+/// WM_GETMINMAXINFO.
+pub const WM_GETMINMAXINFO: u32 = 0x0024;
+/// WM_WINDOWPOSCHANGING.
+pub const WM_WINDOWPOSCHANGING: u32 = 0x0046;
+
+/// MINMAXINFO (40 bytes): WM_GETMINMAXINFO's lParam, the sizes and the place a window may take,
+/// which the window manager fills with its defaults before it sends the message and the procedure
+/// may change.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MinMaxInfo {
+    /// ptReserved.
+    pub reserved: Point,
+    /// ptMaxSize: the maximized window's size.
+    pub max_size: Point,
+    /// ptMaxPosition: the maximized window's place.
+    pub max_position: Point,
+    /// ptMinTrackSize and ptMaxTrackSize: the smallest and the largest size a resize gives it.
+    pub min_track: Point,
+    pub max_track: Point,
+}
+
+// SAFETY: five POINTs, integers only.
+unsafe impl Pod for MinMaxInfo {}
 
 // --- F2K's receipt -------------------------------------------------------------------------------
 
@@ -435,9 +460,12 @@ pub const HWND_LOCK_ACTIVATE_FOCUS: u32 = 2;
 /// NtUserCallHwndParamLock's routines: EnableWindow (the parameter is bEnable; the result the
 /// window's former WS_DISABLED, as the style's state byte holds it); the default window
 /// procedure's WM_SETREDRAW (the parameter is its wParam: the window's WS_VISIBLE set or cleared,
-/// nothing shown, hidden or painted; the result 0).
+/// nothing shown, hidden or painted; the result 0); the default window procedure's
+/// WM_WINDOWPOSCHANGING (the parameter is the WINDOWPOS's address: a resize's size clamped into
+/// the window's tracking sizes, as WM_GETMINMAXINFO answers them, in place; the result 0).
 pub const HWND_PARAM_LOCK_ENABLE_WINDOW: u32 = 0;
 pub const HWND_PARAM_LOCK_SET_REDRAW: u32 = 1;
+pub const HWND_PARAM_LOCK_WINDOW_POS_CHANGING: u32 = 2;
 
 /// NtUserGetThreadState's routines: the calling thread's focus window (GetFocus) and its active
 /// window (GetActiveWindow); the time and the cursor position (x in the low word, y in the high

@@ -15,7 +15,8 @@
 //! through [`super::class`] (atom, visibility, reference), style normalization (the private
 //! ANSI-creator bit, the edge bit, WS_VISIBLE and the layered bit stripped from the stored
 //! values), positioning (CW_USEDEFAULT handling, child offsets, the tiled cascade, monitor
-//! clamping, min/max track), owner/parent/desktop wiring, and the message order WM_NCCREATE,
+//! clamping, min/max track), owner/parent/desktop wiring, and the message order WM_GETMINMAXINFO
+//! (a tiled or thick-framed window's), WM_NCCREATE,
 //! link, WM_NCCALCSIZE, WM_CREATE, WM_SIZE/WM_MOVE, WM_PARENTNOTIFY, show — with the rollback
 //! path for a refused WM_NCCREATE (WM_NCDESTROY only, no WM_DESTROY) and the full destroy for a
 //! refused WM_CREATE. The destroy path ([`Windows::destroy_window`]) is the cascade: ownership
@@ -75,7 +76,12 @@
 //! the procedure's, or, where the window manager answers as the default procedure, the window's
 //! less the frame, caption and menu bar its styles and its menu give ([`Windows::default_client`],
 //! rtl::nonclient's rules, which user32's default procedure computes and draws by); the handlers of
-//! WM_WINDOWPOSCHANGING and WM_STYLECHANGING may change the new place and the new style. A framed
+//! WM_WINDOWPOSCHANGING and WM_STYLECHANGING may change the new place and the new style. The
+//! sizes a window may take are WM_GETMINMAXINFO's answer ([`Session::min_max_info`], the window
+//! manager's defaults sent for the procedure to change): the creation clamps into its tracking
+//! sizes, a maximized window takes its maximized size and place, and the default procedure's
+//! WM_WINDOWPOSCHANGING clamps a resize ([`Windows::window_pos_changing`], reached from user32's
+//! DefWindowProc through NtUserCallHwndParamLock, or answered by [`default_send`]). A framed
 //! window's frame shows anew (shown, sized, SWP_FRAMECHANGED) with WM_NCPAINT, and a window hidden
 //! uncovers the windows under it: invalid there, their frames painted. A thread's end takes its
 //! windows and its queue, on its way out ([`WindowManager::end_thread`]); its record, empty,
@@ -429,13 +435,16 @@ pub enum Activate {
     Skip,
 }
 
-/// The min/max info a WM_GETMINMAXINFO answer carries.
+/// The min/max info a WM_GETMINMAXINFO answer carries (MINMAXINFO's, as (x, y) pairs): the window
+/// manager's defaults ([`Windows::default_min_max_info`]) as the procedure left them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MinMaxInfo {
-    /// ptReserved: the minimized size.
+    /// ptReserved: the smallest size a minimized window's resize gives it.
     pub reserved: (i32, i32),
-    /// ptMaxSize.
+    /// ptMaxSize: the maximized window's size.
     pub max_size: (i32, i32),
+    /// ptMaxPosition: the maximized window's place (in its parent's client coordinates).
+    pub max_position: (i32, i32),
     /// ptMinTrackSize.
     pub min_track: (i32, i32),
     /// ptMaxTrackSize.
@@ -448,8 +457,34 @@ impl MinMaxInfo {
         MinMaxInfo {
             reserved: (0, 0),
             max_size: (i32::MAX, i32::MAX),
+            max_position: (0, 0),
             min_track: (0, 0),
             max_track: (i32::MAX, i32::MAX),
+        }
+    }
+
+    /// The MINMAXINFO a callback carries.
+    pub fn raw(&self) -> rtl::user::MinMaxInfo {
+        let point = |(x, y): (i32, i32)| rtl::user::Point { x, y };
+        rtl::user::MinMaxInfo {
+            reserved: point(self.reserved),
+            max_size: point(self.max_size),
+            max_position: point(self.max_position),
+            min_track: point(self.min_track),
+            max_track: point(self.max_track),
+        }
+    }
+
+    /// The MINMAXINFO a procedure handed back. Any values are taken: the clamps saturate, and a
+    /// size below zero is taken as zero where it is used.
+    pub fn of_raw(raw: &rtl::user::MinMaxInfo) -> Self {
+        let pair = |p: rtl::user::Point| (p.x, p.y);
+        MinMaxInfo {
+            reserved: pair(raw.reserved),
+            max_size: pair(raw.max_size),
+            max_position: pair(raw.max_position),
+            min_track: pair(raw.min_track),
+            max_track: pair(raw.max_track),
         }
     }
 }
@@ -565,6 +600,26 @@ pub fn default_procedure(windows: &Windows, target: WindowId, message: &mut Mess
     }
 }
 
+/// The default window procedure's answer to `message` for `target` in the session `s`, where no
+/// client procedure answers: [`default_procedure`]'s, and WM_WINDOWPOSCHANGING's WINDOWPOS clamped
+/// as Windows 2000's DefWindowProc clamps it ([`Windows::window_pos_changing`]: WM_GETMINMAXINFO
+/// sent through `s`). user32's DefWindowProc reaches the same clamp through a service
+/// (rtl::user's HWND_PARAM_LOCK_WINDOW_POS_CHANGING).
+pub fn default_send<S: Session + ?Sized>(
+    s: &mut S,
+    target: WindowId,
+    message: &mut Message,
+) -> LResult {
+    if message.message == WM_WINDOWPOSCHANGING && s.windows().pool.is_live(target) {
+        if let Payload::WindowPos(mut pos) = message.payload {
+            Windows::window_pos_changing(s, target, &mut pos);
+            message.payload = Payload::WindowPos(pos);
+        }
+        return 0;
+    }
+    default_procedure(s.windows(), target, message)
+}
+
 /// A message's payload.
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -581,6 +636,8 @@ pub enum Payload {
     /// WM_STYLECHANGING's and WM_STYLECHANGED's STYLESTRUCT (a WM_STYLECHANGING handler may change
     /// the new style).
     Style(StyleStruct),
+    /// WM_GETMINMAXINFO's MINMAXINFO, the window manager's defaults (a handler may change them).
+    MinMax(MinMaxInfo),
 }
 
 /// Where SetWindowPos puts a window in its parent's child list (its hWndInsertAfter).
@@ -626,9 +683,9 @@ pub trait Session {
     }
 
     /// Send `message` to `target`; the handler's answer, and its payload as the handler left it.
-    /// The default answers as the default procedure does ([`default_procedure`]).
+    /// The default answers as the default procedure does ([`default_send`]).
     fn send(&mut self, target: WindowId, message: &mut Message) -> LResult {
-        default_procedure(self.windows(), target, message)
+        default_send(self, target, message)
     }
 
     /// The WM_SIZE send (wparam is the SIZE_* command, lparam the client area's width and height,
@@ -737,9 +794,22 @@ pub trait Session {
     /// Post the destroy-window event to a cross-thread child's queue.
     fn post_destroy_event(&mut self, _thread: ThreadId, _window: WindowId) {}
 
-    /// The WM_GETMINMAXINFO answer.
-    fn min_max_info(&mut self, _target: WindowId) -> MinMaxInfo {
-        MinMaxInfo::unbounded()
+    /// The WM_GETMINMAXINFO answer for `target`: the message sent with the window manager's
+    /// defaults ([`Windows::default_min_max_info`]), as the procedure leaves them (Windows 2000's
+    /// xxxInitSendValidateMinMaxInfo). A window gone meanwhile answers the defaults.
+    fn min_max_info(&mut self, target: WindowId) -> MinMaxInfo {
+        let defaults = self.windows().default_min_max_info(target);
+        let mut message = Message {
+            message: rtl::user::WM_GETMINMAXINFO,
+            wparam: 0,
+            lparam: 0,
+            payload: Payload::MinMax(defaults),
+        };
+        self.send(target, &mut message);
+        match message.payload {
+            Payload::MinMax(answer) => answer,
+            _ => defaults,
+        }
     }
 
     /// Load a class menu (the module and menu name); the menu's handle, none on failure.
@@ -1992,9 +2062,12 @@ impl Windows {
         self.monitors[monitor as usize].window_stack += 1;
     }
 
-    /// The min/max-track clamp: a tiled or thick-framed window's size is clamped into the
-    /// min/max track (the reserved/max size while minimized).
-    fn adjust_size(s: &mut dyn Session, id: WindowId, cx: &mut i32, cy: &mut i32) {
+    /// The min/max-track clamp (Windows 2000's xxxAdjustSize): a tiled or thick-framed window's
+    /// size is clamped into the min/max track (the reserved/max size while minimized), as
+    /// WM_GETMINMAXINFO answers them ([`Session::min_max_info`]); another window's is left alone,
+    /// and nothing is sent to it. A window the procedure destroyed meanwhile is clamped by what it
+    /// answered.
+    pub fn adjust_size<S: Session + ?Sized>(s: &mut S, id: WindowId, cx: &mut i32, cy: &mut i32) {
         let windows = s.windows();
         let (tiled, sizebox, minimized) = {
             let w = windows.at(id);
@@ -2495,8 +2568,12 @@ impl Windows {
             }
         }
 
-        // Size clamping, the full-screen check, negative sizes, and the final window rect.
+        // Size clamping (WM_GETMINMAXINFO, the creation's first message to a tiled or thick-framed
+        // window), the full-screen check, negative sizes, and the final window rect.
         Windows::adjust_size(s, id, &mut src.cx, &mut src.cy);
+        if Windows::gone_in_creation(s, id) {
+            return Err(Failure::Refused);
+        }
         if !child && ex_style & WS_EX_TOOLWINDOW == 0 {
             s.check_full_screen(id, &mut src);
         }
@@ -3730,8 +3807,9 @@ impl Windows {
     /// - Minimized, the window goes to its minimized position, (-32000, -32000) without one (where
     ///   Windows 2000's desktop with its taskbar hides minimized windows), at [`MINIMIZED_SIZE`];
     ///   it restores to maximized when it was maximized.
-    /// - Maximized, it fills its monitor's work area (a child its parent's client area), its sizing
-    ///   border outside it ([`Windows::maximized_rect`]).
+    /// - Maximized, it takes WM_GETMINMAXINFO's ptMaxSize at its ptMaxPosition, by default its
+    ///   monitor's work area (a child its parent's client area) with its sizing border outside it
+    ///   ([`Windows::default_min_max_info`]); WM_WINDOWPOSCHANGING's default clamp follows.
     /// - Restored, it goes back to its normal place.
     ///
     /// A command that would leave the window as it is does nothing.
@@ -3762,6 +3840,18 @@ impl Windows {
             _ if minimized || maximized => State::Normal,
             _ => return Ok(()),
         };
+        // Maximized, the window takes WM_GETMINMAXINFO's size and place, asked before it changes.
+        let mmi = match target {
+            State::Maximized => {
+                let mmi = s.min_max_info(window);
+                if !s.windows().pool.is_live(window) {
+                    return Err(Failure::InvalidWindowHandle);
+                }
+                mmi
+            }
+            _ => MinMaxInfo::unbounded(),
+        };
+        let windows = s.windows();
         let origin = windows.parent_origin(window);
         let here = windows
             .at(window)
@@ -3791,7 +3881,13 @@ impl Windows {
             State::Maximized => {
                 let w = windows.at_mut(window);
                 w.style = (w.style | WS_MAXIMIZE) & !WS_MINIMIZE;
-                windows.maximized_rect(window)
+                let (x, y) = mmi.max_position;
+                Rect {
+                    left: x,
+                    top: y,
+                    right: x.saturating_add(mmi.max_size.0.max(0)),
+                    bottom: y.saturating_add(mmi.max_size.1.max(0)),
+                }
             }
             State::Normal => {
                 let w = windows.at_mut(window);
@@ -3809,6 +3905,71 @@ impl Windows {
             place.height(),
             SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED,
         )
+    }
+
+    /// The default window procedure's WM_WINDOWPOSCHANGING for `window` (Windows 2000's
+    /// xxxHandleWindowPosChanging): a resize's size (`pos` without SWP_NOSIZE) clamped into the
+    /// window's tracking sizes ([`Windows::adjust_size`], WM_GETMINMAXINFO sent for a tiled or
+    /// thick-framed window).
+    pub fn window_pos_changing<S: Session + ?Sized>(
+        s: &mut S,
+        window: WindowId,
+        pos: &mut WindowPos,
+    ) {
+        if pos.flags & SWP_NOSIZE == 0 {
+            Windows::adjust_size(s, window, &mut pos.cx, &mut pos.cy);
+        }
+    }
+
+    /// The MINMAXINFO the window manager fills in for `window` before WM_GETMINMAXINFO goes
+    /// (Windows 2000's xxxInitSendValidateMinMaxInfo; the procedure may change any of it):
+    ///
+    /// - the maximized size and place: the monitor's work area (a child's parent's client area)
+    ///   with the sizing border outside it, or where SetWindowPlacement put it
+    ///   ([`Windows::maximized_rect`]);
+    /// - the minimum tracking size: SM_CXMINTRACK by SM_CYMINTRACK (the guigeo capture's `defer`
+    ///   sizes a window 90 wide to 112);
+    /// - the maximum tracking size: SM_CXMAXTRACK by SM_CYMAXTRACK, the screens' extent with a
+    ///   sizing border and an edge on each side (an assumption: no capture has it yet);
+    /// - ptReserved: zero.
+    pub fn default_min_max_info(&self, window: WindowId) -> MinMaxInfo {
+        let max = self.maximized_rect(window);
+        let screens = self.screens();
+        let slack = 2 * (rtl::nonclient::FRAME + rtl::nonclient::EDGE);
+        MinMaxInfo {
+            reserved: (0, 0),
+            max_size: (
+                max.right.saturating_sub(max.left),
+                max.bottom.saturating_sub(max.top),
+            ),
+            max_position: (max.left, max.top),
+            min_track: (rtl::nonclient::MIN_X, rtl::nonclient::MIN_Y),
+            max_track: (
+                screens.width().saturating_add(slack),
+                screens.height().saturating_add(slack),
+            ),
+        }
+    }
+
+    /// The extent of every monitor together (the virtual screen).
+    fn screens(&self) -> Rect {
+        let mut all: Option<Rect> = None;
+        for monitor in self.monitors.iter() {
+            let r = monitor.rect;
+            if r.right <= r.left || r.bottom <= r.top {
+                continue;
+            }
+            all = Some(match all {
+                None => r,
+                Some(a) => Rect {
+                    left: a.left.min(r.left),
+                    top: a.top.min(r.top),
+                    right: a.right.max(r.right),
+                    bottom: a.bottom.max(r.bottom),
+                },
+            });
+        }
+        all.unwrap_or_default()
     }
 
     /// Where `window` goes maximized, in its parent's client coordinates: its maximized position
@@ -4073,18 +4234,6 @@ impl Windows {
         }
         let windows = s.windows();
         let mut flags = pos.flags;
-
-        // The default procedure's answer to WM_WINDOWPOSCHANGING: a tiled or sizable window that is
-        // not minimized is no smaller than the minimum tracking size (WM_GETMINMAXINFO's default,
-        // SM_CXMINTRACK by SM_CYMINTRACK: the guigeo capture's defer sizes a window 90 wide to
-        // 112).
-        if flags & SWP_NOSIZE == 0 {
-            let w = windows.at(window);
-            if (w.is_tiled() || w.style & WS_THICKFRAME != 0) && w.style & WS_MINIMIZE == 0 {
-                pos.cx = pos.cx.max(rtl::nonclient::MIN_X);
-                pos.cy = pos.cy.max(rtl::nonclient::MIN_Y);
-            }
-        }
 
         // The rectangles.
         let mut rect = old;
@@ -6298,7 +6447,11 @@ mod tests {
         veto_window: Option<WindowId>,
         activate_ok: bool,
         no_menus: bool,
-        mmi: MinMaxInfo,
+        /// The MINMAXINFO a WM_GETMINMAXINFO handler answers (none: the window manager's defaults
+        /// stand).
+        mmi: Option<MinMaxInfo>,
+        /// Every WM_GETMINMAXINFO's MINMAXINFO, as sent.
+        minmax_sent: Vec<(WindowId, MinMaxInfo)>,
         caller: ThreadId,
         /// A title a fake handler sets during WM_NCCREATE.
         title_on_nccreate: Option<Vec<u16>>,
@@ -6330,7 +6483,8 @@ mod tests {
                 veto_window: None,
                 activate_ok: true,
                 no_menus: false,
-                mmi: MinMaxInfo::unbounded(),
+                mmi: None,
+                minmax_sent: Vec::new(),
                 caller,
                 title_on_nccreate: None,
                 title_done: false,
@@ -6397,6 +6551,15 @@ mod tests {
         fn paint_frame(&mut self, _target: WindowId) {}
 
         fn send(&mut self, target: WindowId, message: &mut Message) -> LResult {
+            // WM_GETMINMAXINFO is followed apart from the other messages: the handler's answer.
+            if let Payload::MinMax(ref mut mmi) = message.payload {
+                self.rec.events.push(Ev::MinMaxInfo(target));
+                self.rec.minmax_sent.push((target, *mmi));
+                if let Some(answer) = self.rec.mmi {
+                    *mmi = answer;
+                }
+                return 0;
+            }
             if let Payload::Create(ref p) = message.payload {
                 self.rec.params.push((target, message.message, *p));
                 self.rec
@@ -6422,6 +6585,11 @@ mod tests {
                     self.windows.set_window_text(handle, &units).unwrap();
                     self.windows.at_mut(target).flags.title_set = true;
                 }
+            }
+            // The handler hands WM_WINDOWPOSCHANGING to the default procedure first (its clamp),
+            // then changes what it answers, as guigeo `edits`' does.
+            if message.message == WM_WINDOWPOSCHANGING {
+                default_send(self, target, message);
             }
             if let Payload::WindowPos(ref mut pos) = message.payload {
                 if message.message == WM_WINDOWPOSCHANGING {
@@ -6548,11 +6716,6 @@ mod tests {
 
         fn post_destroy_event(&mut self, thread: ThreadId, window: WindowId) {
             self.rec.events.push(Ev::PostEvent(thread, window));
-        }
-
-        fn min_max_info(&mut self, target: WindowId) -> MinMaxInfo {
-            self.rec.events.push(Ev::MinMaxInfo(target));
-            self.rec.mmi
         }
 
         fn load_class_menu(&mut self, module: u32, _name: &class::MenuName) -> Option<Hwnd> {
@@ -7103,6 +7266,8 @@ mod tests {
     fn a_default_position_with_an_app_size_is_clamped_into_the_monitor() {
         let (w, c, t, atom, _, _) = setup();
         let mut pump = Rec::new(t);
+        // The placement alone: no tracking sizes.
+        pump.mmi = Some(MinMaxInfo::unbounded());
         let mut a = args(atom, WS_OVERLAPPED);
         a.x = CW_USEDEFAULT;
         a.cx = 700;
@@ -7151,6 +7316,8 @@ mod tests {
     fn the_default_size_fills_the_cascade_rect() {
         let (w, c, t, atom, _, _) = setup();
         let mut pump = Rec::new(t);
+        // The placement alone: no tracking sizes.
+        pump.mmi = Some(MinMaxInfo::unbounded());
         let mut a = args(atom, WS_OVERLAPPED);
         a.x = CW_USEDEFAULT;
         a.cx = CW_USEDEFAULT;
@@ -7202,12 +7369,11 @@ mod tests {
         let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
         assert_eq!(w.at(id).style & WS_CLIPSIBLINGS, WS_CLIPSIBLINGS);
         // The min/max track clamp on a thick-framed window.
-        pump.mmi = MinMaxInfo {
-            reserved: (0, 0),
-            max_size: (i32::MAX, i32::MAX),
+        pump.mmi = Some(MinMaxInfo {
             min_track: (100, 50),
             max_track: (200, 150),
-        };
+            ..MinMaxInfo::unbounded()
+        });
         let mut a = args(atom, WS_OVERLAPPED | WS_THICKFRAME);
         a.cx = 30;
         a.cy = 10_000;
@@ -9926,6 +10092,234 @@ mod tests {
             Ok(true)
         );
         assert!(pump.events.contains(&Ev::Activate(top, Activate::Skip)));
+    }
+
+    /// The window manager's MINMAXINFO before WM_GETMINMAXINFO goes: maximized, the work area
+    /// with the sizing border outside it (where SetWindowPlacement's place says, when it has one);
+    /// tracking from SM_CXMINTRACK by SM_CYMINTRACK to the screen with a border and an edge each
+    /// side.
+    #[test]
+    fn the_min_max_defaults() {
+        let (w, _, t, _, _, _) = setup();
+        let id = raw_window(w, t, WS_OVERLAPPEDWINDOW, None);
+        assert_eq!(
+            w.default_min_max_info(id),
+            MinMaxInfo {
+                reserved: (0, 0),
+                max_size: (648, 488),
+                max_position: (-4, -4),
+                min_track: (112, 27),
+                max_track: (652, 492),
+            }
+        );
+        w.at_mut(id).max_position = Some((30, 40));
+        assert_eq!(w.default_min_max_info(id).max_position, (30, 40));
+    }
+
+    /// A tiled or thick-framed window's creation sends WM_GETMINMAXINFO first, with the defaults,
+    /// and the procedure's tracking sizes clamp the size asked (guigeo `edits`: 100x100 asked,
+    /// 300x250 the minimum); a popup without a sizing border hears no WM_GETMINMAXINFO.
+    #[test]
+    fn the_creation_asks_for_the_tracking_sizes() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        pump.mmi = Some(MinMaxInfo {
+            min_track: (300, 250),
+            max_track: (400, 300),
+            ..MinMaxInfo::unbounded()
+        });
+        let mut a = args(atom, WS_OVERLAPPEDWINDOW);
+        a.cx = 100;
+        a.cy = 100;
+        let id = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
+        let first = pump
+            .events
+            .iter()
+            .position(|e| matches!(e, Ev::MinMaxInfo(_) | Ev::Send(..)));
+        assert_eq!(pump.events[first.unwrap()], Ev::MinMaxInfo(id));
+        assert_eq!(pump.minmax_sent[0], (id, w.default_min_max_info(id)));
+        let r = w.at(id).window_rect;
+        assert_eq!((r.width(), r.height()), (300, 250));
+
+        let mut pump = Rec::new(t);
+        Windows::create_window_ex(&mut pump.on(w, c), t, &args(atom, WS_POPUP)).unwrap();
+        assert!(pump.minmax_sent.is_empty());
+    }
+
+    /// A procedure that destroys its window during the creation's WM_GETMINMAXINFO ends the
+    /// creation: nothing more is sent, and no window is made.
+    #[test]
+    fn a_window_destroyed_in_its_min_max_info_is_not_made() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let a = args(atom, WS_OVERLAPPEDWINDOW);
+        let mut session = pump.on(w, c);
+        struct Destroying<'a, 'b>(&'a mut RecSession<'b>, ThreadId);
+        impl Session for Destroying<'_, '_> {
+            fn parts(&mut self) -> (&mut Windows, &mut class::Registry) {
+                self.0.parts()
+            }
+
+            fn send(&mut self, target: WindowId, message: &mut Message) -> LResult {
+                if message.message == rtl::user::WM_GETMINMAXINFO {
+                    let caller = self.1;
+                    let _ = Windows::destroy_window(self, caller, target);
+                    return 0;
+                }
+                self.0.send(target, message)
+            }
+        }
+        let mut destroying = Destroying(&mut session, t);
+        assert_eq!(
+            Windows::create_window_ex(&mut destroying, t, &a),
+            Err(Failure::Refused)
+        );
+        assert!(!pump.messages().contains(&WM_NCCREATE));
+    }
+
+    /// The default procedure's WM_WINDOWPOSCHANGING clamps a resize into the procedure's tracking
+    /// sizes (guigeo `edits`: 100x100 to the minimum 300x250, 600x450 to the maximum 400x300,
+    /// 350x280 as asked); a move alone (SWP_NOSIZE) asks for none, and a popup without a sizing
+    /// border is not clamped.
+    #[test]
+    fn the_default_window_pos_changing_clamps_a_resize() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        pump.mmi = Some(MinMaxInfo {
+            min_track: (300, 250),
+            max_track: (400, 300),
+            ..MinMaxInfo::unbounded()
+        });
+        let id = create(w, c, t, atom, WS_OVERLAPPEDWINDOW, &mut pump).unwrap();
+        let flags = SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE;
+        for ((cx, cy), want) in [
+            ((350, 280), (350, 280)),
+            ((100, 100), (300, 250)),
+            ((600, 450), (400, 300)),
+        ] {
+            Windows::set_window_pos(
+                &mut pump.on(w, c),
+                id,
+                InsertAfter::Top,
+                0,
+                0,
+                cx,
+                cy,
+                flags,
+            )
+            .unwrap();
+            let r = w.at(id).window_rect;
+            assert_eq!((r.width(), r.height()), want, "{cx}x{cy}");
+        }
+        pump.minmax_sent.clear();
+        Windows::set_window_pos(
+            &mut pump.on(w, c),
+            id,
+            InsertAfter::Top,
+            5,
+            5,
+            0,
+            0,
+            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+        .unwrap();
+        assert!(pump.minmax_sent.is_empty());
+
+        let popup = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
+        Windows::set_window_pos(
+            &mut pump.on(w, c),
+            popup,
+            InsertAfter::Top,
+            0,
+            0,
+            20,
+            10,
+            flags,
+        )
+        .unwrap();
+        let r = w.at(popup).window_rect;
+        assert_eq!((r.width(), r.height()), (20, 10));
+    }
+
+    /// A procedure's MINMAXINFO is untrusted: a minimum above the maximum takes the minimum, a
+    /// negative size becomes an empty window, extreme values saturate.
+    #[test]
+    fn a_wild_min_max_answer_stays_bounded() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let id = create(w, c, t, atom, WS_OVERLAPPEDWINDOW, &mut pump).unwrap();
+        let flags = SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE;
+        pump.mmi = Some(MinMaxInfo {
+            min_track: (500, 400),
+            max_track: (100, 100),
+            ..MinMaxInfo::unbounded()
+        });
+        Windows::set_window_pos(
+            &mut pump.on(w, c),
+            id,
+            InsertAfter::Top,
+            0,
+            0,
+            200,
+            200,
+            flags,
+        )
+        .unwrap();
+        let r = w.at(id).window_rect;
+        assert_eq!((r.width(), r.height()), (500, 400));
+        pump.mmi = Some(MinMaxInfo {
+            min_track: (i32::MIN, i32::MIN),
+            max_track: (-50, -60),
+            ..MinMaxInfo::unbounded()
+        });
+        Windows::set_window_pos(
+            &mut pump.on(w, c),
+            id,
+            InsertAfter::Top,
+            0,
+            0,
+            200,
+            200,
+            flags,
+        )
+        .unwrap();
+        let r = w.at(id).window_rect;
+        assert_eq!((r.width(), r.height()), (0, 0));
+        pump.mmi = Some(MinMaxInfo {
+            max_size: (i32::MAX, -7),
+            max_position: (i32::MAX, i32::MIN),
+            ..MinMaxInfo::unbounded()
+        });
+        assert!(Windows::show_window(&mut pump.on(w, c), id, SW_SHOWMAXIMIZED).is_ok());
+        let r = w.at(id).window_rect;
+        assert_eq!((r.left, r.top), (i32::MAX, i32::MIN));
+        assert_eq!(r.height(), 0);
+    }
+
+    /// Maximized, a window takes the procedure's ptMaxSize at its ptMaxPosition (guigeo `edits`:
+    /// 380x280 at 20,30), inside its tracking sizes.
+    #[test]
+    fn a_maximized_window_takes_the_procedures_max_size_and_place() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        pump.mmi = Some(MinMaxInfo {
+            max_size: (380, 280),
+            max_position: (20, 30),
+            min_track: (300, 250),
+            max_track: (400, 300),
+            ..MinMaxInfo::unbounded()
+        });
+        let id = create(w, c, t, atom, WS_OVERLAPPEDWINDOW, &mut pump).unwrap();
+        assert!(Windows::show_window(&mut pump.on(w, c), id, SW_SHOWMAXIMIZED).is_ok());
+        assert_eq!(
+            w.at(id).window_rect,
+            Rect {
+                left: 20,
+                top: 30,
+                right: 400,
+                bottom: 310
+            }
+        );
     }
 
     /// The minimizing and maximizing commands go through the min/max seam first, and so do the

@@ -17,7 +17,7 @@
 //! output block goes on with the structure as the procedure left it ([`out_size`]), which the
 //! kernel reads back (no more than that many bytes, and nothing from a shorter block: a user-mode
 //! answer is untrusted) — WM_NCCALCSIZE's client rectangle, WM_WINDOWPOSCHANGING's new place,
-//! WM_STYLECHANGING's new style.
+//! WM_STYLECHANGING's new style, WM_GETMINMAXINFO's sizes.
 //!
 //! WM_NCCALCSIZE comes in two forms, by its wParam: FALSE carries a RECT, TRUE an
 //! NCCALCSIZE_PARAMS ([`crate::window::NcCalcSizeParams`]) and the move's WINDOWPOS after it,
@@ -46,6 +46,8 @@ pub const FN_NCDESTROY: u32 = 3;
 pub const FN_INLPCREATESTRUCT: u32 = 10;
 /// `__fnINLPWINDOWPOS`: WM_WINDOWPOSCHANGED, the WINDOWPOS (in only).
 pub const FN_INLPWINDOWPOS: u32 = 17;
+/// `__fnINOUTLPPOINT5`: WM_GETMINMAXINFO, the MINMAXINFO (five POINTs) in and out.
+pub const FN_INOUTLPPOINT5: u32 = 18;
 /// `__fnINOUTNCCALCSIZE`: WM_NCCALCSIZE, the window rectangle (wParam FALSE) or the
 /// NCCALCSIZE_PARAMS and its WINDOWPOS (wParam TRUE); out: the RECT, or the NCCALCSIZE_PARAMS.
 pub const FN_INOUTNCCALCSIZE: u32 = 21;
@@ -65,6 +67,7 @@ pub const fn out_size(api: u32, wparam: u32) -> usize {
         FN_INOUTNCCALCSIZE => core::mem::size_of::<crate::gdi::Rect>(),
         FN_INOUTLPWINDOWPOS => core::mem::size_of::<crate::window::WindowPos>(),
         FN_INOUTSTYLECHANGE => core::mem::size_of::<crate::user::StyleStruct>(),
+        FN_INOUTLPPOINT5 => core::mem::size_of::<crate::user::MinMaxInfo>(),
         _ => 0,
     }
 }
@@ -173,6 +176,7 @@ mod tests {
             FN_INOUTNCCALCSIZE,
             FN_INOUTLPWINDOWPOS,
             FN_INOUTSTYLECHANGE,
+            FN_INOUTLPPOINT5,
         ] {
             assert!(slot < SMOKE_API);
         }
@@ -185,6 +189,7 @@ mod tests {
         assert_eq!(out_size(FN_INOUTNCCALCSIZE, 1), 52);
         assert_eq!(out_size(FN_INOUTLPWINDOWPOS, 0), 28);
         assert_eq!(out_size(FN_INOUTSTYLECHANGE, 0), 8);
+        assert_eq!(out_size(FN_INOUTLPPOINT5, 0), 40);
         assert_eq!(out_size(FN_INLPWINDOWPOS, 0), 0);
         assert_eq!(out_size(FN_INLPCREATESTRUCT, 0), 0);
         assert_eq!(OUT_MAX, 52);

@@ -21,6 +21,7 @@ use rtl::callback::{
     FN_DWORD,
     FN_INLPCREATESTRUCT,
     FN_INLPWINDOWPOS,
+    FN_INOUTLPPOINT5,
     FN_INOUTLPWINDOWPOS,
     FN_INOUTNCCALCSIZE,
     FN_INOUTSTYLECHANGE,
@@ -29,7 +30,7 @@ use rtl::callback::{
 use rtl::gdi::Rect;
 use rtl::pod::Pod;
 use rtl::status::{STATUS_INVALID_PARAMETER, STATUS_SUCCESS};
-use rtl::user::{CreateStructW, Msg, StyleStruct};
+use rtl::user::{CreateStructW, MinMaxInfo, Msg, StyleStruct};
 use rtl::window::{NcCalcSizeParams, WindowPos};
 
 /// The size of the structure a message slot's block carries after its [`CallbackMsg`] (none for a
@@ -45,6 +46,7 @@ fn carried_size(api: u32, wparam: u32) -> Option<usize> {
         }
         FN_INOUTNCCALCSIZE => core::mem::size_of::<Rect>(),
         FN_INOUTSTYLECHANGE => core::mem::size_of::<StyleStruct>(),
+        FN_INOUTLPPOINT5 => core::mem::size_of::<MinMaxInfo>(),
         _ => return None,
     })
 }
@@ -182,6 +184,7 @@ mod target {
         FN_DWORD,
         FN_INLPCREATESTRUCT,
         FN_INLPWINDOWPOS,
+        FN_INOUTLPPOINT5,
         FN_INOUTLPWINDOWPOS,
         FN_INOUTNCCALCSIZE,
         FN_INOUTSTYLECHANGE,
@@ -209,6 +212,7 @@ mod target {
         table[FN_INOUTNCCALCSIZE as usize] = fn_inoutnccalcsize;
         table[FN_INOUTLPWINDOWPOS as usize] = fn_inoutlpwindowpos;
         table[FN_INOUTSTYLECHANGE as usize] = fn_inoutstylechange;
+        table[FN_INOUTLPPOINT5 as usize] = fn_inoutlppoint5;
         table[SMOKE_API as usize] = smoke;
         table
     };
@@ -286,6 +290,12 @@ mod target {
     unsafe extern "system" fn fn_inoutstylechange(input: usize, length: u32) -> u32 {
         // SAFETY: the dispatcher's block.
         unsafe { message(FN_INOUTSTYLECHANGE, input, length) }
+    }
+
+    /// `__fnINOUTLPPOINT5`.
+    unsafe extern "system" fn fn_inoutlppoint5(input: usize, length: u32) -> u32 {
+        // SAFETY: the dispatcher's block.
+        unsafe { message(FN_INOUTLPPOINT5, input, length) }
     }
 
     /// The smoke slot: the request answered through NtCallbackReturn.
@@ -568,6 +578,25 @@ mod tests {
         };
         let (s, _) = served(FN_INOUTSTYLECHANGE, 0x7C, 0xFFFF_FFF0, style.as_bytes());
         assert_eq!(s, Some(Served { answer: -7, out: 8 }));
+        let mmi = MinMaxInfo {
+            max_track: rtl::user::Point { x: 400, y: 300 },
+            ..MinMaxInfo::default()
+        };
+        let (s, block) = served(FN_INOUTLPPOINT5, 0x24, 0, mmi.as_bytes());
+        assert_eq!(
+            s,
+            Some(Served {
+                answer: -7,
+                out: 40
+            })
+        );
+        let at = core::mem::size_of::<CallbackMsg>();
+        assert_eq!(MinMaxInfo::read_from(&block, at), Some(mmi));
+        let heard = HEARD.with(|heard| heard.take());
+        assert_eq!(
+            heard.last().map(|h| h.3),
+            Some(address_of((block.as_ptr() as usize + at) as *const u8))
+        );
 
         let params = NcCalcSizeParams {
             rects: [rect; 3],

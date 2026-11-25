@@ -37,7 +37,8 @@
 //! - NtUserGetForegroundWindow (0x1189): the foreground window through its pointer;
 //! - NtUserGetThreadState (0x11A3): the calling thread's focus or active window, by rtl::user's
 //!   THREAD_STATE_* routine;
-//! - NtUserCallHwndParamLock (0x1135): EnableWindow, by rtl::user's HWND_PARAM_LOCK_* routine;
+//! - NtUserCallHwndParamLock (0x1135): EnableWindow, DefWindowProc's WM_SETREDRAW and its
+//!   WM_WINDOWPOSCHANGING clamp, by rtl::user's HWND_PARAM_LOCK_* routine;
 //! - NtUserCallHwndLock's SetForegroundWindow and DefWindowProc's WM_ACTIVATE routines
 //!   ([`call_hwnd_lock`], through [`super::paint`]'s service, which serves the others).
 
@@ -534,6 +535,7 @@ mod services {
     use rtl::user::{
         HWND_PARAM_LOCK_ENABLE_WINDOW,
         HWND_PARAM_LOCK_SET_REDRAW,
+        HWND_PARAM_LOCK_WINDOW_POS_CHANGING,
         THREAD_STATE_ACTIVE_WINDOW,
         THREAD_STATE_FOCUS_WINDOW,
         THREAD_STATE_MESSAGE_POS,
@@ -621,8 +623,10 @@ mod services {
     /// `param` its bEnable): the window's former WS_DISABLED as the style's state byte holds it
     /// into `result` — 8 for a window that was disabled, 0 for one that was not, as Windows 2000's
     /// EnableWindow answers (the focus capture); the default procedure's WM_SETREDRAW
-    /// ([`Windows::set_redraw`], `param` its wParam), 0; STATUS_INVALID_PARAMETER for another
-    /// routine.
+    /// ([`Windows::set_redraw`], `param` its wParam), 0; the default procedure's
+    /// WM_WINDOWPOSCHANGING ([`Windows::window_pos_changing`], `param` the WINDOWPOS's address:
+    /// read before the lock is taken, its size written back after it is let go; WM_GETMINMAXINFO
+    /// goes to the window meanwhile), 0; STATUS_INVALID_PARAMETER for another routine.
     pub fn call_hwnd_param_lock(
         call: &mut NtCall,
         window: Handle,
@@ -631,6 +635,24 @@ mod services {
         result: UserPtr<u32>,
     ) -> NtResult {
         gui_thread(call)?;
+        if routine == HWND_PARAM_LOCK_WINDOW_POS_CHANGING {
+            let at = UserPtr::<rtl::window::WindowPos>::at(param);
+            let mut pos = at.read()?;
+            let before = (pos.cx, pos.cy);
+            with_session(call.passive(), |s| {
+                let id = s
+                    .windows()
+                    .window_from_handle(window.raw())
+                    .ok_or(STATUS_INVALID_HANDLE)?;
+                Windows::window_pos_changing(s, id, &mut pos);
+                Ok::<_, NtStatus>(())
+            })?;
+            if (pos.cx, pos.cy) != before {
+                at.write(pos)?;
+            }
+            result.write(0)?;
+            return Ok(STATUS_SUCCESS);
+        }
         let answer = with_session(call.passive(), |s| {
             let id = s
                 .windows()

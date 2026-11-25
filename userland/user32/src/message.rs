@@ -937,7 +937,9 @@ pub fn translate(msg: &Msg) -> u32 {
 /// WM_CANCELMODE the window's menu loop ended ([`menubar::cancel_mode`]); WM_SETREDRAW the window's
 /// WS_VISIBLE set or cleared, 0; WM_CONTEXTMENU a child's handed to its parent, 0; WM_SETICON the
 /// window's big or small icon kept, the one it replaces answered, and WM_GETICON's answer it
-/// ([`set_icon`]); 0 to everything else,
+/// ([`set_icon`]); WM_WINDOWPOSCHANGING a resize's size clamped into the window's tracking sizes
+/// by win32k, which sends WM_GETMINMAXINFO for them (WM_GETMINMAXINFO itself leaves the window
+/// manager's defaults as they are); 0 to everything else,
 /// WM_ENDSESSION included, and to a text message for a handle naming no window.
 /// The messages Windows 2000's acts on and F2K's does not yet ([`UNHANDLED_MESSAGES`]) are logged,
 /// each once per process.
@@ -996,6 +998,18 @@ pub fn default_procedure(window: usize, message: u32, wparam: u32, lparam: i32, 
         WM_GETICON => icon_of(window, wparam) as i32,
         WM_WINDOWPOSCHANGED => {
             window_pos_changed(window, lparam);
+            0
+        }
+        WM_WINDOWPOSCHANGING => {
+            // The kernel's half (Windows 2000's xxxHandleWindowPosChanging): a resize clamped into
+            // the window's tracking sizes, WM_GETMINMAXINFO sent to it meanwhile.
+            if lparam != 0 {
+                let _ = imports::call_hwnd_param_lock(
+                    window,
+                    lparam as u32,
+                    HWND_PARAM_LOCK_WINDOW_POS_CHANGING,
+                );
+            }
             0
         }
         nonclient::WM_NCCALCSIZE => nonclient::calc_size(window, wparam, lparam),

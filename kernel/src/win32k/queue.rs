@@ -32,8 +32,9 @@
 //! another window made from WM_CREATE) happens inside the decision, in Windows' order. What the
 //! structure the procedure was handed comes back through the callback's output block, bounded by
 //! the structure's size ([`read_back`]): WM_NCCALCSIZE's client rectangle, WM_WINDOWPOSCHANGING's
-//! new place, WM_STYLECHANGING's new style. A message to another thread's window is queued for that
-//! thread as a sent message, and the decision goes on with the default procedure's answer (1 to
+//! new place, WM_STYLECHANGING's new style, WM_GETMINMAXINFO's sizes. A message to another
+//! thread's window is queued for that thread as a sent message (WM_GETMINMAXINFO is not: the
+//! defaults stand), and the decision goes on with the default procedure's answer (1 to
 //! WM_NCCREATE, 0 to the rest): the thread's next read hands it out first, before anything posted,
 //! with the procedure to call and a copy of the structure the message points at
 //! ([`rtl::user::Receipt`]); user32 calls the procedure and hands the answer back ([`end_sent`]),
@@ -88,6 +89,7 @@ use rtl::callback::{
     FN_DWORD,
     FN_INLPCREATESTRUCT,
     FN_INLPWINDOWPOS,
+    FN_INOUTLPPOINT5,
     FN_INOUTLPWINDOWPOS,
     FN_INOUTNCCALCSIZE,
     FN_INOUTSTYLECHANGE,
@@ -2048,7 +2050,9 @@ pub fn defer(windows: &mut Windows, target: WindowId, message: &Message) {
         }
         Payload::WindowPos(w) => Carried::WindowPos(w),
         Payload::Style(style) => Carried::Style(style),
-        Payload::Create(_) => return,
+        // A receipt carries no MINMAXINFO, and nobody reads the answer back yet: the defaults
+        // stand.
+        Payload::Create(_) | Payload::MinMax(_) => return,
     };
     let queues = &mut windows.queues;
     let Some(id) = queues.allocate_sent(Sent {
@@ -2115,6 +2119,14 @@ pub fn callback_input(
         }
         Payload::WindowPos(p) => (FN_INLPWINDOWPOS, p.as_bytes()),
         Payload::Style(style) => (FN_INOUTSTYLECHANGE, style.as_bytes()),
+        Payload::MinMax(mmi) => {
+            let raw = mmi.raw();
+            let length = size_of::<rtl::user::MinMaxInfo>();
+            input.carried[..length].copy_from_slice(raw.as_bytes());
+            input.api = FN_INOUTLPPOINT5;
+            input.length = length;
+            return input;
+        }
         Payload::Create(p) => {
             let class = match p.class_name {
                 ClassArg::Atom(atom) => atom,
@@ -2196,6 +2208,11 @@ pub fn read_back(api: u32, message: &mut Message, out: &CallbackOut) {
                 *style = back;
             }
         }
+        (Payload::MinMax(mmi), FN_INOUTLPPOINT5) => {
+            if let Some(back) = rtl::user::MinMaxInfo::from_bytes(bytes) {
+                *mmi = window::MinMaxInfo::of_raw(&back);
+            }
+        }
         _ => {}
     }
 }
@@ -2262,13 +2279,13 @@ impl<H: Hold> Session for QueueSession<H> {
     fn send(&mut self, target: WindowId, message: &mut Message) -> LResult {
         let windows = self.windows();
         let Some(proc) = windows.client_proc(target) else {
-            return window::default_procedure(windows, target, message);
+            return window::default_send(self, target, message);
         };
         if let Some(answer) = call_back(&mut self.0, target, proc, message) {
             return answer;
         }
         defer(self.windows(), target, message);
-        window::default_procedure(self.windows(), target, message)
+        window::default_send(self, target, message)
     }
 
     fn activate(&mut self, target: WindowId, command: window::Activate) -> bool {
@@ -3619,6 +3636,28 @@ mod tests {
         };
         assert_eq!(slot(WM_WINDOWPOSCHANGING), (FN_INOUTLPWINDOWPOS, 28));
         assert_eq!(slot(window::WM_WINDOWPOSCHANGED), (FN_INLPWINDOWPOS, 28));
+
+        // WM_GETMINMAXINFO's MINMAXINFO, five POINTs, in and out.
+        let mmi = window::MinMaxInfo {
+            reserved: (1, 2),
+            max_size: (3, 4),
+            max_position: (5, 6),
+            min_track: (7, 8),
+            max_track: (9, 10),
+        };
+        let input = callback_input(
+            &m.windows,
+            &m.classes,
+            w,
+            PROC,
+            &message(rtl::user::WM_GETMINMAXINFO, Payload::MinMax(mmi)),
+        );
+        assert_eq!((input.api, input.length), (FN_INOUTLPPOINT5, 40));
+        let words: Vec<i32> = input.carried[..40]
+            .chunks(4)
+            .map(|c| i32::from_ne_bytes(c.try_into().unwrap()))
+            .collect();
+        assert_eq!(words, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
     }
 
     /// A callback's output: `bytes` after the LRESULT.
@@ -3693,6 +3732,19 @@ mod tests {
         let mut m = message(WM_STYLECHANGING, -16i32 as u32, Payload::Style(style));
         read_back(FN_INOUTSTYLECHANGE, &mut m, &out(stuck.as_bytes()));
         assert_eq!(m.payload, Payload::Style(stuck));
+
+        // WM_GETMINMAXINFO's MINMAXINFO, whatever the procedure left in it (guigeo `edits`').
+        let defaults = window::MinMaxInfo::unbounded();
+        let answered = window::MinMaxInfo {
+            reserved: (0, 0),
+            max_size: (380, 280),
+            max_position: (20, 30),
+            min_track: (300, 250),
+            max_track: (400, 300),
+        };
+        let mut m = message(rtl::user::WM_GETMINMAXINFO, 0, Payload::MinMax(defaults));
+        read_back(FN_INOUTLPPOINT5, &mut m, &out(answered.raw().as_bytes()));
+        assert_eq!(m.payload, Payload::MinMax(answered));
     }
 
     /// A routine's output is untrusted: one shorter than the slot's structure leaves the structure
@@ -3750,6 +3802,27 @@ mod tests {
         assert_eq!(m.payload, Payload::WindowPos(pos), "input only");
         read_back(FN_INOUTNCCALCSIZE, &mut m, &out(edited.as_bytes()));
         assert_eq!(m.payload, Payload::WindowPos(pos), "another kind's slot");
+
+        // A MINMAXINFO short of its last POINT stays the defaults.
+        let defaults = window::MinMaxInfo::unbounded();
+        let answered = window::MinMaxInfo {
+            min_track: (300, 250),
+            ..defaults
+        };
+        let mut m = Message {
+            message: rtl::user::WM_GETMINMAXINFO,
+            wparam: 0,
+            lparam: 0,
+            payload: Payload::MinMax(defaults),
+        };
+        read_back(
+            FN_INOUTLPPOINT5,
+            &mut m,
+            &out(&answered.raw().as_bytes()[..32]),
+        );
+        assert_eq!(m.payload, Payload::MinMax(defaults), "MINMAXINFO short");
+        read_back(FN_INOUTLPWINDOWPOS, &mut m, &out(answered.raw().as_bytes()));
+        assert_eq!(m.payload, Payload::MinMax(defaults), "another slot's");
     }
 
     /// The host's session queues every message, but a creation's: WM_NCCALCSIZE first, its
