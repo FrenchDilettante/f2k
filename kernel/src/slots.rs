@@ -636,8 +636,9 @@ impl FreeList {
     };
 }
 
-/// The uniqueness count after `uniq`: one more, or 1 after `max`.
-const fn next_uniq(uniq: u16, max: u16) -> u16 {
+/// The uniqueness count after `uniq`: one more, or 1 after `max`. The one rule for a table kept
+/// outside a pool too (the font table's faces), so its counts are never 0 either.
+pub const fn next_uniq(uniq: u16, max: u16) -> u16 {
     if uniq >= max {
         1
     } else {

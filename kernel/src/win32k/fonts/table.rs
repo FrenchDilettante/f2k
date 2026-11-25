@@ -42,6 +42,10 @@ pub trait Storage: AsRef<[u8]> + AsMut<[u8]> + Sized {
 
 /// How many faces can be loaded at once.
 pub const FACES: usize = 16;
+
+/// A face slot's highest generation; the one after it is 1.
+const GENERATION_MAX: u16 = 0xFFFE;
+
 /// How many realised fonts the table keeps.
 pub const REALIZED: usize = 8;
 /// A realised font's cache: its slots, and each slot's bytes (the GLYPHMETRICS and the bitmap's
@@ -113,7 +117,8 @@ impl<B: Storage> Face<B> {
 }
 
 /// A face's name in the table: its slot and the slot's generation (a slot reused for another face
-/// names another).
+/// names another). Generations follow the slot pools' rule ([`crate::slots`]): a slot's first is
+/// 1, and it moves on when its face goes, from 0xFFFE back to 1, never 0.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FaceId {
     slot: u8,
@@ -223,7 +228,7 @@ impl<B: Storage> FontTable<B> {
     pub const fn new() -> Self {
         FontTable {
             faces: [const { None }; FACES],
-            generations: [0; FACES],
+            generations: [1; FACES],
             realized: [const { Realized::empty() }; REALIZED],
             clock: 0,
             buffers: Buffers {
@@ -305,7 +310,6 @@ impl<B: Storage> FontTable<B> {
             .iter()
             .position(Option::is_none)
             .ok_or(AddError::Full)?;
-        self.generations[slot] = self.generations[slot].wrapping_add(1);
         self.faces[slot] = Some(Face {
             file,
             identity,
@@ -335,9 +339,11 @@ impl<B: Storage> FontTable<B> {
         true
     }
 
-    /// The face in `slot` goes, and the fonts realised from it (their caches kept for reuse).
+    /// The face in `slot` goes, its ids with it, and the fonts realised from it (their caches kept
+    /// for reuse).
     fn unload(&mut self, slot: usize) {
         self.faces[slot] = None;
+        self.generations[slot] = crate::slots::next_uniq(self.generations[slot], GENERATION_MAX);
         for realized in &mut self.realized {
             if realized
                 .key
@@ -729,6 +735,27 @@ mod tests {
             table.add(std::vec![0; 100], OTHER, Owner::Public),
             Err(AddError::NotAFont)
         );
+    }
+
+    /// A face's id: generation 1 in a fresh slot; the face's removal moves the slot on, so the id
+    /// is stale at once and the slot's next face has generation 2; the count wraps from 0xFFFE to
+    /// 1, never 0.
+    #[test]
+    fn a_face_slot_s_generation_moves_on_at_removal() {
+        let mut table = table();
+        table.add(fixture_font(), FILE, Owner::Public).unwrap();
+        let first = table.find(&wide("F2K Tahoma"), 9, FW_NORMAL).unwrap();
+        assert_eq!(first.generation, 1);
+        assert!(table.remove(FILE, Owner::Public));
+        assert!(table.face(first).is_none(), "stale at the removal");
+        assert_eq!(table.generations[first.slot as usize], 2);
+        table.add(fixture_font(), FILE, Owner::Public).unwrap();
+        let second = table.find(&wide("F2K Tahoma"), 9, FW_NORMAL).unwrap();
+        assert_eq!((second.slot, second.generation), (first.slot, 2));
+
+        table.generations[second.slot as usize] = GENERATION_MAX;
+        assert!(table.remove(FILE, Owner::Public));
+        assert_eq!(table.generations[second.slot as usize], 1, "wrapped past 0");
     }
 
     /// A process's private faces go with it; another's and the public ones stay.
