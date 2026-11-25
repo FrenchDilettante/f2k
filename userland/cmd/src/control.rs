@@ -608,3 +608,6 @@ impl fmt::Display for FileNotFound<'_> {
         )
     }
 }
+
+#[cfg(test)]
+mod tests;
