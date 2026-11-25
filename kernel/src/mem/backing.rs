@@ -23,6 +23,7 @@
 
 use super::frame::{FrameDb, FrameHooks, FrameState};
 use super::pageout::{self, FrameMemory, PageWriter, PagingIo, SlotId, PAGE_SIZE};
+use super::phys::PhysAddr;
 use super::vm::{self, Pages, PAGE};
 
 /// The paging-file slot a [`vm::TAG_PAGE_FILE`] entry names (bits 12-31 hold it counted from one).
@@ -63,7 +64,7 @@ pub fn page_file_in<H: FrameHooks, Io: PagingIo, Mem: FrameMemory>(
         Some(frame) => frame,
         None => return false,
     };
-    if pageout::page_in(db, io, mem, buf, frame / PAGE, slot).is_err() {
+    if pageout::page_in(db, io, mem, buf, PhysAddr::new(frame).pfn(), slot).is_err() {
         pages.free_frame(frame);
         return false;
     }
@@ -161,7 +162,7 @@ pub fn relieve_pass<H: FrameHooks, Io: PagingIo, Mem: FrameMemory>(
     let mut kept = 0;
     for index in 0..count {
         let victim = victims[index];
-        let fid = victim.frame / PAGE;
+        let fid = PhysAddr::new(victim.frame).pfn();
         match db.entry(fid).state {
             FrameState::Active => writer.evict_dirty(db, fid),
             FrameState::Modified => writer.requeue(fid),
@@ -177,7 +178,7 @@ pub fn relieve_pass<H: FrameHooks, Io: PagingIo, Mem: FrameMemory>(
         .plan(db.available(), db.list_total(FrameState::Modified));
     let mut freed = 0u32;
     writer.run_planned_report(db, io, mem, buf, plan, &mut |fid, slot| {
-        let frame = fid * PAGE;
+        let frame = fid.addr().get();
         let Some(victim) = victims[..kept].iter().find(|victim| victim.frame == frame) else {
             return false;
         };
@@ -419,6 +420,7 @@ mod tests {
     use super::*;
     use crate::mem::frame::{ColorTables, FrameEntry, NoHooks, PRIMARY_COLOR};
     use crate::mem::pageout::{PageIoError, WriterPolicy};
+    use crate::mem::phys::Pfn;
     use crate::mem::vm::{PAGE_READONLY, PAGE_READWRITE, PAGE_WRITECOPY, USER_LOW};
 
     /// The frame table's size: frame ids 1..TABLE.
@@ -584,12 +586,12 @@ mod tests {
     }
 
     impl FrameMemory for FakeMem {
-        fn read_page(&mut self, frame: u32, page: &mut [u8]) {
-            page.copy_from_slice(&self.pages[frame as usize]);
+        fn read_page(&mut self, frame: Pfn, page: &mut [u8]) {
+            page.copy_from_slice(&self.pages[frame.index()]);
         }
 
-        fn write_page(&mut self, frame: u32, page: &[u8]) {
-            self.pages[frame as usize].copy_from_slice(page);
+        fn write_page(&mut self, frame: Pfn, page: &[u8]) {
+            self.pages[frame.index()].copy_from_slice(page);
         }
     }
 
@@ -616,7 +618,7 @@ mod tests {
     }
 
     fn new_writer() -> PageWriter {
-        let queue: &'static mut [u32] = Box::leak(vec![0; 64].into_boxed_slice());
+        let queue: &'static mut [Pfn] = Box::leak(vec![Pfn::ZERO; 64].into_boxed_slice());
         PageWriter::new(queue, WriterPolicy::new(1000, 64, 0, 64))
     }
 
@@ -864,7 +866,7 @@ mod tests {
         // Some frames available (20..30); the "process" holds frames 1..7, its pages at
         // 0x40..0x46_0000.
         for fid in 20..30u32 {
-            db.release(fid, crate::mem::frame::FrameState::Free);
+            db.release(Pfn::new(fid), crate::mem::frame::FrameState::Free);
         }
         assert_eq!(db.available(), 10);
         let base = 0x0040_0000u32;
@@ -918,7 +920,7 @@ mod tests {
                 "the page's bytes"
             );
             assert_eq!(
-                db.entry(page + 1).state,
+                db.entry(Pfn::new(page + 1)).state,
                 crate::mem::frame::FrameState::Standby,
                 "page {page}'s frame is on Standby"
             );
@@ -972,7 +974,7 @@ mod tests {
         let mut pages = Fake::default();
         let mut writer = new_writer();
         for fid in 3..6u32 {
-            db.release(fid, crate::mem::frame::FrameState::Free);
+            db.release(Pfn::new(fid), crate::mem::frame::FrameState::Free);
         }
         let base = 0x0040_0000u32;
         // Frame 1 is in use and mapped; frame 2's page is present but the frame went to Standby
@@ -983,7 +985,7 @@ mod tests {
         pages
             .entries
             .insert(base + PAGE, vm::encode(2 * PAGE, PAGE_READWRITE));
-        db.release(2, crate::mem::frame::FrameState::Standby);
+        db.release(Pfn::new(2), crate::mem::frame::FrameState::Standby);
 
         let mut victims = [Victim {
             va: 0,
@@ -1010,7 +1012,10 @@ mod tests {
             vm::encode(2 * PAGE, PAGE_READWRITE),
             "the standby frame's entry is untouched"
         );
-        assert_eq!(db.entry(2).state, crate::mem::frame::FrameState::Standby);
+        assert_eq!(
+            db.entry(Pfn::new(2)).state,
+            crate::mem::frame::FrameState::Standby
+        );
         assert_eq!(db.audit(), Ok(()));
     }
 }

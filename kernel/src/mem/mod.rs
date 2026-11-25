@@ -14,6 +14,7 @@ pub mod multiboot;
 pub mod pageout;
 pub mod paging;
 pub mod pagingfile;
+pub mod phys;
 pub mod pool;
 pub mod pte;
 pub mod quota;

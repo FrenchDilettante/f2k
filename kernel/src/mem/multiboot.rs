@@ -15,8 +15,9 @@
 use core::mem::offset_of;
 use core::ops::Range;
 
-use super::frame::{FrameId, FRAME_ENTRY_BYTES, PHYSICAL_FRAME_LIMIT};
+use super::frame::{FRAME_ENTRY_BYTES, PHYSICAL_FRAME_LIMIT};
 use super::layout::{FRAME_DATABASE, KERNEL_IMAGE};
+use super::phys::{self, Pfn, PhysAddr};
 
 /// Multiboot information structure flags.
 pub mod flags {
@@ -98,13 +99,13 @@ pub const MODULE_RECORD: usize = core::mem::size_of::<Module>();
 
 impl Module {
     /// The module's bytes, physical; none when it holds none.
-    pub fn bytes(&self) -> Option<Range<u32>> {
-        (self.start < self.end).then_some(self.start..self.end)
+    pub fn bytes(&self) -> Option<Range<PhysAddr>> {
+        (self.start < self.end).then_some(PhysAddr::new(self.start)..PhysAddr::new(self.end))
     }
 
     /// The frames holding any byte of the module.
-    pub fn frames(&self) -> Range<FrameId> {
-        self.start / 4096..self.end.div_ceil(4096)
+    pub fn frames(&self) -> Range<Pfn> {
+        PhysAddr::new(self.start).pfn()..Pfn::new(self.end.div_ceil(PAGE_SIZE))
     }
 }
 
@@ -130,18 +131,18 @@ pub fn names(line: &[u8], name: &[u8]) -> bool {
 /// frame is 4 KiB.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UsableRange {
-    pub first: FrameId,
+    pub first: Pfn,
     pub count: u32,
 }
 
 impl UsableRange {
     /// The frame numbers of this range.
-    pub fn frames(&self) -> Range<FrameId> {
+    pub fn frames(&self) -> Range<Pfn> {
         self.first..self.first + self.count
     }
 
     /// Whether `frame` is one of this range's.
-    pub fn holds(&self, frame: FrameId) -> bool {
+    pub fn holds(&self, frame: Pfn) -> bool {
         frame >= self.first && frame - self.first < self.count
     }
 }
@@ -245,10 +246,10 @@ pub struct BootMemoryPlan<'a> {
     /// frame).
     upper: Option<UsableRange>,
     /// The frames the kernel image occupies.
-    kernel: Range<FrameId>,
+    kernel: Range<Pfn>,
     /// The frame spans withheld besides the kernel's ([`Self::withholding`]): a boot module's (the
     /// disk image's) and the frame database's own; empty spans by default.
-    withheld: [Range<FrameId>; WITHHELD_SPANS],
+    withheld: [Range<Pfn>; WITHHELD_SPANS],
     /// The frames past the last one a frame number reaches (the physical address space's).
     max_frames: usize,
 }
@@ -257,12 +258,7 @@ impl<'a> BootMemoryPlan<'a> {
     /// The plan for the memory picture `source` ([`memory_source`]), whose map's bytes, when it
     /// names one, are `map` (the `len` bytes at its `addr`; ignored under the fallback). The kernel
     /// image's frames `kernel` are never released, nor any frame at or past `max_frames`.
-    pub fn new(
-        source: MemorySource,
-        map: &'a [u8],
-        kernel: Range<FrameId>,
-        max_frames: usize,
-    ) -> Self {
+    pub fn new(source: MemorySource, map: &'a [u8], kernel: Range<Pfn>, max_frames: usize) -> Self {
         let (map, upper) = match source {
             MemorySource::Map { .. } => (Some(map), None),
             // No memory map: usable memory is one region starting at 1 MiB.
@@ -275,7 +271,7 @@ impl<'a> BootMemoryPlan<'a> {
             map,
             upper,
             kernel,
-            withheld: [const { 0..0 }; WITHHELD_SPANS],
+            withheld: [const { Pfn::ZERO..Pfn::ZERO }; WITHHELD_SPANS],
             max_frames,
         }
     }
@@ -286,7 +282,7 @@ impl<'a> BootMemoryPlan<'a> {
     /// # Panics
     ///
     /// The plan withholds [`WITHHELD_SPANS`] non-empty spans already.
-    pub fn withholding(mut self, span: Range<FrameId>) -> Self {
+    pub fn withholding(mut self, span: Range<Pfn>) -> Self {
         if span.start >= span.end {
             return self;
         }
@@ -301,19 +297,19 @@ impl<'a> BootMemoryPlan<'a> {
 
     /// The frames past the highest usable one: the frame database describes `[0, end)`. Zero when
     /// no range holds a frame.
-    pub fn frames_end(&self) -> FrameId {
+    pub fn frames_end(&self) -> Pfn {
         self.ranges()
             .map(|range| range.first + range.count)
             .max()
-            .unwrap_or(0)
+            .unwrap_or(Pfn::ZERO)
     }
 
     /// The usable frames the memory picture describes, reservations aside: the pages of physical
     /// memory (SystemBasicInformation's NumberOfPhysicalPages), whatever the kernel holds of them.
     pub fn physical_pages(&self) -> u32 {
         let whole = BootMemoryPlan {
-            kernel: 0..0,
-            withheld: [const { 0..0 }; WITHHELD_SPANS],
+            kernel: Pfn::ZERO..Pfn::ZERO,
+            withheld: [const { Pfn::ZERO..Pfn::ZERO }; WITHHELD_SPANS],
             ..self.clone()
         };
         whole.released_runs().map(|run| run.end - run.start).sum()
@@ -321,7 +317,7 @@ impl<'a> BootMemoryPlan<'a> {
 
     /// The highest `count` consecutive frames the plan releases below frame `limit`: none when no
     /// released run holds that many there.
-    pub fn highest_released(&self, count: u32, limit: FrameId) -> Option<Range<FrameId>> {
+    pub fn highest_released(&self, count: u32, limit: Pfn) -> Option<Range<Pfn>> {
         self.released_runs()
             .filter_map(|run| {
                 let end = run.end.min(limit);
@@ -343,7 +339,7 @@ impl<'a> BootMemoryPlan<'a> {
 
     /// Whether a frame of a usable range is released: not the kernel image's nor the withheld
     /// module's, and not covered by a reservation record.
-    pub fn releases(&self, frame: FrameId) -> bool {
+    pub fn releases(&self, frame: Pfn) -> bool {
         !self.kernel.contains(&frame)
             && !self.withheld.iter().any(|span| span.contains(&frame))
             && !self.map.is_some_and(|map| frame_is_reserved(map, frame))
@@ -352,7 +348,7 @@ impl<'a> BootMemoryPlan<'a> {
     /// The frames the plan releases, in the order releasing each usable range's frames in turn
     /// would ([`Self::ranges`], skipping those [`Self::releases`] keeps and those an earlier range
     /// already holds), as runs of consecutive frames: the boot links each run at once.
-    pub fn released_runs(&self) -> impl Iterator<Item = Range<FrameId>> + '_ {
+    pub fn released_runs(&self) -> impl Iterator<Item = Range<Pfn>> + '_ {
         self.ranges().enumerate().flat_map(move |(index, range)| {
             let end = u64::from(range.first) + u64::from(range.count);
             let mut at = u64::from(range.first);
@@ -370,7 +366,7 @@ impl<'a> BootMemoryPlan<'a> {
                     .map(|span| span.start)
                     .filter(|&start| start > at)
                     .fold(end, u64::min);
-                let run = at as FrameId..stop as FrameId;
+                let run = Pfn::new(at as u32)..Pfn::new(stop as u32);
                 at = stop;
                 return Some(run);
             })
@@ -381,7 +377,7 @@ impl<'a> BootMemoryPlan<'a> {
     /// kernel image's, the withheld module's, every frame a reservation record covers any byte of,
     /// and the earlier ranges'. Frame numbers are widened so a record's end cannot overflow.
     fn kept_spans(&self, index: usize) -> impl Iterator<Item = Range<u64>> + '_ {
-        let widen = |span: &Range<FrameId>| u64::from(span.start)..u64::from(span.end);
+        let widen = |span: &Range<Pfn>| u64::from(span.start)..u64::from(span.end);
         let reserved = records(self.map.unwrap_or(&[]))
             .filter(|&(_, len, kind)| kind != MEMORY_AVAILABLE && len != 0)
             .map(|(base, len, _)| base / 4096..base.saturating_add(len).div_ceil(4096));
@@ -398,15 +394,16 @@ impl<'a> BootMemoryPlan<'a> {
 
     /// Whether every frame of `run` is released, so the run can be taken out of the free lists
     /// whole. Under the fallback no run is: it vouches for no frame below 1 MiB.
-    pub fn reserves(&self, mut run: Range<FrameId>) -> bool {
+    pub fn reserves(&self, run: Range<Pfn>) -> bool {
         self.uses_map()
-            && run.all(|frame| self.releases(frame) && self.ranges().any(|r| r.holds(frame)))
+            && phys::frames(run)
+                .all(|frame| self.releases(frame) && self.ranges().any(|r| r.holds(frame)))
     }
 }
 
 /// The frames the kernel image window maps: physical `[0, 16 MiB)`, written through the window
 /// before any other mapping exists.
-const IMAGE_WINDOW_FRAMES: FrameId = KERNEL_IMAGE.size() / PAGE_SIZE;
+const IMAGE_WINDOW_FRAMES: Pfn = Pfn::new(KERNEL_IMAGE.size() / PAGE_SIZE);
 
 /// The bytes of a page, as the database's sizing counts them.
 const PAGE_SIZE: u32 = 4096;
@@ -420,13 +417,13 @@ const PT_ENTRIES: usize = 1024;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DatabasePlacement {
     /// The frames the database describes, `[0, frames)`: up to the highest usable frame.
-    pub frames: FrameId,
+    pub frames: Pfn,
     /// The frames holding the entries, consecutive: the highest run the plan releases that holds
     /// them, so the kernel image window's frames stay for the boot's tables.
-    pub storage: Range<FrameId>,
+    pub storage: Range<Pfn>,
     /// The page tables' frames, consecutive, inside the kernel image window (the boot writes them
     /// through it before the region is mapped): the highest such run the plan releases.
-    pub tables: Range<FrameId>,
+    pub tables: Range<Pfn>,
 }
 
 impl DatabasePlacement {
@@ -434,7 +431,7 @@ impl DatabasePlacement {
     /// the entries or (inside the window) the tables.
     pub fn new(plan: &BootMemoryPlan) -> Option<DatabasePlacement> {
         let frames = plan.frames_end();
-        if frames == 0 {
+        if frames == Pfn::ZERO {
             return None;
         }
         let pages = Self::pages(frames);
@@ -443,7 +440,7 @@ impl DatabasePlacement {
         let storage = plan
             .clone()
             .withholding(tables.clone())
-            .highest_released(pages, FrameId::MAX)?;
+            .highest_released(pages, Pfn::new(u32::MAX))?;
         Some(DatabasePlacement {
             frames,
             storage,
@@ -452,8 +449,8 @@ impl DatabasePlacement {
     }
 
     /// The pages `frames` entries take.
-    pub fn pages(frames: FrameId) -> u32 {
-        (frames as usize * FRAME_ENTRY_BYTES).div_ceil(PAGE_SIZE as usize) as u32
+    pub fn pages(frames: Pfn) -> u32 {
+        (frames.index() * FRAME_ENTRY_BYTES).div_ceil(PAGE_SIZE as usize) as u32
     }
 }
 
@@ -488,11 +485,11 @@ pub fn usable_frames_in(base: u64, len: u64, max_frames: usize) -> Option<Usable
     if end <= base_up {
         return None;
     }
-    let mut first = (base_up / 4096) as FrameId;
+    let mut first = Pfn::new((base_up / 4096) as u32);
     let mut count = ((end - base_up) / 4096) as u32;
-    if first == 0 {
+    if first == Pfn::ZERO {
         // Frame 0 holds the IVT and BIOS data area; keep it.
-        first = 1;
+        first = Pfn::new(1);
         count = count.saturating_sub(1);
     }
     if count == 0 {
@@ -546,8 +543,8 @@ pub fn usable_ranges(map: &[u8], max_frames: usize) -> impl Iterator<Item = Usab
 
 /// Whether any record that is not available RAM covers any byte of `frame`. A frame an available
 /// record also lists is still not free to use: the reservation wins.
-pub fn frame_is_reserved(map: &[u8], frame: FrameId) -> bool {
-    let start = frame as u64 * 4096;
+pub fn frame_is_reserved(map: &[u8], frame: Pfn) -> bool {
+    let start = u64::from(frame) * 4096;
     let end = start + 4096;
     records(map).any(|(base, len, kind)| {
         kind != MEMORY_AVAILABLE && len != 0 && base < end && base.saturating_add(len) > start
@@ -591,7 +588,7 @@ mod tests {
     const WINDOW: usize = 0x4000;
 
     /// The kernel image's frames, as the boot's plan sees them.
-    const KERNEL: Range<FrameId> = 0x100..0x200;
+    const KERNEL: Range<Pfn> = Pfn::new(0x100)..Pfn::new(0x200);
 
     /// Loader memory: the window's bytes, with `bytes` placed at each `(address, bytes)`.
     fn memory(placed: &[(u32, &[u8])]) -> Vec<u8> {
@@ -644,7 +641,7 @@ mod tests {
     /// The fallback's one region: `kib` KiB from 1 MiB on.
     fn upper_region(kib: u32) -> Vec<UsableRange> {
         vec![UsableRange {
-            first: 0x100,
+            first: Pfn::new(0x100),
             count: kib / 4,
         }]
     }
@@ -667,11 +664,11 @@ mod tests {
             plan.ranges().collect::<Vec<_>>(),
             [
                 UsableRange {
-                    first: 1,
+                    first: Pfn::new(1),
                     count: 158
                 },
                 UsableRange {
-                    first: 0x100,
+                    first: Pfn::new(0x100),
                     count: 0x100
                 }
             ]
@@ -693,7 +690,7 @@ mod tests {
         assert_eq!(
             plan.ranges().collect::<Vec<_>>(),
             [UsableRange {
-                first: 0x100,
+                first: Pfn::new(0x100),
                 count: 1
             }]
         );
@@ -724,7 +721,10 @@ mod tests {
         assert_eq!(records(&map).count(), 4);
         assert_eq!(usable_ranges(&map, MAX_FRAMES).count(), 0);
         for frame in 0..0x20 {
-            assert!(!frame_is_reserved(&map, frame), "frame {frame:#x}");
+            assert!(
+                !frame_is_reserved(&map, Pfn::new(frame)),
+                "frame {frame:#x}"
+            );
         }
     }
 
@@ -835,22 +835,22 @@ mod tests {
             (0x200, &map),
         ]);
         let plan = plan_in(&memory, 0x100).unwrap();
-        assert!(plan.releases(0xFF));
-        assert!(!plan.releases(0x100) && !plan.releases(0x1FF));
-        assert!(plan.releases(0x200));
-        assert!(!plan.releases(0x300));
-        assert!(plan.releases(0x301));
+        assert!(plan.releases(Pfn::new(0xFF)));
+        assert!(!plan.releases(Pfn::new(0x100)) && !plan.releases(Pfn::new(0x1FF)));
+        assert!(plan.releases(Pfn::new(0x200)));
+        assert!(!plan.releases(Pfn::new(0x300)));
+        assert!(plan.releases(Pfn::new(0x301)));
     }
 
     /// The frames the boot released one at a time: each usable range's in turn, those the plan
     /// releases and no earlier range released.
-    fn released_one_at_a_time(plan: &BootMemoryPlan) -> Vec<FrameId> {
+    fn released_one_at_a_time(plan: &BootMemoryPlan) -> Vec<Pfn> {
         let mut listed = vec![false; MAX_FRAMES];
         let mut released = Vec::new();
         for range in plan.ranges() {
-            for frame in range.frames() {
-                if !listed[frame as usize] && plan.releases(frame) {
-                    listed[frame as usize] = true;
+            for frame in phys::frames(range.frames()) {
+                if !listed[frame.index()] && plan.releases(frame) {
+                    listed[frame.index()] = true;
                     released.push(frame);
                 }
             }
@@ -889,16 +889,20 @@ mod tests {
         let fallback = memory(&[(0x100, &hint.to_bytes())]);
         let plans = [
             plan_in(&with_map, 0x100).unwrap(),
-            plan_in(&with_map, 0x100).unwrap().withholding(0x700..0x900),
-            plan_in(&with_map, 0x100).unwrap().withholding(0x1F0..0x210),
+            plan_in(&with_map, 0x100)
+                .unwrap()
+                .withholding(Pfn::new(0x700)..Pfn::new(0x900)),
+            plan_in(&with_map, 0x100)
+                .unwrap()
+                .withholding(Pfn::new(0x1F0)..Pfn::new(0x210)),
             plan_in(&fallback, 0x100)
                 .unwrap()
-                .withholding(0x2000..0x2001),
+                .withholding(Pfn::new(0x2000)..Pfn::new(0x2001)),
         ];
         for plan in &plans {
-            let runs: Vec<Range<FrameId>> = plan.released_runs().collect();
+            let runs: Vec<Range<Pfn>> = plan.released_runs().collect();
             assert!(runs.iter().all(|run| !run.is_empty()));
-            let frames: Vec<FrameId> = runs.into_iter().flatten().collect();
+            let frames: Vec<Pfn> = runs.into_iter().flat_map(phys::frames).collect();
             assert_eq!(frames, released_one_at_a_time(plan));
         }
     }
@@ -927,11 +931,13 @@ mod tests {
     fn the_plan_sizes_memory_up_to_4_gib() {
         let loader = memory_of(&four_gib_map());
         let plan = plan_in(&loader, 0x100).unwrap();
-        assert_eq!(plan.frames_end(), 0xBFFE0);
+        assert_eq!(plan.frames_end(), Pfn::new(0xBFFE0));
         // Frames 1..0x9F, then 0x100..0xBFFE0: the kernel's are counted too, frame 0 never.
         assert_eq!(plan.physical_pages(), 0x9E + (0xBFFE0 - 0x100));
         assert_eq!(
-            plan.clone().withholding(0x1000..0x2000).physical_pages(),
+            plan.clone()
+                .withholding(Pfn::new(0x1000)..Pfn::new(0x2000))
+                .physical_pages(),
             plan.physical_pages()
         );
         let fallback = MultibootInfo {
@@ -943,7 +949,7 @@ mod tests {
         let fallback = plan_in(&fallback, 0x100).unwrap();
         assert_eq!(
             (fallback.frames_end(), fallback.physical_pages()),
-            (0x2000, 0x1F00)
+            (Pfn::new(0x2000), 0x1F00)
         );
     }
 
@@ -954,21 +960,27 @@ mod tests {
         let memory = memory_of(&four_gib_map());
         let plan = plan_in(&memory, 0x100).unwrap();
         assert_eq!(
-            plan.highest_released(16, FrameId::MAX),
-            Some(0xBFFD0..0xBFFE0)
+            plan.highest_released(16, Pfn::new(u32::MAX)),
+            Some(phys::frame_run(0xBFFD0..0xBFFE0))
         );
-        assert_eq!(plan.highest_released(4, 0x1000), Some(0xFFC..0x1000));
         assert_eq!(
-            plan.highest_released(0x100, 0x200),
+            plan.highest_released(4, Pfn::new(0x1000)),
+            Some(phys::frame_run(0xFFC..0x1000))
+        );
+        assert_eq!(
+            plan.highest_released(0x100, Pfn::new(0x200)),
             None,
             "the kernel's frames"
         );
-        assert_eq!(plan.highest_released(0x9E, 0x100), Some(1..0x9F));
-        assert_eq!(plan.highest_released(0x9F, 0x100), None);
-        let plan = plan.withholding(0xBFF00..0xBFFE0);
         assert_eq!(
-            plan.highest_released(16, FrameId::MAX),
-            Some(0xBFEF0..0xBFF00)
+            plan.highest_released(0x9E, Pfn::new(0x100)),
+            Some(phys::frame_run(1..0x9F))
+        );
+        assert_eq!(plan.highest_released(0x9F, Pfn::new(0x100)), None);
+        let plan = plan.withholding(Pfn::new(0xBFF00)..Pfn::new(0xBFFE0));
+        assert_eq!(
+            plan.highest_released(16, Pfn::new(u32::MAX)),
+            Some(phys::frame_run(0xBFEF0..0xBFF00))
         );
     }
 
@@ -981,26 +993,20 @@ mod tests {
         let plan = plan_in(&memory, 0x100).unwrap();
         let placement = DatabasePlacement::new(&plan).unwrap();
         // 0xBFFE0 entries of 28 bytes: 5376 pages, six tables.
-        assert_eq!(DatabasePlacement::pages(0xBFFE0), 5376);
+        assert_eq!(DatabasePlacement::pages(Pfn::new(0xBFFE0)), 5376);
         assert_eq!(
             placement,
             DatabasePlacement {
-                frames: 0xBFFE0,
-                storage: 0xBFFE0 - 5376..0xBFFE0,
-                tables: 0xFFA..0x1000,
+                frames: Pfn::new(0xBFFE0),
+                storage: Pfn::new(0xBFFE0 - 5376)..Pfn::new(0xBFFE0),
+                tables: Pfn::new(0xFFA)..Pfn::new(0x1000),
             }
         );
         let placed = plan
             .withholding(placement.tables.clone())
             .withholding(placement.storage.clone());
-        assert!(placement
-            .storage
-            .clone()
-            .all(|frame| !placed.releases(frame)));
-        assert!(placement
-            .tables
-            .clone()
-            .all(|frame| !placed.releases(frame)));
+        assert!(phys::frames(placement.storage.clone()).all(|frame| !placed.releases(frame)));
+        assert!(phys::frames(placement.tables.clone()).all(|frame| !placed.releases(frame)));
 
         // 256 MiB as the test boots give it: 447 pages, one table.
         let map = [
@@ -1011,13 +1017,13 @@ mod tests {
         .concat();
         let memory = memory_of(&map);
         let placement = DatabasePlacement::new(&plan_in(&memory, 0x100).unwrap()).unwrap();
-        assert_eq!(placement.frames, 0xFEE0);
-        assert_eq!(placement.storage, 0xFEE0 - 447..0xFEE0);
-        assert_eq!(placement.tables, 0xFFF..0x1000);
+        assert_eq!(placement.frames, Pfn::new(0xFEE0));
+        assert_eq!(placement.storage, phys::frame_run(0xFEE0 - 447..0xFEE0));
+        assert_eq!(placement.tables, phys::frame_run(0xFFF..0x1000));
 
         // The largest database fits its region: every frame below 4 GiB.
         assert!(
-            DatabasePlacement::pages(PHYSICAL_FRAME_LIMIT as FrameId) as usize
+            DatabasePlacement::pages(Pfn::new(PHYSICAL_FRAME_LIMIT as u32)) as usize
                 <= FRAME_DATABASE.entries * PT_ENTRIES
         );
         // Nothing usable: no database.
@@ -1050,15 +1056,18 @@ mod tests {
             end: 0x50_0001,
             ..Module::default()
         };
-        assert_eq!(module.frames(), 0x400..0x501);
+        assert_eq!(module.frames(), phys::frame_run(0x400..0x501));
         let plan = plan_in(&memory, 0x100)
             .unwrap()
             .withholding(module.frames());
-        assert!(plan.releases(0x3FF));
-        assert!(!plan.releases(0x400) && !plan.releases(0x500));
-        assert!(plan.releases(0x501));
-        assert!(!plan.reserves(0x3FF..0x401));
-        assert!(!plan.releases(0x100), "the kernel's are still withheld");
+        assert!(plan.releases(Pfn::new(0x3FF)));
+        assert!(!plan.releases(Pfn::new(0x400)) && !plan.releases(Pfn::new(0x500)));
+        assert!(plan.releases(Pfn::new(0x501)));
+        assert!(!plan.reserves(Pfn::new(0x3FF)..Pfn::new(0x401)));
+        assert!(
+            !plan.releases(Pfn::new(0x100)),
+            "the kernel's are still withheld"
+        );
     }
 
     /// The module list's records, in order: a partial record at the end is none, and an empty
@@ -1076,7 +1085,10 @@ mod tests {
         .collect();
         let modules: Vec<Module> = module_records(&list).collect();
         assert_eq!(modules.len(), 2);
-        assert_eq!(modules[0].bytes(), Some(0x40_0000..0x80_0000));
+        assert_eq!(
+            modules[0].bytes(),
+            Some(PhysAddr::new(0x40_0000)..PhysAddr::new(0x80_0000))
+        );
         assert_eq!(modules[0].string, 0x1234);
         assert_eq!(modules[1].bytes(), None);
         assert_eq!(MODULE_RECORD, 16);
@@ -1127,25 +1139,28 @@ mod tests {
             test(&plan_in(&memory, 0x100).unwrap())
         };
         let low = record(0, 0x9_FC00, MEMORY_AVAILABLE);
-        assert!(plan_for(&[low.clone()], &|plan| plan.reserves(run.clone())));
+        assert!(plan_for(&[low.clone()], &|plan| plan
+            .reserves(phys::frame_run(run.clone()))));
         // A reservation inside the run.
         assert!(!plan_for(
             &[low.clone(), record(0x9_5000, 0x10, 2)],
-            &|plan| { plan.reserves(run.clone()) }
+            &|plan| { plan.reserves(phys::frame_run(run.clone())) }
         ));
         // Available memory that stops short of the run's end.
         assert!(!plan_for(
             &[record(0, 0x9_A000, MEMORY_AVAILABLE)],
-            &|plan| { plan.reserves(run.clone()) }
+            &|plan| { plan.reserves(phys::frame_run(run.clone())) }
         ));
         // A run the kernel image holds.
         assert!(!plan_for(
             &[record(0, 0x40_0000, MEMORY_AVAILABLE)],
-            &|plan| { plan.reserves(0x100..0x10B) }
+            &|plan| { plan.reserves(Pfn::new(0x100)..Pfn::new(0x10B)) }
         ));
         // The fallback vouches for nothing below 1 MiB.
         let memory = memory(&[(0x100, &info_with_map(0, 0, 4096))]);
-        assert!(!plan_in(&memory, 0x100).unwrap().reserves(run.clone()));
+        assert!(!plan_in(&memory, 0x100)
+            .unwrap()
+            .reserves(phys::frame_run(run.clone())));
     }
 
     /// Build one memory-map record: size, base, length, type.
@@ -1175,31 +1190,49 @@ mod tests {
         map.extend(record(0x10_8000, 0x1000, 2));
         map.extend(record(0x11_0800, 0x10, 3)); // inside one frame, unaligned
         map.extend(record(0x12_0000, 0, 2)); // empty
-        assert!(!frame_is_reserved(&map, 0x100));
-        assert!(frame_is_reserved(&map, 0x108));
-        assert!(!frame_is_reserved(&map, 0x109));
-        assert!(frame_is_reserved(&map, 0x110));
-        assert!(!frame_is_reserved(&map, 0x120));
+        assert!(!frame_is_reserved(&map, Pfn::new(0x100)));
+        assert!(frame_is_reserved(&map, Pfn::new(0x108)));
+        assert!(!frame_is_reserved(&map, Pfn::new(0x109)));
+        assert!(frame_is_reserved(&map, Pfn::new(0x110)));
+        assert!(!frame_is_reserved(&map, Pfn::new(0x120)));
         assert_eq!(records(&map).count(), 4);
     }
 
     #[test]
     fn aligned_available_region_becomes_frames() {
         let range = usable_frames_in(0x2000, 0x3000, MAX_FRAMES).unwrap();
-        assert_eq!(range, UsableRange { first: 2, count: 3 });
+        assert_eq!(
+            range,
+            UsableRange {
+                first: Pfn::new(2),
+                count: 3
+            }
+        );
     }
 
     #[test]
     fn unaligned_base_rounds_up_end_rounds_down() {
         // [0x2FFF, 0x4001): whole frames are 0x3000 and 0x3FFF.
         let range = usable_frames_in(0x2FFF, 0x1002, MAX_FRAMES).unwrap();
-        assert_eq!(range, UsableRange { first: 3, count: 1 });
+        assert_eq!(
+            range,
+            UsableRange {
+                first: Pfn::new(3),
+                count: 1
+            }
+        );
     }
 
     #[test]
     fn frame_zero_is_never_handed_out() {
         let range = usable_frames_in(0, 0x9000, MAX_FRAMES).unwrap();
-        assert_eq!(range, UsableRange { first: 1, count: 8 });
+        assert_eq!(
+            range,
+            UsableRange {
+                first: Pfn::new(1),
+                count: 8
+            }
+        );
     }
 
     #[test]
@@ -1209,7 +1242,7 @@ mod tests {
         assert_eq!(
             range,
             UsableRange {
-                first: 256,
+                first: Pfn::new(256),
                 count: 44
             }
         );
@@ -1234,11 +1267,11 @@ mod tests {
             ranges,
             vec![
                 UsableRange {
-                    first: 1,
+                    first: Pfn::new(1),
                     count: 158
                 },
                 UsableRange {
-                    first: 256,
+                    first: Pfn::new(256),
                     count: 1
                 },
             ]

@@ -291,7 +291,9 @@ mod tests {
     fn the_image_window_covers_the_load_address() {
         assert_eq!(KERNEL_IMAGE.size(), 16 * 0x10_0000);
         let entry_span = KERNEL_IMAGE.start..NTOSKRNL_BASE;
-        assert!(entry_span.contains(&(KERNEL_IMAGE.start + crate::mem::paging::LOADER_PHYS_BASE)));
+        assert!(
+            entry_span.contains(&(KERNEL_IMAGE.start + crate::mem::paging::LOADER_PHYS_BASE.get()))
+        );
         assert!(entry_span.contains(&crate::hw::vga::VIRT_BASE));
         assert_eq!(entry_span.len() as u32, ENTRY_SPAN);
     }

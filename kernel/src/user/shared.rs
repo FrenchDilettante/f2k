@@ -60,7 +60,7 @@ pub fn constant_fields() -> KUserSharedData {
 
 /// The page's frame, once made at boot.
 #[cfg(target_arch = "x86")]
-static FRAME: crate::sync::InitOnce<u32> = crate::sync::InitOnce::new();
+static FRAME: crate::sync::InitOnce<crate::mem::phys::PhysAddr> = crate::sync::InitOnce::new();
 
 /// The page, through the kernel's own mapping, lent to `write`: the one way the kernel reaches it.
 /// Its writers never overlap: [`init`] runs before the clock's first tick, the clock interrupt
@@ -120,7 +120,7 @@ pub fn map_into(space: &mut crate::mem::vm::AddressSpace) {
         .map_shared(
             &mut crate::mem::vm::CurrentPages,
             USER_ADDRESS,
-            *FRAME.get(),
+            FRAME.get().get(),
             crate::mem::vm::PAGE_READONLY,
         )
         .expect("the shared data page maps once, inside its region");

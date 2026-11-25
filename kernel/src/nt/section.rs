@@ -1357,7 +1357,11 @@ mod target {
                 Some(frame) => Ok(frame),
                 None => ob::locked(|directory| {
                     segment_frames(directory, segment).image_frame(table, page, |frame| {
-                        crate::mem::paging::write_frame(frame, 0, &buffer);
+                        crate::mem::paging::write_frame(
+                            crate::mem::phys::PhysAddr::new(frame),
+                            0,
+                            &buffer,
+                        );
                     })
                 }),
             };
@@ -1480,7 +1484,7 @@ mod target {
                 if out.len() != PAGE as usize {
                     return false;
                 }
-                crate::mem::paging::read_frame(frame, 0, out);
+                crate::mem::paging::read_frame(crate::mem::phys::PhysAddr::new(frame), 0, out);
                 true
             },
             &mut |offset, bytes| {

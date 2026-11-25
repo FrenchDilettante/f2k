@@ -24,8 +24,9 @@ use core::arch::asm;
 #[cfg(target_arch = "x86")]
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use super::frame::{FrameDb, FrameHooks, FrameId};
+use super::frame::{FrameDb, FrameHooks};
 use super::layout;
+use super::phys::{Pfn, PhysAddr};
 #[cfg(target_arch = "x86")]
 use super::{frame::PRIMARY_COLOR, with_database, Parts};
 
@@ -35,7 +36,7 @@ pub const KERNEL_BASE: u32 = layout::KERNEL_IMAGE.start;
 /// Physical load address of the boot loader, 1 MiB: the start of its memory, in the kernel image
 /// window's entry span, which the kernel keeps until it no longer pages through the loader's
 /// tables.
-pub const LOADER_PHYS_BASE: u32 = 0x0010_0000;
+pub const LOADER_PHYS_BASE: PhysAddr = PhysAddr::new(0x0010_0000);
 
 /// Page-table flag: page/directory entry is present.
 pub const PAGE_PRESENT: u32 = 1 << 0;
@@ -57,7 +58,7 @@ pub const PAGE_SIZE: u32 = 4096;
 
 /// The identity entry for page `page`: present, writable, mapping physical page `page`.
 const fn identity_entry(page: usize) -> u32 {
-    (page * 4096) as u32 | PAGE_PRESENT | PAGE_WRITE
+    Pte::kernel_rw(Pfn::new(page as u32).addr()).raw()
 }
 
 /// Fill `table` with the identity mapping of the 1024 pages from `first_page`: page `first_page +
@@ -82,12 +83,12 @@ pub const BOOT_TABLE_COUNT: usize = layout::KERNEL_IMAGE.entries;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BootTables {
     /// The directory.
-    pub directory: u32,
+    pub directory: PhysAddr,
     /// The identity tables over physical `[0, 16 MiB)`, 4 MiB apiece: the kernel image window's,
     /// and the low identity window's while it lasts.
-    pub identity: [u32; BOOT_TABLE_COUNT],
+    pub identity: [PhysAddr; BOOT_TABLE_COUNT],
     /// The scratch window's table ([`SCRATCH_SLOT`]), shared by every directory.
-    pub scratch: u32,
+    pub scratch: PhysAddr,
     /// The frame database region's tables ([`map_frame_database`]), made before the directory.
     pub database: DatabaseTables,
 }
@@ -97,30 +98,26 @@ pub struct BootTables {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct DatabaseTables {
     /// The first table's physical address.
-    pub first: u32,
+    pub first: PhysAddr,
     /// How many tables, one per directory entry of the region from its first.
     pub count: u32,
 }
 
 impl DatabaseTables {
     /// Table `index`'s physical address.
-    pub const fn table(self, index: u32) -> u32 {
-        self.first + index * PAGE_SIZE
+    pub const fn table(self, index: u32) -> PhysAddr {
+        self.first.pfn().plus(index).addr()
     }
 
     /// Fill `table` (table `index`'s frame): its entries map the database's storage `storage`
     /// (frame numbers, consecutive) in order, from the region's start, kernel-only and writable;
     /// the entries past the storage's end map nothing.
-    pub fn fill_table(
-        index: u32,
-        storage: core::ops::Range<FrameId>,
-        table: &mut [u32; PT_ENTRIES],
-    ) {
+    pub fn fill_table(index: u32, storage: core::ops::Range<Pfn>, table: &mut [u32; PT_ENTRIES]) {
         let first = storage.start + index * PT_ENTRIES as u32;
         for (i, entry) in table.iter_mut().enumerate() {
             let frame = first + i as u32;
             *entry = if frame < storage.end {
-                Pte::kernel_rw(frame * PAGE_SIZE).raw()
+                Pte::kernel_rw(frame.addr()).raw()
             } else {
                 Pte::EMPTY.raw()
             };
@@ -140,9 +137,9 @@ impl BootTables {
     /// The frames for the directory and its tables, from `allocate` (each call one page-aligned
     /// physical address): the directory first, then the identity tables in order, then the
     /// scratch table.
-    pub fn allocate(mut allocate: impl FnMut() -> u32) -> BootTables {
+    pub fn allocate(mut allocate: impl FnMut() -> PhysAddr) -> BootTables {
         let directory = allocate();
-        let mut identity = [0; BOOT_TABLE_COUNT];
+        let mut identity = [PhysAddr::ZERO; BOOT_TABLE_COUNT];
         for table in &mut identity {
             *table = allocate();
         }
@@ -196,18 +193,18 @@ fn boot_directory() -> &'static BootTables {
 
 /// The frames the kernel image window maps: physical `[0, 16 MiB)`, reachable at `KERNEL_BASE +
 /// phys` from the boot loader's directory on.
-const IMAGE_WINDOW_FRAMES: u32 = layout::KERNEL_IMAGE.size() / PAGE_SIZE;
+const IMAGE_WINDOW_FRAMES: Pfn = Pfn::new(layout::KERNEL_IMAGE.size() / PAGE_SIZE);
 
 /// Take the highest free frame below `limit` out of the frame database's free lists: a frame the
 /// kernel image window maps (with `limit` its frame count), so it can be written before any runtime
 /// access window exists. The highest first: the low frames serve the firmware and the real-mode
 /// trampoline. Physical address; none when no frame below `limit` is free.
-pub fn take_window_frame<H: FrameHooks>(frames: &mut FrameDb<H>, limit: u32) -> Option<u32> {
-    let frame = (1..limit)
+pub fn take_window_frame<H: FrameHooks>(frames: &mut FrameDb<H>, limit: Pfn) -> Option<PhysAddr> {
+    let frame = super::phys::frames(Pfn::new(1)..limit)
         .rev()
         .find(|&frame| frames.entry(frame).state.has_color_chain())?;
     frames.take(frame);
-    Some(frame * PAGE_SIZE)
+    Some(frame.addr())
 }
 
 /// Build the boot directory and its tables in frames of their own and switch to it, once, right
@@ -262,7 +259,7 @@ static FRAME_DATABASE_TABLES: crate::sync::InitOnce<DatabaseTables> = crate::syn
 /// Called twice, a table or the directory lies outside the kernel image window, or the storage
 /// takes more than the tables map or the region holds.
 #[cfg(target_arch = "x86")]
-pub fn map_frame_database(tables: core::ops::Range<FrameId>, storage: core::ops::Range<FrameId>) {
+pub fn map_frame_database(tables: core::ops::Range<Pfn>, storage: core::ops::Range<Pfn>) {
     let count = tables.end - tables.start;
     assert!(
         count as usize <= layout::FRAME_DATABASE.entries
@@ -270,7 +267,7 @@ pub fn map_frame_database(tables: core::ops::Range<FrameId>, storage: core::ops:
         "the frame database outgrows its region or its tables"
     );
     let mapped = DatabaseTables {
-        first: tables.start * PAGE_SIZE,
+        first: tables.start.addr(),
         count,
     };
     for index in 0..count {
@@ -280,11 +277,11 @@ pub fn map_frame_database(tables: core::ops::Range<FrameId>, storage: core::ops:
     }
     let directory = current_directory_phys();
     assert!(
-        directory / PAGE_SIZE < IMAGE_WINDOW_FRAMES,
+        directory.pfn() < IMAGE_WINDOW_FRAMES,
         "the boot loader's directory lies outside the kernel image window"
     );
     for index in 0..count {
-        let slot = (KERNEL_BASE + directory) as *mut u32;
+        let slot = (KERNEL_BASE + directory.get()) as *mut u32;
         let entry = layout::FRAME_DATABASE.first_entry() + index as usize;
         // SAFETY: the loader's directory lies in the kernel image window (checked above), which
         // maps physical `[0, 16 MiB)` at `KERNEL_BASE + phys`; the entry is the directory's own
@@ -306,9 +303,9 @@ pub fn map_frame_database(tables: core::ops::Range<FrameId>, storage: core::ops:
 ///
 /// The frame is not page-aligned or lies outside the kernel image window.
 #[cfg(target_arch = "x86")]
-fn fill_new_table(frame_phys: u32, fill: impl FnOnce(&mut [u32; PT_ENTRIES])) {
+fn fill_new_table(frame_phys: PhysAddr, fill: impl FnOnce(&mut [u32; PT_ENTRIES])) {
     assert!(
-        frame_phys.is_multiple_of(PAGE_SIZE) && frame_phys / PAGE_SIZE < IMAGE_WINDOW_FRAMES,
+        frame_phys.is_page_aligned() && frame_phys.pfn() < IMAGE_WINDOW_FRAMES,
         "a boot table outside the kernel image window"
     );
     // SAFETY: the frame lies in the kernel image window (checked above), which maps physical
@@ -317,7 +314,7 @@ fn fill_new_table(frame_phys: u32, fill: impl FnOnce(&mut [u32; PT_ENTRIES])) {
     // table, out of the free lists or out of the boot's memory plan, so no other owner holds it,
     // and no directory names it yet, so the processor does not walk it: the reference, which
     // `fill` cannot keep, is the only access to it.
-    fill(unsafe { &mut *((KERNEL_BASE + frame_phys) as *mut [u32; PT_ENTRIES]) });
+    fill(unsafe { &mut *((KERNEL_BASE + frame_phys.get()) as *mut [u32; PT_ENTRIES]) });
 }
 
 /// A page-directory or page-table entry: the frame (or page table) it names and its flag bits.
@@ -345,26 +342,26 @@ impl Pte {
     }
 
     /// The frame (or page table) the entry names, present or not.
-    pub const fn frame(self) -> u32 {
-        self.0 & PAGE_ADDR_MASK
+    pub const fn frame(self) -> PhysAddr {
+        PhysAddr::new(self.0 & PAGE_ADDR_MASK)
     }
 
     /// A present, writable, supervisor-only entry for `frame`: the kernel's own pages and tables,
     /// and the runtime access windows' directory entries.
-    pub const fn kernel_rw(frame: u32) -> Pte {
-        Pte(frame | PAGE_PRESENT | PAGE_WRITE)
+    pub const fn kernel_rw(frame: PhysAddr) -> Pte {
+        Pte(frame.get() | PAGE_PRESENT | PAGE_WRITE)
     }
 
     /// A present, writable, supervisor-only, uncached entry for `frame`: device memory such as the
     /// display's framebuffer (see [`PAGE_CACHE_DISABLE`]).
-    pub const fn kernel_rw_uncached(frame: u32) -> Pte {
-        Pte(frame | PAGE_PRESENT | PAGE_WRITE | PAGE_CACHE_DISABLE)
+    pub const fn kernel_rw_uncached(frame: PhysAddr) -> Pte {
+        Pte(frame.get() | PAGE_PRESENT | PAGE_WRITE | PAGE_CACHE_DISABLE)
     }
 
     /// A present entry ring 3 can reach for `frame`, with the further `flags` ([`PAGE_WRITE`] for a
     /// writable one).
-    pub const fn user(frame: u32, flags: u32) -> Pte {
-        Pte(frame | PAGE_PRESENT | PAGE_USER | flags)
+    pub const fn user(frame: PhysAddr, flags: u32) -> Pte {
+        Pte(frame.get() | PAGE_PRESENT | PAGE_USER | flags)
     }
 }
 
@@ -647,19 +644,19 @@ pub fn init_module_tables() {
 /// Try to allocate one frame, physical address, through the database; none when the frame database
 /// has none left (a status for the caller, not a panic). The bridge to [`try_allocate_frame`].
 #[cfg(target_arch = "x86")]
-pub fn try_allocate_frame_phys() -> Option<u32> {
+pub fn try_allocate_frame_phys() -> Option<PhysAddr> {
     with_database(|database| try_allocate_frame(database.frames()))
 }
 
 /// Release the frame at `frame_phys` back to the frame database as free (its mapping is the
 /// caller's to remove first). The bridge to [`FrameDb::release`].
 #[cfg(target_arch = "x86")]
-pub fn release_frame_phys(frame_phys: u32) {
-    assert!(frame_phys % PAGE_SIZE == 0, "frame not page-aligned");
+pub fn release_frame_phys(frame_phys: PhysAddr) {
+    assert!(frame_phys.is_page_aligned(), "frame not page-aligned");
     with_database(|database| {
         database
             .frames()
-            .release(frame_phys / PAGE_SIZE, super::frame::FrameState::Free)
+            .release(frame_phys.pfn(), super::frame::FrameState::Free)
     });
 }
 
@@ -670,7 +667,7 @@ pub fn release_frame_phys(frame_phys: u32) {
 ///
 /// The entry is already present.
 #[cfg(target_arch = "x86")]
-fn install_kernel_table(window: usize, table_phys: u32) {
+fn install_kernel_table(window: usize, table_phys: PhysAddr) {
     assert!(
         !self_map::pde(window).present(),
         "kernel-half table already installed"
@@ -728,8 +725,8 @@ impl ScratchWindow {
     /// # Panics
     ///
     /// `frame_phys` is not page-aligned, or interrupts are enabled.
-    fn point_at(&mut self, frame_phys: u32) {
-        assert!(frame_phys & (PAGE_SIZE - 1) == 0, "frame not page-aligned");
+    fn point_at(&mut self, frame_phys: PhysAddr) {
+        assert!(frame_phys.is_page_aligned(), "frame not page-aligned");
         assert!(
             interrupts_masked(),
             "the scratch window used with interrupts enabled"
@@ -739,7 +736,7 @@ impl ScratchWindow {
     }
 
     /// The frame at `frame_phys`, as bytes, until the window is next used.
-    pub fn map(&mut self, frame_phys: u32) -> &mut [u8; PAGE_BYTES] {
+    pub fn map(&mut self, frame_phys: PhysAddr) -> &mut [u8; PAGE_BYTES] {
         self.point_at(frame_phys);
         // SAFETY: the window maps exactly `frame_phys`, page-aligned and page-length, at
         // SCRATCH_VA from the line above. The result borrows the system's one window mutably, so
@@ -750,7 +747,7 @@ impl ScratchWindow {
 
     /// The frame at `frame_phys`, as words (a directory or a page table), until the window is next
     /// used.
-    pub fn map_words(&mut self, frame_phys: u32) -> &mut [u32; PT_ENTRIES] {
+    pub fn map_words(&mut self, frame_phys: PhysAddr) -> &mut [u32; PT_ENTRIES] {
         self.point_at(frame_phys);
         // SAFETY: as in `map`; the window's address is page-aligned, so aligned for words.
         unsafe { &mut *(SCRATCH_VA as *mut [u32; PT_ENTRIES]) }
@@ -758,7 +755,7 @@ impl ScratchWindow {
 
     /// Zero the frame at `frame_phys`, then copy `bytes` in at `offset` (tables: empty slice; image
     /// pages: bytes; data pages: zero fill).
-    pub fn init_frame(&mut self, frame_phys: u32, offset: usize, bytes: &[u8]) {
+    pub fn init_frame(&mut self, frame_phys: PhysAddr, offset: usize, bytes: &[u8]) {
         assert!(
             offset + bytes.len() <= PAGE_BYTES,
             "write past the end of the frame"
@@ -772,7 +769,7 @@ impl ScratchWindow {
 
     /// Copy `bytes` into the frame at `frame_phys` at `offset`, without zeroing the rest (unlike
     /// [`ScratchWindow::init_frame`]).
-    pub fn write_frame(&mut self, frame_phys: u32, offset: usize, bytes: &[u8]) {
+    pub fn write_frame(&mut self, frame_phys: PhysAddr, offset: usize, bytes: &[u8]) {
         assert!(
             offset + bytes.len() <= PAGE_BYTES,
             "write past the end of the frame"
@@ -781,7 +778,7 @@ impl ScratchWindow {
     }
 
     /// Copy `out.len()` bytes of the frame at `frame_phys`, from `offset`, into `out`.
-    pub fn read_frame(&mut self, frame_phys: u32, offset: usize, out: &mut [u8]) {
+    pub fn read_frame(&mut self, frame_phys: PhysAddr, offset: usize, out: &mut [u8]) {
         assert!(
             offset + out.len() <= PAGE_BYTES,
             "read past the end of the frame"
@@ -794,7 +791,7 @@ impl ScratchWindow {
     /// # Panics
     ///
     /// `index` past the frame's end.
-    pub fn read_word(&mut self, frame_phys: u32, index: usize) -> u32 {
+    pub fn read_word(&mut self, frame_phys: PhysAddr, index: usize) -> u32 {
         assert!(index < PT_ENTRIES, "word index past the end of the frame");
         self.map_words(frame_phys)[index]
     }
@@ -815,28 +812,28 @@ fn interrupts_masked() -> bool {
 /// bridge to [`ScratchWindow::init_frame`] for code that does not hold the memory manager's
 /// database.
 #[cfg(target_arch = "x86")]
-pub fn init_frame(frame_phys: u32, offset: usize, bytes: &[u8]) {
+pub fn init_frame(frame_phys: PhysAddr, offset: usize, bytes: &[u8]) {
     with_database(|database| database.scratch.init_frame(frame_phys, offset, bytes));
 }
 
 /// Patch `bytes` into a frame at `offset` without zeroing (unlike [`init_frame`]); for building a
 /// page in pieces. The bridge to [`ScratchWindow::write_frame`].
 #[cfg(target_arch = "x86")]
-pub fn write_frame(frame_phys: u32, offset: usize, bytes: &[u8]) {
+pub fn write_frame(frame_phys: PhysAddr, offset: usize, bytes: &[u8]) {
     with_database(|database| database.scratch.write_frame(frame_phys, offset, bytes));
 }
 
 /// Read `out.len()` bytes of a frame at `offset`, through the scratch window. The bridge to
 /// [`ScratchWindow::read_frame`].
 #[cfg(target_arch = "x86")]
-pub fn read_frame(frame_phys: u32, offset: usize, out: &mut [u8]) {
+pub fn read_frame(frame_phys: PhysAddr, offset: usize, out: &mut [u8]) {
     with_database(|database| database.scratch.read_frame(frame_phys, offset, out));
 }
 
 /// Copy a whole frame's contents into another (a copy-on-write's private copy), through the
 /// scratch window a chunk at a time.
 #[cfg(target_arch = "x86")]
-pub fn copy_frame(from_phys: u32, to_phys: u32) {
+pub fn copy_frame(from_phys: PhysAddr, to_phys: PhysAddr) {
     let mut chunk = [0u8; 512];
     for offset in (0..PAGE_BYTES).step_by(chunk.len()) {
         read_frame(from_phys, offset, &mut chunk);
@@ -851,20 +848,20 @@ pub fn copy_frame(from_phys: u32, to_phys: u32) {
 ///
 /// The frame database is empty.
 #[cfg(target_arch = "x86")]
-pub fn allocate_frame_phys() -> u32 {
+pub fn allocate_frame_phys() -> PhysAddr {
     crate::mem::bootmem::with_frame_db(allocate_in)
 }
 
 /// [`allocate_frame_phys`]'s work, on the frame database the caller holds.
 #[cfg(target_arch = "x86")]
-fn allocate_in(frames: &mut FrameDb) -> u32 {
-    frames.allocate(PRIMARY_COLOR) * PAGE_SIZE
+fn allocate_in(frames: &mut FrameDb) -> PhysAddr {
+    frames.allocate(PRIMARY_COLOR).addr()
 }
 
 /// A fresh page table: a frame from `frames`, zeroed through `scratch` while it is still
 /// unreachable, so no garbage entry ever becomes walkable.
 #[cfg(target_arch = "x86")]
-fn new_table_in(frames: &mut FrameDb, scratch: &mut ScratchWindow) -> u32 {
+fn new_table_in(frames: &mut FrameDb, scratch: &mut ScratchWindow) -> PhysAddr {
     let table_phys = allocate_in(frames);
     scratch.init_frame(table_phys, 0, &[]);
     table_phys
@@ -937,8 +934,8 @@ pub fn set_user_pte(vaddr: u32, entry: u32) {
 /// on target, a plain array read in tests).
 pub fn assemble_process_directory(
     dir: &mut [u32; PT_ENTRIES],
-    own_phys: u32,
-    scratch_phys: u32,
+    own_phys: PhysAddr,
+    scratch_phys: PhysAddr,
     mut read_base_entry: impl FnMut(usize) -> u32,
 ) {
     for entry in dir.iter_mut() {
@@ -955,20 +952,25 @@ pub fn assemble_process_directory(
 
 /// The value CR3 takes for a directory at `dir_phys`: the address bits only, so a sloppy caller's
 /// low flag bits cannot leak into the load.
-pub const fn directory_cr3(dir_phys: u32) -> u32 {
-    dir_phys & PAGE_ADDR_MASK
+pub const fn directory_cr3(dir_phys: PhysAddr) -> u32 {
+    dir_phys.get() & PAGE_ADDR_MASK
+}
+
+/// The directory a CR3 value `cr3` loads: its address bits, the flag bits dropped.
+pub const fn cr3_directory(cr3: u32) -> PhysAddr {
+    PhysAddr::new(cr3 & PAGE_ADDR_MASK)
 }
 
 /// The shared scratch table's physical address (one of the boot's tables, never released).
 #[cfg(target_arch = "x86")]
-pub fn scratch_table_phys() -> u32 {
+pub fn scratch_table_phys() -> PhysAddr {
     boot_directory().scratch
 }
 
 /// The boot directory's physical address: the address space the kernel returns to between
 /// processes.
 #[cfg(target_arch = "x86")]
-pub fn boot_directory_phys() -> u32 {
+pub fn boot_directory_phys() -> PhysAddr {
     boot_directory().directory
 }
 
@@ -981,7 +983,7 @@ pub fn boot_directory_phys() -> u32 {
 /// The frame database is empty (allocation happens before anything is written, so nothing is left
 /// half-built).
 #[cfg(target_arch = "x86")]
-pub fn create_address_space() -> u32 {
+pub fn create_address_space() -> PhysAddr {
     let dir_phys = with_database(|database| {
         let Parts {
             frames, scratch, ..
@@ -1009,7 +1011,7 @@ pub fn create_address_space() -> u32 {
 /// invalidates every non-global TLB entry (no F2K mapping is global), so the switch is also the
 /// flush — no other TLB action belongs here.
 #[cfg(target_arch = "x86")]
-pub fn activate_address_space(dir_phys: u32) {
+pub fn activate_address_space(dir_phys: PhysAddr) {
     let cr3 = directory_cr3(dir_phys);
     // SAFETY: `dir_phys` is a frame this kernel built (page-aligned CR3 value); the kernel half is
     // present in it, so execution continues on a mapped kernel window.
@@ -1028,7 +1030,7 @@ pub fn activate_address_space(dir_phys: u32) {
 ///
 /// As [`map_kernel_page_in`].
 #[cfg(target_arch = "x86")]
-pub fn map_kernel_page(vaddr: u32, frame_phys: u32) {
+pub fn map_kernel_page(vaddr: u32, frame_phys: PhysAddr) {
     with_database(|database| {
         let Parts {
             frames, scratch, ..
@@ -1058,9 +1060,9 @@ fn map_kernel_page_in(
     frames: &mut FrameDb,
     scratch: &mut ScratchWindow,
     vaddr: u32,
-    frame_phys: u32,
+    frame_phys: PhysAddr,
 ) {
-    assert!(frame_phys % PAGE_SIZE == 0, "frame not page-aligned");
+    assert!(frame_phys.is_page_aligned(), "frame not page-aligned");
     map_kernel_page_pte_in(frames, scratch, vaddr, Pte::kernel_rw(frame_phys));
 }
 
@@ -1074,7 +1076,7 @@ fn map_kernel_page_pte_in(
     entry: Pte,
 ) {
     assert!(vaddr % PAGE_SIZE == 0, "kernel address not page-aligned");
-    assert!(entry.frame() % PAGE_SIZE == 0, "frame not page-aligned");
+    assert!(entry.frame().is_page_aligned(), "frame not page-aligned");
     let window = (vaddr >> 22) as usize;
     assert!(
         vaddr >= KERNEL_BASE,
@@ -1107,7 +1109,7 @@ fn map_kernel_page_pte_in(
 /// Map the frame `frame_phys` at the kernel-half page `vaddr` with the caches disabled: the
 /// display's framebuffer, whose writes must reach the device. Like [`map_kernel_page`] otherwise.
 #[cfg(target_arch = "x86")]
-pub fn map_kernel_page_uncached(vaddr: u32, frame_phys: u32) {
+pub fn map_kernel_page_uncached(vaddr: u32, frame_phys: PhysAddr) {
     with_database(|database| {
         let Parts {
             frames, scratch, ..
@@ -1126,9 +1128,9 @@ pub fn map_kernel_page_uncached(vaddr: u32, frame_phys: u32) {
 /// `base_phys` is not page-aligned, `bytes` is zero, the range runs past the region's end, or a
 /// page of it is mapped already.
 #[cfg(target_arch = "x86")]
-pub fn map_framebuffer(base_phys: u32, bytes: u32) -> u32 {
+pub fn map_framebuffer(base_phys: PhysAddr, bytes: u32) -> u32 {
     assert!(
-        base_phys % PAGE_SIZE == 0,
+        base_phys.is_page_aligned(),
         "framebuffer base not page-aligned"
     );
     assert!(bytes > 0, "an empty framebuffer");
@@ -1140,7 +1142,7 @@ pub fn map_framebuffer(base_phys: u32, bytes: u32) -> u32 {
     for page in 0..pages as u32 {
         map_kernel_page_uncached(
             layout::FRAMEBUFFER.start + page * PAGE_SIZE,
-            base_phys + page * PAGE_SIZE,
+            base_phys.pfn().plus(page).addr(),
         );
     }
     layout::FRAMEBUFFER.start
@@ -1171,11 +1173,11 @@ pub fn remove_low_identity() {
 
 /// The current directory's physical address (CR3's frame).
 #[cfg(target_arch = "x86")]
-pub fn current_directory_phys() -> u32 {
+pub fn current_directory_phys() -> PhysAddr {
     let cr3: u32;
     // SAFETY: reading CR3 changes nothing.
     unsafe { asm!("mov {}, cr3", out(reg) cr3, options(nomem, nostack, preserves_flags)) };
-    directory_cr3(cr3)
+    cr3_directory(cr3)
 }
 
 /// Reload CR3 with the current directory, flushing the TLB.
@@ -1199,7 +1201,7 @@ fn reload_cr3() {
 ///
 /// The same window rules as [`map_kernel_page`], or nothing mapped at `vaddr`.
 #[cfg(target_arch = "x86")]
-pub fn unmap_kernel_page(vaddr: u32) -> u32 {
+pub fn unmap_kernel_page(vaddr: u32) -> PhysAddr {
     assert!(vaddr % PAGE_SIZE == 0, "kernel address not page-aligned");
     let window = (vaddr >> 22) as usize;
     assert!(
@@ -1233,13 +1235,13 @@ pub fn unmap_kernel_page(vaddr: u32) -> u32 {
 ///
 /// The index is past the region's capacity, or a slot page is not mapped.
 #[cfg(target_arch = "x86")]
-pub fn unmap_gate_slot(index: u32) -> [u32; GATE_STACK_PAGES] {
+pub fn unmap_gate_slot(index: u32) -> [PhysAddr; GATE_STACK_PAGES] {
     assert!(
         (index as usize) < GATE_SLOT_CAPACITY,
         "gate-slot index past the region's capacity"
     );
     let base = gate_slot_base(index);
-    let mut frames = [0u32; GATE_STACK_PAGES];
+    let mut frames = [PhysAddr::ZERO; GATE_STACK_PAGES];
     for (i, slot) in frames.iter_mut().enumerate() {
         *slot = unmap_kernel_page(base + ((i + 1) as u32) * PAGE_SIZE);
     }
@@ -1259,7 +1261,7 @@ pub fn map_gate_slot(
     frames: &mut FrameDb,
     scratch: &mut ScratchWindow,
     index: u32,
-) -> [u32; GATE_STACK_PAGES] {
+) -> [PhysAddr; GATE_STACK_PAGES] {
     assert!(
         (index as usize) < GATE_SLOT_CAPACITY,
         "gate-slot index past the region's capacity"
@@ -1269,7 +1271,7 @@ pub fn map_gate_slot(
         "a gate stack mapped before the kernel stack tables are made"
     );
     let base = gate_slot_base(index);
-    let mut stack = [0u32; GATE_STACK_PAGES];
+    let mut stack = [PhysAddr::ZERO; GATE_STACK_PAGES];
     for (i, slot) in stack.iter_mut().enumerate() {
         let frame = allocate_in(frames);
         scratch.init_frame(frame, 0, &[]);
@@ -1282,10 +1284,8 @@ pub fn map_gate_slot(
 /// A frame for a nonpaged pool page, from `frames`; none when the frame database has none left
 /// (the pool's caller answers that as a status, not a panic).
 #[cfg(target_arch = "x86")]
-pub fn try_allocate_frame(frames: &mut FrameDb) -> Option<u32> {
-    frames
-        .try_allocate(PRIMARY_COLOR)
-        .map(|frame| frame * PAGE_SIZE)
+pub fn try_allocate_frame(frames: &mut FrameDb) -> Option<PhysAddr> {
+    frames.try_allocate(PRIMARY_COLOR).map(Pfn::addr)
 }
 
 /// Map the frame `frame_phys`, zeroed through `scratch` first, at the nonpaged pool's page
@@ -1299,7 +1299,7 @@ pub fn map_pool_page(
     frames: &mut FrameDb,
     scratch: &mut ScratchWindow,
     vaddr: u32,
-    frame_phys: u32,
+    frame_phys: PhysAddr,
 ) {
     assert!(
         layout::NONPAGED_POOL.holds(vaddr),
@@ -1316,7 +1316,7 @@ pub fn map_pool_page(
 ///
 /// `vaddr` lies outside the pool's region, or is not mapped.
 #[cfg(target_arch = "x86")]
-pub fn unmap_pool_page(vaddr: u32) -> u32 {
+pub fn unmap_pool_page(vaddr: u32) -> PhysAddr {
     assert!(
         layout::NONPAGED_POOL.holds(vaddr),
         "a pool page outside the nonpaged pool"
@@ -1333,7 +1333,7 @@ pub fn unmap_pool_page(vaddr: u32) -> u32 {
 ///
 /// `vaddr` lies outside the MMIO region, is mapped already, or `phys` is not page-aligned.
 #[cfg(target_arch = "x86")]
-pub fn map_mmio_page(vaddr: u32, phys: u32, cache_enable: bool) {
+pub fn map_mmio_page(vaddr: u32, phys: PhysAddr, cache_enable: bool) {
     with_database(|database| {
         let Parts {
             frames, scratch, ..
@@ -1349,7 +1349,7 @@ pub fn map_mmio_page_in(
     frames: &mut FrameDb,
     scratch: &mut ScratchWindow,
     vaddr: u32,
-    phys: u32,
+    phys: PhysAddr,
     cache_enable: bool,
 ) {
     assert!(
@@ -1373,7 +1373,7 @@ pub fn map_mmio_page_in(
 /// `vaddr` lies outside the MMIO region, or is not mapped.
 #[cfg(target_arch = "x86")]
 #[cfg_attr(not(test), allow(dead_code))]
-pub fn unmap_mmio_page(vaddr: u32) -> u32 {
+pub fn unmap_mmio_page(vaddr: u32) -> PhysAddr {
     assert!(
         layout::MMIO.holds(vaddr),
         "an MMIO page outside the MMIO region"
@@ -1386,13 +1386,13 @@ pub fn unmap_mmio_page(vaddr: u32) -> u32 {
 /// bus address of the byte on this platform, where no IOMMU sits between the devices and memory
 /// (identity). None when the address is not mapped present.
 #[cfg(target_arch = "x86")]
-pub fn translate_kernel_address(vaddr: u32) -> Option<u32> {
+pub fn translate_kernel_address(vaddr: u32) -> Option<PhysAddr> {
     assert!(vaddr >= KERNEL_BASE, "a user address has no kernel mapping");
     let pte = self_map::pte(vaddr)?;
     if !pte.present() {
         return None;
     }
-    Some(pte.frame() | (vaddr & (PAGE_SIZE - 1)))
+    Some(pte.frame() + (vaddr & (PAGE_SIZE - 1)))
 }
 
 /// Whether the current directory holds every table of the kernel stack region.
@@ -1419,13 +1419,14 @@ pub fn gate_slot_mapped(index: u32) -> bool {
 ///
 /// `index` past the frame's end.
 #[cfg(target_arch = "x86")]
-pub fn read_frame_word(frame_phys: u32, index: usize) -> u32 {
+pub fn read_frame_word(frame_phys: PhysAddr, index: usize) -> u32 {
     with_database(|database| database.scratch.read_word(frame_phys, index))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mem::phys::frame_run;
 
     /// Identity table `index` as the boot builds it, over a frame holding garbage.
     fn identity(index: usize) -> Box<[u32; PT_ENTRIES]> {
@@ -1474,7 +1475,7 @@ mod tests {
     /// order.
     fn allocated(frames: &[u32]) -> BootTables {
         let mut next = frames.iter().copied();
-        BootTables::allocate(|| next.next().expect("the stand-in ran out of frames"))
+        BootTables::allocate(|| PhysAddr::new(next.next().expect("the stand-in ran out of frames")))
     }
 
     /// The frames are taken in order: the directory, the identity tables, the scratch table.
@@ -1486,9 +1487,14 @@ mod tests {
         assert_eq!(
             tables,
             BootTables {
-                directory: 0x7F_0000,
-                identity: [0x7E_0000, 0x7D_0000, 0x10_5000, 0x20_0000],
-                scratch: 0x3000,
+                directory: PhysAddr::new(0x7F_0000),
+                identity: [
+                    PhysAddr::new(0x7E_0000),
+                    PhysAddr::new(0x7D_0000),
+                    PhysAddr::new(0x10_5000),
+                    PhysAddr::new(0x20_0000)
+                ],
+                scratch: PhysAddr::new(0x3000),
                 database: DatabaseTables::default(),
             }
         );
@@ -1501,20 +1507,20 @@ mod tests {
     fn the_frame_database_tables_map_its_storage() {
         let storage = 0x3_0000..0x3_0000 + 1500;
         let mut table = Box::new([0xDEAD_BEEFu32; PT_ENTRIES]);
-        DatabaseTables::fill_table(0, storage.clone(), &mut table);
-        assert_eq!(table[0], Pte::kernel_rw(0x3000_0000).raw());
+        DatabaseTables::fill_table(0, frame_run(storage.clone()), &mut table);
+        assert_eq!(table[0], Pte::kernel_rw(PhysAddr::new(0x3000_0000)).raw());
         assert_eq!(
             table[1023],
-            Pte::kernel_rw((0x3_0000 + 1023) * PAGE_SIZE).raw()
+            Pte::kernel_rw(PhysAddr::new((0x3_0000 + 1023) * PAGE_SIZE)).raw()
         );
-        DatabaseTables::fill_table(1, storage, &mut table);
+        DatabaseTables::fill_table(1, frame_run(storage), &mut table);
         assert_eq!(
             table[0],
-            Pte::kernel_rw((0x3_0000 + 1024) * PAGE_SIZE).raw()
+            Pte::kernel_rw(PhysAddr::new((0x3_0000 + 1024) * PAGE_SIZE)).raw()
         );
         assert_eq!(
             table[475],
-            Pte::kernel_rw((0x3_0000 + 1499) * PAGE_SIZE).raw()
+            Pte::kernel_rw(PhysAddr::new((0x3_0000 + 1499) * PAGE_SIZE)).raw()
         );
         assert!(table[476..].iter().all(|&entry| entry == 0));
 
@@ -1522,16 +1528,22 @@ mod tests {
             0xFF_F000, 0xFF_E000, 0xFF_D000, 0xFF_C000, 0xFF_B000, 0xFF_A000,
         ]);
         tables.database = DatabaseTables {
-            first: 0xF0_0000,
+            first: PhysAddr::new(0xF0_0000),
             count: 2,
         };
         let mut directory = Box::new([0u32; PT_ENTRIES]);
         tables.fill_directory(&mut directory);
         let first = layout::FRAME_DATABASE.first_entry();
-        assert_eq!(directory[first], Pte::kernel_rw(0xF0_0000).raw());
-        assert_eq!(directory[first + 1], Pte::kernel_rw(0xF0_1000).raw());
+        assert_eq!(
+            directory[first],
+            Pte::kernel_rw(PhysAddr::new(0xF0_0000)).raw()
+        );
+        assert_eq!(
+            directory[first + 1],
+            Pte::kernel_rw(PhysAddr::new(0xF0_1000)).raw()
+        );
         assert_eq!(directory[first + 2], 0);
-        let process = assembled(&directory, 0x60_0000, tables.scratch);
+        let process = assembled(&directory, 0x60_0000, tables.scratch.get());
         assert_eq!(process[first..first + 2], directory[first..first + 2]);
     }
 
@@ -1574,14 +1586,20 @@ mod tests {
         ]);
         let mut boot = Box::new([0u32; PT_ENTRIES]);
         tables.fill_directory(&mut boot);
-        let process = assembled(&boot, 0x60_0000, tables.scratch);
+        let process = assembled(&boot, 0x60_0000, tables.scratch.get());
         let image = layout::KERNEL_IMAGE.first_entry();
         for (i, &table) in tables.identity.iter().enumerate() {
             assert_eq!(Pte::from_raw(process[image + i]).frame(), table);
             assert_eq!(process[i], 0, "the low window is not inherited");
         }
-        assert_eq!(process[SELF_MAP_SLOT], Pte::kernel_rw(0x60_0000).raw());
-        assert_eq!(process[SCRATCH_SLOT], Pte::kernel_rw(0x55_0000).raw());
+        assert_eq!(
+            process[SELF_MAP_SLOT],
+            Pte::kernel_rw(PhysAddr::new(0x60_0000)).raw()
+        );
+        assert_eq!(
+            process[SCRATCH_SLOT],
+            Pte::kernel_rw(PhysAddr::new(0x55_0000)).raw()
+        );
     }
 
     /// The boot's frames come from below the window's end, the highest free one first, and leave
@@ -1600,26 +1618,35 @@ mod tests {
         let buckets: &'static mut ColorTables = Box::leak(Box::new(ColorTables::new()));
         let mut db = FrameDb::new(table, buckets, DEFAULT_COLOR_COUNT, NoHooks);
         for frame in [5, 9, 0xFFE, 0x1000, 0x1800] {
-            db.release(frame, FrameState::Free);
+            db.release(Pfn::new(frame), FrameState::Free);
         }
         let available = db.available();
 
-        assert_eq!(take_window_frame(&mut db, 0x1000), Some(0xFFE * PAGE_SIZE));
-        assert_eq!(db.entry(0xFFE).state, FrameState::Active);
-        assert_eq!(take_window_frame(&mut db, 0x1000), Some(9 * PAGE_SIZE));
-        assert_eq!(take_window_frame(&mut db, 0x1000), Some(5 * PAGE_SIZE));
-        assert_eq!(take_window_frame(&mut db, 0x1000), None);
+        assert_eq!(
+            take_window_frame(&mut db, Pfn::new(0x1000)),
+            Some(Pfn::new(0xFFE).addr())
+        );
+        assert_eq!(db.entry(Pfn::new(0xFFE)).state, FrameState::Active);
+        assert_eq!(
+            take_window_frame(&mut db, Pfn::new(0x1000)),
+            Some(Pfn::new(9).addr())
+        );
+        assert_eq!(
+            take_window_frame(&mut db, Pfn::new(0x1000)),
+            Some(Pfn::new(5).addr())
+        );
+        assert_eq!(take_window_frame(&mut db, Pfn::new(0x1000)), None);
         assert_eq!(db.available(), available - 3);
         // The frames past the window stay free.
-        assert_eq!(db.entry(0x1000).state, FrameState::Free);
-        assert_eq!(db.entry(0x1800).state, FrameState::Free);
+        assert_eq!(db.entry(Pfn::new(0x1000)).state, FrameState::Free);
+        assert_eq!(db.entry(Pfn::new(0x1800)).state, FrameState::Free);
         assert_eq!(db.audit(), Ok(()));
     }
 
     /// The image window's frame count is its 16 MiB.
     #[test]
     fn the_image_window_holds_4096_frames() {
-        assert_eq!(IMAGE_WINDOW_FRAMES, 4096);
+        assert_eq!(IMAGE_WINDOW_FRAMES, Pfn::new(4096));
     }
 
     /// Independent bit check: entry bit 0 is present, bit 1 is R/W, bit 2 is user/supervisor. The
@@ -1640,17 +1667,20 @@ mod tests {
     /// whether the entry is present or not.
     #[test]
     fn entries_carry_their_frame_and_flags() {
-        let kernel = Pte::kernel_rw(0x0090_0000);
+        let kernel = Pte::kernel_rw(PhysAddr::new(0x0090_0000));
         assert_eq!(kernel.raw(), 0x0090_0000 | PAGE_PRESENT | PAGE_WRITE);
         assert!(kernel.present());
-        assert_eq!(kernel.frame(), 0x0090_0000);
+        assert_eq!(kernel.frame(), PhysAddr::new(0x0090_0000));
 
-        assert_eq!(Pte::user(0x0050_0000, 0).raw(), 0x0050_0005);
-        assert_eq!(Pte::user(0x0050_0000, PAGE_WRITE).raw(), 0x0050_0007);
+        assert_eq!(Pte::user(PhysAddr::new(0x0050_0000), 0).raw(), 0x0050_0005);
+        assert_eq!(
+            Pte::user(PhysAddr::new(0x0050_0000), PAGE_WRITE).raw(),
+            0x0050_0007
+        );
 
         let committed = Pte::from_raw(0x0070_0000 | PAGE_WRITE);
         assert!(!committed.present());
-        assert_eq!(committed.frame(), 0x0070_0000);
+        assert_eq!(committed.frame(), PhysAddr::new(0x0070_0000));
         assert!(!Pte::EMPTY.present());
         assert_eq!(Pte::EMPTY.raw(), 0);
     }
@@ -1696,6 +1726,7 @@ mod tests {
     /// depend on the target frame's prior contents.
     fn assembled(base: &[u32; PT_ENTRIES], own: u32, scratch: u32) -> [u32; PT_ENTRIES] {
         let mut dir = [0xDEAD_BEEF; PT_ENTRIES];
+        let (own, scratch) = (PhysAddr::new(own), PhysAddr::new(scratch));
         assemble_process_directory(&mut dir, own, scratch, |i| base[i]);
         dir
     }
@@ -1821,10 +1852,10 @@ mod tests {
     /// not reach the load.
     #[test]
     fn directory_cr3_masks_the_flag_bits() {
-        assert_eq!(directory_cr3(0x0090_0000), 0x0090_0000);
-        assert_eq!(directory_cr3(0x0090_0007), 0x0090_0000);
-        assert_eq!(directory_cr3(0xFFFF_F005), 0xFFFF_F000);
-        assert_eq!(directory_cr3(0), 0);
+        assert_eq!(directory_cr3(PhysAddr::new(0x0090_0000)), 0x0090_0000);
+        assert_eq!(directory_cr3(PhysAddr::new(0x0090_0007)), 0x0090_0000);
+        assert_eq!(directory_cr3(PhysAddr::new(0xFFFF_F005)), 0xFFFF_F000);
+        assert_eq!(directory_cr3(PhysAddr::new(0)), 0);
     }
 
     /// The gate stack window: the kernel stack region (entries 656-659, from 0xA4000000: clear of

@@ -101,6 +101,7 @@ use core::cell::UnsafeCell;
 
 #[cfg(target_arch = "x86")]
 use crate::mem::paging;
+use crate::mem::phys::PhysAddr;
 use crate::mem::quota::CommitQuota;
 use crate::mem::vm::AddressSpace;
 use crate::mem::ws::WorkingSet;
@@ -158,7 +159,7 @@ struct Identity {
     /// in the pool.
     object: crate::ob::ObjectId,
     /// The process's page-directory frame.
-    dir_phys: u32,
+    dir_phys: PhysAddr,
 }
 
 impl Identity {
@@ -173,7 +174,7 @@ impl Identity {
             index: 0,
             generation: 0,
         },
-        dir_phys: 0,
+        dir_phys: PhysAddr::ZERO,
     };
 }
 
@@ -419,7 +420,7 @@ impl Process {
     fn renew(
         &self,
         object: crate::ob::ObjectId,
-        dir_phys: u32,
+        dir_phys: PhysAddr,
         name: ProcessName,
         leg: Option<u32>,
         parent_id: u32,
@@ -441,7 +442,7 @@ impl Process {
                 sched.has_no_threads() && sched.attach_count() == 0,
                 "a free process record has no thread"
             );
-            *sched = SchedProcess::pooled(dir_phys, crate::sched::NORMAL_BASE, object.index);
+            *sched = SchedProcess::pooled(dir_phys.get(), crate::sched::NORMAL_BASE, object.index);
             // A new process starts in the background (PspForegroundQuantum[0]); the next settle
             // point moves it to the foreground when it belongs there.
             sched.set_thread_quantum(foreground::thread_quantum(false, NORMAL_PRIORITY_CLASS));
@@ -486,7 +487,7 @@ impl Process {
     }
 
     /// The process's page-directory frame.
-    pub fn dir_phys(&self) -> u32 {
+    pub fn dir_phys(&self) -> PhysAddr {
         self.identity.get().dir_phys
     }
 
@@ -1216,11 +1217,9 @@ pub fn new_client_id() -> u32 {
 /// Give back the directory frame of an address space that maps nothing of its own (a start
 /// refused before its first mapping): its kernel half is shared, so the frame is all it holds.
 #[cfg(target_arch = "x86")]
-fn free_directory(dir_phys: u32) {
+fn free_directory(dir_phys: PhysAddr) {
     use crate::mem::frame::FrameState;
-    crate::mem::bootmem::with_frame_db(|db| {
-        db.release(dir_phys / paging::PAGE_SIZE, FrameState::Free)
-    });
+    crate::mem::bootmem::with_frame_db(|db| db.release(dir_phys.pfn(), FrameState::Free));
 }
 
 // --- Teardown -------------------------------------------------------------
@@ -1237,21 +1236,21 @@ fn free_directory(dir_phys: u32) {
 /// (the kernel stack region's tables among it, the gate stacks being the threads') is never
 /// touched, and the directory frame is the caller's, last.
 pub fn release_address_space(
-    dir_phys: u32,
-    read_entry: impl Fn(u32, usize) -> u32,
-    mut release: impl FnMut(u32),
+    dir_phys: PhysAddr,
+    read_entry: impl Fn(PhysAddr, usize) -> u32,
+    mut release: impl FnMut(PhysAddr),
 ) {
-    use crate::mem::paging::{KERNEL_HALF_START, PAGE_ADDR_MASK, PAGE_PRESENT, PT_ENTRIES};
+    use crate::mem::paging::{Pte, KERNEL_HALF_START, PT_ENTRIES};
     for window in 0..KERNEL_HALF_START {
-        let pde = read_entry(dir_phys, window);
-        if pde & PAGE_PRESENT == 0 {
+        let pde = Pte::from_raw(read_entry(dir_phys, window));
+        if !pde.present() {
             continue;
         }
-        let table = pde & PAGE_ADDR_MASK;
+        let table = pde.frame();
         for index in 0..PT_ENTRIES {
             let pte = read_entry(table, index);
             if crate::mem::vm::names_frame(pte) {
-                release(pte & PAGE_ADDR_MASK);
+                release(Pte::from_raw(pte).frame());
             }
         }
         release(table);
@@ -1268,8 +1267,8 @@ pub fn release_address_space(
 /// A thread is still attached: teardown follows the last thread's end, never precedes it.
 pub fn release_process(
     process: &Process,
-    read_entry: impl Fn(u32, usize) -> u32,
-    mut release: impl FnMut(u32),
+    read_entry: impl Fn(PhysAddr, usize) -> u32,
+    mut release: impl FnMut(PhysAddr),
 ) {
     assert_eq!(
         process.stack_count(),
@@ -1374,7 +1373,7 @@ pub fn delete_if_unreferenced(id: crate::ob::ObjectId) {
 #[cfg(target_arch = "x86")]
 fn release_address_space_of(process: &Process) {
     use crate::mem::frame::FrameState;
-    use crate::mem::paging::{self, PAGE_SIZE};
+    use crate::mem::paging;
     // The views of an ended process went with its end (see `Process::unmap_views`); a deleted
     // threadless one's go here, each dropping its reference on its section or image segment (one
     // nothing else references goes with it, dropping its hold on its frames) once the address
@@ -1397,8 +1396,8 @@ fn release_address_space_of(process: &Process) {
             // A frame goes back with its last holder: the system DLLs' pages and the shared data
             // page are the kernel's, every process one more holder of them.
             crate::mem::bootmem::with_frame_db(|db| {
-                if db.unshare(frame_phys / PAGE_SIZE) {
-                    db.release(frame_phys / PAGE_SIZE, FrameState::Free);
+                if db.unshare(frame_phys.pfn()) {
+                    db.release(frame_phys.pfn(), FrameState::Free);
                 }
             });
         },
@@ -1529,7 +1528,7 @@ mod tests {
                 index: 0,
                 generation: 0,
             },
-            dir_phys: dir,
+            dir_phys: PhysAddr::new(dir),
         };
         process
     }
@@ -1638,7 +1637,7 @@ mod tests {
         crate::sched::testkit::dispatcher();
         let process = fresh_process();
         assert_eq!(process.name().as_str(), "fixture");
-        assert_eq!(process.dir_phys(), 0x0090_0000);
+        assert_eq!(process.dir_phys(), PhysAddr::new(0x0090_0000));
         assert_eq!(process.base_priority(), 8);
         assert_eq!(process.attach_count(), 0);
         assert_eq!(Thread::new(ThreadId(0)).gate_slot(), NO_GATE_SLOT);
@@ -1822,8 +1821,8 @@ mod tests {
             let mut released = core::mem::take(&mut self.released);
             release_process(
                 process,
-                |frame, index| self.read(frame, index),
-                |frame_phys| released.push(frame_phys),
+                |frame, index| self.read(frame.get(), index),
+                |frame_phys| released.push(frame_phys.get()),
             );
             self.released = released;
         }

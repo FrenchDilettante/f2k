@@ -18,6 +18,8 @@
 //! last thread's exit, finds that exit's stack parked or already released.
 
 #[cfg(target_arch = "x86")]
+use super::phys::PhysAddr;
+#[cfg(target_arch = "x86")]
 use super::{frame::FrameDb, with_database, Parts};
 use super::{layout, paging};
 
@@ -27,7 +29,8 @@ pub const SLOTS: usize = paging::GATE_SLOT_CAPACITY;
 /// How many occupancy words the ledger holds.
 const SLOT_WORDS: usize = SLOTS.div_ceil(64);
 
-/// One gate stack: its slot index and the frames mapped in it.
+/// One gate stack: its slot index and the frames mapped in it, by physical address, as raw words
+/// (the thread record keeps them so).
 pub type GateStack = (u16, [u32; paging::GATE_STACK_PAGES]);
 
 /// Which slots of the kernel stack region threads hold.
@@ -148,7 +151,8 @@ pub fn create() -> Option<GateStack> {
             return None;
         }
         let slot = stacks.slots.allocate()?;
-        Some((slot, paging::map_gate_slot(frames, scratch, slot as u32)))
+        let stack = paging::map_gate_slot(frames, scratch, slot as u32);
+        Some((slot, stack.map(PhysAddr::get)))
     })
 }
 
@@ -203,13 +207,13 @@ pub fn every_stack_mapped_here() -> bool {
 #[cfg(target_arch = "x86")]
 fn release_in(stacks: &mut KernelStacks, frames: &mut FrameDb, (slot, stack): GateStack) {
     use crate::mem::frame::FrameState;
-    let mapped = paging::unmap_gate_slot(slot as u32);
+    let mapped = paging::unmap_gate_slot(slot as u32).map(PhysAddr::get);
     debug_assert_eq!(
         mapped, stack,
         "the slot maps the frames its thread recorded"
     );
     for frame in stack {
-        frames.release(frame / paging::PAGE_SIZE, FrameState::Free);
+        frames.release(PhysAddr::new(frame).pfn(), FrameState::Free);
     }
     stacks.slots.release(slot);
 }

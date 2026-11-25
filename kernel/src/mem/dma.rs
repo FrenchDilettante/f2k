@@ -468,6 +468,7 @@ pub use target::*;
 mod target {
     use super::*;
     use crate::level::{self, High, LevelCell};
+    use crate::mem::phys::PhysAddr;
     use crate::mem::{layout, paging, pool};
 
     /// The platform's bus: identity translation through the current directory's page tables (the
@@ -476,7 +477,7 @@ mod target {
 
     impl DmaBus for PlatformBus {
         fn translate(&self, va: u32) -> Option<u64> {
-            paging::translate_kernel_address(va).map(|phys| phys as u64)
+            paging::translate_kernel_address(va).map(PhysAddr::as_u64)
         }
     }
 
@@ -551,7 +552,7 @@ mod target {
         for i in 0..reservation.pages as u32 {
             paging::map_mmio_page(
                 layout::MMIO.start + (reservation.first_page as u32 + i) * PAGE_SIZE,
-                (reservation.phys & !(PAGE_SIZE - 1)) + i * PAGE_SIZE,
+                PhysAddr::new(reservation.phys).pfn().plus(i).addr(),
                 cache_enable,
             );
         }

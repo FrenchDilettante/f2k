@@ -510,7 +510,7 @@ pub fn prepare_system_dlls() {
             let end = (offset + PAGE_SIZE as usize).min(staging.len());
             let frame = paging::allocate_frame_phys();
             paging::init_frame(frame, 0, &staging[offset..end]);
-            frames[page as usize] = frame;
+            frames[page as usize] = frame.get();
         }
         NTDLL_FRAMES.set(frames);
     });

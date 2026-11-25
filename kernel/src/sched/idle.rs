@@ -111,10 +111,10 @@ mod target {
             // process boundary loads it.
             IDLE_PROCESS
                 .get_mut(dispatcher)
-                .set_dir_phys(crate::mem::paging::boot_directory_phys());
+                .set_dir_phys(crate::mem::paging::boot_directory_phys().get());
             SYSTEM_PROCESS
                 .get_mut(dispatcher)
-                .set_dir_phys(crate::mem::paging::boot_directory_phys());
+                .set_dir_phys(crate::mem::paging::boot_directory_phys().get());
             install(IDLE_THREAD, &IDLE_PROCESS, dispatcher, stack_top);
         });
     }

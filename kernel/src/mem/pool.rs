@@ -14,6 +14,7 @@
 
 use super::layout;
 use super::paging::PAGE_SIZE;
+use super::phys::{self, Pfn};
 
 /// How many pages the region holds: 4096 (16 MiB).
 pub const PAGES: usize = (layout::NONPAGED_POOL.size() / PAGE_SIZE) as usize;
@@ -101,18 +102,23 @@ pub fn pages_for(bytes: usize) -> usize {
     bytes.div_ceil(PAGE_SIZE as usize).max(1)
 }
 
+/// The frames a 32-bit bus master reaches: those below 4 GiB. A contiguous block for a device
+/// stays below it ([`contiguous_run`]), however wide a physical address grows.
+pub const BUS_FRAME_LIMIT: u32 = 1 << 20;
+
 /// The lowest run of `count` consecutive frames, each `usable`, among frames 1 to `frames` - 1
 /// (frame 0 is never handed out) and below 4 GiB: its first frame number. None when no such run
 /// exists. The search a physically contiguous block ([`allocate_contiguous`]) takes its frames
 /// by.
-pub fn contiguous_run(frames: u32, count: u32, usable: impl Fn(u32) -> bool) -> Option<u32> {
-    // Frames past 4 GiB are out of a 32-bit bus master's reach.
-    let end = frames.min(1 << 20);
+pub fn contiguous_run(frames: u32, count: u32, usable: impl Fn(Pfn) -> bool) -> Option<Pfn> {
+    // Frames past 4 GiB are out of a 32-bit bus master's reach, whatever a physical address's
+    // width ([`phys::PhysWord`]).
+    let end = frames.min(BUS_FRAME_LIMIT);
     if count == 0 {
         return None;
     }
     let mut run = 0;
-    for frame in 1..end {
+    for frame in phys::frames(Pfn::new(1)..Pfn::new(end)) {
         if usable(frame) {
             run += 1;
             if run == count {
@@ -209,7 +215,7 @@ mod target {
                 let Some(frame) = paging::try_allocate_frame(frames) else {
                     for mapped in first..page {
                         let frame = paging::unmap_pool_page(page_address(mapped));
-                        frames.release(frame / PAGE_SIZE, FrameState::Free);
+                        frames.release(frame.pfn(), FrameState::Free);
                     }
                     pool.release(first, pages);
                     return None;
@@ -249,12 +255,7 @@ mod target {
             for page in 0..pages {
                 let frame = base + page as u32;
                 frames.take(frame);
-                paging::map_pool_page(
-                    frames,
-                    scratch,
-                    page_address(first + page),
-                    frame * PAGE_SIZE,
-                );
+                paging::map_pool_page(frames, scratch, page_address(first + page), frame.addr());
             }
             Some(Block {
                 first,
@@ -272,7 +273,7 @@ mod target {
                 let Parts { frames, pool, .. } = database.parts();
                 for page in self.first..self.first + self.pages {
                     let frame = paging::unmap_pool_page(page_address(page));
-                    frames.release(frame / PAGE_SIZE, FrameState::Free);
+                    frames.release(frame.pfn(), FrameState::Free);
                 }
                 pool.release(self.first, self.pages);
             });
@@ -308,28 +309,28 @@ mod tests {
     #[test]
     fn a_contiguous_run_of_frames_is_the_lowest_that_fits() {
         // Frames 1-3 usable, 4 not, 5-20 usable.
-        let usable = |frame: u32| frame != 4;
-        assert_eq!(contiguous_run(32, 1, usable), Some(1), "never frame 0");
-        assert_eq!(contiguous_run(32, 3, usable), Some(1));
+        let usable = |frame: Pfn| frame != Pfn::new(4);
+        let at = |frame| Some(Pfn::new(frame));
+        assert_eq!(contiguous_run(32, 1, usable), at(1), "never frame 0");
+        assert_eq!(contiguous_run(32, 3, usable), at(1));
         assert_eq!(
             contiguous_run(32, 4, usable),
-            Some(5),
+            at(5),
             "past the unusable frame"
         );
-        assert_eq!(contiguous_run(32, 16, usable), Some(5));
+        assert_eq!(contiguous_run(32, 16, usable), at(5));
         assert_eq!(
             contiguous_run(21, 16, usable),
-            Some(5),
+            at(5),
             "ending at the last frame"
         );
         assert_eq!(contiguous_run(20, 16, usable), None, "one frame short");
         assert_eq!(contiguous_run(32, 0, usable), None);
         // Nothing at or past 4 GiB (frame 0x10_0000).
-        assert_eq!(contiguous_run(u32::MAX, 2, |frame| frame >= 0xF_FFFF), None);
-        assert_eq!(
-            contiguous_run(u32::MAX, 1, |frame| frame >= 0xF_FFFF),
-            Some(0xF_FFFF)
-        );
+        let high = |frame: Pfn| frame >= Pfn::new(0xF_FFFF);
+        assert_eq!(BUS_FRAME_LIMIT, 0x10_0000);
+        assert_eq!(contiguous_run(u32::MAX, 2, high), None);
+        assert_eq!(contiguous_run(u32::MAX, 1, high), at(0xF_FFFF));
     }
 
     /// Runs are taken lowest first, a freed run is reused, and a run too long for any gap goes

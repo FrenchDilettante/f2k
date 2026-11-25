@@ -28,8 +28,7 @@
 
 use core::ops::Range;
 
-/// Physical frame number. Frame 0 is reserved and never allocated.
-pub type FrameId = u32;
+use super::phys::{self, Pfn, PhysWord};
 
 /// Primary cache color of a frame. This platform has a single primary color; the per-frame field
 /// stays zero.
@@ -47,7 +46,8 @@ pub const DEFAULT_COLOR_COUNT: usize = 4;
 /// The frames a physical address reaches: 4 GiB of 4 KiB frames, the 32-bit physical address space
 /// of paging without PAE. The boot sizes the frame database from the memory map, up to this many
 /// entries; usable memory past it (QEMU's RAM above 4 GiB) is ignored. PAE raises it (36-bit
-/// physical addresses, 2^24 frames): frame numbers are 32-bit already.
+/// physical addresses, 2^24 frames): a frame number is a [`Pfn`], whose width is
+/// [`super::phys::PhysWord`]'s.
 pub const PHYSICAL_FRAME_LIMIT: usize = 1 << 20;
 
 /// Lifecycle state of a frame. Frames are on one of the six list states or off-list
@@ -153,36 +153,36 @@ impl FrameFlags {
 /// A list link: the next or previous frame on a list or a color chain, or none. Frame 0 is
 /// reserved and never on a list, so it stands for "none" and a link takes one word.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
-struct Link(FrameId);
+struct Link(PhysWord);
 
 impl Link {
     /// No frame.
     const NONE: Link = Link(0);
 
     /// The frame linked to, if any.
-    const fn get(self) -> Option<FrameId> {
+    const fn get(self) -> Option<Pfn> {
         if self.0 == 0 {
             None
         } else {
-            Some(self.0)
+            Some(Pfn::new(self.0))
         }
     }
 }
 
-impl From<Option<FrameId>> for Link {
-    fn from(frame: Option<FrameId>) -> Link {
+impl From<Option<Pfn>> for Link {
+    fn from(frame: Option<Pfn>) -> Link {
         match frame {
             Some(frame) => {
-                debug_assert!(frame != 0, "frame 0 is never linked");
-                Link(frame)
+                debug_assert!(frame != Pfn::ZERO, "frame 0 is never linked");
+                Link(frame.get())
             }
             None => Link::NONE,
         }
     }
 }
 
-impl PartialEq<Option<FrameId>> for Link {
-    fn eq(&self, other: &Option<FrameId>) -> bool {
+impl PartialEq<Option<Pfn>> for Link {
+    fn eq(&self, other: &Option<Pfn>) -> bool {
         self.get() == *other
     }
 }
@@ -210,7 +210,7 @@ pub struct FrameEntry {
     pub share_count: u32,
     /// The image segment's frame-table slot naming the frame ([`Self::prototype`]): the table's
     /// frame (0: none) and the slot's index there, kept apart so the entry packs.
-    prototype_table: FrameId,
+    prototype_table: PhysWord,
     prototype_slot: u16,
     /// State flags; see [`FrameFlags`].
     pub flags: FrameFlags,
@@ -238,9 +238,9 @@ pub struct Prototype {
 
 impl Prototype {
     /// The slot `slot` of the frame table in frame `table` (never frame 0, which is reserved).
-    pub fn new(table: FrameId, slot: u32) -> Prototype {
+    pub fn new(table: Pfn, slot: u32) -> Prototype {
         Prototype {
-            table: core::num::NonZeroU32::new(table).expect("a frame table is never frame 0"),
+            table: core::num::NonZeroU32::new(table.get()).expect("a frame table is never frame 0"),
             slot: u16::try_from(slot).expect("a frame table's slot"),
         }
     }
@@ -292,15 +292,15 @@ impl Default for FrameEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct FrameList {
     total: u32,
-    head: Option<FrameId>,
-    tail: Option<FrameId>,
+    head: Option<Pfn>,
+    tail: Option<Pfn>,
 }
 
 /// Head and tail of one per-color chain.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct ColorBucket {
-    head: Option<FrameId>,
-    tail: Option<FrameId>,
+    head: Option<Pfn>,
+    tail: Option<Pfn>,
 }
 
 /// The per-color chain heads for the two colored states. Kept outside [`FrameDb`] so the database
@@ -337,15 +337,15 @@ pub enum UnlinkOutcome {
 pub trait FrameHooks {
     /// The frame's contents must be zeroed before it is handed out as a zeroed frame. Fired by
     /// [`FrameDb::allocate_zeroed`] when the frame did not come from the Zeroed list.
-    fn zero_frame(&mut self, _frame: FrameId) {}
+    fn zero_frame(&mut self, _frame: Pfn) {}
 
     /// The frame's contents just became zeroed: either released into the Zeroed list, or zeroed on
     /// demand during allocation.
-    fn stamp_zeroed(&mut self, _frame: FrameId) {}
+    fn stamp_zeroed(&mut self, _frame: Pfn) {}
 
     /// The frame was released from Standby: its transition mapping slot must be restored. Fired on
     /// standby head-removal and on the removal-requested diversion path.
-    fn restore_transition(&mut self, _frame: FrameId) {}
+    fn restore_transition(&mut self, _frame: Pfn) {}
 
     /// Available frames dropped below the configured minimum. The listener should free more frames.
     /// Fired on every removal path that crosses the threshold.
@@ -373,7 +373,7 @@ impl FrameHooks for NoHooks {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AuditError {
     /// A list link points outside the valid frame range.
-    FrameOutOfRange { frame: FrameId },
+    FrameOutOfRange { frame: Pfn },
     /// A list chain does not terminate (cycle or broken link).
     ChainDoesNotTerminate { state: FrameState },
     /// The list total disagrees with its chain length.
@@ -383,7 +383,7 @@ pub enum AuditError {
     /// A chain's backward links disagree with its forward links.
     PrevLinkMismatch { state: FrameState },
     /// A listed frame's state does not name the list it is on.
-    StateMismatch { frame: FrameId },
+    StateMismatch { frame: Pfn },
     /// The available counter is not the sum of the available lists.
     AvailableMismatch,
     /// The transition tallies are not the sum of the transition lists.
@@ -505,13 +505,13 @@ impl<H: FrameHooks> FrameDb<H> {
     }
 
     /// Read-only access to a frame's entry.
-    pub fn entry(&self, frame: FrameId) -> &FrameEntry {
+    pub fn entry(&self, frame: Pfn) -> &FrameEntry {
         assert!(
-            frame != 0 && (frame as usize) < self.frames.len(),
-            "invalid frame id {}",
+            frame != Pfn::ZERO && frame.index() < self.frames.len(),
+            "invalid frame id {:#x}",
             frame
         );
-        &self.frames[frame as usize]
+        &self.frames[frame.index()]
     }
 
     // -----------------------------------------------------------------
@@ -521,7 +521,7 @@ impl<H: FrameHooks> FrameDb<H> {
     /// a transition entry naming a standby frame — the hold that keeps the allocator from handing
     /// the frame out while the entry names it. A frame starts with one holder, whoever allocated
     /// it.
-    pub fn share(&mut self, frame: FrameId) {
+    pub fn share(&mut self, frame: Pfn) {
         let entry = self.entry_mut(frame);
         assert!(
             matches!(entry.state, FrameState::Active | FrameState::Standby),
@@ -533,7 +533,7 @@ impl<H: FrameHooks> FrameDb<H> {
     /// Drop one holder of a frame: true when it was the last, the caller then releasing it. A
     /// standby frame's holder is the transition entry naming it, dropped when the entry is
     /// re-faulted or dropped.
-    pub fn unshare(&mut self, frame: FrameId) -> bool {
+    pub fn unshare(&mut self, frame: Pfn) -> bool {
         let entry = self.entry_mut(frame);
         assert!(
             matches!(entry.state, FrameState::Active | FrameState::Standby),
@@ -551,7 +551,7 @@ impl<H: FrameHooks> FrameDb<H> {
 
     /// Mark an in-use frame as slot `prototype` of an image segment's frame table names it (the
     /// segment's frames are linked as they are made).
-    pub fn link_prototype(&mut self, frame: FrameId, prototype: Prototype) {
+    pub fn link_prototype(&mut self, frame: Pfn, prototype: Prototype) {
         let entry = self.entry_mut(frame);
         assert_eq!(
             entry.state,
@@ -564,7 +564,7 @@ impl<H: FrameHooks> FrameDb<H> {
 
     /// Whether the frame is still the one slot `prototype` names: linked to it, and in use or on
     /// Standby (a frame handed out again, or gone to another list, has lost its link).
-    pub fn is_prototype(&self, frame: FrameId, prototype: Prototype) -> bool {
+    pub fn is_prototype(&self, frame: Pfn, prototype: Prototype) -> bool {
         let entry = self.entry(frame);
         matches!(entry.state, FrameState::Active | FrameState::Standby)
             && entry.flags.contains(FrameFlags::PROTOTYPE_PTE)
@@ -575,7 +575,7 @@ impl<H: FrameHooks> FrameDb<H> {
     /// no other holder the frame goes to Standby, its back-link kept (true): the allocator may hand
     /// it out — the link then goes — or the segment take it back ([`Self::reclaim_prototype`]).
     /// With another holder the frame stays with it, the segment's hold dropped (false).
-    pub fn park_prototype(&mut self, frame: FrameId) -> bool {
+    pub fn park_prototype(&mut self, frame: Pfn) -> bool {
         if !self.unshare(frame) {
             return false;
         }
@@ -586,7 +586,7 @@ impl<H: FrameHooks> FrameDb<H> {
     /// A parked image segment takes back the frame slot `prototype` named: true when it still is
     /// that slot's, in use again (off Standby when it waited there: a soft fault, no read); false
     /// when the allocator handed it out meanwhile.
-    pub fn reclaim_prototype(&mut self, frame: FrameId, prototype: Prototype) -> bool {
+    pub fn reclaim_prototype(&mut self, frame: Pfn, prototype: Prototype) -> bool {
         if !self.is_prototype(frame, prototype) {
             return false;
         }
@@ -602,7 +602,7 @@ impl<H: FrameHooks> FrameDb<H> {
     }
 
     /// Drop the frame's back-link (it stops being an image segment's).
-    fn unlink_prototype(&mut self, frame: FrameId) {
+    fn unlink_prototype(&mut self, frame: Pfn) {
         let entry = self.entry_mut(frame);
         entry.flags.remove(FrameFlags::PROTOTYPE_PTE);
         entry.set_prototype(None);
@@ -611,13 +611,13 @@ impl<H: FrameHooks> FrameDb<H> {
     // -----------------------------------------------------------------
     // Internal accessors
 
-    fn entry_mut(&mut self, frame: FrameId) -> &mut FrameEntry {
+    fn entry_mut(&mut self, frame: Pfn) -> &mut FrameEntry {
         assert!(
-            frame != 0 && (frame as usize) < self.frames.len(),
-            "invalid frame id {}",
+            frame != Pfn::ZERO && frame.index() < self.frames.len(),
+            "invalid frame id {:#x}",
             frame
         );
-        &mut self.frames[frame as usize]
+        &mut self.frames[frame.index()]
     }
 
     fn list(&self, state: FrameState) -> &FrameList {
@@ -654,13 +654,13 @@ impl<H: FrameHooks> FrameDb<H> {
     }
 
     /// Color of a frame: its position in the color chains, derived from the frame number.
-    fn color_of(&self, frame: FrameId) -> usize {
-        (frame & self.color_mask) as usize
+    fn color_of(&self, frame: Pfn) -> usize {
+        (frame.get() & self.color_mask) as usize
     }
 
     /// Transition tally bookkeeping; keeps the share/private split in lockstep with the transition
     /// list lengths.
-    fn tally_add(&mut self, frame: FrameId) {
+    fn tally_add(&mut self, frame: Pfn) {
         if self.entry(frame).flags.contains(FrameFlags::PROTOTYPE_PTE) {
             self.transition_shared += 1;
         } else {
@@ -669,7 +669,7 @@ impl<H: FrameHooks> FrameDb<H> {
         self.assert_tallies();
     }
 
-    fn tally_remove(&mut self, frame: FrameId) {
+    fn tally_remove(&mut self, frame: Pfn) {
         if self.entry(frame).flags.contains(FrameFlags::PROTOTYPE_PTE) {
             self.transition_shared -= 1;
         } else {
@@ -688,7 +688,7 @@ impl<H: FrameHooks> FrameDb<H> {
     }
 
     /// Common tail-append of `frame` onto `state`'s list.
-    fn append_to_list(&mut self, frame: FrameId, state: FrameState) {
+    fn append_to_list(&mut self, frame: Pfn, state: FrameState) {
         let old_tail = {
             let list = self.list_mut(state);
             list.total += 1;
@@ -708,7 +708,7 @@ impl<H: FrameHooks> FrameDb<H> {
     }
 
     /// Common tail-append of `frame` onto its color chain.
-    fn append_to_color_chain(&mut self, frame: FrameId, state: FrameState) {
+    fn append_to_color_chain(&mut self, frame: Pfn, state: FrameState) {
         let color = self.color_of(frame);
         let old_tail = {
             let bucket = &mut self.buckets.inner[Self::color_table(state)][color];
@@ -727,7 +727,7 @@ impl<H: FrameHooks> FrameDb<H> {
 
     /// Stitch the main chain around `frame` (already known to be on `state`'s list), decrement the
     /// total, and clear its links.
-    fn stitch_around(&mut self, frame: FrameId, state: FrameState) {
+    fn stitch_around(&mut self, frame: Pfn, state: FrameState) {
         let next = self.entry(frame).next.get();
         let prev = self.entry(frame).prev.get();
         if let Some(n) = next {
@@ -749,7 +749,7 @@ impl<H: FrameHooks> FrameDb<H> {
     /// Removal-side accounting shared by every removal path: available count, transition tallies
     /// (reading flags while they are still intact), the standby restore hook, and the low-frames
     /// hook.
-    fn removal_accounting(&mut self, state: FrameState, frame: FrameId, restore_on_standby: bool) {
+    fn removal_accounting(&mut self, state: FrameState, frame: Pfn, restore_on_standby: bool) {
         if state.counts_as_available() {
             self.available -= 1;
             if state == FrameState::Standby {
@@ -774,7 +774,7 @@ impl<H: FrameHooks> FrameDb<H> {
     /// The frame must be off-list with no references. If the frame is flagged
     /// [`FrameFlags::REMOVAL_REQUESTED`] and the target is an available state, the frame is
     /// diverted to the Bad list instead.
-    pub fn release(&mut self, frame: FrameId, state: FrameState) {
+    pub fn release(&mut self, frame: Pfn, state: FrameState) {
         {
             let entry = self.entry(frame);
             assert_eq!(
@@ -856,7 +856,7 @@ impl<H: FrameHooks> FrameDb<H> {
     /// result of releasing each in ascending order: the same list and color-chain order, counters
     /// and hooks. Every frame of the run is unused, as a fresh entry is ([`FrameEntry::new`]):
     /// checked over the run before one pass links it.
-    pub fn release_run(&mut self, run: Range<FrameId>, state: FrameState) {
+    pub fn release_run(&mut self, run: Range<Pfn>, state: FrameState) {
         assert!(
             state.has_color_chain(),
             "a run is released onto a colored list"
@@ -865,23 +865,23 @@ impl<H: FrameHooks> FrameDb<H> {
             return;
         }
         assert!(
-            run.start != 0 && run.end as usize <= self.frames.len(),
-            "invalid frame run {}..{}",
+            run.start != Pfn::ZERO && run.end.index() <= self.frames.len(),
+            "invalid frame run {:#x}..{:#x}",
             run.start,
             run.end
         );
         let (first, last) = (run.start, run.end - 1);
         let count = run.end - run.start;
-        let colors = self.colors as FrameId;
+        let colors = self.colors as PhysWord;
         let old_tail = self.list(state).tail;
-        let entries = &mut self.frames[run.start as usize..run.end as usize];
+        let entries = &mut self.frames[run.start.index()..run.end.index()];
         assert!(
             entries.iter().all(|entry| *entry == FrameEntry::new()),
             "a released run holds a frame in use or on a list"
         );
 
         // The list: the run follows the old tail in frame order.
-        for (frame, entry) in run.clone().zip(entries.iter_mut()) {
+        for (frame, entry) in phys::frames(run.clone()).zip(entries.iter_mut()) {
             entry.state = state;
             entry.prev = Link::from(if frame == first {
                 old_tail
@@ -902,7 +902,7 @@ impl<H: FrameHooks> FrameDb<H> {
         // The color chains: each color's first frame of the run follows its chain's old tail, its
         // last ends the chain.
         let table = Self::color_table(state);
-        for head in first..first + count.min(colors) {
+        for head in phys::frames(first..first + count.min(colors)) {
             let color = self.color_of(head);
             let tail = head + (last - head) / colors * colors;
             let bucket = &mut self.buckets.inner[table][color];
@@ -926,7 +926,7 @@ impl<H: FrameHooks> FrameDb<H> {
             self.hooks.available_high();
         }
         if state == FrameState::Zeroed {
-            for frame in run {
+            for frame in phys::frames(run) {
                 self.hooks.stamp_zeroed(frame);
             }
         } else if !self.zeroing_armed && self.free.total >= self.zero_threshold {
@@ -942,7 +942,7 @@ impl<H: FrameHooks> FrameDb<H> {
     ///
     /// Not valid for the Modified list, which is drained by its writer (that path owns the
     /// ordering). The frame's flags are cleared; its color stays. Panics if the list is empty.
-    pub fn pop(&mut self, state: FrameState) -> FrameId {
+    pub fn pop(&mut self, state: FrameState) -> Pfn {
         assert!(
             state != FrameState::Modified,
             "the modified list is drained by its writer, not by allocation"
@@ -1000,7 +1000,7 @@ impl<H: FrameHooks> FrameDb<H> {
     ///
     /// If the frame has references and no mappings, an I/O transfer is in flight: the call returns
     /// [`UnlinkOutcome::Busy`] and the list is untouched. The frame's flags are left as they are.
-    pub fn unlink(&mut self, frame: FrameId) -> UnlinkOutcome {
+    pub fn unlink(&mut self, frame: Pfn) -> UnlinkOutcome {
         let state = {
             let entry = self.entry(frame);
             if entry.refcount > 0 {
@@ -1033,7 +1033,7 @@ impl<H: FrameHooks> FrameDb<H> {
     ///
     /// The frame's flags are left as they are; the caller owns the rest of the transition. Panics
     /// if the frame is not on a colored list or not on its color chain.
-    pub fn take(&mut self, frame: FrameId) {
+    pub fn take(&mut self, frame: Pfn) {
         let state = {
             let entry = self.entry(frame);
             let state = entry.state;
@@ -1096,7 +1096,7 @@ impl<H: FrameHooks> FrameDb<H> {
 
     /// Allocation-path removal of a colored frame known to be the head of its color chain. Clears
     /// flags and applies removal accounting.
-    fn pop_colored(&mut self, frame: FrameId) {
+    fn pop_colored(&mut self, frame: Pfn) {
         let state = self.entry(frame).state;
         assert!(
             !self
@@ -1136,7 +1136,7 @@ impl<H: FrameHooks> FrameDb<H> {
     /// Remove the oldest allocatable frame from the Standby list and return it, or none when every
     /// standby frame is held. Like [`Self::pop`] for Standby, but skipping shared frames — the
     /// allocator never hands out a frame a transition entry still names.
-    fn pop_standby(&mut self) -> Option<FrameId> {
+    fn pop_standby(&mut self) -> Option<Pfn> {
         if self.standby.total == 0 {
             return None;
         }
@@ -1175,7 +1175,7 @@ impl<H: FrameHooks> FrameDb<H> {
     /// Preference order: the Zeroed list (requested color, then any), the Free list (requested
     /// color, then any, zeroing on demand), then Standby (zeroing on demand, skipping the frames a
     /// transition entry holds). Panics if nothing is available.
-    pub fn allocate_zeroed(&mut self, color: u32) -> FrameId {
+    pub fn allocate_zeroed(&mut self, color: u32) -> Pfn {
         assert!(self.available != 0, "no frames are available");
         assert!((color as usize) < self.colors, "color out of range");
         let color = color as usize;
@@ -1227,7 +1227,7 @@ impl<H: FrameHooks> FrameDb<H> {
     /// # Panics
     ///
     /// Nothing is available.
-    pub fn allocate(&mut self, color: u32) -> FrameId {
+    pub fn allocate(&mut self, color: u32) -> Pfn {
         self.try_allocate(color).expect("no frames are available")
     }
 
@@ -1236,7 +1236,7 @@ impl<H: FrameHooks> FrameDb<H> {
     ///
     /// Preference order: the Free list (requested color, then any), the Zeroed list (requested
     /// color, then any), then Standby (skipping the frames a transition entry holds).
-    pub fn try_allocate(&mut self, color: u32) -> Option<FrameId> {
+    pub fn try_allocate(&mut self, color: u32) -> Option<Pfn> {
         if self.available == 0 {
             return None;
         }
@@ -1278,7 +1278,7 @@ impl<H: FrameHooks> FrameDb<H> {
     }
 
     /// Zero a frame on demand and mark it freshly zeroed.
-    fn zero_and_stamp(&mut self, frame: FrameId) {
+    fn zero_and_stamp(&mut self, frame: Pfn) {
         self.hooks.zero_frame(frame);
         self.hooks.stamp_zeroed(frame);
     }
@@ -1312,11 +1312,11 @@ impl<H: FrameHooks> FrameDb<H> {
 
             // Forward walk: range, termination, per-frame state, and backward-link agreement.
             let mut count = 0u32;
-            let mut first: Option<FrameId> = None;
-            let mut last: Option<FrameId> = None;
+            let mut first: Option<Pfn> = None;
+            let mut last: Option<Pfn> = None;
             let mut cur = list.head;
             while let Some(f) = cur {
-                if f == 0 || (f as usize) >= self.frames.len() {
+                if f == Pfn::ZERO || f.index() >= self.frames.len() {
                     return Err(AuditError::FrameOutOfRange { frame: f });
                 }
                 if self.entry(f).state != state {
@@ -1385,7 +1385,7 @@ impl<H: FrameHooks> FrameDb<H> {
                 // Walk the color-filtered list and the color chain in lockstep.
                 let mut list_cur = self.list(state).head;
                 let mut bucket_cur = bucket.head;
-                let mut last_matched: Option<FrameId> = None;
+                let mut last_matched: Option<Pfn> = None;
                 let mut steps = 0u32;
                 loop {
                     // Advance the list cursor to the next frame of this color.
@@ -1439,9 +1439,9 @@ mod tests {
     /// Records every hook firing so tests can assert on side effects.
     #[derive(Debug, Default, PartialEq)]
     struct RecordingHooks {
-        zeroed: Vec<FrameId>,
-        stamped: Vec<FrameId>,
-        restored: Vec<FrameId>,
+        zeroed: Vec<Pfn>,
+        stamped: Vec<Pfn>,
+        restored: Vec<Pfn>,
         reclaim: u32,
         low: u32,
         high: u32,
@@ -1449,15 +1449,15 @@ mod tests {
     }
 
     impl FrameHooks for RecordingHooks {
-        fn zero_frame(&mut self, frame: FrameId) {
+        fn zero_frame(&mut self, frame: Pfn) {
             self.zeroed.push(frame);
         }
 
-        fn stamp_zeroed(&mut self, frame: FrameId) {
+        fn stamp_zeroed(&mut self, frame: Pfn) {
             self.stamped.push(frame);
         }
 
-        fn restore_transition(&mut self, frame: FrameId) {
+        fn restore_transition(&mut self, frame: Pfn) {
             self.restored.push(frame);
         }
 
@@ -1490,9 +1490,14 @@ mod tests {
         )
     }
 
-    fn release_all(db: &mut FrameDb<RecordingHooks>, state: FrameState, frames: &[FrameId]) {
+    /// The frames numbered `numbers`.
+    fn pfns(numbers: &[u32]) -> Vec<Pfn> {
+        numbers.iter().copied().map(Pfn::new).collect()
+    }
+
+    fn release_all(db: &mut FrameDb<RecordingHooks>, state: FrameState, frames: &[u32]) {
         for &f in frames {
-            db.release(f, state);
+            db.release(Pfn::new(f), state);
         }
     }
 
@@ -1545,12 +1550,12 @@ mod tests {
     fn a_prototype_link_lives_while_the_frame_is_the_segments() {
         let mut db = new_db();
         release_all(&mut db, Free, &[3, 4]);
-        let slot = Prototype::new(9, 5);
+        let slot = Prototype::new(Pfn::new(9), 5);
         let frame = db.allocate(PRIMARY_COLOR);
         db.link_prototype(frame, slot);
         assert!(db.is_prototype(frame, slot));
         assert!(
-            !db.is_prototype(frame, Prototype::new(9, 6)),
+            !db.is_prototype(frame, Prototype::new(Pfn::new(9), 6)),
             "another slot"
         );
 
@@ -1587,25 +1592,33 @@ mod tests {
 
     #[test]
     fn release_run_matches_releasing_each_frame() {
-        let runs: [Range<FrameId>; 7] = [1..2, 3..3, 4..7, 9..24, 26..29, 30..31, 33..TABLE as u32];
+        let runs: [Range<Pfn>; 7] = [
+            Pfn::new(1)..Pfn::new(2),
+            Pfn::new(3)..Pfn::new(3),
+            Pfn::new(4)..Pfn::new(7),
+            Pfn::new(9)..Pfn::new(24),
+            Pfn::new(26)..Pfn::new(29),
+            Pfn::new(30)..Pfn::new(31),
+            Pfn::new(33)..Pfn::new(TABLE as u32),
+        ];
         for colors in [2, 4, 8, 16] {
             for state in [Free, Zeroed] {
                 let (mut each, mut at_once) = (db_with_colors(colors), db_with_colors(colors));
                 for db in [&mut each, &mut at_once] {
                     db.set_zeroing_threshold(20);
-                    db.release(8, Free);
-                    db.release(25, Zeroed);
-                    db.release(2, Standby);
+                    db.release(Pfn::new(8), Free);
+                    db.release(Pfn::new(25), Zeroed);
+                    db.release(Pfn::new(2), Standby);
                 }
                 for (index, run) in runs.iter().enumerate() {
-                    for frame in run.clone() {
+                    for frame in phys::frames(run.clone()) {
                         each.release(frame, state);
                     }
                     at_once.release_run(run.clone(), state);
                     // Single releases between runs, onto either colored list.
                     if index == 3 {
-                        each.release(32, Free);
-                        at_once.release(32, Free);
+                        each.release(Pfn::new(32), Free);
+                        at_once.release(Pfn::new(32), Free);
                     }
                     assert_same(&each, &at_once);
                 }
@@ -1625,22 +1638,22 @@ mod tests {
     #[should_panic(expected = "a released run holds a frame in use or on a list")]
     fn release_run_refuses_a_listed_frame() {
         let mut db = new_db();
-        db.release(5, Free);
-        db.release_run(3..8, Free);
+        db.release(Pfn::new(5), Free);
+        db.release_run(Pfn::new(3)..Pfn::new(8), Free);
     }
 
     /// Runs go onto the colored lists only.
     #[test]
     #[should_panic(expected = "a run is released onto a colored list")]
     fn release_run_requires_a_colored_state() {
-        new_db().release_run(3..8, Standby);
+        new_db().release_run(Pfn::new(3)..Pfn::new(8), Standby);
     }
 
     /// A run past the table is refused.
     #[test]
     #[should_panic(expected = "invalid frame run")]
     fn release_run_refuses_frames_out_of_range() {
-        new_db().release_run(60..TABLE as u32 + 1, Free);
+        new_db().release_run(Pfn::new(60)..Pfn::new(TABLE as u32 + 1), Free);
     }
 
     /// A frame's holders: each share adds one, each unshare drops one, and the last unshare says so
@@ -1676,25 +1689,25 @@ mod tests {
     fn the_allocator_skips_shared_standby_frames() {
         let mut db = new_db();
         release_all(&mut db, Standby, &[10, 14, 18]);
-        db.share(10); // the head, held by a transition entry
-        db.share(14);
+        db.share(Pfn::new(10)); // the head, held by a transition entry
+        db.share(Pfn::new(14));
         assert_eq!(db.available(), 3, "held frames still count as available");
         assert_eq!(
             db.try_allocate(PRIMARY_COLOR),
-            Some(18),
+            Some(Pfn::new(18)),
             "the oldest unshared one"
         );
         assert_eq!(db.try_allocate(PRIMARY_COLOR), None, "the rest are held");
         assert_eq!(db.list_total(Standby), 2);
-        assert_eq!(db.entry(10).state, Standby);
+        assert_eq!(db.entry(Pfn::new(10)).state, Standby);
         assert_eq!(db.audit(), Ok(()));
 
         // allocate_zeroed takes the same path, zeroing the standby frame it gets.
         let mut db = new_db();
         release_all(&mut db, Standby, &[10, 14]);
-        db.share(10);
-        assert_eq!(db.allocate_zeroed(PRIMARY_COLOR), 14);
-        assert_eq!(db.hooks.zeroed, vec![14]);
+        db.share(Pfn::new(10));
+        assert_eq!(db.allocate_zeroed(PRIMARY_COLOR), Pfn::new(14));
+        assert_eq!(db.hooks.zeroed, pfns(&[14]));
         assert_eq!(db.audit(), Ok(()));
     }
 
@@ -1704,15 +1717,15 @@ mod tests {
     fn a_refaulted_transition_frame_is_unlinked_and_unshared() {
         let mut db = new_db();
         release_all(&mut db, Standby, &[10, 14]);
-        db.share(10);
-        assert_eq!(db.unlink(10), UnlinkOutcome::Unlinked);
-        assert_eq!(db.entry(10).state, Active);
-        assert!(!db.unshare(10), "the hold was the only one");
-        assert_eq!(db.entry(10).share_count, 0);
+        db.share(Pfn::new(10));
+        assert_eq!(db.unlink(Pfn::new(10)), UnlinkOutcome::Unlinked);
+        assert_eq!(db.entry(Pfn::new(10)).state, Active);
+        assert!(!db.unshare(Pfn::new(10)), "the hold was the only one");
+        assert_eq!(db.entry(Pfn::new(10)).share_count, 0);
         assert_eq!(db.list_total(Standby), 1);
         assert_eq!(db.available(), 1);
         // Back to one holder: the caller may release it as it would any in-use frame.
-        db.release(10, Free);
+        db.release(Pfn::new(10), Free);
         assert_eq!(db.audit(), Ok(()));
     }
 
@@ -1722,10 +1735,10 @@ mod tests {
     fn unsharing_a_standby_frame_frees_it_for_allocation() {
         let mut db = new_db();
         release_all(&mut db, Standby, &[10]);
-        db.share(10);
-        assert!(!db.unshare(10));
-        assert_eq!(db.entry(10).state, Standby);
-        assert_eq!(db.try_allocate(PRIMARY_COLOR), Some(10));
+        db.share(Pfn::new(10));
+        assert!(!db.unshare(Pfn::new(10)));
+        assert_eq!(db.entry(Pfn::new(10)).state, Standby);
+        assert_eq!(db.try_allocate(PRIMARY_COLOR), Some(Pfn::new(10)));
     }
 
     #[test]
@@ -1733,7 +1746,7 @@ mod tests {
     fn sharing_a_free_frame_is_refused() {
         let mut db = new_db();
         release_all(&mut db, Free, &[4]);
-        db.share(4);
+        db.share(Pfn::new(4));
     }
 
     #[test]
@@ -1741,7 +1754,7 @@ mod tests {
     fn unsharing_a_modified_frame_is_refused() {
         let mut db = new_db();
         release_all(&mut db, Modified, &[4]);
-        db.unshare(4);
+        db.unshare(Pfn::new(4));
     }
 
     #[test]
@@ -1772,15 +1785,15 @@ mod tests {
     fn release_appends_in_fifo_order() {
         let mut db = new_db();
         release_all(&mut db, Free, &[3, 9, 5]);
-        assert_eq!(db.free.head, Some(3));
-        assert_eq!(db.free.tail, Some(5));
-        assert_eq!(db.entry(3).prev, None);
-        assert_eq!(db.entry(9).prev, Some(3));
-        assert_eq!(db.entry(9).next, Some(5));
-        assert_eq!(db.entry(5).next, None);
-        assert_eq!(db.pop(Free), 3);
-        assert_eq!(db.pop(Free), 9);
-        assert_eq!(db.pop(Free), 5);
+        assert_eq!(db.free.head, Some(Pfn::new(3)));
+        assert_eq!(db.free.tail, Some(Pfn::new(5)));
+        assert_eq!(db.entry(Pfn::new(3)).prev, None);
+        assert_eq!(db.entry(Pfn::new(9)).prev, Some(Pfn::new(3)));
+        assert_eq!(db.entry(Pfn::new(9)).next, Some(Pfn::new(5)));
+        assert_eq!(db.entry(Pfn::new(5)).next, None);
+        assert_eq!(db.pop(Free), Pfn::new(3));
+        assert_eq!(db.pop(Free), Pfn::new(9));
+        assert_eq!(db.pop(Free), Pfn::new(5));
         assert_eq!(db.list_total(Free), 0);
         assert_eq!(db.audit(), Ok(()));
     }
@@ -1788,19 +1801,19 @@ mod tests {
     #[test]
     fn release_into_zeroed_stamps() {
         let mut db = new_db();
-        db.release(7, Zeroed);
-        assert_eq!(db.hooks.stamped, vec![7]);
-        db.release(8, Free);
-        assert_eq!(db.hooks.stamped, vec![7]);
+        db.release(Pfn::new(7), Zeroed);
+        assert_eq!(db.hooks.stamped, pfns(&[7]));
+        db.release(Pfn::new(8), Free);
+        assert_eq!(db.hooks.stamped, pfns(&[7]));
         assert!(db.hooks.zeroed.is_empty());
     }
 
     #[test]
     fn release_into_bad_has_no_side_effects() {
         let mut db = new_db();
-        db.release(10, Bad);
+        db.release(Pfn::new(10), Bad);
         assert_eq!(db.available(), 0);
-        assert_eq!(db.entry(10).state, Bad);
+        assert_eq!(db.entry(Pfn::new(10)).state, Bad);
         assert_eq!(db.list_total(Bad), 1);
         assert_eq!(db.buckets.inner[0][10 & 3].head, None);
         assert_eq!(db.buckets.inner[1][10 & 3].head, None);
@@ -1810,19 +1823,23 @@ mod tests {
     #[test]
     fn removal_requested_frames_divert_to_bad() {
         let mut db = new_db();
-        db.entry_mut(4).flags.insert(FrameFlags::REMOVAL_REQUESTED);
-        db.release(4, Free);
-        assert_eq!(db.entry(4).state, Bad);
+        db.entry_mut(Pfn::new(4))
+            .flags
+            .insert(FrameFlags::REMOVAL_REQUESTED);
+        db.release(Pfn::new(4), Free);
+        assert_eq!(db.entry(Pfn::new(4)).state, Bad);
         assert_eq!(db.list_total(Free), 0);
         assert_eq!(db.list_total(Bad), 1);
         assert_eq!(db.available(), 0);
 
-        db.entry_mut(5).flags.insert(FrameFlags::REMOVAL_REQUESTED);
-        db.release(5, Standby);
-        assert_eq!(db.entry(5).state, Bad);
+        db.entry_mut(Pfn::new(5))
+            .flags
+            .insert(FrameFlags::REMOVAL_REQUESTED);
+        db.release(Pfn::new(5), Standby);
+        assert_eq!(db.entry(Pfn::new(5)).state, Bad);
         assert_eq!(db.list_total(Bad), 2);
         assert_eq!(db.available(), 0);
-        assert_eq!(db.hooks.restored, vec![5]);
+        assert_eq!(db.hooks.restored, pfns(&[5]));
         assert_eq!(db.audit(), Ok(()));
     }
 
@@ -1830,36 +1847,36 @@ mod tests {
     #[should_panic(expected = "already on a list")]
     fn double_release_panics() {
         let mut db = new_db();
-        db.release(4, Free);
-        db.release(4, Free);
+        db.release(Pfn::new(4), Free);
+        db.release(Pfn::new(4), Free);
     }
 
     #[test]
     #[should_panic(expected = "outstanding references")]
     fn release_with_references_panics() {
         let mut db = new_db();
-        db.entry_mut(4).refcount = 1;
-        db.release(4, Free);
+        db.entry_mut(Pfn::new(4)).refcount = 1;
+        db.release(Pfn::new(4), Free);
     }
 
     #[test]
     fn pop_clears_flags_and_keeps_bookkeeping() {
         let mut db = new_db();
         release_all(&mut db, Free, &[3, 9, 5]);
-        db.entry_mut(3).flags.insert(FrameFlags::MODIFIED);
-        assert_eq!(db.pop(Free), 3);
-        assert_eq!(db.entry(3).state, Active);
-        assert!(db.entry(3).flags.is_empty());
-        assert_eq!(u32::from(db.entry(3).color), PRIMARY_COLOR);
+        db.entry_mut(Pfn::new(3)).flags.insert(FrameFlags::MODIFIED);
+        assert_eq!(db.pop(Free), Pfn::new(3));
+        assert_eq!(db.entry(Pfn::new(3)).state, Active);
+        assert!(db.entry(Pfn::new(3)).flags.is_empty());
+        assert_eq!(u32::from(db.entry(Pfn::new(3)).color), PRIMARY_COLOR);
         assert_eq!(db.list_total(Free), 2);
-        assert_eq!(db.free.head, Some(9));
-        assert_eq!(db.entry(9).prev, None);
+        assert_eq!(db.free.head, Some(Pfn::new(9)));
+        assert_eq!(db.entry(Pfn::new(9)).prev, None);
         assert_eq!(db.available(), 2);
         // Frame 3 is color 3 (sole); 9 and 5 are color 1.
         assert_eq!(db.buckets.inner[1][3].head, None);
         assert_eq!(db.buckets.inner[1][3].tail, None);
-        assert_eq!(db.buckets.inner[1][1].head, Some(9));
-        assert_eq!(db.buckets.inner[1][1].tail, Some(5));
+        assert_eq!(db.buckets.inner[1][1].head, Some(Pfn::new(9)));
+        assert_eq!(db.buckets.inner[1][1].tail, Some(Pfn::new(5)));
         assert_eq!(db.audit(), Ok(()));
     }
 
@@ -1874,7 +1891,7 @@ mod tests {
     #[should_panic(expected = "modified list")]
     fn pop_from_modified_list_panics() {
         let mut db = new_db();
-        db.release(4, Modified);
+        db.release(Pfn::new(4), Modified);
         db.pop(Modified);
     }
 
@@ -1882,13 +1899,13 @@ mod tests {
     fn unlink_middle_stitches_neighbors() {
         let mut db = new_db();
         release_all(&mut db, Standby, &[10, 14, 18]);
-        assert_eq!(db.unlink(14), UnlinkOutcome::Unlinked);
+        assert_eq!(db.unlink(Pfn::new(14)), UnlinkOutcome::Unlinked);
         assert_eq!(db.list_total(Standby), 2);
-        assert_eq!(db.entry(10).next, Some(18));
-        assert_eq!(db.entry(18).prev, Some(10));
-        assert_eq!(db.entry(14).next, None);
-        assert_eq!(db.entry(14).prev, None);
-        assert_eq!(db.entry(14).state, Active);
+        assert_eq!(db.entry(Pfn::new(10)).next, Some(Pfn::new(18)));
+        assert_eq!(db.entry(Pfn::new(18)).prev, Some(Pfn::new(10)));
+        assert_eq!(db.entry(Pfn::new(14)).next, None);
+        assert_eq!(db.entry(Pfn::new(14)).prev, None);
+        assert_eq!(db.entry(Pfn::new(14)).state, Active);
         assert_eq!(db.available(), 2);
         assert_eq!(db.audit(), Ok(()));
     }
@@ -1897,13 +1914,13 @@ mod tests {
     fn unlink_head_tail_and_sole_frames() {
         let mut db = new_db();
         release_all(&mut db, Standby, &[10, 14, 18]);
-        db.unlink(10);
-        assert_eq!(db.standby.head, Some(14));
-        assert_eq!(db.entry(14).prev, None);
-        db.unlink(18);
-        assert_eq!(db.standby.tail, Some(14));
-        assert_eq!(db.entry(14).next, None);
-        db.unlink(14);
+        db.unlink(Pfn::new(10));
+        assert_eq!(db.standby.head, Some(Pfn::new(14)));
+        assert_eq!(db.entry(Pfn::new(14)).prev, None);
+        db.unlink(Pfn::new(18));
+        assert_eq!(db.standby.tail, Some(Pfn::new(14)));
+        assert_eq!(db.entry(Pfn::new(14)).next, None);
+        db.unlink(Pfn::new(14));
         assert_eq!(db.standby.head, None);
         assert_eq!(db.standby.tail, None);
         assert_eq!(db.list_total(Standby), 0);
@@ -1914,29 +1931,29 @@ mod tests {
     #[test]
     fn unlink_busy_frame_is_left_in_place() {
         let mut db = new_db();
-        db.release(10, Standby);
-        db.entry_mut(10).refcount = 1;
-        assert_eq!(db.unlink(10), UnlinkOutcome::Busy);
+        db.release(Pfn::new(10), Standby);
+        db.entry_mut(Pfn::new(10)).refcount = 1;
+        assert_eq!(db.unlink(Pfn::new(10)), UnlinkOutcome::Busy);
         assert_eq!(db.list_total(Standby), 1);
-        assert_eq!(db.entry(10).state, Standby);
+        assert_eq!(db.entry(Pfn::new(10)).state, Standby);
     }
 
     #[test]
     #[should_panic(expected = "corrupts the list")]
     fn unlink_referenced_mapped_frame_panics() {
         let mut db = new_db();
-        db.release(10, Standby);
-        db.entry_mut(10).refcount = 1;
-        db.entry_mut(10).share_count = 1;
-        db.unlink(10);
+        db.release(Pfn::new(10), Standby);
+        db.entry_mut(Pfn::new(10)).refcount = 1;
+        db.entry_mut(Pfn::new(10)).share_count = 1;
+        db.unlink(Pfn::new(10));
     }
 
     #[test]
     #[should_panic(expected = "take()")]
     fn unlink_free_frame_requires_take() {
         let mut db = new_db();
-        db.release(4, Free);
-        db.unlink(4);
+        db.release(Pfn::new(4), Free);
+        db.unlink(Pfn::new(4));
     }
 
     #[test]
@@ -1944,32 +1961,32 @@ mod tests {
         let mut db = new_db();
         // Colors (mask 3): 4 and 8 are color 0; 5, 9, 13, 17 are color 1.
         release_all(&mut db, Free, &[4, 5, 9, 8, 13, 17]);
-        db.entry_mut(9).flags.insert(FrameFlags::MODIFIED);
+        db.entry_mut(Pfn::new(9)).flags.insert(FrameFlags::MODIFIED);
 
-        db.take(9);
-        assert_eq!(db.entry(5).next, Some(8));
-        assert_eq!(db.entry(8).prev, Some(5));
-        assert_eq!(db.entry(9).state, Active);
+        db.take(Pfn::new(9));
+        assert_eq!(db.entry(Pfn::new(5)).next, Some(Pfn::new(8)));
+        assert_eq!(db.entry(Pfn::new(8)).prev, Some(Pfn::new(5)));
+        assert_eq!(db.entry(Pfn::new(9)).state, Active);
         // Flags survive take: the caller owns the rest of the transition.
-        assert!(db.entry(9).flags.contains(FrameFlags::MODIFIED));
-        assert_eq!(db.entry(5).next_color, Some(13));
-        assert_eq!(db.buckets.inner[1][1].tail, Some(17));
+        assert!(db.entry(Pfn::new(9)).flags.contains(FrameFlags::MODIFIED));
+        assert_eq!(db.entry(Pfn::new(5)).next_color, Some(Pfn::new(13)));
+        assert_eq!(db.buckets.inner[1][1].tail, Some(Pfn::new(17)));
         assert_eq!(db.list_total(Free), 5);
         assert_eq!(db.available(), 5);
         assert_eq!(db.audit(), Ok(()));
 
         // Tail of a color chain keeps the bucket tail correct.
-        db.take(17);
-        assert_eq!(db.buckets.inner[1][1].tail, Some(13));
-        assert_eq!(db.entry(13).next_color, None);
+        db.take(Pfn::new(17));
+        assert_eq!(db.buckets.inner[1][1].tail, Some(Pfn::new(13)));
+        assert_eq!(db.entry(Pfn::new(13)).next_color, None);
         // Head of a color chain.
-        db.take(5);
-        assert_eq!(db.buckets.inner[1][1].head, Some(13));
+        db.take(Pfn::new(5));
+        assert_eq!(db.buckets.inner[1][1].head, Some(Pfn::new(13)));
         // A chain with more than one frame left.
-        db.take(4);
-        assert_eq!(db.buckets.inner[1][0].head, Some(8));
+        db.take(Pfn::new(4));
+        assert_eq!(db.buckets.inner[1][0].head, Some(Pfn::new(8)));
         // Sole frame of a color chain empties the bucket.
-        db.take(8);
+        db.take(Pfn::new(8));
         assert_eq!(db.buckets.inner[1][0].head, None);
         assert_eq!(db.buckets.inner[1][0].tail, None);
         assert_eq!(db.audit(), Ok(()));
@@ -1979,8 +1996,8 @@ mod tests {
     #[should_panic(expected = "take() only accepts")]
     fn take_requires_a_colored_state() {
         let mut db = new_db();
-        db.release(10, Standby);
-        db.take(10);
+        db.release(Pfn::new(10), Standby);
+        db.take(Pfn::new(10));
     }
 
     #[test]
@@ -1988,11 +2005,11 @@ mod tests {
         let mut db = new_db();
         release_all(&mut db, Zeroed, &[6, 5]);
         let stamps_before = db.hooks.stamped.len();
-        assert_eq!(db.allocate_zeroed(1), 5);
+        assert_eq!(db.allocate_zeroed(1), Pfn::new(5));
         assert!(db.hooks.zeroed.is_empty());
         assert_eq!(db.hooks.stamped.len(), stamps_before);
         // Any-color fallback stays zeroed too.
-        assert_eq!(db.allocate_zeroed(0), 6);
+        assert_eq!(db.allocate_zeroed(0), Pfn::new(6));
         assert!(db.hooks.zeroed.is_empty());
     }
 
@@ -2002,12 +2019,12 @@ mod tests {
         release_all(&mut db, Free, &[5]);
         release_all(&mut db, Standby, &[12]);
         let stamps_before = db.hooks.stamped.len();
-        assert_eq!(db.allocate_zeroed(1), 5);
-        assert_eq!(db.hooks.zeroed, vec![5]);
+        assert_eq!(db.allocate_zeroed(1), Pfn::new(5));
+        assert_eq!(db.hooks.zeroed, pfns(&[5]));
         assert_eq!(db.hooks.stamped.len(), stamps_before + 1);
-        assert_eq!(db.allocate_zeroed(1), 12);
-        assert_eq!(db.hooks.restored, vec![12]);
-        assert_eq!(db.hooks.zeroed, vec![5, 12]);
+        assert_eq!(db.allocate_zeroed(1), Pfn::new(12));
+        assert_eq!(db.hooks.restored, pfns(&[12]));
+        assert_eq!(db.hooks.zeroed, pfns(&[5, 12]));
         assert_eq!(db.audit(), Ok(()));
     }
 
@@ -2016,9 +2033,9 @@ mod tests {
         let mut db = new_db();
         release_all(&mut db, Free, &[5]);
         release_all(&mut db, Zeroed, &[9]);
-        assert_eq!(db.allocate(1), 5);
+        assert_eq!(db.allocate(1), Pfn::new(5));
         assert!(db.hooks.zeroed.is_empty());
-        assert_eq!(db.allocate(1), 9);
+        assert_eq!(db.allocate(1), Pfn::new(9));
         assert!(db.hooks.zeroed.is_empty());
 
         // The zeroed allocation makes the opposite choice on the same state: zeroed over free.
@@ -2026,7 +2043,7 @@ mod tests {
             let mut db = new_db();
             release_all(&mut db, Free, &[5]);
             release_all(&mut db, Zeroed, &[9]);
-            assert_eq!(db.allocate_zeroed(1), 9);
+            assert_eq!(db.allocate_zeroed(1), Pfn::new(9));
         }
     }
 
@@ -2051,7 +2068,7 @@ mod tests {
         let mut db = new_db();
         assert_eq!(db.try_allocate(0), None);
         release_all(&mut db, Free, &[5]);
-        assert_eq!(db.try_allocate(0), Some(5));
+        assert_eq!(db.try_allocate(0), Some(Pfn::new(5)));
         assert_eq!(db.try_allocate(0), None);
         assert_eq!(db.audit(), Ok(()));
     }
@@ -2062,10 +2079,10 @@ mod tests {
         db.set_zeroing_threshold(3);
         release_all(&mut db, Free, &[1, 2, 3]);
         assert_eq!(db.hooks.zeroing, 1);
-        db.release(4, Free); // Pass already armed: no second request.
+        db.release(Pfn::new(4), Free); // Pass already armed: no second request.
         assert_eq!(db.hooks.zeroing, 1);
         db.zeroing_done();
-        db.release(5, Free); // Armed again at the next release.
+        db.release(Pfn::new(5), Free); // Armed again at the next release.
         assert_eq!(db.hooks.zeroing, 2);
 
         // Releasing into the zeroed list never requests a pass.
@@ -2082,12 +2099,12 @@ mod tests {
         let mut db = new_db();
         release_all(&mut db, Free, &[1, 2]);
         assert_eq!(db.hooks.low, 1);
-        db.take(1); // Removal path: no event.
+        db.take(Pfn::new(1)); // Removal path: no event.
         assert_eq!(db.hooks.low, 1);
-        db.release(3, Free); // Back at the low mark: fires again.
+        db.release(Pfn::new(3), Free); // Back at the low mark: fires again.
         assert_eq!(db.hooks.low, 2);
         for f in 4..=20u32 {
-            db.release(f, Free);
+            db.release(Pfn::new(f), Free);
         }
         assert_eq!(db.available(), 19);
         assert_eq!(db.hooks.high, 1);
@@ -2100,16 +2117,16 @@ mod tests {
         db.set_min_free_pages(2);
         release_all(&mut db, Free, &[1, 2, 3]);
         assert_eq!(db.hooks.reclaim, 0); // The release path never fires it.
-        assert_eq!(db.allocate(1), 1); // Colored removal: not below yet.
+        assert_eq!(db.allocate(1), Pfn::new(1)); // Colored removal: not below yet.
         assert_eq!(db.hooks.reclaim, 0);
-        assert_eq!(db.allocate(1), 2); // Below the minimum.
+        assert_eq!(db.allocate(1), Pfn::new(2)); // Below the minimum.
         assert_eq!(db.hooks.reclaim, 1);
-        db.release(10, Standby); // Release path stays silent.
+        db.release(Pfn::new(10), Standby); // Release path stays silent.
         assert_eq!(db.hooks.reclaim, 1);
-        db.unlink(10); // Unlink path.
+        db.unlink(Pfn::new(10)); // Unlink path.
         assert_eq!(db.hooks.reclaim, 2);
-        db.release(12, Standby);
-        assert_eq!(db.allocate_zeroed(1), 3); // Free head, zeroed on demand.
+        db.release(Pfn::new(12), Standby);
+        assert_eq!(db.allocate_zeroed(1), Pfn::new(3)); // Free head, zeroed on demand.
         assert_eq!(db.hooks.reclaim, 3);
         assert_eq!(db.audit(), Ok(()));
     }
@@ -2124,9 +2141,12 @@ mod tests {
         db.free.total = 5;
         assert_eq!(db.audit(), Err(AuditError::TotalMismatch { state: Free }));
         db.free.total = 2;
-        db.entry_mut(9).state = Zeroed;
-        assert_eq!(db.audit(), Err(AuditError::StateMismatch { frame: 9 }));
-        db.entry_mut(9).state = Free;
+        db.entry_mut(Pfn::new(9)).state = Zeroed;
+        assert_eq!(
+            db.audit(),
+            Err(AuditError::StateMismatch { frame: Pfn::new(9) })
+        );
+        db.entry_mut(Pfn::new(9)).state = Free;
         assert_eq!(db.audit(), Ok(()));
     }
 
@@ -2139,14 +2159,14 @@ mod tests {
         release_all(&mut db, Modified, &[18]);
         release_all(&mut db, ModifiedNoWrite, &[22]);
         release_all(&mut db, Bad, &[26]);
-        assert_eq!(db.allocate_zeroed(1), 6);
-        assert_eq!(db.allocate(1), 5);
-        assert_eq!(db.allocate_zeroed(1), 9);
-        db.take(13);
-        db.unlink(14);
-        assert_eq!(db.allocate_zeroed(0), 10);
-        assert_eq!(db.hooks.zeroed, vec![9, 10]);
-        assert_eq!(db.hooks.restored, vec![10]);
+        assert_eq!(db.allocate_zeroed(1), Pfn::new(6));
+        assert_eq!(db.allocate(1), Pfn::new(5));
+        assert_eq!(db.allocate_zeroed(1), Pfn::new(9));
+        db.take(Pfn::new(13));
+        db.unlink(Pfn::new(14));
+        assert_eq!(db.allocate_zeroed(0), Pfn::new(10));
+        assert_eq!(db.hooks.zeroed, pfns(&[9, 10]));
+        assert_eq!(db.hooks.restored, pfns(&[10]));
         assert_eq!(db.available(), 0);
         assert_eq!(db.list_total(Modified), 1);
         assert_eq!(db.list_total(Bad), 1);
@@ -2157,21 +2177,23 @@ mod tests {
     #[should_panic(expected = "invalid frame id")]
     fn frame_zero_is_rejected() {
         let mut db = new_db();
-        db.release(0, Free);
+        db.release(Pfn::new(0), Free);
     }
 
     #[test]
     #[should_panic(expected = "invalid frame id")]
     fn frame_out_of_range_is_rejected() {
         let mut db = new_db();
-        db.release(TABLE as FrameId, Free);
+        db.release(Pfn::new(TABLE as u32), Free);
     }
 
     #[test]
     #[should_panic(expected = "in-page-error")]
     fn release_rejects_in_page_error_frames_on_colored_lists() {
         let mut db = new_db();
-        db.entry_mut(4).flags.insert(FrameFlags::IN_PAGE_ERROR);
-        db.release(4, Free);
+        db.entry_mut(Pfn::new(4))
+            .flags
+            .insert(FrameFlags::IN_PAGE_ERROR);
+        db.release(Pfn::new(4), Free);
     }
 }

@@ -182,7 +182,7 @@ fn debug_assert_on_own_space(dispatch: &mut crate::level::At<crate::level::Dispa
         // SAFETY: a running thread's address-space process outlives its scope on it.
         let dir_phys = unsafe { (*space).dir_phys() };
         assert_eq!(
-            crate::mem::paging::directory_cr3(cr3),
+            crate::mem::paging::cr3_directory(cr3).get(),
             dir_phys,
             "a thread resumes on its address-space directory"
         );

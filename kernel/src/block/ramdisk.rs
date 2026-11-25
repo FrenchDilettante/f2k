@@ -118,6 +118,7 @@ impl<M: PhysicalMemory> BlockDevice for RamDisk<M> {
 #[cfg(target_arch = "x86")]
 mod target {
     use super::*;
+    use crate::mem::phys::PhysAddr;
     use crate::sync::InitOnce;
 
     /// Physical memory through the scratch window: each piece copied under the memory manager's
@@ -126,13 +127,15 @@ mod target {
 
     impl PhysicalMemory for ScratchMemory {
         fn read(&self, address: u32, out: &mut [u8]) {
-            let offset = (address % PAGE_SIZE as u32) as usize;
-            crate::mem::paging::read_frame(address - offset as u32, offset, out);
+            let address = PhysAddr::new(address);
+            let offset = address.page_offset() as usize;
+            crate::mem::paging::read_frame(address.pfn().addr(), offset, out);
         }
 
         fn write(&self, address: u32, bytes: &[u8]) {
-            let offset = (address % PAGE_SIZE as u32) as usize;
-            crate::mem::paging::write_frame(address - offset as u32, offset, bytes);
+            let address = PhysAddr::new(address);
+            let offset = address.page_offset() as usize;
+            crate::mem::paging::write_frame(address.pfn().addr(), offset, bytes);
         }
     }
 
@@ -145,7 +148,8 @@ mod target {
     pub fn init() {
         let disk = crate::mem::bootmem::disk_module().and_then(|bytes| {
             let start = bytes.start;
-            let disk = RamDisk::over(ScratchMemory, bytes)?;
+            // A Multiboot 1 module lies below 4 GiB: its record's fields are 32-bit.
+            let disk = RamDisk::over(ScratchMemory, bytes.start.get()..bytes.end.get())?;
             crate::serial_println!(
                 "F2K: ram disk: {} sectors from the boot module at {:#010x}",
                 disk.sectors,

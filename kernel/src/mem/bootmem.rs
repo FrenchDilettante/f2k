@@ -44,13 +44,14 @@ use super::multiboot::{
     MultibootInfo,
 };
 use super::paging::{KERNEL_BASE, LOADER_PHYS_BASE, PAGE_SIZE};
+use super::phys::{self, Pfn, PhysAddr};
 use crate::sync::{InitOnce, StaticBuf};
 
 /// The first frame of the run of conventional memory the real-mode trampoline owns (physical
 /// 0x90000, below the extended BIOS data area and the VGA hole): its code, its save area and the
 /// BIOS's reply blocks, its real-mode stack and the mode-info buffer (see
 /// `hw::vbe::trampoline`). Fixed, because the trampoline's real-mode segment is derived from it.
-pub const TRAMPOLINE_FIRST_FRAME: u32 = 0x90;
+pub const TRAMPOLINE_FIRST_FRAME: Pfn = Pfn::new(0x90);
 /// How many frames the trampoline's run holds: 0x90000-0x9AFFF.
 pub const TRAMPOLINE_FRAMES: u32 = 11;
 
@@ -64,11 +65,11 @@ pub static TRAMPOLINE_RESERVED: AtomicBool = AtomicBool::new(false);
 static COLOR_TABLES: StaticBuf<ColorTables> = StaticBuf::new(ColorTables::new());
 
 /// The kernel's image's first frame: its base's, its headers' page.
-const IMAGE_FIRST_FRAME: u32 = (NTOSKRNL_BASE - KERNEL_BASE) / PAGE_SIZE;
+const IMAGE_FIRST_FRAME: Pfn = PhysAddr::new(NTOSKRNL_BASE - KERNEL_BASE).pfn();
 
 /// The boot loader's frames: from its load address to the kernel's image, the rest of the kernel
 /// image window's entry span.
-const LOADER_FRAMES: Range<u32> = LOADER_PHYS_BASE / PAGE_SIZE..IMAGE_FIRST_FRAME;
+const LOADER_FRAMES: Range<Pfn> = LOADER_PHYS_BASE.pfn()..IMAGE_FIRST_FRAME;
 
 /// Which of the boot loader's frames are memory to release once the loader's tables are no longer
 /// walked: the ones the memory picture releases (usable, not reserved), one bit per frame of
@@ -76,10 +77,11 @@ const LOADER_FRAMES: Range<u32> = LOADER_PHYS_BASE / PAGE_SIZE..IMAGE_FIRST_FRAM
 struct LoaderMemory([u32; LOADER_WORDS]);
 
 /// The words of [`LoaderMemory`]'s bits.
-const LOADER_WORDS: usize = (LOADER_FRAMES.end - LOADER_FRAMES.start).div_ceil(32) as usize;
+const LOADER_WORDS: usize =
+    (LOADER_FRAMES.end.get() - LOADER_FRAMES.start.get()).div_ceil(32) as usize;
 
 impl LoaderMemory {
-    fn holds(&self, frame: u32) -> bool {
+    fn holds(&self, frame: Pfn) -> bool {
         let bit = frame - LOADER_FRAMES.start;
         self.0[(bit / 32) as usize] & 1 << (bit % 32) != 0
     }
@@ -90,7 +92,7 @@ static LOADER_MEMORY: InitOnce<LoaderMemory> = InitOnce::new();
 
 /// The disk image's module, physical bytes, recorded by [`boot_init`]: none when the boot loader
 /// loaded none.
-static DISK_MODULE: InitOnce<Option<Range<u32>>> = InitOnce::new();
+static DISK_MODULE: InitOnce<Option<Range<PhysAddr>>> = InitOnce::new();
 
 /// The pages of physical memory the boot's memory picture describes, recorded by [`boot_init`]
 /// ([`BootMemoryPlan::physical_pages`]).
@@ -113,7 +115,7 @@ fn image_size(headers: &[u8]) -> Option<u32> {
 ///
 /// The headers are not a PE32 image's, or the image ends past the kernel image window (the boot
 /// loader checks the same before it enters the kernel): its last pages would be unmapped.
-fn image_frames() -> Range<u32> {
+fn image_frames() -> Range<Pfn> {
     // SAFETY: the boot loader mapped the image at its base, its headers in its first page, inside
     // the kernel image window; nothing writes the headers.
     let headers =
@@ -125,7 +127,7 @@ fn image_frames() -> Range<u32> {
         "the kernel image ends at {end:#010x}, past its window's end {:#010x}",
         KERNEL_IMAGE.end()
     );
-    IMAGE_FIRST_FRAME..(end as u32 - KERNEL_BASE).div_ceil(PAGE_SIZE)
+    IMAGE_FIRST_FRAME..Pfn::new((end as u32 - KERNEL_BASE).div_ceil(PAGE_SIZE))
 }
 
 /// The end of the boot identity window: until the low identity mapping is torn down, physical
@@ -194,7 +196,7 @@ pub fn boot_init(multiboot_info_addr: u32) {
     // A module holding no bytes is no disk; one that does is withheld whole, every frame holding
     // any of its bytes.
     let module = module.filter(|module| module.bytes().is_some());
-    let withheld = module.map_or(0..0, |module| module.frames());
+    let withheld = module.map_or(Pfn::ZERO..Pfn::ZERO, |module| module.frames());
     DISK_MODULE.set(module.and_then(|module| module.bytes()));
     let Some(source) = source else {
         panic!("Multiboot info carries no memory information");
@@ -237,7 +239,9 @@ pub fn boot_init(multiboot_info_addr: u32) {
             .withholding(placement.storage);
         let mut loader = LoaderMemory([0; LOADER_WORDS]);
         for run in after.released_runs() {
-            for frame in run.start.max(LOADER_FRAMES.start)..run.end.min(LOADER_FRAMES.end) {
+            for frame in
+                phys::frames(run.start.max(LOADER_FRAMES.start)..run.end.min(LOADER_FRAMES.end))
+            {
                 let bit = frame - LOADER_FRAMES.start;
                 loader.0[(bit / 32) as usize] |= 1 << (bit % 32);
             }
@@ -249,7 +253,7 @@ pub fn boot_init(multiboot_info_addr: u32) {
         // mode set reports none.
         let run = TRAMPOLINE_FIRST_FRAME..TRAMPOLINE_FIRST_FRAME + TRAMPOLINE_FRAMES;
         if plan.reserves(run.clone()) {
-            for frame in run {
+            for frame in phys::frames(run) {
                 db.take(frame);
             }
             TRAMPOLINE_RESERVED.store(true, Ordering::Relaxed);
@@ -267,7 +271,7 @@ pub fn boot_init(multiboot_info_addr: u32) {
 fn map_database(placement: &DatabasePlacement) -> &'static mut [FrameEntry] {
     super::paging::map_frame_database(placement.tables.clone(), placement.storage.clone());
     let entries = FRAME_DATABASE.start as *mut FrameEntry;
-    let len = placement.frames as usize;
+    let len = placement.frames.index();
     // SAFETY: the region maps the storage from its start, `DatabasePlacement::pages(frames)`
     // pages, enough for `len` entries; the storage's frames are withheld from the frame database
     // for the kernel's lifetime, so nothing else ever writes them. The region is aligned for
@@ -300,7 +304,7 @@ pub fn physical_pages() -> u32 {
 pub fn release_loader_memory() {
     let loader = LOADER_MEMORY.get();
     with_frame_db(|db| {
-        for frame in LOADER_FRAMES.filter(|&frame| loader.holds(frame)) {
+        for frame in phys::frames(LOADER_FRAMES).filter(|&frame| loader.holds(frame)) {
             db.release(frame, FrameState::Free);
         }
     });
@@ -312,7 +316,7 @@ pub fn release_loader_memory() {
 /// # Panics
 ///
 /// Called before [`boot_init`].
-pub fn disk_module() -> Option<Range<u32>> {
+pub fn disk_module() -> Option<Range<PhysAddr>> {
     DISK_MODULE.get().clone()
 }
 
@@ -369,7 +373,7 @@ mod tests {
     /// image, which starts on the window's second directory entry.
     #[test]
     fn the_loader_frames_lead_up_to_the_image() {
-        assert_eq!(LOADER_FRAMES, 0x100..0x400);
+        assert_eq!(LOADER_FRAMES, phys::frame_run(0x100..0x400));
         assert_eq!(IMAGE_FIRST_FRAME, LOADER_FRAMES.end);
         assert_eq!(
             LOADER_WORDS * 32,
@@ -377,7 +381,7 @@ mod tests {
         );
         let mut loader = LoaderMemory([0; LOADER_WORDS]);
         loader.0[1] = 1 << 3;
-        assert!(loader.holds(0x100 + 35));
-        assert!(!loader.holds(0x100 + 34) && !loader.holds(0x100));
+        assert!(loader.holds(Pfn::new(0x100 + 35)));
+        assert!(!loader.holds(Pfn::new(0x100 + 34)) && !loader.holds(Pfn::new(0x100)));
     }
 }

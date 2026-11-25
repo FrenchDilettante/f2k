@@ -10,7 +10,8 @@
 //! the paging-file slice implements [`PagingIo`], tests use a fake. Frame contents are reached
 //! through a [`FrameMemory`] accessor, so this module is pure bookkeeping: no unsafe, no hardware.
 
-use super::frame::{FrameDb, FrameHooks, FrameId, FrameState, UnlinkOutcome};
+use super::frame::{FrameDb, FrameHooks, FrameState, UnlinkOutcome};
+use super::phys::Pfn;
 use super::vm::PAGE;
 
 /// Page size in bytes: the unit of every backing-store slot and frame-page access.
@@ -46,9 +47,9 @@ pub trait PagingIo {
 /// use a flat per-frame page table (the fake frame source).
 pub trait FrameMemory {
     /// Copy the frame's page into `page`.
-    fn read_page(&mut self, frame: FrameId, page: &mut [u8]);
+    fn read_page(&mut self, frame: Pfn, page: &mut [u8]);
     /// Copy `page` into the frame's page.
-    fn write_page(&mut self, frame: FrameId, page: &[u8]);
+    fn write_page(&mut self, frame: Pfn, page: &[u8]);
 }
 
 /// Why a page-out failed. On every failure the frame is left back on the Modified list.
@@ -76,7 +77,7 @@ pub enum PageInError {
 }
 
 /// Assert the frame is in use (off-list) and release it onto `state`'s list.
-fn evict<H: FrameHooks>(db: &mut FrameDb<H>, frame: FrameId, state: FrameState) {
+fn evict<H: FrameHooks>(db: &mut FrameDb<H>, frame: Pfn, state: FrameState) {
     assert_eq!(
         db.entry(frame).state,
         FrameState::Active,
@@ -86,17 +87,17 @@ fn evict<H: FrameHooks>(db: &mut FrameDb<H>, frame: FrameId, state: FrameState) 
 }
 
 /// Move an in-use frame to the Standby list: a clean page evicted from its last mapping.
-pub fn to_standby<H: FrameHooks>(db: &mut FrameDb<H>, frame: FrameId) {
+pub fn to_standby<H: FrameHooks>(db: &mut FrameDb<H>, frame: Pfn) {
     evict(db, frame, FrameState::Standby);
 }
 
 /// Move an in-use frame to the Modified list: a dirty page awaiting write-out.
-pub fn to_modified<H: FrameHooks>(db: &mut FrameDb<H>, frame: FrameId) {
+pub fn to_modified<H: FrameHooks>(db: &mut FrameDb<H>, frame: Pfn) {
     evict(db, frame, FrameState::Modified);
 }
 
 /// Move an in-use frame to the ModifiedNoWrite list: dirty, but write-back is suppressed.
-pub fn to_modified_no_write<H: FrameHooks>(db: &mut FrameDb<H>, frame: FrameId) {
+pub fn to_modified_no_write<H: FrameHooks>(db: &mut FrameDb<H>, frame: Pfn) {
     evict(db, frame, FrameState::ModifiedNoWrite);
 }
 
@@ -109,7 +110,7 @@ pub fn page_out<H: FrameHooks, Io: PagingIo, Mem: FrameMemory>(
     io: &mut Io,
     mem: &mut Mem,
     buf: &mut [u8; PAGE_SIZE],
-    frame: FrameId,
+    frame: Pfn,
 ) -> Result<SlotId, PageOutError> {
     if db.entry(frame).state != FrameState::Modified {
         return Err(PageOutError::NotModified);
@@ -147,7 +148,7 @@ pub fn page_in<H: FrameHooks, Io: PagingIo, Mem: FrameMemory>(
     io: &mut Io,
     mem: &mut Mem,
     buf: &mut [u8; PAGE_SIZE],
-    frame: FrameId,
+    frame: Pfn,
     slot: SlotId,
 ) -> Result<(), PageInError> {
     if db.entry(frame).state != FrameState::Active {
@@ -248,7 +249,7 @@ impl WriterPolicy {
 /// queue is caller-owned storage, borrowed for the writer's lifetime like the frame database's
 /// table (the kernel's is a static over the whole frame range; tests leak a small slice).
 pub struct PageWriter {
-    queue: &'static mut [FrameId],
+    queue: &'static mut [Pfn],
     head: usize,
     len: usize,
     policy: WriterPolicy,
@@ -257,7 +258,7 @@ pub struct PageWriter {
 impl PageWriter {
     /// A writer over `queue` with the given `policy`. The queue must hold a full `modified_max`
     /// batch, so a policy-driven pass never overflows it.
-    pub fn new(queue: &'static mut [FrameId], policy: WriterPolicy) -> Self {
+    pub fn new(queue: &'static mut [Pfn], policy: WriterPolicy) -> Self {
         assert!(
             policy.modified_max as usize <= queue.len(),
             "the writer queue must hold a full modified_max batch"
@@ -281,7 +282,7 @@ impl PageWriter {
     }
 
     /// Append at the tail of the ring buffer.
-    fn push(&mut self, frame: FrameId) {
+    fn push(&mut self, frame: Pfn) {
         assert!(
             self.len < self.queue.len(),
             "writer queue full: run a pass first"
@@ -292,7 +293,7 @@ impl PageWriter {
     }
 
     /// Take the head of the ring buffer (the oldest queued frame).
-    fn pop(&mut self) -> Option<FrameId> {
+    fn pop(&mut self) -> Option<Pfn> {
         if self.len == 0 {
             return None;
         }
@@ -303,31 +304,31 @@ impl PageWriter {
     }
 
     /// Evict a clean page to Standby.
-    pub fn evict_clean<H: FrameHooks>(&mut self, db: &mut FrameDb<H>, frame: FrameId) {
+    pub fn evict_clean<H: FrameHooks>(&mut self, db: &mut FrameDb<H>, frame: Pfn) {
         to_standby(db, frame);
     }
 
     /// Evict a dirty page to the Modified list and queue it at the tail, so a pass writes the
     /// oldest dirty page first.
-    pub fn evict_dirty<H: FrameHooks>(&mut self, db: &mut FrameDb<H>, frame: FrameId) {
+    pub fn evict_dirty<H: FrameHooks>(&mut self, db: &mut FrameDb<H>, frame: Pfn) {
         to_modified(db, frame);
         self.push(frame);
     }
 
     /// Queue a frame already on the Modified list for the next pass, without moving it again (a
     /// page already marked modified whose eviction a relief pass found).
-    pub fn requeue(&mut self, frame: FrameId) {
+    pub fn requeue(&mut self, frame: Pfn) {
         self.push(frame);
     }
 
     /// Take the oldest queued frame off the queue, for a pass driven step by step (the target's
     /// staged page-out runs between database borrows, so it cannot call [`run_planned`] whole).
-    pub fn pop_queued(&mut self) -> Option<FrameId> {
+    pub fn pop_queued(&mut self) -> Option<Pfn> {
         self.pop()
     }
 
     /// Evict a dirty page whose write-back is suppressed; it is not queued.
-    pub fn evict_no_write<H: FrameHooks>(&mut self, db: &mut FrameDb<H>, frame: FrameId) {
+    pub fn evict_no_write<H: FrameHooks>(&mut self, db: &mut FrameDb<H>, frame: Pfn) {
         to_modified_no_write(db, frame);
     }
 
@@ -373,7 +374,7 @@ impl PageWriter {
         mem: &mut Mem,
         buf: &mut [u8; PAGE_SIZE],
         plan: WriterPlan,
-        done: &mut impl FnMut(FrameId, SlotId) -> bool,
+        done: &mut impl FnMut(Pfn, SlotId) -> bool,
     ) -> PassReport {
         let mut report = PassReport::default();
         let mut remaining = if plan.run { plan.count } else { 0 };
@@ -424,7 +425,7 @@ mod tests {
     }
 
     fn new_writer(policy: WriterPolicy) -> PageWriter {
-        let queue: &'static mut [FrameId] = Box::leak(vec![0; 256].into_boxed_slice());
+        let queue: &'static mut [Pfn] = Box::leak(vec![Pfn::ZERO; 256].into_boxed_slice());
         PageWriter::new(queue, policy)
     }
 
@@ -522,8 +523,8 @@ mod tests {
             }
         }
 
-        fn fill(&mut self, frame: FrameId, byte: u8) {
-            self.pages[frame as usize] = [byte; PAGE_SIZE];
+        fn fill(&mut self, frame: Pfn, byte: u8) {
+            self.pages[frame.index()] = [byte; PAGE_SIZE];
         }
 
         fn pattern() -> [u8; PAGE_SIZE] {
@@ -534,24 +535,24 @@ mod tests {
             page
         }
 
-        fn fill_pattern(&mut self, frame: FrameId) {
-            self.pages[frame as usize] = Self::pattern();
+        fn fill_pattern(&mut self, frame: Pfn) {
+            self.pages[frame.index()] = Self::pattern();
         }
 
-        fn page(&self, frame: FrameId) -> [u8; PAGE_SIZE] {
-            self.pages[frame as usize]
+        fn page(&self, frame: Pfn) -> [u8; PAGE_SIZE] {
+            self.pages[frame.index()]
         }
     }
 
     impl FrameMemory for FakeMem {
-        fn read_page(&mut self, frame: FrameId, page: &mut [u8]) {
+        fn read_page(&mut self, frame: Pfn, page: &mut [u8]) {
             assert_eq!(page.len(), PAGE_SIZE);
-            page.copy_from_slice(&self.pages[frame as usize]);
+            page.copy_from_slice(&self.pages[frame.index()]);
         }
 
-        fn write_page(&mut self, frame: FrameId, page: &[u8]) {
+        fn write_page(&mut self, frame: Pfn, page: &[u8]) {
             assert_eq!(page.len(), PAGE_SIZE);
-            self.pages[frame as usize].copy_from_slice(page);
+            self.pages[frame.index()].copy_from_slice(page);
         }
     }
 
@@ -573,7 +574,7 @@ mod tests {
             }
         }
 
-        fn out(&mut self, frame: FrameId) -> Result<SlotId, PageOutError> {
+        fn out(&mut self, frame: Pfn) -> Result<SlotId, PageOutError> {
             page_out(
                 &mut self.db,
                 &mut self.io,
@@ -583,7 +584,7 @@ mod tests {
             )
         }
 
-        fn page_in(&mut self, frame: FrameId, slot: SlotId) -> Result<(), PageInError> {
+        fn page_in(&mut self, frame: Pfn, slot: SlotId) -> Result<(), PageInError> {
             page_in(
                 &mut self.db,
                 &mut self.io,
@@ -598,18 +599,18 @@ mod tests {
     #[test]
     fn eviction_moves_a_frame_onto_the_matching_list() {
         let mut db = new_db();
-        to_standby(&mut db, 3);
-        assert_eq!(db.entry(3).state, FrameState::Standby);
+        to_standby(&mut db, Pfn::new(3));
+        assert_eq!(db.entry(Pfn::new(3)).state, FrameState::Standby);
         assert_eq!(db.list_total(FrameState::Standby), 1);
         assert_eq!(db.available(), 1);
 
-        to_modified(&mut db, 4);
-        assert_eq!(db.entry(4).state, FrameState::Modified);
+        to_modified(&mut db, Pfn::new(4));
+        assert_eq!(db.entry(Pfn::new(4)).state, FrameState::Modified);
         assert_eq!(db.list_total(FrameState::Modified), 1);
         assert_eq!(db.available(), 1, "a modified page is not available");
 
-        to_modified_no_write(&mut db, 5);
-        assert_eq!(db.entry(5).state, FrameState::ModifiedNoWrite);
+        to_modified_no_write(&mut db, Pfn::new(5));
+        assert_eq!(db.entry(Pfn::new(5)).state, FrameState::ModifiedNoWrite);
         assert_eq!(db.list_total(FrameState::ModifiedNoWrite), 1);
         assert_eq!(db.audit(), Ok(()));
     }
@@ -618,8 +619,8 @@ mod tests {
     #[should_panic(expected = "not in use")]
     fn evicting_a_listed_frame_panics() {
         let mut db = new_db();
-        to_standby(&mut db, 3);
-        to_modified(&mut db, 3);
+        to_standby(&mut db, Pfn::new(3));
+        to_modified(&mut db, Pfn::new(3));
     }
 
     #[test]
@@ -667,19 +668,19 @@ mod tests {
     #[test]
     #[should_panic(expected = "queue")]
     fn writer_rejects_a_queue_smaller_than_modified_max() {
-        let queue: &'static mut [FrameId] = Box::leak(vec![0; 4].into_boxed_slice());
+        let queue: &'static mut [Pfn] = Box::leak(vec![Pfn::ZERO; 4].into_boxed_slice());
         PageWriter::new(queue, WriterPolicy::new(1, 8, 1, 1));
     }
 
     #[test]
     fn page_out_writes_the_page_and_moves_the_frame_to_standby() {
         let mut rig = Rig::new(4);
-        rig.mem.fill(7, 0xAB);
-        to_modified(&mut rig.db, 7);
-        let slot = rig.out(7).expect("page-out");
+        rig.mem.fill(Pfn::new(7), 0xAB);
+        to_modified(&mut rig.db, Pfn::new(7));
+        let slot = rig.out(Pfn::new(7)).expect("page-out");
         assert_ne!(slot, INVALID_SLOT);
         assert_eq!(rig.io.page(slot), [0xAB; PAGE_SIZE]);
-        assert_eq!(rig.db.entry(7).state, FrameState::Standby);
+        assert_eq!(rig.db.entry(Pfn::new(7)).state, FrameState::Standby);
         assert_eq!(rig.db.list_total(FrameState::Modified), 0);
         assert_eq!(rig.db.available(), 1, "a standby page is available again");
         assert_eq!(rig.db.audit(), Ok(()));
@@ -688,9 +689,9 @@ mod tests {
     #[test]
     fn page_out_without_a_free_slot_leaves_the_frame_modified() {
         let mut rig = Rig::new(0); // no slots at all
-        to_modified(&mut rig.db, 7);
-        assert_eq!(rig.out(7), Err(PageOutError::NoSlot));
-        assert_eq!(rig.db.entry(7).state, FrameState::Modified);
+        to_modified(&mut rig.db, Pfn::new(7));
+        assert_eq!(rig.out(Pfn::new(7)), Err(PageOutError::NoSlot));
+        assert_eq!(rig.db.entry(Pfn::new(7)).state, FrameState::Modified);
         assert_eq!(rig.io.used_slots(), 0);
         assert_eq!(rig.db.audit(), Ok(()));
     }
@@ -699,9 +700,9 @@ mod tests {
     fn page_out_write_failure_releases_the_slot_and_returns_to_modified() {
         let mut rig = Rig::new(2);
         rig.io.fail_writes = true;
-        to_modified(&mut rig.db, 7);
-        assert_eq!(rig.out(7), Err(PageOutError::WriteFailed));
-        assert_eq!(rig.db.entry(7).state, FrameState::Modified);
+        to_modified(&mut rig.db, Pfn::new(7));
+        assert_eq!(rig.out(Pfn::new(7)), Err(PageOutError::WriteFailed));
+        assert_eq!(rig.db.entry(Pfn::new(7)).state, FrameState::Modified);
         assert_eq!(
             rig.io.freed.len(),
             1,
@@ -718,19 +719,19 @@ mod tests {
     #[test]
     fn page_out_rejects_a_frame_that_is_not_modified() {
         let mut rig = Rig::new(2);
-        to_standby(&mut rig.db, 7);
-        assert_eq!(rig.out(7), Err(PageOutError::NotModified));
-        assert_eq!(rig.db.entry(7).state, FrameState::Standby);
+        to_standby(&mut rig.db, Pfn::new(7));
+        assert_eq!(rig.out(Pfn::new(7)), Err(PageOutError::NotModified));
+        assert_eq!(rig.db.entry(Pfn::new(7)).state, FrameState::Standby);
 
-        to_modified_no_write(&mut rig.db, 8);
+        to_modified_no_write(&mut rig.db, Pfn::new(8));
         assert_eq!(
-            rig.out(8),
+            rig.out(Pfn::new(8)),
             Err(PageOutError::NotModified),
             "never written out"
         );
 
         assert_eq!(
-            rig.out(9),
+            rig.out(Pfn::new(9)),
             Err(PageOutError::NotModified),
             "an in-use frame is off-list"
         );
@@ -743,14 +744,14 @@ mod tests {
         let mut rig = Rig::new(4);
 
         // A dirty page with a known pattern is evicted and written out.
-        rig.mem.fill_pattern(7);
-        to_modified(&mut rig.db, 7);
-        let slot = rig.out(7).expect("page-out");
-        assert_eq!(rig.db.entry(7).state, FrameState::Standby);
+        rig.mem.fill_pattern(Pfn::new(7));
+        to_modified(&mut rig.db, Pfn::new(7));
+        let slot = rig.out(Pfn::new(7)).expect("page-out");
+        assert_eq!(rig.db.entry(Pfn::new(7)).state, FrameState::Standby);
 
         // The frame is reused for something else and zeroed.
         let frame = rig.db.allocate_zeroed(PRIMARY_COLOR);
-        assert_eq!(frame, 7, "the only standby frame is reused");
+        assert_eq!(frame, Pfn::new(7), "the only standby frame is reused");
         rig.mem.fill(frame, 0);
 
         // The page is faulted back in from its slot.
@@ -774,9 +775,9 @@ mod tests {
     #[test]
     fn page_in_read_failure_leaves_frame_and_slot_untouched() {
         let mut rig = Rig::new(4);
-        rig.mem.fill(7, 0x5A);
-        to_modified(&mut rig.db, 7);
-        let slot = rig.out(7).expect("page-out");
+        rig.mem.fill(Pfn::new(7), 0x5A);
+        to_modified(&mut rig.db, Pfn::new(7));
+        let slot = rig.out(Pfn::new(7)).expect("page-out");
 
         let frame = rig.db.allocate_zeroed(PRIMARY_COLOR);
         rig.mem.fill(frame, 0xEE);
@@ -794,10 +795,13 @@ mod tests {
     #[test]
     fn page_in_rejects_a_listed_frame_and_the_invalid_slot() {
         let mut rig = Rig::new(2);
-        to_standby(&mut rig.db, 7);
-        assert_eq!(rig.page_in(7, 1), Err(PageInError::NotActive));
+        to_standby(&mut rig.db, Pfn::new(7));
+        assert_eq!(rig.page_in(Pfn::new(7), 1), Err(PageInError::NotActive));
         // Frame 8 was never listed: it is in use.
-        assert_eq!(rig.page_in(8, INVALID_SLOT), Err(PageInError::InvalidSlot));
+        assert_eq!(
+            rig.page_in(Pfn::new(8), INVALID_SLOT),
+            Err(PageInError::InvalidSlot)
+        );
     }
 
     #[test]
@@ -820,13 +824,13 @@ mod tests {
 
         // Some free frames, so the free count alone does not trigger a pass.
         for f in 20..50u32 {
-            rig.db.release(f, FrameState::Free);
+            rig.db.release(Pfn::new(f), FrameState::Free);
         }
         assert_eq!(rig.db.available(), 30);
 
         for (i, f) in [10u32, 11, 12].iter().enumerate() {
-            rig.mem.fill(*f, 0xA0 + i as u8);
-            writer.evict_dirty(&mut rig.db, *f);
+            rig.mem.fill(Pfn::new(*f), 0xA0 + i as u8);
+            writer.evict_dirty(&mut rig.db, Pfn::new(*f));
         }
         assert_eq!(writer.queued(), 3);
 
@@ -852,10 +856,10 @@ mod tests {
             [0xA1; PAGE_SIZE],
             "then frame 11"
         );
-        assert_eq!(rig.db.entry(10).state, FrameState::Standby);
-        assert_eq!(rig.db.entry(11).state, FrameState::Standby);
+        assert_eq!(rig.db.entry(Pfn::new(10)).state, FrameState::Standby);
+        assert_eq!(rig.db.entry(Pfn::new(11)).state, FrameState::Standby);
         assert_eq!(
-            rig.db.entry(12).state,
+            rig.db.entry(Pfn::new(12)).state,
             FrameState::Modified,
             "not in this batch"
         );
@@ -868,7 +872,7 @@ mod tests {
         }
         let report = writer.run_pass(&mut rig.db, &mut rig.io, &mut rig.mem, &mut rig.buf);
         assert_eq!(report, want_report(1, 0, 0));
-        assert_eq!(rig.db.entry(12).state, FrameState::Standby);
+        assert_eq!(rig.db.entry(Pfn::new(12)).state, FrameState::Standby);
         assert_eq!(writer.queued(), 0);
         assert_eq!(rig.db.list_total(FrameState::Modified), 0);
         assert_eq!(rig.db.audit(), Ok(()));
@@ -880,7 +884,7 @@ mod tests {
         let policy = WriterPolicy::new(10, 100, 2, 8);
         let mut writer = new_writer(policy);
         for f in [10u32, 11, 12] {
-            writer.evict_dirty(&mut rig.db, f);
+            writer.evict_dirty(&mut rig.db, Pfn::new(f));
         }
         // 0 available < goal 10: run, writing 3 modified down towards 2 -> 1 page.
         let report = writer.run_pass(&mut rig.db, &mut rig.io, &mut rig.mem, &mut rig.buf);
@@ -904,20 +908,20 @@ mod tests {
         let mut rig = Rig::new(8);
         let policy = WriterPolicy::new(100, 100, 0, 10);
         let mut writer = new_writer(policy);
-        rig.mem.fill(10, 0x10);
-        rig.mem.fill(12, 0x12);
-        writer.evict_dirty(&mut rig.db, 10);
-        writer.evict_dirty(&mut rig.db, 11);
-        writer.evict_dirty(&mut rig.db, 12);
+        rig.mem.fill(Pfn::new(10), 0x10);
+        rig.mem.fill(Pfn::new(12), 0x12);
+        writer.evict_dirty(&mut rig.db, Pfn::new(10));
+        writer.evict_dirty(&mut rig.db, Pfn::new(11));
+        writer.evict_dirty(&mut rig.db, Pfn::new(12));
         // Frame 11 is re-activated behind the writer's back.
-        assert_eq!(rig.db.unlink(11), UnlinkOutcome::Unlinked);
+        assert_eq!(rig.db.unlink(Pfn::new(11)), UnlinkOutcome::Unlinked);
 
         rig.io.fail_writes = true;
         let plan = want_plan(true, 3);
         let report = writer.run_planned(&mut rig.db, &mut rig.io, &mut rig.mem, &mut rig.buf, plan);
         assert_eq!(report, want_report(0, 2, 1));
-        assert_eq!(rig.db.entry(10).state, FrameState::Modified);
-        assert_eq!(rig.db.entry(12).state, FrameState::Modified);
+        assert_eq!(rig.db.entry(Pfn::new(10)).state, FrameState::Modified);
+        assert_eq!(rig.db.entry(Pfn::new(12)).state, FrameState::Modified);
         assert_eq!(writer.queued(), 2, "the failures are re-queued");
 
         rig.io.fail_writes = false;
@@ -940,14 +944,14 @@ mod tests {
         let mut rig = Rig::new(1); // one slot
         let policy = WriterPolicy::new(100, 100, 0, 10);
         let mut writer = new_writer(policy);
-        writer.evict_dirty(&mut rig.db, 10);
-        writer.evict_dirty(&mut rig.db, 11);
+        writer.evict_dirty(&mut rig.db, Pfn::new(10));
+        writer.evict_dirty(&mut rig.db, Pfn::new(11));
         let plan = want_plan(true, 2);
         let report = writer.run_planned(&mut rig.db, &mut rig.io, &mut rig.mem, &mut rig.buf, plan);
         assert_eq!(report, want_report(1, 1, 0));
-        assert_eq!(rig.db.entry(10).state, FrameState::Standby);
+        assert_eq!(rig.db.entry(Pfn::new(10)).state, FrameState::Standby);
         assert_eq!(
-            rig.db.entry(11).state,
+            rig.db.entry(Pfn::new(11)).state,
             FrameState::Modified,
             "no slot: back to modified"
         );
@@ -968,17 +972,20 @@ mod tests {
         let mut rig = Rig::new(8);
         let policy = WriterPolicy::new(100, 100, 0, 10);
         let mut writer = new_writer(policy);
-        writer.evict_clean(&mut rig.db, 10);
-        writer.evict_no_write(&mut rig.db, 11);
-        assert_eq!(rig.db.entry(10).state, FrameState::Standby);
-        assert_eq!(rig.db.entry(11).state, FrameState::ModifiedNoWrite);
+        writer.evict_clean(&mut rig.db, Pfn::new(10));
+        writer.evict_no_write(&mut rig.db, Pfn::new(11));
+        assert_eq!(rig.db.entry(Pfn::new(10)).state, FrameState::Standby);
+        assert_eq!(
+            rig.db.entry(Pfn::new(11)).state,
+            FrameState::ModifiedNoWrite
+        );
         assert_eq!(writer.queued(), 0);
 
         // Available (1) is below the goal, but nothing is on the modified list: idle.
         let report = writer.run_pass(&mut rig.db, &mut rig.io, &mut rig.mem, &mut rig.buf);
         assert_eq!(report, PassReport::default());
         assert_eq!(
-            rig.db.entry(11).state,
+            rig.db.entry(Pfn::new(11)).state,
             FrameState::ModifiedNoWrite,
             "never written out"
         );

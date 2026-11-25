@@ -55,7 +55,7 @@ use crate::mem::paging::KERNEL_BASE;
 use crate::sync::InitOnce;
 
 /// The run's physical address: fixed, because the real-mode segment is derived from it.
-const RUN: u32 = TRAMPOLINE_FIRST_FRAME * 0x1000;
+const RUN: u32 = TRAMPOLINE_FIRST_FRAME.addr().get();
 /// The real-mode segment whose base is the run: 0x9000 (real mode takes base = segment << 4).
 const RUN_SEGMENT: u16 = (RUN >> 4) as u16;
 

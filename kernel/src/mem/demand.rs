@@ -194,10 +194,11 @@ pub fn scan_pages(
 pub mod target {
     use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
-    use super::super::frame::{FrameId, FrameState, UnlinkOutcome};
+    use super::super::frame::{FrameState, UnlinkOutcome};
+    use super::super::phys::{Pfn, PhysAddr};
     use crate::mem::pageout::{self, SlotId, PAGE_SIZE};
     use crate::mem::pagingfile::with_paging_file;
-    use crate::mem::vm::{self, CurrentPages, Pages, PAGE};
+    use crate::mem::vm::{self, CurrentPages, Pages};
     use crate::mem::{self, Parts};
 
     /// How many victims one relief selects at most: the trim batch the hook relieves with.
@@ -269,11 +270,11 @@ pub mod target {
     /// Commit the resolved victim `frame` to the write-out (the trim's `evict_dirty` callback):
     /// its page goes to a fresh paging-file slot below, so the slot it already holds is not used
     /// — a resident page holds none.
-    pub fn queue_dirty(frame: FrameId, slot: SlotId) {
+    pub fn queue_dirty(frame: Pfn, slot: SlotId) {
         let _ = slot;
         let count = VICTIM_COUNT.load(Ordering::Acquire);
         for victim in &mut victims()[..count] {
-            if !victim.committed && victim.frame / PAGE == frame {
+            if !victim.committed && PhysAddr::new(victim.frame).pfn() == frame {
                 victim.committed = true;
                 return;
             }
@@ -350,7 +351,7 @@ pub mod target {
     /// one naming its frame — is instead written out from there: the frame off the standby list,
     /// its hold dropped (the entry is about to name a paging-file slot), onto the Modified list.
     fn evict(victim: Victim) -> bool {
-        let fid = victim.frame / PAGE;
+        let fid = PhysAddr::new(victim.frame).pfn();
         let mut queued = false;
         let mut already_soft = false;
         mem::with_database(|db| {
@@ -484,14 +485,14 @@ pub mod target {
             } = db.parts();
             for index in 0..count {
                 let victim = victims()[index];
-                let fid = victim.frame / PAGE;
+                let fid = PhysAddr::new(victim.frame).pfn();
                 if frames.entry(fid).state != FrameState::Modified {
                     continue;
                 }
                 if frames.unlink(fid) != UnlinkOutcome::Unlinked {
                     continue;
                 }
-                scratch.read_frame(victim.frame, 0, batch_page(total));
+                scratch.read_frame(PhysAddr::new(victim.frame), 0, batch_page(total));
                 copied[index] = true;
                 page_of[index] = total as u32;
                 total += 1;
@@ -556,7 +557,7 @@ pub mod target {
                 continue;
             }
             let victim = victims()[index];
-            let fid = victim.frame / PAGE;
+            let fid = PhysAddr::new(victim.frame).pfn();
             if page_of[index] >= want as u32 {
                 mem::with_database(|db| db.parts().frames.release(fid, FrameState::Modified));
                 continue;
@@ -606,7 +607,7 @@ pub mod target {
             let Parts { frames, .. } = db.parts();
             for index in 0..count {
                 if copied[index] {
-                    frames.release(victims()[index].frame / PAGE, state);
+                    frames.release(PhysAddr::new(victims()[index].frame).pfn(), state);
                 }
             }
         });

@@ -109,7 +109,7 @@ pub fn listed() -> impl Iterator<Item = &'static Process> {
 /// caller's.
 #[cfg(target_arch = "x86")]
 pub(super) fn create(
-    dir_phys: u32,
+    dir_phys: crate::mem::phys::PhysAddr,
     name: super::ProcessName,
     leg: Option<u32>,
     parent_id: u32,

@@ -45,6 +45,7 @@
 //! ([`Maximum::Write`]): the system DLLs' pages, an image's, the shared data page and a
 //! copy-on-write or read-only view's section stay as their holders made them.
 
+use super::phys::PhysAddr;
 use super::pte::{self, PteKind};
 use super::quota::CommitQuota;
 
@@ -1385,16 +1386,16 @@ impl SectionFrames {
 /// `protect`: the kernel's own areas (the image, the stacks' first pages, the TEB, the parameters,
 /// the stubs), each mapped once inside its region.
 #[cfg(target_arch = "x86")]
-pub fn map_prepared(space: &mut AddressSpace, va: u32, frame: u32, protect: u32) {
+pub fn map_prepared(space: &mut AddressSpace, va: u32, frame: PhysAddr, protect: u32) {
     space
-        .map_frame(&mut CurrentPages, va, frame, protect)
+        .map_frame(&mut CurrentPages, va, frame.get(), protect)
         .expect("the kernel's own pages map once, inside their regions");
 }
 
 /// A zeroed frame of the kernel's, mapped at `va` in `space` (the running process's) with
 /// `protect`: the frame, for the caller to fill.
 #[cfg(target_arch = "x86")]
-pub fn map_zeroed(space: &mut AddressSpace, va: u32, protect: u32) -> u32 {
+pub fn map_zeroed(space: &mut AddressSpace, va: u32, protect: u32) -> PhysAddr {
     let frame = crate::mem::paging::allocate_frame_phys();
     crate::mem::paging::init_frame(frame, 0, &[]);
     map_prepared(space, va, frame, protect);
@@ -1405,6 +1406,11 @@ pub fn map_zeroed(space: &mut AddressSpace, va: u32, protect: u32) -> u32 {
 /// while attached the one it attached to (see [`crate::sched::attach`]) — and the frame database.
 #[cfg(target_arch = "x86")]
 pub struct CurrentPages;
+
+/// The frame an entry's frame field (a physical address) names, as the frame database counts it.
+fn frame_number(frame: u32) -> crate::mem::phys::Pfn {
+    PhysAddr::new(frame).pfn()
+}
 
 #[cfg(target_arch = "x86")]
 impl Pages for CurrentPages {
@@ -1426,14 +1432,13 @@ impl Pages for CurrentPages {
             }
             db.try_allocate(crate::mem::frame::PRIMARY_COLOR)
         })?;
-        let phys = frame * PAGE;
-        crate::mem::paging::init_frame(phys, 0, &[]);
-        Some(phys)
+        crate::mem::paging::init_frame(frame.addr(), 0, &[]);
+        Some(frame.addr().get())
     }
 
     fn free_frame(&mut self, frame: u32) {
         crate::mem::bootmem::with_frame_db(|db| {
-            let fid = frame / PAGE;
+            let fid = frame_number(frame);
             // A frame on a backing list (a transition entry's, dropped without being read back)
             // comes off it first.
             let listed = matches!(
@@ -1454,28 +1459,32 @@ impl Pages for CurrentPages {
     }
 
     fn share_frame(&mut self, frame: u32) {
-        crate::mem::bootmem::with_frame_db(|db| db.share(frame / PAGE));
+        crate::mem::bootmem::with_frame_db(|db| db.share(frame_number(frame)));
     }
 
     fn frame_shared(&self, frame: u32) -> bool {
-        crate::mem::bootmem::with_frame_db(|db| db.entry(frame / PAGE).share_count > 0)
+        crate::mem::bootmem::with_frame_db(|db| db.entry(frame_number(frame)).share_count > 0)
     }
 
     fn copy_frame(&mut self, from: u32, to: u32) {
-        crate::mem::paging::copy_frame(from, to);
+        crate::mem::paging::copy_frame(PhysAddr::new(from), PhysAddr::new(to));
     }
 
     fn frame_word(&self, frame: u32, index: u32) -> u32 {
-        crate::mem::paging::read_frame_word(frame, index as usize)
+        crate::mem::paging::read_frame_word(PhysAddr::new(frame), index as usize)
     }
 
     fn set_frame_word(&mut self, frame: u32, index: u32, value: u32) {
-        crate::mem::paging::write_frame(frame, index as usize * 4, &value.to_le_bytes());
+        crate::mem::paging::write_frame(
+            PhysAddr::new(frame),
+            index as usize * 4,
+            &value.to_le_bytes(),
+        );
     }
 
     fn activate_frame(&mut self, frame: u32) {
         crate::mem::bootmem::with_frame_db(|db| {
-            let fid = frame / PAGE;
+            let fid = frame_number(frame);
             if matches!(
                 db.entry(fid).state,
                 crate::mem::frame::FrameState::Standby
@@ -1490,21 +1499,23 @@ impl Pages for CurrentPages {
     }
 
     fn fill_frame(&mut self, frame: u32, bytes: &[u8]) {
-        crate::mem::paging::write_frame(frame, 0, bytes);
+        crate::mem::paging::write_frame(PhysAddr::new(frame), 0, bytes);
     }
 
     fn link_frame(&mut self, frame: u32, table: u32, slot: u32) {
-        let prototype = crate::mem::frame::Prototype::new(table / PAGE, slot);
-        crate::mem::bootmem::with_frame_db(|db| db.link_prototype(frame / PAGE, prototype));
+        let prototype = crate::mem::frame::Prototype::new(frame_number(table), slot);
+        crate::mem::bootmem::with_frame_db(|db| db.link_prototype(frame_number(frame), prototype));
     }
 
     fn reclaim_frame(&mut self, frame: u32, table: u32, slot: u32) -> bool {
-        let prototype = crate::mem::frame::Prototype::new(table / PAGE, slot);
-        crate::mem::bootmem::with_frame_db(|db| db.reclaim_prototype(frame / PAGE, prototype))
+        let prototype = crate::mem::frame::Prototype::new(frame_number(table), slot);
+        crate::mem::bootmem::with_frame_db(|db| {
+            db.reclaim_prototype(frame_number(frame), prototype)
+        })
     }
 
     fn cache_frame(&mut self, frame: u32) -> bool {
-        crate::mem::bootmem::with_frame_db(|db| db.park_prototype(frame / PAGE))
+        crate::mem::bootmem::with_frame_db(|db| db.park_prototype(frame_number(frame)))
     }
 
     fn discard_backing(&mut self, slot: u32) {
@@ -1706,7 +1717,10 @@ mod tests {
                 crate::mem::frame::DEFAULT_COLOR_COUNT,
                 NoHooks,
             );
-            db.release_run(1..TABLE as u32, crate::mem::frame::FrameState::Free);
+            db.release_run(
+                frame_number(PAGE)..frame_number(TABLE as u32 * PAGE),
+                crate::mem::frame::FrameState::Free,
+            );
             DbPages {
                 db,
                 words: HashMap::new(),
@@ -1714,14 +1728,14 @@ mod tests {
         }
 
         fn state(&self, frame: u32) -> crate::mem::frame::FrameState {
-            self.db.entry(frame / PAGE).state
+            self.db.entry(frame_number(frame)).state
         }
 
         /// Another use takes every frame the allocator has, standby ones included.
         fn exhaust(&mut self) -> Vec<u32> {
             let mut taken = Vec::new();
             while let Some(fid) = self.db.try_allocate(crate::mem::frame::PRIMARY_COLOR) {
-                taken.push(fid * PAGE);
+                taken.push(fid.addr().get());
             }
             taken
         }
@@ -1736,23 +1750,24 @@ mod tests {
 
         fn zeroed_frame(&mut self) -> Option<u32> {
             let fid = self.db.try_allocate(crate::mem::frame::PRIMARY_COLOR)?;
-            self.words.retain(|&(frame, _), _| frame != fid * PAGE);
-            Some(fid * PAGE)
+            self.words
+                .retain(|&(frame, _), _| frame != fid.addr().get());
+            Some(fid.addr().get())
         }
 
         fn free_frame(&mut self, frame: u32) {
-            if self.db.unshare(frame / PAGE) {
+            if self.db.unshare(frame_number(frame)) {
                 self.db
-                    .release(frame / PAGE, crate::mem::frame::FrameState::Free);
+                    .release(frame_number(frame), crate::mem::frame::FrameState::Free);
             }
         }
 
         fn share_frame(&mut self, frame: u32) {
-            self.db.share(frame / PAGE);
+            self.db.share(frame_number(frame));
         }
 
         fn frame_shared(&self, frame: u32) -> bool {
-            self.db.entry(frame / PAGE).share_count > 0
+            self.db.entry(frame_number(frame)).share_count > 0
         }
 
         fn copy_frame(&mut self, _from: u32, _to: u32) {}
@@ -1766,17 +1781,17 @@ mod tests {
         }
 
         fn link_frame(&mut self, frame: u32, table: u32, slot: u32) {
-            let prototype = crate::mem::frame::Prototype::new(table / PAGE, slot);
-            self.db.link_prototype(frame / PAGE, prototype);
+            let prototype = crate::mem::frame::Prototype::new(frame_number(table), slot);
+            self.db.link_prototype(frame_number(frame), prototype);
         }
 
         fn reclaim_frame(&mut self, frame: u32, table: u32, slot: u32) -> bool {
-            let prototype = crate::mem::frame::Prototype::new(table / PAGE, slot);
-            self.db.reclaim_prototype(frame / PAGE, prototype)
+            let prototype = crate::mem::frame::Prototype::new(frame_number(table), slot);
+            self.db.reclaim_prototype(frame_number(frame), prototype)
         }
 
         fn cache_frame(&mut self, frame: u32) -> bool {
-            self.db.park_prototype(frame / PAGE)
+            self.db.park_prototype(frame_number(frame))
         }
     }
 
@@ -1867,7 +1882,7 @@ mod tests {
         // One parked frame goes to another use, which keeps it.
         let mut taken = Vec::new();
         while let Some(fid) = pages.db.try_allocate(crate::mem::frame::PRIMARY_COLOR) {
-            taken.push(fid * PAGE);
+            taken.push(fid.addr().get());
             if taken.contains(&frames[0]) {
                 break;
             }

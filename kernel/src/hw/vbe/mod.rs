@@ -17,6 +17,8 @@
 
 use core::sync::atomic::{AtomicU8, Ordering};
 
+use crate::mem::phys::PhysAddr;
+
 #[cfg(target_arch = "x86")]
 pub mod trampoline;
 
@@ -146,7 +148,7 @@ pub struct Geometry {
     pub width: usize,
     pub height: usize,
     pub pitch: usize,
-    pub lfb_phys: u32,
+    pub lfb_phys: PhysAddr,
     red_field: u8,
     green_field: u8,
     blue_field: u8,
@@ -167,12 +169,12 @@ impl Geometry {
             width: u16::from_le_bytes([bytes[MI_WIDTH], bytes[MI_WIDTH + 1]]) as usize,
             height: u16::from_le_bytes([bytes[MI_HEIGHT], bytes[MI_HEIGHT + 1]]) as usize,
             pitch: u16::from_le_bytes([bytes[MI_PITCH], bytes[MI_PITCH + 1]]) as usize,
-            lfb_phys: u32::from_le_bytes([
+            lfb_phys: PhysAddr::new(u32::from_le_bytes([
                 bytes[MI_LFB],
                 bytes[MI_LFB + 1],
                 bytes[MI_LFB + 2],
                 bytes[MI_LFB + 3],
-            ]),
+            ])),
             red_field: bytes[MI_RED_FIELD],
             green_field: bytes[MI_GREEN_FIELD],
             blue_field: bytes[MI_BLUE_FIELD],
@@ -209,7 +211,7 @@ impl Geometry {
             width,
             height,
             pitch: width * 4,
-            lfb_phys: 0xE000_0000,
+            lfb_phys: PhysAddr::new(0xE000_0000),
             red_field: 16,
             green_field: 8,
             blue_field: 0,
@@ -391,17 +393,18 @@ pub fn list_modes<B: Bios>(bios: &mut B, list: &mut ModeList) -> Result<(), Mode
 pub fn set_graphics_mode<B: Bios>(
     bios: &mut B,
     request: &ModeRequest,
-    map: &mut impl FnMut(u32, u32) -> u32,
+    map: &mut impl FnMut(PhysAddr, u32) -> u32,
 ) -> Result<(Geometry, u32), ModeError> {
     let (mode, geometry) = choose_mode(bios, request)?;
     if !bios.set_mode(mode | LFB_REQUEST) {
         return Err(ModeError::Refused);
     }
     // The LFB is page-aligned; map its whole span, rounded up to pages.
-    let base = geometry.lfb_phys & !0xFFF;
-    let bytes = (geometry.lfb_phys - base + geometry.bytes()).div_ceil(0x1000) * 0x1000;
+    let base = geometry.lfb_phys.pfn().addr();
+    let offset = geometry.lfb_phys.page_offset();
+    let bytes = (offset + geometry.bytes()).div_ceil(0x1000) * 0x1000;
     let virtual_base = map(base, bytes);
-    Ok((geometry, virtual_base + (geometry.lfb_phys - base)))
+    Ok((geometry, virtual_base + offset))
 }
 
 /// The graphics mode's one-time set: who sets it, and what the callers that come meanwhile or
@@ -595,7 +598,7 @@ mod tests {
         assert_eq!(geometry.width, 640);
         assert_eq!(geometry.height, 480);
         assert_eq!(geometry.pitch, 2560);
-        assert_eq!(geometry.lfb_phys, 0xE000_0000);
+        assert_eq!(geometry.lfb_phys, PhysAddr::new(0xE000_0000));
         assert_eq!(geometry.bytes(), 2560 * 480);
         assert_eq!(geometry.pixel(0x00FF_0000), 0x00FF_0000, "red at field 16");
         assert_eq!(geometry.pixel(0x0000_FF00), 0x0000_FF00, "green at field 8");
@@ -623,8 +626,8 @@ mod tests {
     fn the_mode_set_maps_the_lfb() {
         let mut bios = FakeBios::new();
         let mut mapped = Vec::new();
-        let map = |base: u32, bytes: u32| {
-            mapped.push((base, bytes));
+        let map = |base: PhysAddr, bytes: u32| {
+            mapped.push((base.get(), bytes));
             0xC080_0000
         };
         let mut map = map;
@@ -633,7 +636,7 @@ mod tests {
         assert_eq!(bios.asked_set, [MODE | LFB_REQUEST]);
         assert_eq!(mapped, [(0xE000_0000, 2560 * 480)]);
         assert_eq!(va, 0xC080_0000);
-        assert_eq!(geometry.lfb_phys, 0xE000_0000);
+        assert_eq!(geometry.lfb_phys, PhysAddr::new(0xE000_0000));
     }
 
     /// A non-page-aligned LFB is mapped from its page, and the virtual base follows the offset.
@@ -665,8 +668,8 @@ mod tests {
             }
         }
         let mut mapped = Vec::new();
-        let mut map = |base: u32, bytes: u32| {
-            mapped.push((base, bytes));
+        let mut map = |base: PhysAddr, bytes: u32| {
+            mapped.push((base.get(), bytes));
             0xC080_0000
         };
         let (geometry, va) =
@@ -679,7 +682,7 @@ mod tests {
             )]
         );
         assert_eq!(va, 0xC080_0000 + 0x123);
-        assert_eq!(geometry.lfb_phys, 0xE000_0123);
+        assert_eq!(geometry.lfb_phys, PhysAddr::new(0xE000_0123));
         let _ = &mut bios;
     }
 

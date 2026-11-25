@@ -438,7 +438,7 @@ mod target {
                                 .unwrap_or_else(|| vm::soft_protect(entry));
                             crate::mem::demand::target::record_victim(
                                 va,
-                                victim.frame * vm::PAGE,
+                                victim.frame.addr().get(),
                                 protect,
                             );
                         }
@@ -455,7 +455,7 @@ mod target {
                         vm::soften_to_transition(
                             &mut vm::CurrentPages,
                             va,
-                            frame * vm::PAGE,
+                            frame.addr().get(),
                             protect,
                         );
                     },
