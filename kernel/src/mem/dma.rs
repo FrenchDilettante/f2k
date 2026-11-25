@@ -562,26 +562,28 @@ mod target {
 
 #[cfg(test)]
 mod tests {
+    use core::cell::{Cell, RefCell};
     use std::collections::BTreeMap;
     use std::vec::Vec;
 
     use super::*;
 
     /// A fake page table: virtual page -> physical frame, with a bus that translates through it.
+    /// The table sits in a cell: the store maps pages while the code under test holds the bus.
     struct FakeBus {
-        pages: BTreeMap<u32, u64>,
+        pages: RefCell<BTreeMap<u32, u64>>,
     }
 
     impl FakeBus {
         fn new() -> Self {
             FakeBus {
-                pages: BTreeMap::new(),
+                pages: RefCell::new(BTreeMap::new()),
             }
         }
 
         /// Map virtual page `va_page` to physical frame `frame`.
-        fn map_page(&mut self, va_page: u32, frame: u64) {
-            self.pages.insert(va_page, frame);
+        fn map_page(&self, va_page: u32, frame: u64) {
+            self.pages.borrow_mut().insert(va_page, frame);
         }
     }
 
@@ -589,6 +591,7 @@ mod tests {
         fn translate(&self, va: u32) -> Option<u64> {
             let page = va & !(PAGE_SIZE - 1);
             self.pages
+                .borrow()
                 .get(&page)
                 .map(|frame| *frame + (va - page) as u64)
         }
@@ -597,16 +600,16 @@ mod tests {
     /// A fake store: hands out pages from a fake pool region, mapping each in the bus's page
     /// table to the next scripted frame (the frames control contiguity), and records what it
     /// releases. With `hole`, the last page of an allocation stays unmapped.
-    struct FakeStore {
-        bus: *mut FakeBus,
-        next_va: *mut u32,
+    struct FakeStore<'a> {
+        bus: &'a FakeBus,
+        next_va: &'a Cell<u32>,
         frames: Vec<u64>,
         hole: bool,
         released: Vec<CommonBuffer>,
     }
 
-    impl FakeStore {
-        fn new(bus: &mut FakeBus, next_va: &mut u32) -> Self {
+    impl<'a> FakeStore<'a> {
+        fn new(bus: &'a FakeBus, next_va: &'a Cell<u32>) -> Self {
             FakeStore {
                 bus,
                 next_va,
@@ -629,23 +632,20 @@ mod tests {
         }
     }
 
-    impl CommonBufferStore for FakeStore {
+    impl CommonBufferStore for FakeStore<'_> {
         fn allocate(&mut self, bytes: usize) -> Option<u32> {
             let pages = pages_for(bytes);
             if self.frames.len() < pages {
                 return None;
             }
-            // SAFETY: the test's one counter, alive for the whole test.
-            let va = unsafe { *self.next_va };
+            let va = self.next_va.get();
             for page in 0..pages {
                 let frame = self.frames.remove(0);
                 if !(self.hole && page == pages - 1) {
-                    // SAFETY: the test's one bus, alive for the whole test.
-                    unsafe { &mut *self.bus }.map_page(va + page as u32 * PAGE_SIZE, frame);
+                    self.bus.map_page(va + page as u32 * PAGE_SIZE, frame);
                 }
             }
-            // SAFETY: as above.
-            unsafe { *self.next_va = va + pages as u32 * PAGE_SIZE };
+            self.next_va.set(va + pages as u32 * PAGE_SIZE);
             Some(va)
         }
 
@@ -659,7 +659,7 @@ mod tests {
     /// too-small output fails.
     #[test]
     fn scatter_gather_splits_and_merges_over_the_page_table() {
-        let mut bus = FakeBus::new();
+        let bus = FakeBus::new();
         // va 0x1000_0000: three contiguous frames (0x200_0000, 0x200_1000, 0x200_2000), then a
         // page mapped elsewhere (0x400_0000).
         bus.map_page(0x1000_0000, 0x200_0000);
@@ -760,14 +760,14 @@ mod tests {
     /// the virtual address.
     #[test]
     fn common_buffers_allocate_translate_and_free_over_the_seams() {
-        let mut bus = FakeBus::new();
+        let bus = FakeBus::new();
         let mut registry = CommonBufferRegistry::new();
-        let mut next_va = 0xFEC0_0000u32;
+        let next_va = Cell::new(0xFEC0_0000u32);
 
         // dmabuf's three sizes over contiguous frames: one logical address, the first byte's.
         for pages in [1u32, 3, 16] {
             let base = 0x0050_0000 + pages as u64 * 0x10_0000;
-            let mut store = FakeStore::new(&mut bus, &mut next_va);
+            let mut store = FakeStore::new(&bus, &next_va);
             for page in 0..pages {
                 store = store.with_frame(base + (page * PAGE_SIZE) as u64);
             }
@@ -788,13 +788,13 @@ mod tests {
         }
 
         // Two contiguous pages, kept: a second buffer lands past the first.
-        let mut store = FakeStore::new(&mut bus, &mut next_va)
+        let mut store = FakeStore::new(&bus, &next_va)
             .with_frame(0x500_0000)
             .with_frame(0x500_1000);
         let record = allocate_common_buffer(&mut store, &bus, &mut registry, 0x2000).unwrap();
         assert_eq!(record.bus, 0x500_0000);
         assert_eq!(record.length, 0x2000);
-        let mut store = FakeStore::new(&mut bus, &mut next_va).with_frame(0x600_0000);
+        let mut store = FakeStore::new(&bus, &next_va).with_frame(0x600_0000);
         let record2 = allocate_common_buffer(&mut store, &bus, &mut registry, 0x1000).unwrap();
         assert_eq!(
             record2.va,
@@ -815,7 +815,7 @@ mod tests {
         assert_eq!(store.released.len(), 1, "gone now");
 
         // A store with no frames left fails cleanly.
-        let mut empty = FakeStore::new(&mut bus, &mut next_va);
+        let mut empty = FakeStore::new(&bus, &next_va);
         assert_eq!(
             allocate_common_buffer(&mut empty, &bus, &mut registry, 0x1000),
             None
@@ -823,7 +823,7 @@ mod tests {
         assert!(empty.released.is_empty());
 
         // A page that does not translate fails and gives the block back.
-        let mut holed = FakeStore::new(&mut bus, &mut next_va)
+        let mut holed = FakeStore::new(&bus, &next_va)
             .with_frame(0x700_0000)
             .with_frame(0x700_1000)
             .with_hole();
@@ -838,7 +838,7 @@ mod tests {
         );
 
         // Frames that are not contiguous fail: one logical address could not cover them.
-        let mut scattered = FakeStore::new(&mut bus, &mut next_va)
+        let mut scattered = FakeStore::new(&bus, &next_va)
             .with_frame(0x710_0000)
             .with_frame(0x720_0000);
         assert_eq!(
@@ -848,7 +848,7 @@ mod tests {
         assert_eq!(scattered.released.len(), 1, "the scattered block went back");
 
         // A run reaching past 4 GiB fails.
-        let mut high = FakeStore::new(&mut bus, &mut next_va)
+        let mut high = FakeStore::new(&bus, &next_va)
             .with_frame(0xFFFF_F000)
             .with_frame(0x1_0000_0000);
         assert_eq!(
@@ -869,7 +869,7 @@ mod tests {
                 })
                 .unwrap();
         }
-        let mut store = FakeStore::new(&mut bus, &mut next_va).with_frame(0x800_0000);
+        let mut store = FakeStore::new(&bus, &next_va).with_frame(0x800_0000);
         assert_eq!(
             allocate_common_buffer(&mut store, &bus, &mut registry, 0x1000),
             None

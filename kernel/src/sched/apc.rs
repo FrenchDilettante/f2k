@@ -705,7 +705,6 @@ pub enum ApcDelivery {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sched::dispatcher::Dispatcher;
     use crate::sched::event::{Event, EventKind};
     use crate::sched::process::SchedProcess;
     use crate::sched::testkit::Rec;
@@ -719,7 +718,7 @@ mod tests {
     // write through the APC's context pointer, so every test owns its recorder and parallel tests
     // share nothing.
 
-    fn dispatcher() -> &'static mut Dispatcher {
+    fn dispatcher() -> crate::sched::testkit::Disp {
         crate::sched::testkit::dispatcher()
     }
 
@@ -733,7 +732,7 @@ mod tests {
     }
 
     /// Run `t` as the processor's current thread.
-    fn run(d: &mut Dispatcher, mut t: Rec<Thread>) {
+    fn run(mut d: crate::sched::testkit::Disp, mut t: Rec<Thread>) {
         d.enter(t.id());
         t.state = ThreadState::Running;
     }
@@ -746,13 +745,18 @@ mod tests {
     }
 
     /// Block `t` on `object` in a kernel-mode wait, asserting the wait parked it.
-    fn block_on(d: &mut Dispatcher, t: Rec<Thread>, object: *mut Waitable, timeout: Option<i64>) {
+    fn block_on(
+        d: crate::sched::testkit::Disp,
+        t: Rec<Thread>,
+        object: *mut Waitable,
+        timeout: Option<i64>,
+    ) {
         block_on_as(d, t, object, WaitMode::Kernel, false, timeout);
     }
 
     /// Block `t` on `object` in the given mode and alertability, asserting the wait parked it.
     fn block_on_as(
-        d: &mut Dispatcher,
+        mut d: crate::sched::testkit::Disp,
         t: Rec<Thread>,
         object: *mut Waitable,
         mode: WaitMode,
@@ -851,7 +855,7 @@ mod tests {
             thread: thread.id(),
             mode,
         };
-        list::iter(crate::sched::testkit::installed(), queue).collect()
+        list::iter(&*crate::sched::testkit::installed(), queue).collect()
     }
 
     // --- Group A: the APC object ---------------------------------------------
@@ -897,7 +901,7 @@ mod tests {
     /// A2: the insertion flag is the lifecycle — a double queue refuses with the queue untouched.
     #[test]
     fn the_insertion_flag_is_the_lifecycle() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -913,7 +917,7 @@ mod tests {
     /// overwrite an object a caller may inspect or re-queue later.
     #[test]
     fn arguments_capture_on_the_queueable_path_only() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         run(d, t);
@@ -935,7 +939,7 @@ mod tests {
     /// arms, the terminated record is untouched.
     #[test]
     fn a_terminated_thread_refuses_inserts() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         run(d, t);
@@ -954,7 +958,7 @@ mod tests {
     /// B1: normals queue at the tail, first in first out.
     #[test]
     fn normals_queue_at_the_tail() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -972,7 +976,7 @@ mod tests {
     /// insertion order.
     #[test]
     fn specials_land_before_the_first_normal() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -993,7 +997,7 @@ mod tests {
     /// kernel has no such producer.)
     #[test]
     fn user_normals_queue_at_the_tail_like_any_normal() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -1021,7 +1025,7 @@ mod tests {
     /// B4: remove — the flag, the unlink, and the pending side effect only when the queue empties.
     #[test]
     fn remove_clears_the_flag_and_the_emptied_queue_s_pending() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -1050,7 +1054,7 @@ mod tests {
     /// flag is untouched (the armed flag over the empty queue is a harmless residue).
     #[test]
     fn flush_takes_the_queue_and_leaves_the_flag() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -1080,7 +1084,7 @@ mod tests {
     /// moves.
     #[test]
     fn a_kernel_apc_on_a_running_thread_arms_the_window() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -1097,7 +1101,7 @@ mod tests {
     /// ordinary wait exit with the APC status.
     #[test]
     fn a_special_apc_breaks_a_passive_wait() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -1119,7 +1123,7 @@ mod tests {
     /// queueing itself never is.
     #[test]
     fn the_normal_apc_unwait_arm_is_gated() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let ev = event(EventKind::Notification, false);
 
@@ -1161,7 +1165,7 @@ mod tests {
     /// C4: the wait-level gate — a wait entered above the passive level is not APC-breakable.
     #[test]
     fn a_wait_above_the_passive_level_is_not_breakable() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         run(d, t);
@@ -1180,7 +1184,7 @@ mod tests {
     /// pre-state (a suspended spinner is Ready when the suspend lands).
     #[test]
     fn a_ready_thread_arms_only_the_flag() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let main = thread(p);
         run(d, main);
@@ -1200,7 +1204,7 @@ mod tests {
     /// does. No F2K code builds a user APC; this exercises the armed data.
     #[test]
     fn the_user_arm_breaks_only_an_alertable_user_wait() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let ev = event(EventKind::Notification, false);
 
@@ -1250,7 +1254,7 @@ mod tests {
     /// delivery re-arms for the next window instead of being lost.
     #[test]
     fn the_pending_flag_clears_on_entry() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -1268,7 +1272,7 @@ mod tests {
     /// delivers them.
     #[test]
     fn kernel_apcs_wait_for_the_passive_level() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -1295,7 +1299,7 @@ mod tests {
     /// D2: specials deliver first, in queue order, ahead of every normal queued before them.
     #[test]
     fn specials_deliver_first() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -1322,7 +1326,7 @@ mod tests {
     /// with the in-progress flag set inside it and cleared after, the captured arguments received.
     #[test]
     fn the_normal_arm_brackets_the_normal_routine() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -1346,7 +1350,7 @@ mod tests {
         fn cancel_normal(_apc: ApcId, args: &mut ApcArgs) {
             args.normal_routine = None;
         }
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -1365,7 +1369,7 @@ mod tests {
     /// D4: the normal arm's gates stop the delivery with the queue intact — deferred, not dropped.
     #[test]
     fn the_normal_arm_gates_stop_the_delivery() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         run(d, t);
@@ -1394,7 +1398,7 @@ mod tests {
     /// gated normal (the gate is per entry, not global).
     #[test]
     fn delivery_stops_on_the_empty_queue_and_gates_per_entry() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         run(d, t);
@@ -1424,7 +1428,7 @@ mod tests {
     /// flag set delivers nothing here (its delivery is in user mode), its queue untouched.
     #[test]
     fn nothing_delivers_a_user_apc() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         run(d, t);
@@ -1451,7 +1455,7 @@ mod tests {
     /// count rises. The returns are the previous counts.
     #[test]
     fn suspend_queues_once_and_returns_the_previous_count() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -1470,7 +1474,7 @@ mod tests {
     /// no-op returning zero.
     #[test]
     fn resume_releases_at_one_and_no_ops_at_zero() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -1496,7 +1500,7 @@ mod tests {
     /// F3: the overflow — the count stays at the documented maximum and the caller sees the error.
     #[test]
     fn the_suspend_overflow_is_refused() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         run(d, t);
@@ -1515,7 +1519,7 @@ mod tests {
     /// flag set, and the resume's wake completes it.
     #[test]
     fn the_suspend_apc_delivery_parks_and_resumes() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -1557,7 +1561,7 @@ mod tests {
     /// the queued APC then parks the thread, however many such pairs came before.
     #[test]
     fn a_suspend_over_a_still_queued_apc_takes_back_the_residue() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let target = thread(p);
         let caller = thread(p);
@@ -1583,7 +1587,7 @@ mod tests {
     #[test]
     fn force_resume_releases_waiter_or_not() {
         // (a): the parked case — the release wakes exactly like a resume.
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let parked = thread(p);
         run(d, parked);
@@ -1597,7 +1601,7 @@ mod tests {
 
         // (b): the undelivered case — the APC is queued but its thread was never dispatched, so
         // the release lands with nobody parked and the residue count stays.
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let ready = thread(p);
         run(d, ready);
@@ -1623,7 +1627,7 @@ mod tests {
     /// (F1/F2's table) and the gate is live data.
     #[test]
     fn the_freeze_gates_read_the_constant_zero_field() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         run(d, t);
@@ -1668,7 +1672,7 @@ mod tests {
     /// it), and the user APCs the thread never turned alertable for.
     #[test]
     fn the_exit_closes_the_queue() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -1698,7 +1702,7 @@ mod tests {
     /// thread can run on.
     #[test]
     fn a_suspended_threads_exit_route_force_resumes() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -1720,7 +1724,7 @@ mod tests {
     /// dispatched, its queued suspend APC is discarded, and its first delivery runs the exit alone.
     #[test]
     fn a_suspended_thread_terminated_by_another_runs_its_exit() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let suspended = thread(p);
         let killer = thread(p);
@@ -1747,7 +1751,7 @@ mod tests {
 
         // Suspended but never dispatched: the suspend APC is still queued, and the termination
         // discards it before it queues the exit APC.
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let queued_suspend = thread(p);
         let killer = thread(p);
@@ -1777,7 +1781,7 @@ mod tests {
     /// the exit with the termination's status, and the creator's resume finds a count of 0.
     #[test]
     fn a_thread_terminated_before_its_creates_suspend_runs_its_exit() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let fresh = thread(p);
         let creator = thread(p);
@@ -1809,7 +1813,7 @@ mod tests {
     /// nothing queued, arms nothing.
     #[test]
     fn leaving_a_region_arms_what_it_held_off() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         run(d, t);
@@ -1837,7 +1841,7 @@ mod tests {
     /// detach arms their delivery again.
     #[test]
     fn an_attached_scope_holds_kernel_apcs_off() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let other = process(8);
         let t = thread(p);
@@ -1858,7 +1862,7 @@ mod tests {
     /// G3: suspend of an exiting or exited thread is refused — the count does not move.
     #[test]
     fn suspend_of_a_terminated_thread_is_refused() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         run(d, t);

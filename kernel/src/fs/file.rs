@@ -1008,7 +1008,7 @@ mod lock_tests {
         tick: 0,
     };
 
-    fn dispatcher() -> &'static mut Dispatcher {
+    fn dispatcher() -> crate::sched::testkit::Disp {
         crate::sched::testkit::dispatcher()
     }
 
@@ -1028,7 +1028,7 @@ mod lock_tests {
     }
 
     /// The readied `thread` (the only one) selected and running.
-    fn run(d: &mut Dispatcher, thread: &mut Rec<Thread>, id: ThreadId) {
+    fn run(mut d: crate::sched::testkit::Disp, thread: &mut Rec<Thread>, id: ThreadId) {
         assert_eq!(d.select_next(), Some(id));
         thread.state = ThreadState::Running;
     }
@@ -1040,10 +1040,14 @@ mod lock_tests {
 
     /// The acquisition's slow path up to its wait: the taker counted among the waiters, the flag
     /// tried, and the wait on the event entered.
-    fn contend(d: &mut Dispatcher, lock: &FileLock, taker: ThreadId) -> WaitDisposition {
+    fn contend(
+        mut d: crate::sched::testkit::Disp,
+        lock: &FileLock,
+        taker: ThreadId,
+    ) -> WaitDisposition {
         lock.waiters.fetch_add(1, Ordering::SeqCst);
         assert!(!lock.take(taker), "the flag is set");
-        lock.wait_for(d, taker, NOW)
+        lock.wait_for(&mut d, taker, NOW)
     }
 
     /// A free lock is taken at once and leaves the event alone; a second taker finds the flag set
@@ -1067,14 +1071,14 @@ mod lock_tests {
     /// then finds it taken and waits again. A release with nobody waiting leaves the event clear.
     #[test]
     fn the_release_readies_a_waiter_without_handing_it_the_lock() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let lock = lock();
         let (_holder, h) = thread();
         let (mut waiter, w) = thread();
         assert!(lock.take(h));
         assert_eq!(contend(d, lock, w), WaitDisposition::Yield);
 
-        lock.release_with(d);
+        lock.release_with(&mut d);
         assert_ne!(waiter.state(), ThreadState::Waiting, "the event readies it");
         assert!(!lock.is_busy(), "and the lock is left free");
         assert!(!signaled(lock), "the signal served the waiter");
@@ -1083,13 +1087,13 @@ mod lock_tests {
         // The waiter runs: the flag is set again, so it waits again.
         run(d, &mut waiter, w);
         assert!(!lock.take(w));
-        assert_eq!(lock.wait_for(d, w, NOW), WaitDisposition::Yield);
+        assert_eq!(lock.wait_for(&mut d, w, NOW), WaitDisposition::Yield);
 
-        lock.release_with(d);
+        lock.release_with(&mut d);
         run(d, &mut waiter, w);
         assert!(lock.take(w), "the woken waiter takes the free lock");
         lock.waiters.fetch_sub(1, Ordering::SeqCst);
-        lock.release_with(d);
+        lock.release_with(&mut d);
         assert!(!lock.is_busy());
         assert!(!signaled(lock), "nobody waits: the event is not set");
     }
@@ -1099,14 +1103,14 @@ mod lock_tests {
     /// once, to try the flag again.
     #[test]
     fn a_signal_left_on_the_event_lets_one_wait_through() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let lock = lock();
         let (_first, a) = thread();
         let (_second, b) = thread();
         assert!(lock.take(a));
         lock.waiters.fetch_add(1, Ordering::SeqCst);
         assert!(!lock.take(b));
-        lock.release_with(d);
+        lock.release_with(&mut d);
         assert!(signaled(lock), "nobody parked: the signal stays");
         assert!(lock.take(b), "the counted waiter finds the flag clear");
         lock.waiters.fetch_sub(1, Ordering::SeqCst);
@@ -1114,7 +1118,7 @@ mod lock_tests {
         assert!(matches!(contend(d, lock, a), WaitDisposition::Complete(_)));
         assert!(!signaled(lock), "the wait consumed the signal");
         assert!(!lock.take(a), "the flag is still set");
-        assert_eq!(lock.wait_for(d, a, NOW), WaitDisposition::Yield);
+        assert_eq!(lock.wait_for(&mut d, a, NOW), WaitDisposition::Yield);
     }
 
     /// The holder taking the lock again would wait for itself: refused.
@@ -1131,7 +1135,7 @@ mod lock_tests {
     #[test]
     #[should_panic(expected = "nobody holds")]
     fn releasing_a_free_lock_is_a_contract_violation() {
-        lock().release_with(dispatcher());
+        lock().release_with(&mut dispatcher());
     }
 
     /// A file object's own event (a wait on its handle waits on it) is a notification event, clear
@@ -1139,13 +1143,13 @@ mod lock_tests {
     /// it stays set for every later wait until the next request clears it.
     #[test]
     fn a_file_object_s_own_event_is_a_notification_event() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let object = Box::leak(Box::new(FileObject::none()));
         object.init();
         let own = object.completion();
         assert!(matches!(own, WaitableId::Embedded(_)));
         let (mut waiter, w) = thread();
-        let wait = |d: &mut Dispatcher, thread| {
+        let wait = |mut d: crate::sched::testkit::Disp, thread| {
             d.wait_for(
                 thread,
                 own,

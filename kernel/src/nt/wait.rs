@@ -88,7 +88,7 @@ mod tests {
             interrupt_time: 10_000,
             tick: 5,
         };
-        let d = testkit::dispatcher();
+        let mut d = testkit::dispatcher();
         let p = testkit::process(8);
         let (owner, waiter, other) = (testkit::thread(p), testkit::thread(p), testkit::thread(p));
         let wait = |thread: testkit::Rec<crate::sched::thread::Thread>,

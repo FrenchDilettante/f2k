@@ -1116,7 +1116,7 @@ mod tests {
     // are linked, so the rig leaks every object it creates (one-shot tests; the addresses never
     // die).
 
-    fn dispatcher() -> &'static mut Dispatcher {
+    fn dispatcher() -> crate::sched::testkit::Disp {
         crate::sched::testkit::dispatcher()
     }
 
@@ -1130,14 +1130,14 @@ mod tests {
     }
 
     /// Run `t` as the processor's current thread.
-    fn run(d: &mut Dispatcher, mut t: Rec<Thread>) {
+    fn run(d: crate::sched::testkit::Disp, mut t: Rec<Thread>) {
         install_current(d, t.id());
         t.state = ThreadState::Running;
     }
 
     /// Put `thread` in the processor's current slot, its quantum handed over as a switch hands it,
     /// and nothing else changed.
-    fn install_current(d: &mut Dispatcher, thread: ThreadId) {
+    fn install_current(mut d: crate::sched::testkit::Disp, thread: ThreadId) {
         if let Some(running) = d.current() {
             d.thread_mut(running).switch_out();
         }
@@ -1146,7 +1146,7 @@ mod tests {
     }
 
     /// Make `t` the processor's standby thread.
-    fn standby(d: &mut Dispatcher, mut t: Rec<Thread>) {
+    fn standby(mut d: crate::sched::testkit::Disp, mut t: Rec<Thread>) {
         d.set_next(Some(t.id()));
         t.state = ThreadState::Standby;
     }
@@ -1192,7 +1192,7 @@ mod tests {
     /// bits survive.
     #[test]
     fn selection_picks_the_highest_queue() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t8 = thread(p);
         t8.priority = 8;
@@ -1213,7 +1213,7 @@ mod tests {
     /// The floor masks lower queues: a thread below it is invisible.
     #[test]
     fn selection_floor_masks_lower_queues() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t8 = thread(p);
         t8.priority = 8;
@@ -1231,14 +1231,14 @@ mod tests {
     /// An empty summary selects nothing.
     #[test]
     fn selection_from_empty_selects_nothing() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         assert!(d.find_ready(0).is_none());
     }
 
     /// Within one priority, selection is first-in, first-out.
     #[test]
     fn selection_is_fifo_within_a_priority() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t1 = thread(p);
         let t2 = thread(p);
@@ -1257,7 +1257,7 @@ mod tests {
     /// A thread that merely became runnable queues at the tail.
     #[test]
     fn fresh_thread_queues_at_the_tail() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t1 = thread(p);
         let t2 = thread(p);
@@ -1274,7 +1274,7 @@ mod tests {
     /// it.
     #[test]
     fn preempted_thread_requeues_at_the_head() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut witness = thread(p);
         witness.priority = 12;
@@ -1298,7 +1298,7 @@ mod tests {
     /// Draining a queue clears its bit; higher bits survive.
     #[test]
     fn draining_a_queue_clears_its_bit() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t8 = thread(p);
         t8.priority = 8;
@@ -1317,7 +1317,7 @@ mod tests {
     /// The summary invariant is an auditable property, and a manual corruption is caught.
     #[test]
     fn the_summary_tracks_the_queues() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut a = thread(p);
         a.priority = 5;
@@ -1337,7 +1337,7 @@ mod tests {
     /// clears.
     #[test]
     fn a_readied_thread_takes_an_idle_processor() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let idle = thread(p);
         d.install_idle_thread(idle.id());
@@ -1356,7 +1356,7 @@ mod tests {
     /// displaced thread is marked preempted and requeues at the head.
     #[test]
     fn an_arrival_displaces_the_standby_thread() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut witness = thread(p);
         witness.priority = 12;
@@ -1386,7 +1386,7 @@ mod tests {
     /// running thread is marked preempted (still Running until the context switch).
     #[test]
     fn an_arrival_preempts_the_running_thread() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut current = thread(p);
         current.priority = 12;
@@ -1406,7 +1406,7 @@ mod tests {
     /// An equal-priority arrival never preempts: it queues.
     #[test]
     fn an_equal_arrival_never_preempts() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut current = thread(p);
         current.priority = 12;
@@ -1425,7 +1425,7 @@ mod tests {
     /// select_next consumes a pending standby thread first.
     #[test]
     fn select_next_consumes_the_standby_thread() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         standby(d, t);
@@ -1442,7 +1442,7 @@ mod tests {
     /// With nothing pending, select_next scans the queues.
     #[test]
     fn select_next_scans_the_queues() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         d.make_ready(t);
@@ -1454,7 +1454,7 @@ mod tests {
     /// processor idle.
     #[test]
     fn select_next_falls_back_to_the_idle_thread() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let idle = thread(p);
         slots().set_idle(id_of(idle));
@@ -1468,7 +1468,7 @@ mod tests {
     /// queue leaves it alone.
     #[test]
     fn standby_from_ready_installs_an_equal() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.priority = 8;
@@ -1497,7 +1497,7 @@ mod tests {
     /// returns its kernel stack loan, and the processor's next thread is selected.
     #[test]
     fn terminate_signals_unlinks_and_selects() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let victim = thread(p);
         let survivor = thread(p);
@@ -1535,7 +1535,7 @@ mod tests {
     /// no other APC from then on.
     #[test]
     fn a_termination_queues_the_exit_apc_on_a_ready_thread() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let running = thread(p);
         let first = thread(p);
@@ -1545,7 +1545,7 @@ mod tests {
         d.make_ready(second);
 
         assert!(d.request_termination(first, exit_normal, 7));
-        assert!(exit_queued(d, first, 7));
+        assert!(exit_queued(&d, first, 7));
         assert!(first.kernel_apc_pending, "armed for the resume tail");
         assert!(first.termination_pending());
         assert!(!first.apc_queueable);
@@ -1566,7 +1566,7 @@ mod tests {
     /// delivers the exit APC.
     #[test]
     fn a_termination_leaves_the_standby_thread_in_its_slot() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let running = thread(p);
         let next = thread(p);
@@ -1576,14 +1576,14 @@ mod tests {
         assert!(d.request_termination(next, exit_normal, 1));
         assert_eq!(d.next_thread(), id_of(next));
         assert_eq!(next.state(), ThreadState::Standby);
-        assert!(exit_queued(d, next, 1));
+        assert!(exit_queued(&d, next, 1));
     }
 
     /// A thread that never ran keeps its exit APC for its startup's delivery, before its first
     /// user instruction: nothing is unlinked, and the readying schedules it.
     #[test]
     fn a_never_readied_thread_keeps_its_exit_apc_for_its_startup() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let running = thread(p);
         let fresh = thread(p);
@@ -1591,9 +1591,9 @@ mod tests {
 
         assert!(d.request_termination(fresh, exit_normal, 0xC000_004B));
         assert_eq!(fresh.state(), ThreadState::Initialized);
-        assert!(exit_queued(d, fresh, 0xC000_004B));
+        assert!(exit_queued(&d, fresh, 0xC000_004B));
         d.make_ready(fresh);
-        assert!(exit_queued(d, fresh, 0xC000_004B));
+        assert!(exit_queued(&d, fresh, 0xC000_004B));
         assert_eq!(unsafe { (*p).stack_count() }, 2);
         assert_eq!(d.audit(), Ok(()));
     }
@@ -1602,7 +1602,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "the running thread terminates through its own exit")]
     fn a_termination_refuses_the_running_thread() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let running = thread(p);
         run(d, running);
@@ -1613,7 +1613,7 @@ mod tests {
     /// changes nothing, its first status standing.
     #[test]
     fn a_termination_is_requested_once() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let running = thread(p);
         let other = thread(p);
@@ -1623,7 +1623,7 @@ mod tests {
         assert!(d.request_termination(other, exit_normal, 5));
         assert!(!d.request_termination(other, exit_normal, 6));
         assert_eq!(other.exit_status(), 5);
-        assert!(exit_queued(d, other, 5));
+        assert!(exit_queued(&d, other, 5));
 
         // A thread whose own exit runs is marked terminating by it, its queue closed.
         exiting.terminate_pending = true;
@@ -1637,7 +1637,7 @@ mod tests {
     /// An equal-priority set is a complete no-op.
     #[test]
     fn equal_priority_is_a_no_op() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         d.make_ready(t);
@@ -1652,7 +1652,7 @@ mod tests {
     /// A Ready thread being lowered moves to the tail of the new queue; the old queue's bit clears.
     #[test]
     fn a_ready_thread_lowered_moves_queues() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.priority = 12;
@@ -1669,7 +1669,7 @@ mod tests {
     /// to preempt, at the tail of the new queue).
     #[test]
     fn a_ready_thread_raised_is_rereadied() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.priority = 8;
@@ -1685,7 +1685,7 @@ mod tests {
     /// the field change alone.
     #[test]
     fn a_parked_thread_takes_the_field_only() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.priority = 8;
@@ -1702,7 +1702,7 @@ mod tests {
     /// standby, the thread re-readies.
     #[test]
     fn a_standby_thread_lowered_swaps_out() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.priority = 12;
@@ -1723,7 +1723,7 @@ mod tests {
     /// ready list.
     #[test]
     fn a_standby_thread_lowered_without_replacement_stays() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.priority = 12;
@@ -1740,7 +1740,7 @@ mod tests {
     /// running thread keeps Running.
     #[test]
     fn a_running_thread_lowered_installs_a_candidate() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.priority = 12;
@@ -1760,7 +1760,7 @@ mod tests {
     /// pending thread owns the slot.
     #[test]
     fn a_running_thread_lowered_with_standby_pending_is_untouched() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.priority = 12;
@@ -1781,7 +1781,7 @@ mod tests {
     /// A Running thread being raised (or held) takes no dispatch action.
     #[test]
     fn a_running_thread_raised_takes_no_action() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.priority = 8;
@@ -1796,7 +1796,7 @@ mod tests {
     /// Initialized, Terminated, Waiting and Transition take the field change alone.
     #[test]
     fn unscheduled_states_take_the_field_only() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         for state in [
             ThreadState::Initialized,
@@ -1818,7 +1818,7 @@ mod tests {
     /// machine; the old priority returns.
     #[test]
     fn set_priority_replenishes_before_the_machine() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.priority = 8;
@@ -1837,7 +1837,7 @@ mod tests {
     /// query reports the pin.
     #[test]
     fn base_priority_saturation_pins_and_reports() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
 
         let mut high = thread(p);
@@ -1866,7 +1866,7 @@ mod tests {
     /// priority follows with the decay debt subtracted.
     #[test]
     fn base_priority_variable_class_clamps() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.base_priority = 8;
@@ -1885,7 +1885,7 @@ mod tests {
     /// equals the base.
     #[test]
     fn base_priority_realtime_class_pins() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(24);
         let mut t = thread(p);
         t.base_priority = 24;
@@ -1904,7 +1904,7 @@ mod tests {
     /// is not replenished).
     #[test]
     fn base_priority_clears_decay_even_without_a_change() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.base_priority = 8;
@@ -1927,7 +1927,7 @@ mod tests {
     /// the quantum.
     #[test]
     fn a_boost_raises_and_replenishes() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.base_priority = 8;
@@ -1943,7 +1943,7 @@ mod tests {
     /// even though the priority does not change.
     #[test]
     fn a_boost_caps_below_realtime() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.base_priority = 15;
@@ -1959,7 +1959,7 @@ mod tests {
     /// is already in effect.
     #[test]
     fn a_boost_below_the_current_priority_does_not_apply() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.base_priority = 8;
@@ -1974,7 +1974,7 @@ mod tests {
     /// No boost while a decay debt is outstanding.
     #[test]
     fn a_boost_refuses_on_outstanding_decay() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.base_priority = 8;
@@ -1991,7 +1991,7 @@ mod tests {
     /// No boost at a realtime priority.
     #[test]
     fn a_boost_refuses_at_realtime() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(24);
         let mut t = thread(p);
         t.base_priority = 24;
@@ -2008,7 +2008,7 @@ mod tests {
     #[test]
     fn a_boost_drives_the_state_machine() {
         // Raised above the running thread: standby, the running thread marked preempted.
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut current = thread(p);
         current.priority = 12;
@@ -2025,7 +2025,7 @@ mod tests {
         assert!(current.preempted);
 
         // Raised below the running thread: queued at the tail of the new priority.
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut current = thread(p);
         current.priority = 15;
@@ -2045,7 +2045,7 @@ mod tests {
     /// wait-exit path.
     #[test]
     fn a_boost_ignores_the_boost_policy() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.base_priority = 8;
@@ -2063,7 +2063,7 @@ mod tests {
     /// zero — except for the idle thread.
     #[test]
     fn the_tick_charges_three_and_flags_at_zero() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.set_quantum(6);
@@ -2082,7 +2082,7 @@ mod tests {
     /// Quantum end resets the quantum to the process value first.
     #[test]
     fn quantum_end_resets_the_quantum() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         run(d, t);
@@ -2095,7 +2095,7 @@ mod tests {
     /// Variable-class decay: one priority step per quantum.
     #[test]
     fn quantum_end_decays_one_step() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.priority = 10;
@@ -2112,7 +2112,7 @@ mod tests {
     /// over.
     #[test]
     fn quantum_end_decays_to_the_floor() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.priority = 8;
@@ -2127,7 +2127,7 @@ mod tests {
     /// The decay consumes the outstanding debt, then clears it.
     #[test]
     fn quantum_end_consumes_the_decay_debt() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.priority = 10;
@@ -2144,7 +2144,7 @@ mod tests {
     /// round-robin among equals.
     #[test]
     fn quantum_end_round_robins_realtime_equals() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(24);
         let mut t = thread(p);
         t.priority = 24;
@@ -2166,7 +2166,7 @@ mod tests {
     /// the maximum instead.
     #[test]
     fn quantum_end_exempt_realtime_never_ends() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(24);
         unsafe { (*p).set_disable_quantum(true) };
         let mut t = thread(p);
@@ -2184,7 +2184,7 @@ mod tests {
     /// one place the quantum doubles — and re-readied.
     #[test]
     fn the_balance_boost_doubles_the_quantum() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.priority = 8;
@@ -2203,7 +2203,7 @@ mod tests {
     /// spinner that starved it; one ready for less is left alone.
     #[test]
     fn the_scan_boosts_a_starved_thread() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut hog = thread(p);
         hog.priority = 8;
@@ -2231,7 +2231,7 @@ mod tests {
     /// the yielder queues behind it at its decayed priority.
     #[test]
     fn the_yield_hands_the_processor_to_any_ready_thread() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut running = thread(p);
         running.priority = 10;
@@ -2259,7 +2259,7 @@ mod tests {
     /// dropped to base (through the full form) when the count runs out — then immediately retried.
     #[test]
     fn the_round_trip_boost_renews_then_drops() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.priority = 8;
@@ -2290,7 +2290,7 @@ mod tests {
     /// A thread at or above the ceiling is never round-trip boosted.
     #[test]
     fn the_round_trip_boost_refuses_at_the_ceiling() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.priority = 15;
@@ -2307,7 +2307,7 @@ mod tests {
     /// realtime threads and time-critical bases replenish outright.
     #[test]
     fn the_wait_charge_decays_at_exhaustion() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
 
         let mut t = thread(p);
@@ -2350,7 +2350,7 @@ mod tests {
     /// value.
     #[test]
     fn process_priority_moves_variable_threads() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut a = thread(p);
         a.priority = 8;
@@ -2373,7 +2373,7 @@ mod tests {
     /// band.
     #[test]
     fn process_priority_into_realtime_clamps_threads() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut a = thread(p);
         a.priority = 8;
@@ -2387,7 +2387,7 @@ mod tests {
     /// saturation to the top, low saturation to the band floor.
     #[test]
     fn process_priority_crossing_pins_saturated_threads() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut high = thread(p);
         high.saturation = 1;
@@ -2404,7 +2404,7 @@ mod tests {
     /// Saturated threads are untouched when the class does not cross — in either direction.
     #[test]
     fn process_priority_leaves_saturated_threads_within_a_class() {
-        let d = dispatcher();
+        let mut d = dispatcher();
 
         // Realtime staying realtime: a saturated thread keeps its pinned base, priority and
         // quantum.
@@ -2435,7 +2435,7 @@ mod tests {
     /// Crossing from realtime down to variable pins saturated threads to the variable edges.
     #[test]
     fn process_priority_crossing_down_pins_saturated_threads() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(20);
         let mut high = thread(p);
         high.saturation = 1;
@@ -2456,7 +2456,7 @@ mod tests {
     /// repeats.
     #[test]
     fn the_quantum_charge_runs_out_every_second_tick() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -2493,7 +2493,7 @@ mod tests {
     /// ticks and ends on the sixth, and the reset keeps the stretch until the process goes back.
     #[test]
     fn the_foreground_switch_stretches_every_threads_quantum() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let (t, mut u) = (thread(p), thread(p));
         run(d, t);
@@ -2558,7 +2558,7 @@ mod tests {
     /// thread's coming out of its own.
     #[test]
     fn the_running_quantum_lives_in_the_processor_slots() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let a = thread(p);
         let b = thread(p);
@@ -2629,7 +2629,7 @@ mod tests {
     /// between the charge and the request, never around the charge.
     #[test]
     fn the_idle_thread_is_charged_but_never_requests() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(0);
         let mut idle = thread(p);
         d.install_idle_thread(idle.id());
@@ -2657,7 +2657,7 @@ mod tests {
     /// at the reset value) and silently granting the thread another one.
     #[test]
     fn an_overcharged_quantum_never_wraps_positive() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         run(d, t);
@@ -2675,7 +2675,7 @@ mod tests {
     /// end.
     #[test]
     fn a_strictly_higher_arrival_requests_and_an_equal_does_not() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let main = thread(p);
         run(d, main);
@@ -2694,7 +2694,7 @@ mod tests {
         );
 
         // The equal arrival: no request, a plain tail queueing.
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let main = thread(p);
         run(d, main);
@@ -2710,7 +2710,7 @@ mod tests {
     #[test]
     fn priority_changes_request_the_processor() {
         // A Ready thread raised: it re-readies through the strictly-higher rule.
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let main = thread(p);
         run(d, main);
@@ -2722,7 +2722,7 @@ mod tests {
 
         // A Running thread lowered: the replacement look selects a ready thread at or above the new
         // priority.
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(9);
         let main = thread(p);
         run(d, main);
@@ -2740,7 +2740,7 @@ mod tests {
     /// displaced and nothing is flagged.
     #[test]
     fn an_idle_processor_takes_the_thread_without_preemption() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(0);
         let idle = thread(p);
         d.install_idle_thread(idle.id());
@@ -2758,7 +2758,7 @@ mod tests {
     /// is selected.
     #[test]
     fn the_realtime_exemption_refuses_at_the_decision() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(20);
         unsafe { (*p).disable_quantum = true };
         let rt = thread(p);
@@ -2791,7 +2791,7 @@ mod tests {
     /// at the tail — a round-robined thread keeps its turn order among equals.
     #[test]
     fn a_quantum_end_switches_to_the_equal_and_requeues_at_the_tail() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let a = thread(p);
         run(d, a);
@@ -2819,7 +2819,7 @@ mod tests {
     /// flag before the requeue spends it.
     #[test]
     fn a_quantum_end_clears_the_displacement_before_the_requeue() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let a = thread(p);
         run(d, a);
@@ -2847,7 +2847,7 @@ mod tests {
     /// earlier arrival's preemption mark does not put it at the head.
     #[test]
     fn a_decaying_quantum_end_still_requeues_at_the_tail() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut a = thread(p);
         a.priority = 10; // boosted above its base of 8
@@ -2875,7 +2875,7 @@ mod tests {
     /// thread is not queued behind it: it stays the fallback, off every ready list.
     #[test]
     fn the_window_never_queues_the_idle_thread() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let idle_process = process(0);
         let mut idle = thread(idle_process);
@@ -2899,7 +2899,7 @@ mod tests {
     /// processor with a fresh quantum.
     #[test]
     fn a_request_with_no_better_thread_is_a_refusal() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let a = thread(p);
         run(d, a);
@@ -2920,7 +2920,7 @@ mod tests {
     /// mid-quantum, with the displaced thread requeued at the head.
     #[test]
     fn a_standby_from_the_drained_work_switches_at_the_head_requeue() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut a = thread(p);
         run(d, a);
@@ -2949,7 +2949,7 @@ mod tests {
     /// equal readied by the drain win the round-robin look in the same window.
     #[test]
     fn the_window_sees_what_the_drain_readied() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let a = thread(p);
         run(d, a);
@@ -2974,7 +2974,7 @@ mod tests {
     fn the_decision_reads_thread_state_alone() {
         // The decision is reached from whatever context the window opened in; the entry's only
         // inputs are the dispatcher's own state, so every context decides identically.
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let a = thread(p);
         run(d, a);
@@ -2991,7 +2991,7 @@ mod tests {
     /// refusal included.
     #[test]
     fn the_request_is_cleared_before_the_decision() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let a = thread(p);
         run(d, a);
@@ -3009,7 +3009,7 @@ mod tests {
     /// it, and nothing merges or queues in between.
     #[test]
     fn the_request_is_edge_armed_and_window_consumed() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let a = thread(p);
         run(d, a);
@@ -3038,7 +3038,7 @@ mod tests {
     /// the window ran) — is consumed to a no-op: the decision re-verifies the quantum.
     #[test]
     fn a_stale_request_is_consumed_to_a_no_op() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let a = thread(p);
         run(d, a);
@@ -3070,7 +3070,7 @@ mod tests {
     /// having been displaced by a strictly higher thread.
     #[test]
     fn the_boundary_check_delivers_the_service_request() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let main = thread(p);
         run(d, main);
@@ -3094,7 +3094,7 @@ mod tests {
     /// position moves.
     #[test]
     fn the_boundary_check_without_a_request_is_a_no_op() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let main = thread(p);
         run(d, main);
@@ -3127,7 +3127,7 @@ mod tests {
         // With a dispatch request pending and an equal-priority thread ready, the quantum-end
         // round-robin selects it: the decision's target is the switch's, and the running thread's
         // armed APC stays armed — the target delivers at its own resume tail, not here.
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut main = thread(p);
         run(d, main);
@@ -3153,7 +3153,7 @@ mod tests {
 
         // Without a dispatch request, the window delivers on the current thread directly: the
         // decision leaves no target, and the armed APC runs here.
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let solo = thread(p);
         run(d, solo);

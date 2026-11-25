@@ -249,11 +249,17 @@ mod tests {
     use crate::sched::testkit::{record, Rec};
     use crate::sched::thread::{Thread, ThreadState};
 
-    fn setup(stack_top: u32) -> (Rec<Thread>, &'static PinnedProcess, &'static mut Dispatcher) {
+    fn setup(
+        stack_top: u32,
+    ) -> (
+        Rec<Thread>,
+        &'static PinnedProcess,
+        crate::sched::testkit::Disp,
+    ) {
         let process: &'static PinnedProcess =
             Box::leak(Box::new(PinnedProcess::new(0x0090_0000, 0)));
-        let dispatcher = crate::sched::testkit::dispatcher();
-        install(IDLE_THREAD, process, dispatcher, stack_top);
+        let mut dispatcher = crate::sched::testkit::dispatcher();
+        install(IDLE_THREAD, process, &mut dispatcher, stack_top);
         (record(IDLE_THREAD), process, dispatcher)
     }
 
@@ -265,7 +271,7 @@ mod tests {
     #[test]
     fn the_idle_thread_record_and_install() {
         const STACK: u32 = 0x8010_0000;
-        let (idle, process, dispatcher) = setup(STACK);
+        let (idle, process, mut dispatcher) = setup(STACK);
 
         assert_eq!(idle.priority(), 0);
         assert_eq!(idle.state(), ThreadState::Running);
@@ -273,7 +279,7 @@ mod tests {
         assert_eq!(idle.initial_stack(), STACK);
         assert_eq!(idle.kernel_stack(), STACK);
         // The kernel's own process: base priority 0.
-        assert_eq!(process.get(dispatcher).base_priority(), 0);
+        assert_eq!(process.get(&dispatcher).base_priority(), 0);
 
         // The dispatcher's install: current, idle flag, and the fallback that selection reaches
         // when nothing is ready.

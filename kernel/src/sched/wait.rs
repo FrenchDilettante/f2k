@@ -1230,7 +1230,7 @@ mod tests {
     // The same style as the dispatcher tests: kernel objects live at fixed addresses for as long as
     // they are linked, so the rig leaks everything it creates.
 
-    fn dispatcher() -> &'static mut Dispatcher {
+    fn dispatcher() -> crate::sched::testkit::Disp {
         crate::sched::testkit::dispatcher()
     }
 
@@ -1244,7 +1244,7 @@ mod tests {
     }
 
     /// Run `t` as the processor's current thread.
-    fn run(d: &mut Dispatcher, mut t: Rec<Thread>) {
+    fn run(mut d: crate::sched::testkit::Disp, mut t: Rec<Thread>) {
         d.enter(t.id());
         t.state = ThreadState::Running;
     }
@@ -1299,7 +1299,12 @@ mod tests {
 
     /// Block `t` on `object` (with the rig's fixed clock reading), asserting the wait actually
     /// parked it.
-    fn block_on(d: &mut Dispatcher, t: Rec<Thread>, object: *mut Waitable, timeout: Option<i64>) {
+    fn block_on(
+        mut d: crate::sched::testkit::Disp,
+        t: Rec<Thread>,
+        object: *mut Waitable,
+        timeout: Option<i64>,
+    ) {
         match d.wait_single(
             t,
             object,
@@ -1322,7 +1327,7 @@ mod tests {
     /// The threads parked on `event`, in wait order.
     fn waiters(event: &Event) -> Vec<ThreadId> {
         let d = crate::sched::testkit::installed();
-        list::iter(d, Waiters(event.waitable.id()))
+        list::iter(&*d, Waiters(event.waitable.id()))
             .map(|block| d.block(block).thread)
             .collect()
     }
@@ -1409,7 +1414,7 @@ mod tests {
     /// Waiting, on the waiting list, on no ready list.
     #[test]
     fn the_block_path_lands_the_wait_fields() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         let ev = event(EventKind::Notification, false);
@@ -1444,7 +1449,7 @@ mod tests {
     /// take, the thread never leaves Running, and the quantum is still charged.
     #[test]
     fn a_signaled_notification_event_satisfies_without_side_effects() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -1481,7 +1486,7 @@ mod tests {
     /// signal serves exactly one waiter, even when the waiter arrives after the signal.
     #[test]
     fn a_signaled_synchronization_event_resets_on_the_take() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -1520,7 +1525,7 @@ mod tests {
     /// (no owner-based branch exists for any kind). The thread object is no exception.
     #[test]
     fn the_satisfaction_dispatch_keys_on_the_signal_state() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         let mut other = thread(p);
@@ -1539,7 +1544,7 @@ mod tests {
     /// Running, and the quantum charge still runs.
     #[test]
     fn a_zero_timeout_never_blocks() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -1566,7 +1571,7 @@ mod tests {
     /// satisfied wait reports success even with a zero timeout, which is simply dropped.
     #[test]
     fn a_signaled_object_beats_a_due_deadline() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -1593,7 +1598,7 @@ mod tests {
     /// reaches it.
     #[test]
     fn a_due_time_already_past_times_out_at_once() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -1627,7 +1632,7 @@ mod tests {
     /// priority alone and the standby slot is empty.
     #[test]
     fn the_nowait_charge_exhausts_decays_and_round_robins() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
 
         // Exhaustion: the quantum resets and the priority decays one step — 11 - 1 = 10, above the
@@ -1699,7 +1704,7 @@ mod tests {
 
         // The tail: exhaustion at the base leaves the priority alone, and an equal-priority ready
         // thread takes the standby slot — round-robin among equals.
-        let d2 = dispatcher();
+        let mut d2 = dispatcher();
         let mut t4 = thread(p);
         run(d2, t4);
         t4.set_quantum(1);
@@ -1727,7 +1732,7 @@ mod tests {
         );
 
         // Exclusivity: a pending standby blocks the install.
-        let d3 = dispatcher();
+        let mut d3 = dispatcher();
         let mut t5 = thread(p);
         run(d3, t5);
         t5.set_quantum(1);
@@ -1764,7 +1769,7 @@ mod tests {
     /// signal.
     #[test]
     fn a_notification_event_wakes_every_waiter_in_order() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t1 = thread(p);
         let t2 = thread(p);
@@ -1797,7 +1802,7 @@ mod tests {
     /// event is clear again after each set.
     #[test]
     fn a_synchronization_event_wakes_exactly_the_head_waiter() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t1 = thread(p);
         let t2 = thread(p);
@@ -1831,7 +1836,7 @@ mod tests {
     /// anyway.
     #[test]
     fn the_synchronization_fast_path_leaves_the_state_clear() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         let ev = event(EventKind::Synchronization, false);
@@ -1852,7 +1857,7 @@ mod tests {
     /// parked under the written signal.
     #[test]
     fn a_wait_all_head_takes_the_notification_path() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         let a = event(EventKind::Synchronization, false);
@@ -1871,7 +1876,7 @@ mod tests {
         block.wait_all = false;
         block.next_block = head;
         d.block_mut(head).next_block = second;
-        list::push_back(d, Waiters(b.waitable.id()), second);
+        list::push_back(&mut *d, Waiters(b.waitable.id()), second);
         assert_eq!(d.audit_waits(), Ok(()));
 
         d.set_event(a.id(), EVENT_WAKE_INCREMENT);
@@ -1894,7 +1899,7 @@ mod tests {
     /// readies.
     #[test]
     fn the_wait_exit_unwinds_the_wait() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         let ev = event(EventKind::Notification, false);
@@ -1935,7 +1940,7 @@ mod tests {
     /// before the scheduling teardown, and a woken waiter is what the processor runs next.
     #[test]
     fn termination_satisfies_the_thread_waiters() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let main = thread(p);
         let mut child = thread(p);
@@ -1962,7 +1967,7 @@ mod tests {
     /// process, is one that selection weighs: the higher priority wins it over the thread's waiter.
     #[test]
     fn a_process_signal_between_retirement_and_selection_is_weighed() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let ending = process(8);
         let other = process(8);
         let mut last = thread(ending);
@@ -2006,7 +2011,7 @@ mod tests {
     /// later signal finds nobody. The thread is not ended here: it runs its own exit.
     #[test]
     fn a_termination_breaks_a_parked_wait() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let running = thread(p);
         let parked = thread(p);
@@ -2044,7 +2049,7 @@ mod tests {
     #[test]
     fn threads_waiting_on_each_other_end_in_turn() {
         for waited_on_first in [true, false] {
-            let d = dispatcher();
+            let mut d = dispatcher();
             let p = process(8);
             let running = thread(p);
             let waiter = thread(p);
@@ -2086,7 +2091,7 @@ mod tests {
     /// queued ones are discarded. Outside a region the request breaks the wait at once.
     #[test]
     fn a_termination_waits_for_a_critical_region() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let running = thread(p);
         let mut inside = thread(p);
@@ -2145,7 +2150,7 @@ mod tests {
     /// arms their delivery again.
     #[test]
     fn an_attached_wait_holds_the_exit_apc_off() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let target = process(8);
         let running = thread(p);
@@ -2180,7 +2185,7 @@ mod tests {
     /// timer with the inserted mark. An already-past due is refused.
     #[test]
     fn due_times_come_from_the_clock_reading() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         let ev = event(EventKind::Notification, false);
@@ -2224,7 +2229,7 @@ mod tests {
     /// the event too.
     #[test]
     fn expiry_delivers_the_timeout_through_the_seam() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         let ev = event(EventKind::Notification, false);
@@ -2246,7 +2251,7 @@ mod tests {
     /// empty lists — a thread is never unwoken twice for one wait.
     #[test]
     fn a_wake_cancels_the_timer_and_the_late_expiry_is_a_no_op() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         let ev = event(EventKind::Notification, false);
@@ -2270,7 +2275,7 @@ mod tests {
     /// finds nobody — it only writes the signal.
     #[test]
     fn an_expiry_wins_and_the_late_set_finds_nobody() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         let ev = event(EventKind::Notification, false);
@@ -2291,7 +2296,7 @@ mod tests {
     /// take over.
     #[test]
     fn the_delay_wait_blocks_on_the_timer_alone() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         run(d, t);
@@ -2321,7 +2326,7 @@ mod tests {
     fn an_expired_delay_yields_the_processor() {
         // Nobody to take over: completes at once, boosted thread dropped to its base, no wait state
         // consumed.
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         run(d, t);
@@ -2341,7 +2346,7 @@ mod tests {
 
         // An equal ready to take over: the current thread is readied with a fresh quantum and the
         // delay yields.
-        let d2 = dispatcher();
+        let mut d2 = dispatcher();
         let p2 = process(8);
         let mut t2 = thread(p2);
         run(d2, t2);
@@ -2367,7 +2372,7 @@ mod tests {
     /// ready ladder, never directly on the processor.
     #[test]
     fn the_wait_exit_is_the_only_waiting_state_exit() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         let ev = event(EventKind::Notification, false);
@@ -2383,7 +2388,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "the wait exit runs on a waiting thread")]
     fn the_wait_exit_refuses_a_running_thread() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         run(d, t);
@@ -2393,7 +2398,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "the wait exit runs on a waiting thread")]
     fn the_wait_exit_refuses_a_ready_thread() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let mut t = thread(p);
         t.state = ThreadState::Ready;
@@ -2403,7 +2408,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "a waiting thread is readied only through the wait exit")]
     fn the_ready_path_refuses_a_waiting_thread() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
         let ev = event(EventKind::Notification, false);
@@ -2415,7 +2420,7 @@ mod tests {
     /// a non-waiting thread on the waiting list is an audit failure.
     #[test]
     fn the_wait_audit_tracks_the_structures() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let ev_a = event(EventKind::Notification, false);
         let ev_b = event(EventKind::Synchronization, false);
@@ -2433,7 +2438,7 @@ mod tests {
 
         // The negative: a thread on the waiting list that is not waiting is an audit failure.
         let stray = thread(p);
-        list::push_back(d, WaitingList, stray.id());
+        list::push_back(&mut *d, WaitingList, stray.id());
         assert!(d.audit_waits().is_err());
     }
 
@@ -2442,7 +2447,7 @@ mod tests {
     /// gets no boost but is still charged.
     #[test]
     fn the_wake_boost_caps_and_gates() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p15 = process(15);
         let mut capped = thread(p15);
         capped.priority = 15;
@@ -2576,7 +2581,7 @@ mod tests {
     #[test]
     fn a_delivered_routines_wait_keeps_the_woken_status() {
         for woken in [STATUS_KERNEL_APC, STATUS_TIMEOUT] {
-            let d = dispatcher();
+            let mut d = dispatcher();
             let p = process(8);
             let t = thread(p);
             run(d, t);
@@ -2591,7 +2596,7 @@ mod tests {
 
             let inner = event(EventKind::Notification, true);
             preserving_wait_status(|| {
-                let d = crate::sched::testkit::installed();
+                let mut d = crate::sched::testkit::installed();
                 let t = d.current().expect("the running thread");
                 let nested = d.wait_single(
                     t,
@@ -2663,7 +2668,7 @@ mod tests {
             // The park's resume tail: the delivered routine waits on its own object.
             || {
                 preserving_wait_status(|| {
-                    let d = crate::sched::testkit::installed();
+                    let mut d = crate::sched::testkit::installed();
                     let t = d.current().expect("the running thread");
                     let _ = d.wait_single(
                         t,

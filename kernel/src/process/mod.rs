@@ -1544,11 +1544,11 @@ mod tests {
         use crate::sched::database::USER_APCS;
         fn normal(_: ThreadId, _: usize, _: usize, _: usize) {}
 
-        let dispatcher = crate::sched::testkit::dispatcher();
+        let mut dispatcher = crate::sched::testkit::dispatcher();
         let target = crate::sched::testkit::thread(crate::sched::testkit::process(8));
         let process = fresh_process();
         let mut queued = Vec::new();
-        while let Some(apc) = process.free_apc(dispatcher) {
+        while let Some(apc) = process.free_apc(&mut dispatcher) {
             dispatcher.apc_mut(apc).init(
                 target,
                 nop_kernel_routine,
@@ -1565,13 +1565,16 @@ mod tests {
         other.identity.0.get_mut().object.index = 1;
         assert!(
             other
-                .free_apc(dispatcher)
+                .free_apc(&mut dispatcher)
                 .is_some_and(|apc| !queued.contains(&apc)),
             "another process's share is its own"
         );
 
         assert!(dispatcher.remove_apc(queued[USER_APCS / 2]));
-        assert_eq!(process.free_apc(dispatcher), Some(queued[USER_APCS / 2]));
+        assert_eq!(
+            process.free_apc(&mut dispatcher),
+            Some(queued[USER_APCS / 2])
+        );
     }
 
     /// A process's name: its image's file name without the extension, cut at fifteen bytes (the
@@ -1918,7 +1921,7 @@ mod tests {
         stacks: &mut KernelStacks,
         thread: crate::sched::testkit::Rec<Thread>,
     ) -> Option<GateStack> {
-        let dispatcher = crate::sched::testkit::installed();
+        let mut dispatcher = crate::sched::testkit::installed();
         dispatcher.enter(thread.id());
         dispatcher.terminate();
         stacks.park((thread.gate_slot, thread.gate_frames))
@@ -2117,7 +2120,7 @@ mod tests {
     fn exit_process_outlives_a_remote_thread_that_retires_last() {
         use exit::{ProcessEnd, ThreadEnd};
         let process = Box::leak(Box::new(record_at(0x0090_0000)));
-        let dispatcher = crate::sched::testkit::dispatcher();
+        let mut dispatcher = crate::sched::testkit::dispatcher();
         let main = crate::sched::testkit::thread(process.sched_ptr());
         let mut remote = crate::sched::testkit::thread(process.sched_ptr());
 

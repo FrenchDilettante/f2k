@@ -502,7 +502,7 @@ mod tests {
         let (mut idle, _same, worker) = threads();
         idle.state = ThreadState::Running;
 
-        let dispatcher = crate::sched::testkit::installed();
+        let mut dispatcher = crate::sched::testkit::installed();
         // The boot install: the idle thread is current.
         dispatcher.install_idle_thread(idle.id());
         assert_eq!(dispatcher.current(), Some(idle.id()));

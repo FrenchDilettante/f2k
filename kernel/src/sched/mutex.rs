@@ -173,7 +173,7 @@ mod tests {
 
     // The rig: the same leaked-objects style as the scheduler's other test modules.
 
-    fn dispatcher() -> &'static mut Dispatcher {
+    fn dispatcher() -> crate::sched::testkit::Disp {
         crate::sched::testkit::dispatcher()
     }
 
@@ -202,7 +202,7 @@ mod tests {
     };
 
     fn wait(
-        d: &mut Dispatcher,
+        mut d: crate::sched::testkit::Disp,
         t: crate::sched::testkit::Rec<Thread>,
         object: *mut Waitable,
     ) -> WaitDisposition {
@@ -221,7 +221,7 @@ mod tests {
     /// its release is refused; the owner's last release hands the mutex to the oldest waiter.
     #[test]
     fn ownership_is_recursive_and_the_last_release_hands_it_over() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process();
         let (owner, other) = (thread(p), thread(p));
         let mut m = mutex();
@@ -261,7 +261,7 @@ mod tests {
     /// with nobody parked, the next take reports it once.
     #[test]
     fn an_owners_end_abandons_its_mutexes() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process();
         let (owner, waiter, late) = (thread(p), thread(p), thread(p));
         let (mut m1, mut m2) = (mutex(), mutex());
@@ -304,7 +304,7 @@ mod tests {
     /// object that signals first completes the wait with its index and every block unwinds.
     #[test]
     fn wait_any_reports_the_lowest_signaled_index() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process();
         let t = thread(p);
         let mut events = [
@@ -313,18 +313,19 @@ mod tests {
             event(EventKind::Synchronization, true),
         ];
         let objects: Vec<*mut Waitable> = events.iter_mut().map(|e| e.waitable()).collect();
-        let any = |d: &mut Dispatcher, t: crate::sched::testkit::Rec<Thread>, timeout| {
-            d.wait_multiple(
-                t,
-                &objects,
-                false,
-                WaitReason::UserRequest,
-                WaitMode::User,
-                false,
-                timeout,
-                STAMP,
-            )
-        };
+        let any =
+            |mut d: crate::sched::testkit::Disp, t: crate::sched::testkit::Rec<Thread>, timeout| {
+                d.wait_multiple(
+                    t,
+                    &objects,
+                    false,
+                    WaitReason::UserRequest,
+                    WaitMode::User,
+                    false,
+                    timeout,
+                    STAMP,
+                )
+            };
         assert_eq!(any(d, t, Some(0)), WaitDisposition::Complete(NtStatus(1)));
         assert_eq!(any(d, t, Some(0)), WaitDisposition::Complete(NtStatus(2)));
         assert_eq!(
@@ -345,7 +346,7 @@ mod tests {
     /// owns counts — and then all are taken at once.
     #[test]
     fn wait_all_takes_everything_at_once() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process();
         let t = thread(p);
         let (e0, e1) = (
@@ -358,18 +359,19 @@ mod tests {
             WaitDisposition::Complete(STATUS_SUCCESS)
         );
         let objects = [e0.waitable(), e1.waitable(), m.waitable()];
-        let all = |d: &mut Dispatcher, t: crate::sched::testkit::Rec<Thread>, timeout| {
-            d.wait_multiple(
-                t,
-                &objects,
-                true,
-                WaitReason::UserRequest,
-                WaitMode::User,
-                false,
-                timeout,
-                STAMP,
-            )
-        };
+        let all =
+            |mut d: crate::sched::testkit::Disp, t: crate::sched::testkit::Rec<Thread>, timeout| {
+                d.wait_multiple(
+                    t,
+                    &objects,
+                    true,
+                    WaitReason::UserRequest,
+                    WaitMode::User,
+                    false,
+                    timeout,
+                    STAMP,
+                )
+            };
         assert_eq!(
             all(d, t, Some(0)),
             WaitDisposition::Complete(STATUS_TIMEOUT)
@@ -388,7 +390,7 @@ mod tests {
     /// user-APC status and arms the delivery; a non-alertable one ignores the queue.
     #[test]
     fn an_alertable_wait_with_user_apcs_queued_completes_at_once() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process();
         let mut t = thread(p);
         let e = event(EventKind::Notification, false);

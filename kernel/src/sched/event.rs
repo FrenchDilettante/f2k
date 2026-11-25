@@ -152,10 +152,9 @@ impl Dispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sched::dispatcher::Dispatcher;
     use crate::sched::wait::{WaitKind, WAIT_KIND_MASK};
 
-    fn dispatcher() -> &'static mut Dispatcher {
+    fn dispatcher() -> crate::sched::testkit::Disp {
         crate::sched::testkit::dispatcher()
     }
 
@@ -192,7 +191,7 @@ mod tests {
     /// nobody.
     #[test]
     fn read_clear_reset_report_the_state() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let ev = event(EventKind::Notification, true);
 
         assert_eq!(ev.signal_state(), 1);
@@ -217,7 +216,7 @@ mod tests {
     /// a satisfied wait (the auto-reset take), never at the set.
     #[test]
     fn a_set_with_no_waiters_parks_the_signal() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let notification = event(EventKind::Notification, false);
         let synchronization = event(EventKind::Synchronization, false);
 

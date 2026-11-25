@@ -439,7 +439,7 @@ mod tests {
     }
 
     /// A fresh dispatcher, whose table the timers below join.
-    fn fresh_table() -> &'static mut Dispatcher {
+    fn fresh_table() -> crate::sched::testkit::Disp {
         crate::sched::testkit::dispatcher()
     }
 
@@ -456,7 +456,7 @@ mod tests {
 
     // --- The wait rig (the wait tests' shape) ---------------------------
 
-    fn dispatcher() -> &'static mut Dispatcher {
+    fn dispatcher() -> crate::sched::testkit::Disp {
         crate::sched::testkit::dispatcher()
     }
 
@@ -483,7 +483,7 @@ mod tests {
     }
 
     fn block_on(
-        dispatcher: &mut Dispatcher,
+        mut dispatcher: crate::sched::testkit::Disp,
         thread: crate::sched::testkit::Rec<Thread>,
         object: *mut crate::sched::wait::Waitable,
         timeout: Option<i64>,
@@ -511,16 +511,16 @@ mod tests {
     /// 1019 & 127 = 123.
     #[test]
     fn the_index_is_the_due_tick_masked() {
-        let table = fresh_table();
+        let mut table = fresh_table();
         let timer = fresh_timer();
         assert!(table.insert(timer, tick(1000) + 2_000_000, tick(1000)));
         assert_eq!(timer.due_time(), tick(1000) + 2_000_000);
         assert!(timer.inserted());
-        assert_eq!(bucket_dues(table, 123), vec![tick(1000) + 2_000_000]);
+        assert_eq!(bucket_dues(&table, 123), vec![tick(1000) + 2_000_000]);
         // Nowhere else: every other bucket is empty.
         for index in 0..TIMER_TABLE_SIZE {
             if index != 123 {
-                assert_eq!(bucket_dues(table, index), Vec::<u64>::new());
+                assert_eq!(bucket_dues(&table, index), Vec::<u64>::new());
             }
         }
         assert_eq!(table.audit_timers(), Ok(()));
@@ -530,20 +530,20 @@ mod tests {
     /// trigger's second arm.
     #[test]
     fn an_exact_tick_due_lands_in_its_own_bucket() {
-        let table = fresh_table();
+        let mut table = fresh_table();
         let timer = fresh_timer();
         assert!(table.insert(timer, tick(1020), tick(1000)));
-        assert_eq!(bucket_dues(table, 1020 & 127), vec![tick(1020)]);
+        assert_eq!(bucket_dues(&table, 1020 & 127), vec![tick(1020)]);
     }
 
     /// A3: a sub-tick due is bucketed with the current tick and expires at the next tick boundary —
     /// the tick is the resolution floor.
     #[test]
     fn a_sub_tick_due_expires_next_boundary() {
-        let table = fresh_table();
+        let mut table = fresh_table();
         let timer = fresh_timer();
         assert!(table.insert(timer, tick(1000) + 50_000, tick(1000)));
-        assert_eq!(bucket_dues(table, 1000 & 127), vec![tick(1000) + 50_000]);
+        assert_eq!(bucket_dues(&table, 1000 & 127), vec![tick(1000) + 50_000]);
         // Not due at tick 1000's boundary, due at 1001's.
         assert_eq!(table.trigger(tick(1000), 1000), None);
         assert_eq!(table.trigger(tick(1001), 1001), Some(1000));
@@ -553,14 +553,14 @@ mod tests {
     /// comparison gates expiry.
     #[test]
     fn long_timers_wrap_the_mask_and_still_expire_on_time() {
-        let dispatcher = dispatcher();
+        let mut dispatcher = dispatcher();
         let early = fresh_timer();
         let late = fresh_timer();
         assert!(dispatcher.insert(early, tick(1300), tick(1000)));
         assert!(dispatcher.insert(late, tick(1300) + 5_000, tick(1000)));
         // Both in bucket 1300 & 127 = 20, earliest due first.
         assert_eq!(
-            bucket_dues(dispatcher, 20),
+            bucket_dues(&dispatcher, 20),
             vec![tick(1300), tick(1300) + 5_000]
         );
 
@@ -576,7 +576,7 @@ mod tests {
         assert!(!early.inserted());
         assert_eq!(early.waitable.signal_state(), 1);
         assert!(late.inserted());
-        assert_eq!(bucket_dues(dispatcher, 20), vec![tick(1300) + 5_000]);
+        assert_eq!(bucket_dues(&dispatcher, 20), vec![tick(1300) + 5_000]);
 
         // The tail expires at tick 1301, through the first arm (its bucket is tick 1300's) with
         // argument 1300.
@@ -591,7 +591,7 @@ mod tests {
     /// exactly the buckets whose heads are due, reading no dispatcher state.
     #[test]
     fn the_hand_reads_the_published_heads() {
-        let dispatcher = fresh_table();
+        let mut dispatcher = fresh_table();
         let early = fresh_timer();
         let late = fresh_timer();
         assert!(dispatcher.insert(late, tick(1300) + 5_000, tick(1000)));
@@ -639,7 +639,7 @@ mod tests {
     /// places the new entry after the first whose due is not later).
     #[test]
     fn buckets_are_due_ordered_and_equals_keep_insertion_order() {
-        let table = fresh_table();
+        let mut table = fresh_table();
         let t1 = fresh_timer();
         let t2 = fresh_timer();
         let t3 = fresh_timer();
@@ -648,7 +648,7 @@ mod tests {
         assert!(table.insert(t2, now + 70_000, now));
         assert!(table.insert(t3, now + 70_000, now));
         assert_eq!(
-            bucket_dues(table, 1000 & 127),
+            bucket_dues(&table, 1000 & 127),
             vec![now + 50_000, now + 70_000, now + 70_000]
         );
         assert_eq!(table.audit_timers(), Ok(()));
@@ -657,10 +657,10 @@ mod tests {
     /// B2: an insert into an empty bucket is the front insert.
     #[test]
     fn an_empty_bucket_takes_the_front_insert() {
-        let table = fresh_table();
+        let mut table = fresh_table();
         let timer = fresh_timer();
         assert!(table.insert(timer, tick(1000) + 2_000_000, tick(1000)));
-        assert_eq!(bucket_dues(table, 123), vec![tick(1000) + 2_000_000]);
+        assert_eq!(bucket_dues(&table, 123), vec![tick(1000) + 2_000_000]);
         assert_eq!(table.audit_timers(), Ok(()));
     }
 
@@ -669,7 +669,7 @@ mod tests {
     /// the caller's to take.
     #[test]
     fn a_past_due_is_refused_at_the_entry() {
-        let table = fresh_table();
+        let mut table = fresh_table();
         let base = tick(1000);
         let low = fresh_timer();
         let high = fresh_timer();
@@ -683,7 +683,7 @@ mod tests {
         assert!(!mid.inserted());
         assert_eq!(mid.waitable.signal_state(), 0);
         assert_eq!(
-            bucket_dues(table, 1000 & 127),
+            bucket_dues(&table, 1000 & 127),
             vec![base + 50_000, base + 90_000]
         );
 
@@ -702,7 +702,7 @@ mod tests {
     /// covers it — a delayed walk never widens backwards past its own argument.)
     #[test]
     fn the_walk_scans_from_the_argument_bucket_to_the_current() {
-        let dispatcher = dispatcher();
+        let mut dispatcher = dispatcher();
         let in_range = fresh_timer();
         let behind = fresh_timer();
         let now = tick(1002);
@@ -725,7 +725,7 @@ mod tests {
     /// bookkeeping is void.
     #[test]
     fn a_delayed_walk_scans_the_whole_table() {
-        let dispatcher = dispatcher();
+        let mut dispatcher = dispatcher();
         let stale = fresh_timer();
         assert!(dispatcher.insert(stale, tick(500), tick(400)));
         // 130 ticks late: over the 128-bucket round.
@@ -738,7 +738,7 @@ mod tests {
     /// the bucket is left alone.
     #[test]
     fn the_walk_stops_at_a_not_due_head() {
-        let dispatcher = dispatcher();
+        let mut dispatcher = dispatcher();
         let head = fresh_timer();
         let tail = fresh_timer();
         // Both dues fall within tick 1000 — one bucket.
@@ -751,7 +751,7 @@ mod tests {
         assert!(tail.inserted());
         assert_eq!(tail.waitable.signal_state(), 0);
         assert_eq!(
-            bucket_dues(dispatcher, 1000 & 127),
+            bucket_dues(&dispatcher, 1000 & 127),
             vec![tick(1000) + 90_000]
         );
         assert_eq!(dispatcher.audit_timers(), Ok(()));
@@ -761,7 +761,7 @@ mod tests {
     /// timer outside the range never expires).
     #[test]
     fn the_collection_wraps_the_mask_in_due_order() {
-        let dispatcher = dispatcher();
+        let mut dispatcher = dispatcher();
         // Buckets 127, 1, 3 — inside the range [126, 3] that wraps the mask; bucket 11's timer is
         // outside and due later.
         let a = fresh_timer();
@@ -788,7 +788,7 @@ mod tests {
     /// into a successful sleep.
     #[test]
     fn the_walk_wakes_parked_threads_in_due_order() {
-        let dispatcher = dispatcher();
+        let mut dispatcher = dispatcher();
         let process = process(8);
         let sleeper_a = thread(process);
         let sleeper_b = thread(process);
@@ -829,7 +829,7 @@ mod tests {
     /// C7: the audit catches a corrupted table.
     #[test]
     fn the_audit_rejects_a_signaled_bucket_entry() {
-        let table = fresh_table();
+        let mut table = fresh_table();
         let mut timer = fresh_timer();
         assert!(table.insert(timer, tick(1000) + 50_000, tick(1000)));
         assert_eq!(table.audit_timers(), Ok(()));
@@ -844,7 +844,7 @@ mod tests {
     /// re-inserts by its new due.
     #[test]
     fn removal_leaves_order_and_the_record_reuses() {
-        let table = fresh_table();
+        let mut table = fresh_table();
         let t1 = fresh_timer();
         let t2 = fresh_timer();
         let t3 = fresh_timer();
@@ -856,7 +856,7 @@ mod tests {
         assert!(!t2.inserted());
         assert_eq!(t2.due_time(), now + 70_000, "the due time stays recorded");
         assert_eq!(
-            bucket_dues(table, 1000 & 127),
+            bucket_dues(&table, 1000 & 127),
             vec![now + 50_000, now + 70_000]
         );
         assert_eq!(table.audit_timers(), Ok(()));
@@ -864,7 +864,7 @@ mod tests {
         // Re-insert with a later due: lands behind t3.
         assert!(table.insert(t2, now + 90_000, now));
         assert_eq!(
-            bucket_dues(table, 1000 & 127),
+            bucket_dues(&table, 1000 & 127),
             vec![now + 50_000, now + 70_000, now + 90_000]
         );
     }
@@ -873,7 +873,7 @@ mod tests {
     /// the later walk (and a direct expiry) find nothing to do for the cancelled timer.
     #[test]
     fn a_wake_cancels_the_table_entry_and_the_walk_skips_it() {
-        let dispatcher = dispatcher();
+        let mut dispatcher = dispatcher();
         let process = process(8);
         let waiter = thread(process);
         let ev = event(EventKind::Notification, false);
@@ -906,7 +906,7 @@ mod tests {
     /// of tick N (argument N); nothing fires before the due is live.
     #[test]
     fn the_trigger_checks_the_tick_pair_in_order() {
-        let table = fresh_table();
+        let mut table = fresh_table();
         let timer = fresh_timer();
         assert!(table.insert(timer, tick(1000) + 2_000_000, tick(1000)));
 
@@ -917,7 +917,7 @@ mod tests {
         assert_eq!(table.trigger(tick(1020), 1020), Some(1019));
 
         // An exact-multiple due fires the N arm with the tick's own number as the argument.
-        let table2 = fresh_table();
+        let mut table2 = fresh_table();
         let exact = fresh_timer();
         assert!(table2.insert(exact, tick(1020), tick(1000)));
         assert_eq!(table2.trigger(tick(1019), 1019), None);
@@ -931,7 +931,7 @@ mod tests {
     /// runs.
     #[test]
     fn a_delay_parks_the_timer_in_the_table() {
-        let dispatcher = dispatcher();
+        let mut dispatcher = dispatcher();
         let process = process(8);
         let sleeper = thread(process);
         match dispatcher.delay(
@@ -948,7 +948,7 @@ mod tests {
         assert_eq!(sleeper.wait_reason(), WaitReason::DelayExecution);
         assert_eq!(sleeper.wait_block_head, Some(BlockId::timer(sleeper.id())));
         assert!(sleeper.timer.inserted());
-        assert_eq!(bucket_dues(dispatcher, 123), vec![tick(1000) + 2_000_000]);
+        assert_eq!(bucket_dues(&dispatcher, 123), vec![tick(1000) + 2_000_000]);
         assert_eq!(dispatcher.audit_timers(), Ok(()));
     }
 
@@ -958,7 +958,7 @@ mod tests {
     /// 1009.)
     #[test]
     fn a_timed_wait_times_out_through_the_walk() {
-        let dispatcher = dispatcher();
+        let mut dispatcher = dispatcher();
         let process = process(8);
         let waiter = thread(process);
         let ev = event(EventKind::Notification, false);
@@ -981,7 +981,7 @@ mod tests {
     /// a due time on the far side of the clock — not an immediate timeout.
     #[test]
     fn the_longest_relative_interval_parks_far_in_the_future() {
-        let dispatcher = dispatcher();
+        let mut dispatcher = dispatcher();
         let process = process(8);
         let sleeper = thread(process);
         let now = tick(1000);

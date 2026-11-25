@@ -415,7 +415,10 @@ mod tests {
     const POOL: usize = 4 * 1024;
 
     fn heap() -> KernelHeap {
-        let pool: &'static mut [u8] = Box::leak(vec![0u8; POOL].into_boxed_slice());
+        // 8-byte aligned, as the heap requires (a byte buffer's allocation need not be).
+        #[repr(C, align(8))]
+        struct Pool([u8; POOL]);
+        let pool: &'static mut [u8] = &mut Box::leak(Box::new(Pool([0; POOL]))).0;
         KernelHeap::new(pool)
     }
 

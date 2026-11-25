@@ -32,13 +32,13 @@ mod tests {
         let dispatcher = crate::sched::testkit::dispatcher();
         let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
         let address = process as *mut SchedProcess;
-        assert_eq!(threads_of(dispatcher, address).count(), 0);
+        assert_eq!(threads_of(&dispatcher, address).count(), 0);
         let first = crate::sched::testkit::thread(process).id();
         let second = crate::sched::testkit::thread(process).id();
-        let listed: std::vec::Vec<_> = threads_of(dispatcher, address)
+        let listed: std::vec::Vec<_> = threads_of(&dispatcher, address)
             .map(|thread| thread.id())
             .collect();
         assert_eq!(listed, [first, second]);
-        assert!(threads_of(dispatcher, address).all(|thread| thread.base_priority() == 8));
+        assert!(threads_of(&dispatcher, address).all(|thread| thread.base_priority() == 8));
     }
 }

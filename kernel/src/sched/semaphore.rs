@@ -105,14 +105,13 @@ impl Dispatcher {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sched::dispatcher::Dispatcher;
     use crate::sched::process::SchedProcess;
     use crate::sched::thread::Thread;
     use crate::sched::wait::{WaitDisposition, WaitMode, WaitReason};
 
     // The rig: the same leaked-objects style as the scheduler's other test modules.
 
-    fn dispatcher() -> &'static mut Dispatcher {
+    fn dispatcher() -> crate::sched::testkit::Disp {
         crate::sched::testkit::dispatcher()
     }
 
@@ -126,18 +125,22 @@ mod tests {
     }
 
     /// A fresh semaphore object of `d`'s pool, at count zero with the ceiling `limit`.
-    fn semaphore(d: &mut Dispatcher, limit: i32) -> WaitableId {
+    fn semaphore(mut d: crate::sched::testkit::Disp, limit: i32) -> WaitableId {
         d.renew_semaphore(0, 0, limit);
         WaitableId::Semaphore(0)
     }
 
     /// The semaphore object's count.
-    fn count(d: &mut Dispatcher, semaphore: WaitableId) -> i32 {
+    fn count(d: crate::sched::testkit::Disp, semaphore: WaitableId) -> i32 {
         d.waitable(semaphore).signal_state()
     }
 
     /// Park `t` on `semaphore`, asserting the wait blocked.
-    fn park_on(d: &mut Dispatcher, t: crate::sched::testkit::Rec<Thread>, semaphore: WaitableId) {
+    fn park_on(
+        mut d: crate::sched::testkit::Disp,
+        t: crate::sched::testkit::Rec<Thread>,
+        semaphore: WaitableId,
+    ) {
         let stamp = crate::sched::wait::ClockStamp {
             interrupt_time: 10_000,
             tick: 5,
@@ -160,7 +163,7 @@ mod tests {
     /// count serves as many waiters as it covers.
     #[test]
     fn a_release_serves_one_waiter_per_count() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let semaphore = semaphore(d, 2);
         let w1 = thread(p);
@@ -217,7 +220,7 @@ mod tests {
     /// woken.
     #[test]
     fn the_release_bound_refuses_past_the_ceiling() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process(8);
         let semaphore = semaphore(d, 2);
         let t = thread(p);

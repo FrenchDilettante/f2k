@@ -2237,7 +2237,7 @@ mod tests {
     }
 
     /// The dispatcher of the newest directory.
-    fn dispatcher() -> &'static mut Dispatcher {
+    fn dispatcher() -> crate::sched::testkit::Disp {
         crate::sched::testkit::installed()
     }
 
@@ -2561,7 +2561,7 @@ mod tests {
     #[test]
     fn a_wait_holds_a_timer_through_its_last_handle() {
         let directory = directory();
-        let dispatcher = dispatcher();
+        let mut dispatcher = dispatcher();
         let waiter = directory.create_thread_in(1..THREADS).unwrap();
         let timer = directory.create_timer(true).unwrap();
         published(directory, timer);
@@ -2597,7 +2597,7 @@ mod tests {
     #[test]
     fn the_sweep_disarms_a_leaked_timer() {
         let directory = directory();
-        let dispatcher = dispatcher();
+        let mut dispatcher = dispatcher();
         let leaked = directory.create_timer(true).unwrap();
         dispatcher.set_waitable_timer(directory.timer(leaked).unwrap(), 1_000_000, 0, 0, false, 0);
         assert_eq!(sweep(directory).0, 1);
@@ -2759,7 +2759,9 @@ mod tests {
         // A's main thread, B's main thread, then a created thread of A's: records 0, 1, 2.
         let threads = [(a, 8), (b, 16), (a, 20)].map(|(owner, client_id)| {
             let id = directory.create_thread().unwrap();
-            let record = dispatcher().thread_mut(directory.renew_thread(id));
+            let thread = directory.renew_thread(id);
+            let mut dispatcher = dispatcher();
+            let record = dispatcher.thread_mut(thread);
             record.process = owner;
             record.thread_id = client_id;
             id
@@ -2788,7 +2790,7 @@ mod tests {
     #[test]
     fn the_timer_table_fills_and_reuses() {
         let directory = directory();
-        let dispatcher = dispatcher();
+        let mut dispatcher = dispatcher();
         let timers: Vec<_> = (0..TIMERS)
             .map(|_| directory.create_timer(true).unwrap())
             .collect();
@@ -3065,7 +3067,7 @@ mod tests {
     #[test]
     fn a_deleted_owned_mutex_leaves_its_owner() {
         let directory = directory();
-        let dispatcher = dispatcher();
+        let mut dispatcher = dispatcher();
         let owner = thread();
         let id = directory.create_mutex().unwrap();
         dispatcher.acquire_mutex(directory.mutex(id).unwrap(), owner.id());
@@ -3371,7 +3373,7 @@ mod tests {
     #[test]
     fn a_process_object_signals_its_end() {
         let directory = directory();
-        let dispatcher = dispatcher();
+        let mut dispatcher = dispatcher();
         let id = directory.create_process().unwrap();
         assert_eq!(directory.processes_live(id.index), Some(id));
         assert_eq!(

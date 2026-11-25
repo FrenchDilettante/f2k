@@ -957,7 +957,7 @@ mod tests {
 
         // The process list holds both, in creation order.
         let threads = ProcessThreads(super::super::process::ProcessRef::new(process));
-        let linked: Vec<ThreadId> = super::super::list::iter(d, threads).collect();
+        let linked: Vec<ThreadId> = super::super::list::iter(&*d, threads).collect();
         assert_eq!(linked, [t1.id(), t2.id()]);
     }
 

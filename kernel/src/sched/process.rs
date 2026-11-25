@@ -308,17 +308,21 @@ mod tests {
     }
 
     /// A process and a dispatcher whose threads attach to it, by id.
-    fn rig() -> (
-        &'static mut crate::sched::dispatcher::Dispatcher,
-        &'static mut SchedProcess,
-    ) {
+    ///
+    /// The process is held by its address, as the dispatcher holds it: a borrow of it kept across
+    /// the dispatcher's calls would be invalidated by them.
+    fn rig() -> (crate::sched::testkit::Disp, *mut SchedProcess) {
         let dispatcher = crate::sched::testkit::dispatcher();
-        let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
-        (dispatcher, process)
+        (dispatcher, leaked(0x0090_0000))
+    }
+
+    /// A process record on directory `dir`, leaked at its final address.
+    fn leaked(dir: u32) -> *mut SchedProcess {
+        Box::into_raw(Box::new(SchedProcess::new(dir, 8)))
     }
 
     /// Attach a fresh thread to `process`.
-    fn attach(process: &mut SchedProcess) -> ThreadId {
+    fn attach(process: *mut SchedProcess) -> ThreadId {
         crate::sched::testkit::thread(process).id()
     }
 
@@ -326,19 +330,19 @@ mod tests {
     /// (or nothing) is attached — and it follows the list as threads leave it.
     #[test]
     fn first_thread_except_walks_the_others() {
-        let (d, process) = rig();
+        let (mut d, process) = rig();
         assert!(d.first_thread_except(process, None).is_none());
         let main = attach(process);
         let first = attach(process);
         let second = attach(process);
-        let threads = ProcessThreads(ProcessRef::new(process));
+        let threads = ProcessThreads(ProcessRef::of(process));
 
         assert_eq!(d.first_thread_except(process, Some(main)), Some(first));
         assert_eq!(d.first_thread_except(process, Some(first)), Some(main));
         // Unlinking stands in for a termination.
-        crate::sched::list::remove(d, threads, first);
+        crate::sched::list::remove(&mut *d, threads, first);
         assert_eq!(d.first_thread_except(process, Some(main)), Some(second));
-        crate::sched::list::remove(d, threads, second);
+        crate::sched::list::remove(&mut *d, threads, second);
         assert!(d.first_thread_except(process, Some(main)).is_none());
         assert_eq!(d.first_thread_except(process, None), Some(main));
     }
@@ -347,13 +351,13 @@ mod tests {
     /// termination walk moves past it.
     #[test]
     fn first_thread_except_skips_pending_terminations() {
-        let (d, process) = rig();
+        let (mut d, process) = rig();
         let main = attach(process);
         let deferred = attach(process);
         let next = attach(process);
         d.thread_mut(deferred).terminate_pending = true;
         assert_eq!(d.first_thread_except(process, Some(main)), Some(next));
-        crate::sched::list::remove(d, ProcessThreads(ProcessRef::new(process)), next);
+        crate::sched::list::remove(&mut *d, ProcessThreads(ProcessRef::of(process)), next);
         assert!(d.first_thread_except(process, Some(main)).is_none());
         assert_eq!(d.first_thread_except(process, Some(next)), Some(main));
     }
@@ -361,14 +365,15 @@ mod tests {
     /// The detach answers whether it ended the last attach to the process: the reap's trigger.
     #[test]
     fn the_last_detach_is_answered() {
-        let (d, target) = rig();
-        let home = Box::leak(Box::new(SchedProcess::new(0x00B0_0000, 8)));
+        let (mut d, target) = rig();
+        let home = leaked(0x00B0_0000);
         let (first, second) = (attach(home), attach(home));
         assert!(d.attach_space(first, target).is_some());
         assert!(d.attach_space(second, target).is_some());
         assert_eq!(d.detach_space(first), (0x00B0_0000, false));
         assert_eq!(d.detach_space(second), (0x00B0_0000, true));
-        assert_eq!(target.attach_count(), 0);
+        // SAFETY: the record is leaked, and no borrow of it is live.
+        assert_eq!(unsafe { &*target }.attach_count(), 0);
     }
 
     /// The quantum-end exemption flag is a plain store returning the previous value.

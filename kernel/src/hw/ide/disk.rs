@@ -496,7 +496,7 @@ mod tests {
         }
 
         // The scheduler side: a thread blocked on the completion event.
-        let dispatcher = crate::sched::testkit::dispatcher();
+        let mut dispatcher = crate::sched::testkit::dispatcher();
         let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
         let mut thread = crate::sched::testkit::thread(process);
         thread.state = ThreadState::Running;
@@ -527,7 +527,7 @@ mod tests {
             in_service: false,
             ended: 0,
         });
-        let mut pair: (&mut Event, &mut Dispatcher) = (event, dispatcher);
+        let mut pair: (&mut Event, &mut Dispatcher) = (event, &mut dispatcher);
         let mut harness = Box::new(Harness {
             sim: SimChannel::with_disk(DISK),
             latch: Latch::new(),

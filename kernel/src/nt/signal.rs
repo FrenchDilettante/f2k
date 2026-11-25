@@ -204,7 +204,11 @@ mod tests {
     };
 
     /// Park or satisfy `thread`'s untimed wait on `object`.
-    fn wait(d: &mut Dispatcher, thread: Rec<Thread>, object: *mut Waitable) -> WaitDisposition {
+    fn wait(
+        mut d: crate::sched::testkit::Disp,
+        thread: Rec<Thread>,
+        object: *mut Waitable,
+    ) -> WaitDisposition {
         d.wait_single(
             thread,
             object,
@@ -362,7 +366,7 @@ mod tests {
     /// oldest alone; both are left cleared, and the pulse answers the state before it.
     #[test]
     fn a_pulse_wakes_the_waiters_present_and_leaves_the_event_cleared() {
-        let d = testkit::dispatcher();
+        let mut d = testkit::dispatcher();
         let p = testkit::process(8);
         let (a, b, c, e) = (
             testkit::thread(p),
@@ -374,7 +378,7 @@ mod tests {
         let manual: &mut Event = testkit::event(EventKind::Notification, false);
         assert_eq!(wait(d, a, manual.waitable()), WaitDisposition::Yield);
         assert_eq!(wait(d, b, manual.waitable()), WaitDisposition::Yield);
-        assert_eq!(pulse_event(d, manual.id()), 0);
+        assert_eq!(pulse_event(&mut d, manual.id()), 0);
         assert_eq!(a.state(), ThreadState::Ready);
         assert_eq!(b.state(), ThreadState::Ready);
         assert_eq!(manual.signal_state(), 0, "left cleared");
@@ -382,14 +386,14 @@ mod tests {
         let auto: &mut Event = testkit::event(EventKind::Synchronization, false);
         assert_eq!(wait(d, c, auto.waitable()), WaitDisposition::Yield);
         assert_eq!(wait(d, e, auto.waitable()), WaitDisposition::Yield);
-        assert_eq!(pulse_event(d, auto.id()), 0);
+        assert_eq!(pulse_event(&mut d, auto.id()), 0);
         assert_eq!(c.state(), ThreadState::Ready, "the oldest");
         assert_eq!(e.state(), ThreadState::Waiting, "the other stays");
         assert_eq!(auto.signal_state(), 0);
 
         // With nobody waiting a pulse signals no one and leaves the event as cleared as a reset.
         let signaled: &mut Event = testkit::event(EventKind::Notification, true);
-        assert_eq!(pulse_event(d, signaled.id()), 1, "the state before");
+        assert_eq!(pulse_event(&mut d, signaled.id()), 1, "the state before");
         assert_eq!(signaled.signal_state(), 0);
     }
 
@@ -397,13 +401,13 @@ mod tests {
     /// refused with the limit's status and the count stays.
     #[test]
     fn a_release_stops_at_the_semaphore_s_maximum() {
-        let d = testkit::dispatcher();
+        let mut d = testkit::dispatcher();
         d.renew_semaphore(0, 1, 3);
         let semaphore = WaitableId::Semaphore(0);
-        assert_eq!(release_semaphore(d, semaphore, 2), Ok(1));
+        assert_eq!(release_semaphore(&mut d, semaphore, 2), Ok(1));
         assert_eq!(d.waitable(semaphore).signal_state(), 3);
         assert_eq!(
-            release_semaphore(d, semaphore, 1),
+            release_semaphore(&mut d, semaphore, 1),
             Err(STATUS_SEMAPHORE_LIMIT_EXCEEDED)
         );
         assert_eq!(d.waitable(semaphore).signal_state(), 3, "unchanged");
@@ -411,11 +415,11 @@ mod tests {
         d.renew_semaphore(1, 1, i32::MAX);
         let wide = WaitableId::Semaphore(1);
         assert_eq!(
-            release_semaphore(d, wide, i32::MAX),
+            release_semaphore(&mut d, wide, i32::MAX),
             Err(STATUS_SEMAPHORE_LIMIT_EXCEEDED),
             "the wrap"
         );
-        assert_eq!(release_semaphore(d, wide, i32::MAX - 1), Ok(1));
+        assert_eq!(release_semaphore(&mut d, wide, i32::MAX - 1), Ok(1));
         assert_eq!(d.waitable(wide).signal_state(), i32::MAX);
     }
 
@@ -423,29 +427,38 @@ mod tests {
     /// its maximum, the mutant released by its owner alone.
     #[test]
     fn a_signal_for_each_kind() {
-        let d = testkit::dispatcher();
+        let mut d = testkit::dispatcher();
         let p = testkit::process(8);
         let (owner, other) = (testkit::thread(p), testkit::thread(p));
 
         let event: &mut Event = testkit::event(EventKind::Synchronization, false);
-        assert_eq!(signal(d, Signal::Event(event.id()), owner.id()), Ok(()));
+        assert_eq!(
+            signal(&mut d, Signal::Event(event.id()), owner.id()),
+            Ok(())
+        );
         assert_eq!(event.signal_state(), 1);
-        assert_eq!(signal(d, Signal::Event(event.id()), owner.id()), Ok(()));
+        assert_eq!(
+            signal(&mut d, Signal::Event(event.id()), owner.id()),
+            Ok(())
+        );
         assert_eq!(event.signal_state(), 1, "a set event stays set");
 
         d.renew_semaphore(0, 0, 1);
         let semaphore = WaitableId::Semaphore(0);
-        assert_eq!(signal(d, Signal::Semaphore(semaphore), owner.id()), Ok(()));
+        assert_eq!(
+            signal(&mut d, Signal::Semaphore(semaphore), owner.id()),
+            Ok(())
+        );
         assert_eq!(d.waitable(semaphore).signal_state(), 1);
         assert_eq!(
-            signal(d, Signal::Semaphore(semaphore), owner.id()),
+            signal(&mut d, Signal::Semaphore(semaphore), owner.id()),
             Err(STATUS_SEMAPHORE_LIMIT_EXCEEDED)
         );
         assert_eq!(d.waitable(semaphore).signal_state(), 1);
 
         let mut mutant = testkit::mutex();
         assert_eq!(
-            signal(d, Signal::Mutant(mutant.id()), owner.id()),
+            signal(&mut d, Signal::Mutant(mutant.id()), owner.id()),
             Err(STATUS_MUTANT_NOT_OWNED),
             "a free mutant is no one's"
         );
@@ -454,11 +467,14 @@ mod tests {
             WaitDisposition::Complete(STATUS_SUCCESS)
         );
         assert_eq!(
-            signal(d, Signal::Mutant(mutant.id()), other.id()),
+            signal(&mut d, Signal::Mutant(mutant.id()), other.id()),
             Err(STATUS_MUTANT_NOT_OWNED)
         );
         assert_eq!(mutant.owner(), Some(owner.id()), "still the owner's");
-        assert_eq!(signal(d, Signal::Mutant(mutant.id()), owner.id()), Ok(()));
+        assert_eq!(
+            signal(&mut d, Signal::Mutant(mutant.id()), owner.id()),
+            Ok(())
+        );
         assert_eq!(mutant.owner(), None, "free again");
     }
 }

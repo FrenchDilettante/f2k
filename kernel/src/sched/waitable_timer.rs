@@ -125,7 +125,7 @@ mod tests {
 
     const INCREMENT: u64 = crate::interrupt::clock::INTERVAL_100NS as u64;
 
-    fn dispatcher() -> &'static mut Dispatcher {
+    fn dispatcher() -> crate::sched::testkit::Disp {
         crate::sched::testkit::dispatcher()
     }
 
@@ -150,7 +150,7 @@ mod tests {
     }
 
     fn wait(
-        d: &mut Dispatcher,
+        mut d: crate::sched::testkit::Disp,
         t: crate::sched::testkit::Rec<Thread>,
         object: *mut Waitable,
         now: u64,
@@ -170,14 +170,14 @@ mod tests {
     const SIGNALED_AT: u64 = 126_256_467_067_890_000;
 
     /// Run the clock's expiry walk at tick `n`.
-    fn expire_at(d: &mut Dispatcher, n: u64) {
+    fn expire_at(mut d: crate::sched::testkit::Disp, n: u64) {
         d.expire_timers(n * INCREMENT, n as u32, 0, SIGNALED_AT);
     }
 
     /// A manual-reset timer stays signaled once due; a new set resets it.
     #[test]
     fn a_manual_timer_stays_signaled_until_set_again() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let t = thread(process());
         let mut m = timer(true);
         assert!(!d.set_waitable_timer(m, 10 * INCREMENT, 0, 0, false, SIGNALED_AT));
@@ -212,7 +212,7 @@ mod tests {
     /// re-arms one period on; a cancel stops it.
     #[test]
     fn an_auto_reset_periodic_timer_rearms_and_cancels() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let t = thread(process());
         let mut a = timer(false);
         d.set_waitable_timer(a, 5 * INCREMENT, 0, 5 * INCREMENT, false, SIGNALED_AT);
@@ -244,7 +244,7 @@ mod tests {
     /// A due time already past expires the timer at the set: signaled, its waiters satisfied.
     #[test]
     fn a_past_due_time_expires_at_once() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let m = timer(true);
         d.set_waitable_timer(m, 100, 200, 0, false, SIGNALED_AT);
         assert!(!m.armed());
@@ -255,7 +255,7 @@ mod tests {
     /// wall clock's reading then its signal time.
     #[test]
     fn a_past_due_completion_is_queued_at_the_set() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let setter = thread(process());
         let mut m = timer(true);
         crate::user::apc::init(&mut m.apc, setter.id(), 0x0040_1000, 7);
@@ -272,7 +272,7 @@ mod tests {
     /// FILETIME the timer was signaled at, low dword then high.
     #[test]
     fn the_completion_apc_breaks_an_alertable_wait() {
-        let d = dispatcher();
+        let mut d = dispatcher();
         let p = process();
         let setter = thread(p);
         let mut m = timer(false);

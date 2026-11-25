@@ -437,7 +437,12 @@ impl<L: NoPreempt, T> LevelCell<L, T> {
     /// value beside the code under test, one reference at a time by its own discipline.
     #[cfg(test)]
     pub(crate) fn as_ptr(&self) -> *mut T {
-        raised::<L, _>(|at| self.get(at) as *mut T)
+        // Built through a borrow, then named from the cell itself: a pointer derived from no
+        // `&mut`, so the rig's later references (and the code's own borrows) do not invalidate it.
+        raised::<L, _>(|at| {
+            self.get(at);
+        });
+        self.value.get().cast::<T>()
     }
 }
 
