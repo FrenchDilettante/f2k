@@ -93,6 +93,7 @@ pub mod printf;
 #[cfg(all(target_arch = "x86", target_os = "windows", not(test)))]
 pub mod probe;
 pub mod resource;
+pub mod scroll;
 pub mod seh;
 pub mod shared_data;
 pub mod status;
