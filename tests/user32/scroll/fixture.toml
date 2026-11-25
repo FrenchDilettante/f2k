@@ -6,8 +6,10 @@
 # rectangle each scroll uncovers.
 description = "scroll - scroll bars: SetScrollInfo and GetScrollInfo on a window's WS_VSCROLL and WS_HSCROLL bars and on ScrollBar controls (the range, the page, the position clamped to nMax - nPage + 1, SIF_DISABLENOSCROLL, the returns, a window given bars by SetScrollInfo); the control's SBM_* messages; SetScrollPos, SetScrollRange, GetScrollPos and GetScrollRange; ShowScrollBar and EnableScrollBar, the arrows' state probed; ScrollWindowEx's return and update region (prcUpdate, hrgnUpdate, the window's) as relations, with prcScroll, prcClip, SW_INVALIDATE, SW_ERASE and SW_SCROLLCHILDREN, and ScrollWindow."
 kind = "sectioned"
+gate = true
 
-# Not gated: F2K has no scroll bars yet (its scroll bar calls are stubs, and no ScrollBar class).
+[pending]
+scrollex = "F2K's gdi32 has no region objects yet: CreateRectRgn answers NULL, so hrgnUpdate's GetRgnBox reads ERROR and its box is not prcUpdate; ScrollWindowEx's return, prcUpdate, the window's update region, SW_SCROLLCHILDREN and ScrollWindow match the capture"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
