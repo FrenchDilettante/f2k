@@ -30,12 +30,13 @@
 //!   read), and a buffer from the process heap ([`Buffer`], src/heap.rs);
 //! - the calls that shut the machine down (src/shutdown.rs: the computer's name, a privilege
 //!   enabled in the process's token through advapi32, ExitWindowsEx through user32), and a
-//!   [`sleep`].
+//!   [`sleep`];
+//! - ASCII text widened to UTF-16 ([`ascii_into`], src/text.rs).
 //!
 //! `unsafe` lives here, at the seam to the system's DLLs (src/sys.rs, src/toolhelp.rs,
 //! src/files.rs, src/console.rs, src/heap.rs, src/shutdown.rs); the programs are safe Rust. The
-//! writer's buffering and its UTF-16LE bytes (src/output.rs) and the command line (src/command.rs)
-//! are host-tested; the rest is only built for F2K's target.
+//! writer's buffering and its UTF-16LE bytes (src/output.rs), the command line (src/command.rs)
+//! and the widening (src/text.rs) are host-tested; the rest is only built for F2K's target.
 
 #![cfg_attr(not(test), no_std)]
 
@@ -58,6 +59,7 @@ mod output;
 mod shutdown;
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
 mod sys;
+mod text;
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
 mod toolhelp;
 pub mod winerror;
@@ -154,6 +156,7 @@ pub use sys::{
     INFINITE,
     MAX_PATH,
 };
+pub use text::ascii_into;
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
 pub use toolhelp::{ProcessEntry, ProcessSnapshot, Processes};
 

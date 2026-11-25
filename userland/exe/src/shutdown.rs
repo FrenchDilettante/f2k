@@ -125,9 +125,7 @@ pub fn lookup_privilege(name: &str) -> Result<Luid, Error> {
     if name.len() >= PRIVILEGE_NAME || !name.is_ascii() {
         return Err(Error(ERROR_INVALID_PARAMETER));
     }
-    for (unit, byte) in wide.iter_mut().zip(name.bytes()) {
-        *unit = u16::from(byte);
-    }
+    crate::ascii_into(&mut wide, name.as_bytes());
     let mut luid = Luid::default();
     // SAFETY: the name ends with a NUL within `wide`; no system name (the local computer); the
     // call writes a LUID into `luid`.
