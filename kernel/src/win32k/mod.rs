@@ -45,6 +45,7 @@ pub mod display;
 pub mod focus;
 pub mod font;
 pub mod fonts;
+pub mod gdi;
 pub mod handle;
 pub mod icon;
 pub mod input;
