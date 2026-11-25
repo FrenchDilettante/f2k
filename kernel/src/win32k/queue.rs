@@ -318,6 +318,10 @@ enum State {
     Queued,
     /// Handed out: on its receiver's receiving stack.
     Received,
+    /// Answered by ReplyMessage while still on its receiver's receiving stack: its sender (or the
+    /// server) may take the answer at once, but the record stays until the delivery ends
+    /// ([`Queues::leave_stack`]), the receiver's stack linked through it.
+    Replied,
     /// Answered: the sender collects the answer.
     Answered,
     /// Never answered: its window or its receiver's queue went first (for a thread's send, its
@@ -708,6 +712,34 @@ impl Queues {
         Some(index)
     }
 
+    /// The sent message at `index`, which ReplyMessage answered ([`State::Replied`]), leaves its
+    /// receiver's stack: back to the pool when its answer was taken already (or nobody waits for
+    /// it), else answered, for its sender or the server to take.
+    fn leave_stack(&mut self, index: u16) {
+        let sent = &mut self.sent[index as usize];
+        sent.next = None;
+        if sent.state != State::Replied {
+            return;
+        }
+        if sent.sender.is_none() && !sent.server {
+            self.free_sent(index);
+        } else {
+            sent.state = State::Answered;
+        }
+    }
+
+    /// The sender or the server took the answer to the sent message at `index`: back to the pool,
+    /// unless its receiver still delivers it ([`State::Replied`]), whose delivery's end frees it.
+    fn collected(&mut self, index: u16) {
+        let sent = &mut self.sent[index as usize];
+        if sent.state == State::Replied {
+            sent.sender = None;
+            sent.server = false;
+        } else {
+            self.free_sent(index);
+        }
+    }
+
     /// End the queue at `index`: what was posted to it goes, what was sent to it and not answered
     /// is dropped, failing its sender ([`Queues::receiver_gone`]), the sends it waits on are left
     /// to be dropped when answered, its timers go.
@@ -725,7 +757,7 @@ impl Queues {
             if self.sent[sent as usize].state == State::Received {
                 self.receiver_gone(sent);
             } else {
-                self.sent[sent as usize].next = None;
+                self.leave_stack(sent);
             }
         }
         // The sends it waits on, the innermost and the ones it delivered messages inside: their
@@ -1443,7 +1475,7 @@ pub fn keep_text_reply(windows: &mut Windows, caller: ThreadId, units: &[u16]) {
 pub fn answered_text(windows: &Windows, id: SentId) -> Option<&[u16]> {
     let sent = windows.queues.sent_at(id)?;
     match (sent.carried, sent.message, sent.state) {
-        (Carried::Text(carried), WM_GETTEXT, State::Answered) => {
+        (Carried::Text(carried), WM_GETTEXT, State::Answered | State::Replied) => {
             Some(windows.queues.store.units(carried.text))
         }
         _ => None,
@@ -1495,8 +1527,8 @@ pub fn end_sent(windows: &mut Windows, caller: ThreadId, result: LResult) -> boo
     if queues.sent[index as usize].state == State::Received {
         queues.answer(index, result);
     } else {
-        // ReplyMessage answered it: the sender collects that answer.
-        queues.sent[index as usize].next = None;
+        // ReplyMessage answered it: the sender takes that answer, or took it already.
+        queues.leave_stack(index);
     }
     if let (WM_NCDESTROY, Some(window)) = (message, window) {
         super::caret::ncdestroy_delivered(windows, caller, window);
@@ -1519,7 +1551,7 @@ pub fn reply(windows: &mut Windows, caller: ThreadId, result: LResult) -> bool {
         return false;
     }
     let sender = sent.sender;
-    sent.state = State::Answered;
+    sent.state = State::Replied;
     sent.result = result;
     match sender {
         Some(sender) => queues.wake(sender),
@@ -1724,11 +1756,13 @@ pub fn abandon_send(windows: &mut Windows, caller: ThreadId, id: SentId) {
 pub fn collect_reply(windows: &mut Windows, caller: ThreadId, id: SentId) -> Option<LResult> {
     let queues = &mut windows.queues;
     let sent = queues.sent_at(id)?;
-    if sent.state != State::Answered || sent.sender != queues.queue_of(caller) {
+    if !matches!(sent.state, State::Answered | State::Replied)
+        || sent.sender != queues.queue_of(caller)
+    {
         return None;
     }
     let result = sent.result;
-    queues.free_sent(id.index);
+    queues.collected(id.index);
     Some(result)
 }
 
@@ -1861,11 +1895,11 @@ pub fn server_reply(windows: &mut Windows, id: SentId) -> Option<ServerReply> {
     let queues = &mut windows.queues;
     let sent = queues.sent_at(id)?;
     let reply = match sent.state {
-        State::Answered => ServerReply::Answered(sent.result),
+        State::Answered | State::Replied if sent.server => ServerReply::Answered(sent.result),
         State::Dropped => ServerReply::Dropped,
-        State::Queued | State::Received => return None,
+        State::Queued | State::Received | State::Answered | State::Replied => return None,
     };
-    queues.free_sent(id.index);
+    queues.collected(id.index);
     Some(reply)
 }
 
@@ -1884,7 +1918,7 @@ pub fn server_abandon(windows: &mut Windows, id: SentId) {
             }
             queues.free_sent(id.index);
         }
-        State::Received => queues.sent[id.index as usize].server = false,
+        State::Received | State::Replied => queues.sent[id.index as usize].server = false,
         State::Answered | State::Dropped => queues.free_sent(id.index),
     }
 }
@@ -3865,6 +3899,89 @@ mod tests {
         assert!(!reply(&mut m.windows, b, 6), "answered already");
         assert!(end_sent(&mut m.windows, b, 9));
         assert_eq!(collect_reply(&mut m.windows, a, id), Some(5));
+    }
+
+    /// A send ReplyMessage answered stays its receiver's until the delivery ends, even once its
+    /// sender took the answer: the receiver's stack of deliveries keeps the send beneath it, whose
+    /// delivery then ends with its own answer; the record goes back to the pool at the end. The
+    /// server's sends the same.
+    #[test]
+    fn a_replied_send_collected_early_stays_on_its_receiver_s_stack() {
+        let (m, atom) = manager();
+        let a = thread(m, 1, 0x100);
+        let b = thread(m, 2, 0x200);
+        let c = thread(m, 3, 0x300);
+        let hb = popup(m, atom, b);
+        deliver(m, b);
+        let Ok(Sending::Waiting(outer)) = send(&mut m.windows, a, hb, WM_USER, 1, 0) else {
+            panic!("queued");
+        };
+        assert!(matches!(read(m, b, &all(), 0), Taken::Sent(_)));
+        let Ok(Sending::Waiting(inner)) = send(&mut m.windows, c, hb, WM_USER, 2, 0) else {
+            panic!("queued");
+        };
+        assert!(matches!(read(m, b, &all(), 0), Taken::Sent(_)), "nested");
+        assert!(reply(&mut m.windows, b, 7));
+        assert_eq!(collect_reply(&mut m.windows, c, inner), Some(7));
+        assert_eq!(
+            collect_reply(&mut m.windows, c, inner),
+            None,
+            "collected once"
+        );
+        assert!(end_sent(&mut m.windows, b, 9), "the inner delivery ends");
+        assert!(
+            end_sent(&mut m.windows, b, 8),
+            "the outer one is still there"
+        );
+        assert!(!end_sent(&mut m.windows, b, 0), "nothing left");
+        assert_eq!(collect_reply(&mut m.windows, a, outer), Some(8));
+        assert_eq!(live_sends(m), 0, "every record back");
+
+        // Answered early and abandoned by its sender: the end of the delivery frees it.
+        let Ok(Sending::Waiting(id)) = send(&mut m.windows, a, hb, WM_USER, 3, 0) else {
+            panic!("queued");
+        };
+        assert!(matches!(read(m, b, &all(), 0), Taken::Sent(_)));
+        assert!(reply(&mut m.windows, b, 4));
+        abandon_send(&mut m.windows, a, id);
+        assert!(end_sent(&mut m.windows, b, 0));
+        assert_eq!(live_sends(m), 0);
+
+        // Answered early, collected after the delivery's end: as before.
+        let Ok(Sending::Waiting(id)) = send(&mut m.windows, a, hb, WM_USER, 3, 0) else {
+            panic!("queued");
+        };
+        assert!(matches!(read(m, b, &all(), 0), Taken::Sent(_)));
+        assert!(reply(&mut m.windows, b, 4));
+        assert!(end_sent(&mut m.windows, b, 0));
+        assert_eq!(collect_reply(&mut m.windows, a, id), Some(4));
+        assert_eq!(live_sends(m), 0);
+
+        // The server's: taken early, freed at the delivery's end.
+        let ServerSending::Waiting(id) = server_send(&mut m.windows, hb, WM_QUERYENDSESSION, 0, 0)
+        else {
+            panic!("queued");
+        };
+        assert!(matches!(read(m, b, &all(), 0), Taken::Sent(_)));
+        assert!(reply(&mut m.windows, b, 1));
+        assert_eq!(
+            server_reply(&mut m.windows, id),
+            Some(ServerReply::Answered(1))
+        );
+        assert_eq!(server_reply(&mut m.windows, id), None, "taken once");
+        assert!(end_sent(&mut m.windows, b, 0));
+        assert_eq!(live_sends(m), 0);
+
+        // The receiver's thread ends while delivering a send answered early: its sender still
+        // takes the answer.
+        let Ok(Sending::Waiting(id)) = send(&mut m.windows, a, hb, WM_USER, 3, 0) else {
+            panic!("queued");
+        };
+        assert!(matches!(read(m, b, &all(), 0), Taken::Sent(_)));
+        assert!(reply(&mut m.windows, b, 6));
+        detach(&mut m.windows, b);
+        assert_eq!(collect_reply(&mut m.windows, a, id), Some(6));
+        assert_eq!(live_sends(m), 0);
     }
 
     /// A message another thread sent to a window destroyed before it was read is answered 0 and
