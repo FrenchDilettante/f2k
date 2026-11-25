@@ -3455,23 +3455,25 @@ fails = "FALSE"
 name = "EnableScrollBar"
 group = "scroll"
 args = ["handle hWnd", "u32 wSBflags", "u32 wArrows"]
-impl = { stub = "not yet implemented" }
+impl = { native = "EnableScrollBar" }
 ordinal = 185
 fails = "FALSE"
+note = "a window's bars' arrows (whether they changed), a control's through EnableWindow or SBM_ENABLE_ARROWS"
 
 [[export]]
 name = "GetScrollInfo"
 group = "scroll"
 args = ["handle hwnd", "i32 fnBar", "ptr lpsi"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetScrollInfo" }
 ordinal = 322
 fails = "FALSE"
+note = "a window's bars from win32k's SBINFO, a control's through SBM_GETSCROLLINFO; nTrackPos is the position (no thumb tracking)"
 
 [[export]]
 name = "GetScrollPos"
 group = "scroll"
 args = ["handle hWnd", "i32 nBar"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetScrollPos" }
 ordinal = 323
 fails = "0"
 
@@ -3479,15 +3481,16 @@ fails = "0"
 name = "GetScrollRange"
 group = "scroll"
 args = ["handle hWnd", "i32 nBar", "ptr<i32> lpMinPos", "ptr<i32> lpMaxPos"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetScrollRange" }
 ordinal = 324
 fails = "FALSE"
+note = "ERROR_NO_SCROLLBARS with a range of 0 to 0 and TRUE for a window with no bars"
 
 [[export]]
 name = "ScrollWindow"
 group = "scroll"
 args = ["handle hWnd", "i32 XAmount", "i32 YAmount", "ptr lpRect", "ptr lpClipRect"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ScrollWindow" }
 ordinal = 530
 fails = "FALSE"
 
@@ -3498,24 +3501,25 @@ args = [
     "handle hWnd", "i32 dx", "i32 dy", "ptr prcScroll", "ptr prcClip", "handle hrgnUpdate",
     "ptr prcUpdate", "u32 flags",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "ScrollWindowEx" }
 ordinal = 531
 fails = "0"
-note = "the update region's complexity, 0 (ERROR) failing"
+note = "the update region's complexity, 0 (ERROR) failing; hrgnUpdate is not filled (no region objects yet)"
 
 [[export]]
 name = "SetScrollInfo"
 group = "scroll"
 args = ["handle hwnd", "i32 fnBar", "ptr lpsi", "bool fRedraw"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetScrollInfo" }
 ordinal = 588
 fails = "0"
+note = "a bar with nothing to scroll hidden (kept with its arrows disabled by SIF_DISABLENOSCROLL)"
 
 [[export]]
 name = "SetScrollPos"
 group = "scroll"
 args = ["handle hWnd", "i32 nBar", "i32 nPos", "bool bRedraw"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetScrollPos" }
 ordinal = 589
 fails = "0"
 
@@ -3523,15 +3527,16 @@ fails = "0"
 name = "SetScrollRange"
 group = "scroll"
 args = ["handle hWnd", "i32 nBar", "i32 nMinPos", "i32 nMaxPos", "bool bRedraw"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetScrollRange" }
 ordinal = 590
 fails = "FALSE"
+note = "ERROR_INVALID_SCROLLBAR_RANGE for a range wider than MAXLONG"
 
 [[export]]
 name = "ShowScrollBar"
 group = "scroll"
 args = ["handle hWnd", "i32 wBar", "bool bShow"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ShowScrollBar" }
 ordinal = 622
 fails = "FALSE"
 

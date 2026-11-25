@@ -1014,11 +1014,7 @@ pub fn default_procedure(window: usize, message: u32, wparam: u32, lparam: i32, 
         }
         nonclient::WM_NCCALCSIZE => nonclient::calc_size(window, wparam, lparam),
         nonclient::WM_NCHITTEST => nonclient::hit_test(window, lparam),
-        nonclient::WM_NCPAINT => nonclient::paint(
-            window,
-            default_entry(ansi),
-            (window, message, wparam, lparam),
-        ),
+        nonclient::WM_NCPAINT => nonclient::paint(window),
         WM_NCACTIVATE => nonclient::activate(window, wparam),
         WM_SYSKEYDOWN | WM_SYSKEYUP | WM_KEYDOWN | WM_KEYUP | WM_SYSCHAR => {
             system_key(window, message, wparam, lparam, ansi);

@@ -435,6 +435,8 @@ pub struct HostWindow {
     pub fnid: u32,
     /// Its properties, (atom, data), in the order they were set.
     pub props: Vec<(u16, u32)>,
+    /// Its own scroll bars, once a scroll bar service changed them.
+    pub scroll: Option<rtl::scroll::ScrollBars>,
 }
 
 /// A creation, as NtUserCreateWindowEx was given it: the class (its units, or its atom), the name.
@@ -922,6 +924,7 @@ pub unsafe extern "system" fn NtUserQueryWindow(
         QUERY_WINDOW_TEXT => length >= 4 && length % 2 == 0,
         QUERY_WINDOW_LINKS => length as usize == size_of::<WindowLinks>(),
         QUERY_WINDOW_CLASS => length as usize == size_of::<WindowClass>(),
+        QUERY_WINDOW_SCROLL_BARS => length as usize == size_of::<rtl::scroll::ScrollBars>(),
         index if index & (QUERY_WINDOW_EXTRA | QUERY_CLASS_EXTRA) != 0 => {
             length == 2 || length == 4
         }
@@ -997,6 +1000,11 @@ pub unsafe extern "system" fn NtUserQueryWindow(
             }
             .as_bytes()
             .to_vec()
+        } else if index == QUERY_WINDOW_SCROLL_BARS {
+            match host_bars(&w) {
+                Some(bars) => bars.as_bytes().to_vec(),
+                None => return NtStatus::from_win32(rtl::scroll::ERROR_NO_SCROLLBARS).0,
+            }
         } else if index == QUERY_WINDOW_PARENT {
             w.parent.to_le_bytes().to_vec()
         } else if index == QUERY_WINDOW_LINKS {
@@ -2970,4 +2978,136 @@ pub unsafe extern "system" fn NtUserTranslateMessage(
     // SAFETY: the caller's out-pointer.
     unsafe { translated.write(1) };
     STATUS_SUCCESS
+}
+
+// --- The scroll bars: a window's own, as the kernel keeps them (its rules in rtl::scroll)
+// ---------
+
+/// The window's own bars: those a service set, or a window's bars as made when its style asks for
+/// a bar.
+fn host_bars(w: &HostWindow) -> Option<rtl::scroll::ScrollBars> {
+    use rtl::nonclient::{WS_HSCROLL, WS_VSCROLL};
+    w.scroll.or_else(|| {
+        (w.style & (WS_HSCROLL | WS_VSCROLL) != 0).then_some(rtl::scroll::ScrollBars::WINDOW)
+    })
+}
+
+/// The style bit of a window's bar.
+fn host_bar_bit(bar: i32) -> u32 {
+    if bar == rtl::scroll::SB_HORZ {
+        rtl::nonclient::WS_HSCROLL
+    } else {
+        rtl::nonclient::WS_VSCROLL
+    }
+}
+
+pub unsafe extern "system" fn NtUserSetScrollInfo(
+    window: usize,
+    bar: i32,
+    info: *const rtl::scroll::ScrollInfo,
+    _redraw: u32,
+    result: *mut u32,
+) -> u32 {
+    use rtl::scroll::*;
+    // SAFETY: the caller's structure.
+    let info = unsafe { info.read_unaligned() };
+    wm(|wm| {
+        let w = match wm.window(window) {
+            Ok(w) => w,
+            Err(status) => return status,
+        };
+        if info.mask & SIF_RANGE == 0 && host_bars(w).is_none() {
+            return NtStatus::from_win32(ERROR_NO_SCROLLBARS).0;
+        }
+        let mut bars = host_bars(w).unwrap_or(ScrollBars::WINDOW);
+        let set = set_parms(bars.bar_mut(bar), &info);
+        let bit = host_bar_bit(bar);
+        if set.changed && info.mask & SIF_DISABLENOSCROLL == 0 {
+            if let Some(scrollable) = set.scrollable {
+                if scrollable != (w.style & bit != 0) {
+                    w.style ^= bit;
+                }
+            }
+        }
+        w.scroll = Some(bars);
+        // SAFETY: the caller's out-pointer.
+        unsafe { result.write(set.result as u32) };
+        STATUS_SUCCESS
+    })
+}
+
+pub unsafe extern "system" fn NtUserShowScrollBar(window: usize, bar: i32, show: u32) -> u32 {
+    use rtl::nonclient::{WS_HSCROLL, WS_VSCROLL};
+    use rtl::scroll::*;
+    wm(|wm| {
+        let w = match wm.window(window) {
+            Ok(w) => w,
+            Err(status) => return status,
+        };
+        let bits = match bar {
+            SB_HORZ => WS_HSCROLL,
+            SB_VERT => WS_VSCROLL,
+            SB_BOTH => WS_HSCROLL | WS_VSCROLL,
+            _ => return STATUS_INVALID_PARAMETER,
+        };
+        w.scroll = Some(host_bars(w).unwrap_or(ScrollBars::WINDOW));
+        if show != 0 {
+            w.style |= bits;
+        } else {
+            w.style &= !bits;
+        }
+        STATUS_SUCCESS
+    })
+}
+
+pub unsafe extern "system" fn NtUserEnableScrollBar(
+    window: usize,
+    bar: u32,
+    arrows: u32,
+    result: *mut u32,
+) -> u32 {
+    use rtl::scroll::*;
+    wm(|wm| {
+        let w = match wm.window(window) {
+            Ok(w) => w,
+            Err(status) => return status,
+        };
+        let mut bars = host_bars(w).unwrap_or(ScrollBars::WINDOW);
+        let (flags, changed) = enable_arrows(bars.flags, bar as i32, arrows);
+        bars.flags = flags;
+        w.scroll = Some(bars);
+        // SAFETY: the caller's out-pointer.
+        unsafe { result.write(changed as u32) };
+        STATUS_SUCCESS
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "system" fn NtUserScrollWindowEx(
+    window: usize,
+    dx: i32,
+    dy: i32,
+    scroll: usize,
+    clip: usize,
+    _flags: u32,
+    update: *mut Rect,
+    result: *mut u32,
+) -> u32 {
+    // SAFETY: the caller's rectangles, when given.
+    let read = |at: usize| (at != 0).then(|| unsafe { (at as *const Rect).read_unaligned() });
+    let (scroll, clip) = (read(scroll), read(clip));
+    wm(|wm| {
+        let w = match wm.window(window) {
+            Ok(w) => w,
+            Err(status) => return status,
+        };
+        let client = Rect::new(0, 0, w.rect.width(), w.rect.height());
+        let area = rtl::scroll::scroll_area(client, scroll, clip, dx, dy);
+        // SAFETY: the caller's out-pointers.
+        unsafe {
+            update.write(area.bounds);
+            result.write(area.complexity as u32);
+        }
+        STATUS_SUCCESS
+    })
 }

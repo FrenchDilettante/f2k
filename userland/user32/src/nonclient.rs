@@ -67,7 +67,6 @@ pub const WM_NCPAINT: u32 = 0x0085;
 pub const WM_NCACTIVATE: u32 = 0x0086;
 
 /// The system colors the frame is drawn in (winuser.h's COLOR_*).
-const COLOR_SCROLLBAR: u32 = 0;
 const COLOR_ACTIVECAPTION: u32 = 2;
 const COLOR_INACTIVECAPTION: u32 = 3;
 const COLOR_WINDOWFRAME: u32 = 6;
@@ -218,38 +217,10 @@ fn is_active(window: usize) -> bool {
         || menubar::loop_owner() == window
 }
 
-/// The scroll bars a window's styles ask for, which the frame takes from the client area but draws
-/// only as their bare tracks yet (no arrows, no thumb), and what each is.
-const SCROLL_BARS: [(u32, &str); 2] = [
-    (0x0020_0000, "WS_VSCROLL (the window's vertical scroll bar)"),
-    (
-        0x0010_0000,
-        "WS_HSCROLL (the window's horizontal scroll bar)",
-    ),
-];
-
-/// The scroll bars logged in this process.
-static SCROLL_BARS_LOGGED: rtl::stub::Logged<2> = rtl::stub::Logged::new();
-
 /// The default procedure's WM_NCPAINT: the window's whole frame painted (whatever region wParam
-/// names), its caption as its activation has it; 0. A scroll bar its styles ask for is logged for
-/// `entry` (DefWindowProc's, with the message's `call`), once per process: it is not drawn yet.
-pub fn paint(window: usize, entry: &rtl::stub::Entry, call: (usize, u32, u32, i32)) -> i32 {
+/// names), its caption as its activation has it, its scroll bars as they stand; 0.
+pub fn paint(window: usize) -> i32 {
     if let Some(framed) = Framed::of(window) {
-        for &(bit, what) in &SCROLL_BARS {
-            if framed.style & bit != 0 {
-                crate::stub::message_once(
-                    &SCROLL_BARS_LOGGED,
-                    bit,
-                    entry,
-                    format_args!(
-                        "{what} is not yet implemented: its area is drawn as a bare track, with no \
-                         arrows and no thumb"
-                    ),
-                    call,
-                );
-            }
-        }
         if crate::window::is_window_visible(window) != 0 {
             paint_frame(&framed, is_active(window), true);
         }
@@ -303,6 +274,7 @@ fn paint_frame(framed: &Framed, active: bool, whole: bool) {
         if let Some(bar) = frame.menu_bar(local) {
             menubar::draw_bar(dc, framed.menu, bar, menubar::bar_selection(framed.handle));
         }
+        crate::scrollbar::draw_frame_bars(dc, framed.handle, &frame, local);
     }
     let _ = imports::delete_dc(dc);
 }
@@ -349,20 +321,6 @@ fn draw_borders(dc: usize, local: Rect, frame: &Frame, active: bool) {
         if frame.edge >= 2 {
             draw::draw_edge_in(dc, edge, EDGE_SUNKEN, BF_RECT);
         }
-    }
-    // The scroll bars' tracks, and the square between them in the face color.
-    let (vertical, horizontal) = frame.scroll_bars(local);
-    for bar in [vertical, horizontal].into_iter().flatten() {
-        draw::fill(dc, bar, color(COLOR_SCROLLBAR));
-    }
-    if let (Some(vertical), Some(horizontal)) = (vertical, horizontal) {
-        let corner = Rect {
-            left: vertical.left,
-            top: horizontal.top,
-            right: vertical.right,
-            bottom: horizontal.bottom,
-        };
-        draw::fill(dc, corner, color(COLOR_3DFACE));
     }
 }
 

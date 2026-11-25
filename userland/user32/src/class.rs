@@ -396,8 +396,8 @@ fn system_classes_due() -> bool {
     SYSTEM_CLASSES_WANTED.with(|wanted| wanted.replace(false))
 }
 
-/// user32's own classes registered in the calling process, once: the Button, Static and Edit
-/// controls, the dialog class (#32770) and the menu class (#32768), as Windows 2000's user32
+/// user32's own classes registered in the calling process, once: the Button, Static, ScrollBar and
+/// Edit controls, the dialog class (#32770) and the menu class (#32768), as Windows 2000's user32
 /// registers them in every process it connects. Each names its procedure's two forms, so a window
 /// takes the form of the call that created it (CreateWindowExA's is no Unicode window). They are
 /// registered when the process first creates a window, not when user32 loads, so a console program
@@ -407,7 +407,7 @@ pub fn register_system_classes() {
         return;
     }
     let arrow = stock(32512, RT_CURSOR);
-    let classes: [(usize, u32, usize, usize, i32); 4] = [
+    let classes: [(usize, u32, usize, usize, i32); 5] = [
         (
             BUTTON_NAME.as_ptr() as usize,
             CS_DBLCLKS | CS_PARENTDC | CS_VREDRAW | CS_HREDRAW,
@@ -421,6 +421,13 @@ pub fn register_system_classes() {
             procedures::static_control().0,
             procedures::static_control().1,
             crate::static_control::STATIC_EXTRA,
+        ),
+        (
+            SCROLLBAR_NAME.as_ptr() as usize,
+            CS_DBLCLKS | CS_PARENTDC | CS_VREDRAW | CS_HREDRAW,
+            procedures::scroll_bar().0,
+            procedures::scroll_bar().1,
+            crate::scrollbar::SCROLLBAR_EXTRA,
         ),
         (
             usize::from(DIALOG_CLASS_ATOM),
@@ -448,7 +455,13 @@ pub fn register_system_classes() {
             class_name: name,
             ..WndClassEx::default()
         };
-        let _ = imports::register_class(&class, name, REGISTER_WIN40_COMPAT, narrow as u32);
+        let atom = imports::register_class(&class, name, REGISTER_WIN40_COMPAT, narrow as u32);
+        if name == SCROLLBAR_NAME.as_ptr() as usize {
+            if let Ok(atom) = atom {
+                crate::scrollbar::SCROLLBAR_ATOM
+                    .store(u32::from(atom), core::sync::atomic::Ordering::Relaxed);
+            }
+        }
     }
     // The Edit control, with the I-beam cursor.
     let edit = WndClassEx {
@@ -473,14 +486,13 @@ const IDC_IBEAM: u16 = 32513;
 
 /// The system classes Windows 2000 has (user32's and win32k's, as the platform documents them)
 /// that F2K does not register yet: each one's name, and what it is, as a log line names it.
-const MISSING_SYSTEM_CLASSES: [(&str, &str); 9] = [
+const MISSING_SYSTEM_CLASSES: [(&str, &str); 8] = [
     ("ListBox", "the ListBox control class"),
     ("ComboBox", "the ComboBox control class"),
     (
         "ComboLBox",
         "the ComboLBox class (a combo box's drop-down list)",
     ),
-    ("ScrollBar", "the ScrollBar control class"),
     ("MDIClient", "the MDIClient class"),
     ("Message", "the Message class (message-only windows)"),
     ("DDEMLEvent", "the DDEMLEvent class"),
@@ -529,6 +541,7 @@ pub unsafe fn missing_system_class(class: usize) -> Option<(&'static str, &'stat
 const BUTTON_NAME: [u16; 7] = units::<7>("Button");
 const STATIC_NAME: [u16; 7] = units::<7>("Static");
 const EDIT_NAME: [u16; 5] = units::<5>("Edit");
+const SCROLLBAR_NAME: [u16; 10] = units::<10>("ScrollBar");
 
 /// `text`'s units, NUL-terminated, in an array of `N` (its length plus one).
 const fn units<const N: usize>(text: &str) -> [u16; N] {
@@ -571,6 +584,13 @@ mod procedures {
         (
             crate::edit::edit_proc_w as *const () as usize,
             crate::edit::edit_proc_a as *const () as usize,
+        )
+    }
+
+    pub fn scroll_bar() -> (usize, usize) {
+        (
+            crate::scrollbar::scroll_bar_proc_w as *const () as usize,
+            crate::scrollbar::scroll_bar_proc_a as *const () as usize,
         )
     }
 
@@ -644,6 +664,21 @@ mod procedures {
 
     pub fn edit() -> (usize, usize) {
         (procedure(edit_w) as usize, procedure(edit_a) as usize)
+    }
+
+    fn scroll_bar_w(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+        crate::scrollbar::scroll_bar_proc_w(window as usize, message, wparam, lparam)
+    }
+
+    fn scroll_bar_a(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+        crate::scrollbar::scroll_bar_proc_a(window as usize, message, wparam, lparam)
+    }
+
+    pub fn scroll_bar() -> (usize, usize) {
+        (
+            procedure(scroll_bar_w) as usize,
+            procedure(scroll_bar_a) as usize,
+        )
     }
 }
 

@@ -7,7 +7,8 @@
 //! procedure, [`message`]; the procedures' narrow and wide forms and CallWindowProc,
 //! [`procedure`]; the painting, [`paint`]; the GetDC family, [`dc`]; the drawing calls, [`draw`];
 //! the string tables, [`resource`]; the dialog manager, [`dialog`]; the Button, Static and Edit
-//! controls, [`button`], [`static_control`] and [`edit`]; MessageBox, [`msgbox`]; the menus,
+//! controls, [`button`], [`static_control`] and [`edit`]; the scroll bars and the ScrollBar
+//! control, [`scrollbar`]; MessageBox, [`msgbox`]; the menus,
 //! [`menu`], and their MENUITEMINFO calls, [`menuinfo`]; the menu bar, its popups and the keyboard
 //! menu loop, [`menubar`]; the non-client area, [`nonclient`]; the caret, [`caret`]; the keyboard
 //! accelerators, [`accel`]; the icons, [`icon`]; the bitmaps, [`bitmap`]; the clipboard,
@@ -68,6 +69,7 @@ pub mod prop;
 pub mod records;
 pub mod rect;
 pub mod resource;
+pub mod scrollbar;
 pub mod shutdown;
 pub mod sound;
 pub mod static_control;

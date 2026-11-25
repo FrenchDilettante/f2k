@@ -26,6 +26,7 @@ use rtl::heap::HEAP_ZERO_MEMORY;
 use rtl::icon::CursorData;
 use rtl::menu::{MenuItemAnswer, MenuItemInfoW};
 use rtl::pod::Pod;
+use rtl::scroll::ScrollInfo;
 use rtl::status::{checked, NtStatus};
 use rtl::user::{GuiThreadInfo, Msg, Point, Receipt, SendTimeout};
 use rtl::window::{WindowPlacement, WindowPos};
@@ -39,6 +40,7 @@ mod raw {
     use rtl::display::DevModeW;
     use rtl::gdi::{LogFontW, Rect, Size, TextMetricW};
     use rtl::icon::CursorData;
+    use rtl::scroll::ScrollInfo;
     use rtl::user::{GuiThreadInfo, Msg, Point, Receipt, SendTimeout};
     use rtl::window::{WindowPlacement, WindowPos};
 
@@ -618,6 +620,32 @@ mod raw {
         pub fn NtUserGetGUIThreadInfo(thread: u32, info: *mut GuiThreadInfo) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserCallTwoParam"]
         pub fn NtUserCallTwoParam(param1: u32, param2: u32, routine: u32, result: *mut u32) -> u32;
+
+        // The scroll bars (kernel/src/win32k/scroll.rs).
+        #[link_name = "\u{1}_f2k_nt_NtUserSetScrollInfo"]
+        pub fn NtUserSetScrollInfo(
+            window: usize,
+            bar: i32,
+            info: *const ScrollInfo,
+            redraw: u32,
+            result: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserShowScrollBar"]
+        pub fn NtUserShowScrollBar(window: usize, bar: i32, show: u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserEnableScrollBar"]
+        pub fn NtUserEnableScrollBar(window: usize, bar: u32, arrows: u32, result: *mut u32)
+            -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserScrollWindowEx"]
+        pub fn NtUserScrollWindowEx(
+            window: usize,
+            dx: i32,
+            dy: i32,
+            scroll: usize,
+            clip: usize,
+            flags: u32,
+            update: *mut Rect,
+            result: *mut u32,
+        ) -> u32;
 
         // The DCs (kernel/src/win32k/dc.rs).
         #[link_name = "\u{1}_f2k_nt_NtUserGetDC"]
@@ -2030,6 +2058,66 @@ pub fn call_hwnd_param_lock(window: usize, param: u32, routine: u32) -> Result<u
     // SAFETY: the kernel writes the result into the local.
     checked(unsafe { raw::NtUserCallHwndParamLock(window, param, routine, &mut result) })?;
     Ok(result)
+}
+
+// --- win32k: the scroll bars ---------------------------------------------------------------------
+
+/// NtUserSetScrollInfo: `info` set on `window`'s own bar `bar`; the position (the old one with
+/// SIF_RETURNOLDPOS).
+pub fn set_scroll_info(
+    window: usize,
+    bar: i32,
+    info: &ScrollInfo,
+    redraw: bool,
+) -> Result<i32, NtStatus> {
+    let mut result = 0u32;
+    // SAFETY: the kernel reads the local structure and writes the local answer.
+    checked(unsafe { raw::NtUserSetScrollInfo(window, bar, info, redraw as u32, &mut result) })?;
+    Ok(result as i32)
+}
+
+/// NtUserShowScrollBar: `window`'s own bars `bar` shown or hidden.
+pub fn show_scroll_bar(window: usize, bar: i32, show: bool) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtUserShowScrollBar(window, bar, show as u32) })
+}
+
+/// NtUserEnableScrollBar: the arrows of `window`'s own bars `bar` enabled or disabled; whether
+/// they changed.
+pub fn enable_scroll_bar(window: usize, bar: i32, arrows: u32) -> Result<bool, NtStatus> {
+    let mut result = 0u32;
+    // SAFETY: the kernel writes the local answer.
+    checked(unsafe { raw::NtUserEnableScrollBar(window, bar as u32, arrows, &mut result) })?;
+    Ok(result != 0)
+}
+
+/// NtUserScrollWindowEx: `window`'s client area scrolled by `dx` and `dy` (the rectangles at
+/// `scroll` and `clip` read by the kernel, zero for none); the uncovered region's complexity and
+/// its box.
+pub fn scroll_window_ex(
+    window: usize,
+    dx: i32,
+    dy: i32,
+    scroll: usize,
+    clip: usize,
+    flags: u32,
+) -> Result<(i32, Rect), NtStatus> {
+    let (mut result, mut update) = (0u32, Rect::EMPTY);
+    // SAFETY: the kernel reads the rectangles through its fault-tolerant copies and writes the
+    // locals.
+    checked(unsafe {
+        raw::NtUserScrollWindowEx(
+            window,
+            dx,
+            dy,
+            scroll,
+            clip,
+            flags,
+            &mut update,
+            &mut result,
+        )
+    })?;
+    Ok((result as i32, update))
 }
 
 // --- win32k: painting ----------------------------------------------------------------------------

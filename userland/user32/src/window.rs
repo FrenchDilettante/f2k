@@ -1710,7 +1710,7 @@ mod tests {
         let narrow = unsafe {
             create_window_ex_a(
                 0,
-                c"ScrollBar".as_ptr().cast(),
+                c"ComboBox".as_ptr().cast(),
                 core::ptr::null(),
                 0,
                 0,
@@ -1728,7 +1728,7 @@ mod tests {
         assert!(
             line.len() == 1
                 && line[0].starts_with("stub user32.CreateWindowExA(")
-                && line[0].ends_with(": the ScrollBar control class is not yet implemented\n"),
+                && line[0].ends_with(": the ComboBox control class is not yet implemented\n"),
             "{line:?}"
         );
     }
