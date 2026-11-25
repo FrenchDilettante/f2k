@@ -1,5 +1,6 @@
-//! The IDE (ATA) disk controller: the primary channel's master disk, LBA28 PIO reads and writes
-//! driven by IRQ 14, and the write cache's flush.
+//! The IDE (ATA) disk controller: the primary channel's master disk, LBA28 reads and writes driven
+//! by IRQ 14 — by the controller's bus master (DMA) where it has one, else by PIO — and the write
+//! cache's flush.
 //!
 //! The register machine — the port layout, the task-file packing, the IDENTIFY decode, the
 //! interrupt latch the service routine fills, and the per-command protocol — is generic over
@@ -13,10 +14,12 @@
 //! status read is the acknowledgment. A data-in command interrupts once per DRQ block (a sector,
 //! or the SET MULTIPLE count under READ MULTIPLE), when that block's data is ready: draining a
 //! block's last word starts the next. The last drain raises nothing, so the caller ends a command
-//! with one status read of its own, which also clears an interrupt a device might still hold.
+//! with one status read of its own, which also clears an interrupt a device might still hold. A DMA
+//! command interrupts once, when the bus master has moved all its sectors ([`busmaster`]).
 //!
 //! [`Io`]: crate::hal::Io
 
+pub mod busmaster;
 mod channel;
 pub mod disk;
 mod flush;

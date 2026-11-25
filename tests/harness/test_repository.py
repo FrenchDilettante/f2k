@@ -424,6 +424,8 @@ RAW_ACCESS_ALLOWED = {
     "kernel/src/hal/exports.rs": "the hal.dll entry points' device registers and buffers, named by"
     " kernel-mode drivers through their resolved imports: no system service reaches them, so no"
     " program's pointer does",
+    "kernel/src/hw/ide/disk.rs": "the bus master's descriptor table, a common buffer of the"
+    " nonpaged pool the disk alone writes",
     "kernel/src/hw/vbe/trampoline.rs": "the trampoline's run of conventional memory, taken out of"
     " the free lists at boot (no program's page is ever there), the BIOS's mode list and the"
     " framebuffer, through the kernel window",

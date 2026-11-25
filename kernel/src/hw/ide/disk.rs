@@ -10,6 +10,13 @@
 //! nothing to switch to, so it halts until the same event is signaled — the same interrupt, the
 //! same deferred completion, no polling for the data.
 //!
+//! Where the controller has a bus master (a PCI IDE controller's BAR 4) and the drive does
+//! multiword DMA, bring-up sets the drive's transfer mode, and every request whose buffer the
+//! engine reaches moves by READ DMA / WRITE DMA: the buffer's physical runs ([`crate::mem::dma`]'s
+//! scatter/gather over the page tables) written to a descriptor table in a common buffer, one
+//! interrupt per command, as Windows 2000's atapi/pciidex do. A buffer the engine cannot reach (a
+//! run above 4 GiB, an odd address, a user address) moves by PIO, as before.
+//!
 //! [`IDE`]: crate::interrupt::irql::IDE
 
 #[cfg(target_arch = "x86")]
@@ -34,20 +41,31 @@ pub fn complete(event: WaitableId, dispatcher: &mut Dispatcher) {
 #[cfg(target_arch = "x86")]
 mod target {
     use core::cell::UnsafeCell;
+    use core::sync::atomic::{fence, Ordering};
 
     use super::*;
     use crate::block::lock::DeviceLock;
     use crate::block::{check_request, BlockDevice, BusType, CacheFlush, DeviceInfo, DeviceKind};
     use crate::hal::Ports;
+    use crate::hw::ide::busmaster::{descriptors, Descriptor};
     use crate::hw::ide::flush;
     use crate::hw::ide::identify::{self, Identity};
     use crate::hw::ide::latch::{Completion, Latch};
     use crate::hw::ide::read;
-    use crate::hw::ide::regs::{PRIMARY_BASE, PRIMARY_CONTROL, PRIMARY_VECTOR, SECTOR_SIZE};
+    use crate::hw::ide::regs::{
+        MAX_SECTORS_PER_COMMAND,
+        PRIMARY_BASE,
+        PRIMARY_CONTROL,
+        PRIMARY_VECTOR,
+        SECTOR_SIZE,
+        SET_TRANSFER_MODE,
+    };
+    use crate::hw::ide::taskfile::pack_lba28;
     use crate::hw::ide::write;
     use crate::interrupt::dpc::{self, Dpc};
     use crate::interrupt::InterruptObject;
     use crate::level::{At, Dispatch, Ide};
+    use crate::mem::dma::{scatter_gather, CommonBuffer, PlatformBus, ScatterGatherElement};
     use crate::pcr::pcr;
     use crate::sched::event::{Event, EventKind};
     use crate::sched::wait::{WaitReason, Waitable};
@@ -70,9 +88,83 @@ mod target {
         latch: Latch,
         /// What IDENTIFY reported, set once at bring-up: none when no usable disk answered.
         identity: InitOnce<Option<Identity>>,
+        /// The channel's bus master, set once at bring-up: none when the controller has none, the
+        /// drive does no DMA, or setting its mode failed.
+        bus_master: InitOnce<Option<BusMaster>>,
         /// The channel's registers, held by one request at a time, across its interrupt waits.
         channel: DeviceLock<Channel<Ports>>,
     }
+
+    /// The channel's bus master: its ports, and the common buffer holding its descriptor table.
+    #[derive(Clone, Copy)]
+    struct BusMaster {
+        port: u16,
+        table: CommonBuffer,
+    }
+
+    /// The descriptor table's common buffer: one page.
+    const TABLE_BYTES: usize = 4096;
+
+    /// The most descriptors one command's table holds: a 256-sector buffer spans at most 33
+    /// pages, each run split at most once more at a 64 KiB boundary.
+    const MAX_DESCRIPTORS: usize = 72;
+
+    /// The bytes one DMA command moves at most: 256 sectors.
+    const PER_COMMAND: usize = MAX_SECTORS_PER_COMMAND as usize * SECTOR_SIZE;
+
+    /// One command's descriptor table, built before it is installed.
+    #[derive(Clone, Copy)]
+    struct Table {
+        entries: [Descriptor; MAX_DESCRIPTORS],
+        count: usize,
+    }
+
+    impl Table {
+        const EMPTY: Table = Table {
+            entries: [Descriptor {
+                address: 0,
+                count_and_end: 0,
+            }; MAX_DESCRIPTORS],
+            count: 0,
+        };
+
+        /// The table for the `len` bytes at kernel address `va`: its pages' physical runs; none
+        /// when a page is not mapped or the engine cannot reach a run.
+        fn of(va: u32, len: usize) -> Option<Table> {
+            let mut elements = [ScatterGatherElement {
+                address: 0,
+                length: 0,
+                reserved: 0,
+            }; MAX_DESCRIPTORS / 2];
+            let count = scatter_gather(&PlatformBus, va, len, &mut elements)?;
+            let mut table = Table::EMPTY;
+            table.count = descriptors(
+                elements[..count]
+                    .iter()
+                    .map(|element| (element.address, element.length)),
+                &mut table.entries,
+            )?;
+            Some(table)
+        }
+
+        /// Write the table into the bus master's common buffer, under the channel's lock (the
+        /// engine reads it only inside a command, which runs under the lock).
+        fn install(&self, bus_master: &BusMaster) {
+            // SAFETY: the common buffer bring-up allocated for the bus master alone, TABLE_BYTES
+            // long and mapped for the system's life; its one writer is this, under the channel's
+            // lock, and the engine reads it only while a command runs under that same lock.
+            let bytes = unsafe {
+                core::slice::from_raw_parts_mut(bus_master.table.va as *mut u8, TABLE_BYTES)
+            };
+            for (index, entry) in self.entries[..self.count].iter().enumerate() {
+                bytes[8 * index..8 * index + 8].copy_from_slice(&entry.bytes());
+            }
+            fence(Ordering::SeqCst);
+        }
+    }
+
+    /// The PCI command register's bus-master enable (bit 2).
+    const PCI_BUS_MASTER: u32 = 0x4;
 
     /// The primary master.
     static IDE: IdeExtension = IdeExtension {
@@ -81,6 +173,7 @@ mod target {
         event: CompletionEvent::new(),
         latch: Latch::new(),
         identity: InitOnce::new(),
+        bus_master: InitOnce::new(),
         channel: DeviceLock::new(Channel::new(Ports, PRIMARY_BASE, PRIMARY_CONTROL)),
     };
 
@@ -112,6 +205,93 @@ mod target {
             self.channel.init();
             let identity = self.channel.with(|channel| self.bring_up(channel));
             self.identity.set(identity);
+            let bus_master = identity.and_then(|identity| {
+                self.channel
+                    .with(|channel| self.bring_up_dma(channel, &identity))
+            });
+            self.bus_master.set(bus_master);
+        }
+
+        /// The bus master, when the controller has one and the drive takes a DMA mode: the PCI
+        /// IDE controller's BAR 4 (its primary channel's eight ports), its bus mastering enabled,
+        /// a descriptor table in a common buffer, and the drive set to its fastest multiword DMA
+        /// mode. Reported on COM1.
+        fn bring_up_dma(
+            &'static self,
+            channel: &mut Channel<Ports>,
+            identity: &Identity,
+        ) -> Option<BusMaster> {
+            use crate::hw::pci::{self, Bar, ConfigAddress, ConfigIo, PortsConfig};
+            let mode = identity.dma_mode()?;
+            // A PCI mass-storage IDE controller (class 01, subclass 01) whose programming
+            // interface says it bus-masters (bit 7), its BAR 4 the bus master's ports.
+            let controller = pci::devices().iter().find(|device| {
+                device.class() == 0x01 && device.subclass() == 0x01 && device.class_code & 0x80 != 0
+            })?;
+            let Bar::Io(base) = controller.bars[4] else {
+                return None;
+            };
+            let port = u16::try_from(base).ok()?;
+            let table = crate::mem::dma::allocate(TABLE_BYTES as u32)?;
+            let mut config = PortsConfig::new(Ports);
+            let command = ConfigAddress::new(controller.bus, controller.dev, controller.func, 4);
+            let value = config.read_config(command);
+            config.write_config(command, value | PCI_BUS_MASTER);
+            let set = channel.set_features(
+                &self.latch,
+                &mut EventWait(&self.event),
+                SET_TRANSFER_MODE,
+                mode,
+            );
+            if !set.is_success() {
+                serial_println!("F2K: ide: DMA mode {:#04x} refused, PIO only", mode);
+                crate::mem::dma::free(table.length, table.bus, table.va);
+                return None;
+            }
+            serial_println!(
+                "F2K: ide: bus master at port {:#06x}, multiword DMA mode {}",
+                port,
+                mode & 0x07
+            );
+            Some(BusMaster { port, table })
+        }
+
+        /// The bus master, if bring-up set one up.
+        fn bus_master(&self) -> Option<BusMaster> {
+            *self.bus_master.get()
+        }
+
+        /// Move a run of one command's sectors (at most 256) by DMA, the descriptor table written
+        /// from the buffer's physical runs first; none, nothing done, when the engine cannot reach
+        /// the buffer (a user address, an unmapped page, a run above 4 GiB, an odd address): the
+        /// caller moves it by PIO. Under the channel's lock.
+        fn dma_command(
+            &self,
+            channel: &mut Channel<Ports>,
+            bus_master: &BusMaster,
+            lba: u32,
+            buffer: *const u8,
+            len: usize,
+            to_memory: bool,
+        ) -> Option<NtStatus> {
+            let va = buffer as u32;
+            if va < crate::mem::paging::KERNEL_BASE {
+                return None;
+            }
+            let table = Table::of(va, len)?;
+            table.install(bus_master);
+            let status = channel.dma(
+                &self.latch,
+                &mut EventWait(&self.event),
+                bus_master.port,
+                bus_master.table.bus as u32,
+                pack_lba28(lba, (len / SECTOR_SIZE) as u32),
+                to_memory,
+            );
+            // The engine wrote the buffer behind the compiler's back.
+            fence(Ordering::SeqCst);
+            core::hint::black_box(buffer);
+            Some(status)
         }
 
         /// The bring-up proper, on the held channel; reports the outcome on COM1.
@@ -182,6 +362,34 @@ mod target {
         /// no-such-device (no usable disk), I/O timeout, or device error.
         fn read(&self, lba: u64, buffer: &mut [u8]) -> Result<(), NtStatus> {
             check_request(&self.info(), lba, buffer)?;
+            if let Some(bus_master) = self.bus_master() {
+                return self.channel.with(|channel| {
+                    for (index, run) in buffer.chunks_mut(PER_COMMAND).enumerate() {
+                        let at = lba as u32 + (index * PER_COMMAND / SECTOR_SIZE) as u32;
+                        let status = match self.dma_command(
+                            channel,
+                            &bus_master,
+                            at,
+                            run.as_ptr(),
+                            run.len(),
+                            true,
+                        ) {
+                            Some(status) => status,
+                            None => read::read(
+                                channel,
+                                &self.latch,
+                                &mut EventWait(&self.event),
+                                self.capacity(),
+                                self.block(),
+                                at,
+                                run,
+                            ),
+                        };
+                        completed(status)?;
+                    }
+                    Ok(())
+                });
+            }
             // The run is on the disk, whose LBA28 capacity fits in 32 bits.
             completed(self.channel.with(|channel| {
                 read::read(
@@ -199,6 +407,34 @@ mod target {
         /// Write the run, holding the channel until the transfer completes (the read's failures).
         fn write(&self, lba: u64, buffer: &[u8]) -> Result<(), NtStatus> {
             check_request(&self.info(), lba, buffer)?;
+            if let Some(bus_master) = self.bus_master() {
+                return self.channel.with(|channel| {
+                    for (index, run) in buffer.chunks(PER_COMMAND).enumerate() {
+                        let at = lba as u32 + (index * PER_COMMAND / SECTOR_SIZE) as u32;
+                        let status = match self.dma_command(
+                            channel,
+                            &bus_master,
+                            at,
+                            run.as_ptr(),
+                            run.len(),
+                            false,
+                        ) {
+                            Some(status) => status,
+                            None => write::write(
+                                channel,
+                                &self.latch,
+                                &mut EventWait(&self.event),
+                                self.capacity(),
+                                self.block(),
+                                at,
+                                run,
+                            ),
+                        };
+                        completed(status)?;
+                    }
+                    Ok(())
+                });
+            }
             completed(self.channel.with(|channel| {
                 write::write(
                     channel,

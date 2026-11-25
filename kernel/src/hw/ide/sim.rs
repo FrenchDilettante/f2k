@@ -18,6 +18,12 @@
 //! BUSY: `command_latency` models it as status reads that still return the status from before the
 //! command. The shared test helpers (a channel over the simulator, the expected sector contents,
 //! the access-log views) are at the end.
+//!
+//! SET FEATURES' transfer mode completes at once for a multiword DMA mode, aborted otherwise. The
+//! bus master (its eight ports at [`BUS_MASTER`]) moves a READ DMA's or WRITE DMA's sectors between
+//! the disk and `memory`, a simulated physical memory, along the descriptor table its table
+//! register names, once the command is written and the engine started; it then sets its interrupt
+//! bit and the device asserts INTRQ.
 
 use super::channel::Channel;
 use super::latch::{Completion, Latch};
@@ -64,6 +70,17 @@ pub struct SimChannel {
     /// Abort every SET MULTIPLE MODE (a drive without multiple mode).
     pub refuse_multiple: bool,
     pub log: Vec<Access>,
+    /// The simulated physical memory the bus master reads and writes.
+    pub memory: Vec<u8>,
+    /// The bus master's command, status and table registers.
+    pub bm_command: u8,
+    pub bm_status: u8,
+    pub bm_table: u32,
+    /// The transfer mode SET FEATURES last took.
+    pub transfer_mode: Option<u8>,
+    features: u8,
+    /// A DMA command written and waiting for the engine: its direction (true: to memory).
+    dma_pending: Option<bool>,
     buffer: Vec<u8>,
     position: usize,
     next_lba: u64,
@@ -116,6 +133,13 @@ impl SimChannel {
             multiple: 0,
             refuse_multiple: false,
             log: Vec::new(),
+            memory: vec![0; 0x2_0000],
+            bm_command: 0,
+            bm_status: 0,
+            bm_table: 0,
+            transfer_mode: None,
+            features: 0,
+            dma_pending: None,
             buffer: Vec::new(),
             position: 0,
             next_lba: 0,
@@ -223,6 +247,30 @@ impl SimChannel {
                     self.raise();
                 }
             }
+            READ_DMA | WRITE_DMA if self.device & 0x40 != 0 => {
+                let lba = (self.lba[0] as u64)
+                    | (self.lba[1] as u64) << 8
+                    | (self.lba[2] as u64) << 16
+                    | ((self.device & 0x0F) as u64) << 24;
+                let count = decode_count(self.count);
+                if lba + count as u64 > self.sectors() {
+                    self.abort();
+                    return;
+                }
+                self.next_lba = lba;
+                self.remaining = count;
+                self.status = DRDY | SEEK | BUSY;
+                self.dma_pending = Some(command == READ_DMA);
+            }
+            SET_FEATURES if self.features == SET_TRANSFER_MODE => {
+                if self.count & 0xF8 == MULTIWORD_DMA {
+                    self.transfer_mode = Some(self.count);
+                    self.status = DRDY | SEEK;
+                    self.raise();
+                } else {
+                    self.abort();
+                }
+            }
             FLUSH_CACHE | FLUSH_CACHE_EXT if self.flush_fails => self.abort(),
             FLUSH_CACHE | FLUSH_CACHE_EXT => {
                 self.status = DRDY | SEEK | BUSY;
@@ -316,6 +364,43 @@ impl SimChannel {
         self.raise();
     }
 
+    /// The engine started over a pending DMA command: walk the descriptor table, moving the
+    /// command's sectors between the disk and memory, then complete: the engine's interrupt bit,
+    /// the device ready, INTRQ.
+    fn run_dma(&mut self, to_memory: bool) {
+        let start = self.next_lba as usize * SECTOR_SIZE;
+        let total = self.remaining as usize * SECTOR_SIZE;
+        let mut moved = 0;
+        let mut entry = self.bm_table as usize;
+        let word =
+            |memory: &[u8], at: usize| u32::from_le_bytes(memory[at..at + 4].try_into().unwrap());
+        loop {
+            let address = word(&self.memory, entry) as usize;
+            let count_and_end = word(&self.memory, entry + 4);
+            let bytes = match count_and_end & 0xFFFF {
+                0 => 0x1_0000,
+                count => count as usize,
+            };
+            let take = bytes.min(total - moved);
+            let disk = &mut self.disk.as_mut().unwrap()[start + moved..start + moved + take];
+            let memory = &mut self.memory[address..address + take];
+            if to_memory {
+                memory.copy_from_slice(disk);
+            } else {
+                disk.copy_from_slice(memory);
+            }
+            moved += take;
+            if count_and_end & 0x8000_0000 != 0 || moved == total {
+                break;
+            }
+            entry += 8;
+        }
+        self.remaining = 0;
+        self.bm_status = (self.bm_status & !BM_ACTIVE) | BM_INTERRUPT;
+        self.status = DRDY | SEEK;
+        self.raise();
+    }
+
     fn drained(&mut self) {
         self.status = DRDY | SEEK;
         if self.remaining > 0 {
@@ -336,6 +421,24 @@ impl Io for SimChannel {
             self.control = byte;
             return;
         }
+        if (BUS_MASTER..BUS_MASTER + 8).contains(&port) {
+            match port - BUS_MASTER {
+                BM_COMMAND => {
+                    self.bm_command = byte;
+                    if byte & BM_START != 0 {
+                        self.bm_status |= BM_ACTIVE;
+                        if let Some(to_memory) = self.dma_pending.take() {
+                            self.run_dma(to_memory);
+                        }
+                    } else {
+                        self.bm_status &= !BM_ACTIVE;
+                    }
+                }
+                BM_STATUS => self.bm_status &= !(byte & (BM_ERROR | BM_INTERRUPT)),
+                _ => {}
+            }
+            return;
+        }
         if self.status & (BUSY | DRQ) != 0 {
             return;
         }
@@ -345,6 +448,7 @@ impl Io for SimChannel {
             LBA_MID => self.lba[1] = byte,
             LBA_HIGH => self.lba[2] = byte,
             DEVICE => self.device = byte,
+            FEATURES => self.features = byte,
             COMMAND => self.execute(byte),
             _ => {}
         }
@@ -353,6 +457,8 @@ impl Io for SimChannel {
     fn read(&mut self, port: u16) -> u8 {
         let value = if self.disk.is_none() {
             0
+        } else if port == BUS_MASTER + BM_STATUS {
+            self.bm_status
         } else if self.latency_left > 0
             && (port == PRIMARY_CONTROL || port == PRIMARY_BASE + STATUS)
         {
@@ -397,6 +503,12 @@ impl Io for SimChannel {
         word
     }
 
+    fn out_dword(&mut self, port: u16, value: u32) {
+        if port == BUS_MASTER + BM_TABLE {
+            self.bm_table = value;
+        }
+    }
+
     fn out_word(&mut self, port: u16, word: u16) {
         self.log.push(Access::Word(port));
         if port != PRIMARY_BASE + DATA || self.status & DRQ == 0 || !self.data_out {
@@ -426,6 +538,7 @@ pub fn identify_block(sectors: u32) -> [u8; SECTOR_SIZE] {
     put(49, (1 << 11) | (1 << 9) | (1 << 8));
     put(60, sectors as u16);
     put(61, (sectors >> 16) as u16);
+    put(63, 0x07);
     put(83, (1 << 14) | (1 << 12));
     block
 }
@@ -454,6 +567,9 @@ impl Completion<SimChannel> for Deliver {
 
 /// The simulated disk's size in sectors.
 pub const DISK: u32 = 4096;
+
+/// The simulated bus master's ports (a PIIX's primary channel at BAR 4 0xC000).
+pub const BUS_MASTER: u16 = 0xC000;
 
 /// A channel over `sim` at the primary channel's ports.
 pub fn sim_channel(sim: SimChannel) -> Channel<SimChannel> {

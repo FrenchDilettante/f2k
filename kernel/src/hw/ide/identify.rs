@@ -31,6 +31,18 @@ pub struct Identity {
     /// The sectors the driver moves per DRQ block: the count SET MULTIPLE MODE took at bring-up,
     /// or 1 (READ/WRITE SECTORS) before it or when the drive has none or refused it.
     pub block: u8,
+    /// Word 63's low byte, the multiword DMA modes the drive supports (bit `n`: mode `n`), when
+    /// word 49 bit 8 says it does DMA at all; 0 otherwise.
+    pub multiword_dma: u8,
+}
+
+impl Identity {
+    /// The transfer-mode value SET FEATURES takes for the fastest multiword DMA mode the drive
+    /// supports (mode 2 at most, the PIIX's fastest); none for a drive without DMA.
+    pub fn dma_mode(&self) -> Option<u8> {
+        let modes = self.multiword_dma & 0x07;
+        (modes != 0).then(|| super::regs::MULTIWORD_DMA | (7 - modes.leading_zeros() as u8))
+    }
 }
 
 /// Word 83's validity mark: bit 14 set and bit 15 clear (a word of all ones or all zeros is no
@@ -56,6 +68,11 @@ pub fn decode_identify(block: &[u8; SECTOR_SIZE]) -> Identity {
         max_multiple: word(47) as u8,
         flush,
         block: 1,
+        multiword_dma: if word(49) & (1 << 8) != 0 {
+            word(63) as u8
+        } else {
+            0
+        },
     }
 }
 
@@ -148,6 +165,7 @@ mod tests {
                 max_multiple: 16,
                 flush: Some(FLUSH_CACHE),
                 block: 1,
+                multiword_dma: 0x07,
             }
         );
 
@@ -160,6 +178,26 @@ mod tests {
         let mut no_lba = identify_block(131_072);
         no_lba[2 * 49 + 1] &= !0x02; // clear bit 9
         assert!(!decode_identify(&no_lba).lba);
+    }
+
+    /// The DMA modes from word 63, counted only where word 49 bit 8 says the drive does DMA; the
+    /// mode SET FEATURES takes is the fastest of modes 0-2.
+    #[test]
+    fn identify_decodes_the_dma_modes() {
+        let with = |word_49_dma: bool, word_63: u16| {
+            let mut block = identify_block(131_072);
+            if !word_49_dma {
+                block[2 * 49 + 1] &= !0x01; // clear bit 8
+            }
+            block[2 * 63..2 * 63 + 2].copy_from_slice(&word_63.to_le_bytes());
+            let identity = decode_identify(&block);
+            (identity.multiword_dma, identity.dma_mode())
+        };
+        assert_eq!(with(true, 0x0407), (0x07, Some(0x22)));
+        assert_eq!(with(true, 0x0003), (0x03, Some(0x21)));
+        assert_eq!(with(true, 0x0001), (0x01, Some(0x20)));
+        assert_eq!(with(true, 0), (0, None));
+        assert_eq!(with(false, 0x0007), (0, None), "no DMA at all");
     }
 
     /// The flush command from word 83: FLUSH CACHE EXT where bit 13 says the drive takes it,
@@ -224,6 +262,7 @@ mod tests {
                 max_multiple: 16,
                 flush: Some(FLUSH_CACHE),
                 block: 16,
+                multiword_dma: 0x07,
             }
         );
         assert_eq!(channel.io().multiple, 16);

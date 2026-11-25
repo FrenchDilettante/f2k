@@ -692,23 +692,23 @@ CASES = (
         ordered=True,
         expects=IRQ_SMOKE,
     ),
-    # IDE driver: the disk-smoke diagnostic boot drives the IRQ14 PIO read path end to end —
+    # IDE driver: the disk-smoke diagnostic boot drives the IRQ14 read path end to end —
     # IDENTIFY, the MBR, the volume boot sector, and the first fixture's sector — then the default
     # image exits 0: coexistence, not just the diagnostic. The disk build copies
     # tests/core/hello/hello.exe into the volume first, so the fixture's bytes land on cluster 3 (LBA
     # 4067; see the disk target in the Makefile); the expected checksums are the offline CRC-32s of
-    # its first 512 and 4096 bytes, and one IRQ14 per DRQ block is expected, none unsolicited. The
-    # reads go through the block layer: the disk and the one partition the boot-time scan
-    # registers from its MBR, the volume read as that partition's own sectors. The boot also mounts
-    # that partition as a FAT32 volume; the diagnostic reports the mount state (in disk LBAs) and
-    # two FAT entries from one FAT sector — the second lookup is a cache hit. Nine interrupts:
-    # IDENTIFY, SET MULTIPLE MODE (16-sector blocks), the scan's MBR read, the mount's boot-sector
-    # read, the smoke's MBR and VBR reads, the FAT sector, the single-sector file read, and the
-    # 8-sector run, one READ MULTIPLE block. The diagnostic then finds HELLO.EXE by name in the root
-    # directory and reads it through its cluster chain; the CRC-32 pinned for it is the offline
-    # checksum of tests/core/hello/hello.exe whole. 14 = those 9 + the root directory's 1 sector +
-    # HELLO.EXE's 56 clusters, consecutive on the disk, read as one run: one 56-sector READ
-    # MULTIPLE, four blocks (its FAT sector is already cached).
+    # its first 512 and 4096 bytes, and none of the interrupts is unsolicited. The reads go through
+    # the block layer: the disk and the one partition the boot-time scan registers from its MBR, the
+    # volume read as that partition's own sectors. The boot also mounts that partition as a FAT32
+    # volume; the diagnostic reports the mount state (in disk LBAs) and two FAT entries from one FAT
+    # sector — the second lookup is a cache hit. The diagnostic then finds HELLO.EXE by name in the
+    # root directory and reads it through its cluster chain; the CRC-32 pinned for it is the offline
+    # checksum of tests/core/hello/hello.exe whole. The controller's bus master moves every read by
+    # DMA, one interrupt per command, once bring-up has set the drive's DMA mode. 12 interrupts:
+    # IDENTIFY, SET MULTIPLE MODE, SET FEATURES (the DMA mode), the scan's MBR read, the mount's
+    # boot-sector read, the smoke's MBR and VBR reads, the FAT sector, the single-sector file read,
+    # the 8-sector run, the root directory's sector, and HELLO.EXE's 56 clusters — consecutive on the
+    # disk, one run, one command (its FAT sector is already cached).
     Case(
         name="disk-smoke",
         description="the IDE diagnostic boot reads the MBR, the volume boot sector, and the first fixture's sectors through the block layer and IRQ14, then the default image exits 0 (Limine disk path)",
@@ -729,7 +729,7 @@ CASES = (
             "F2K: disk-smoke: HELLO.EXE via chain: CRC-32 0x4482A505",
             "F2K: disk-smoke: LBA 4067 CRC-32 0x4312483E",
             "F2K: disk-smoke: LBA 4067+8 CRC-32 0x4A1FD7BB",
-            "F2K: disk-smoke: IRQ14 serviced 14 interrupts (0 unsolicited), interrupt audit: ok",
+            "F2K: disk-smoke: IRQ14 serviced 12 interrupts (0 unsolicited), interrupt audit: ok",
             "F2K: image loaded",
             "F2K: entering ring 3",
             "F2K: user process exited normally (exit code=0)",

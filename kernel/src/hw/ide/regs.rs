@@ -11,6 +11,8 @@ pub const PRIMARY_VECTOR: u8 = crate::hal::interrupt_vector(14);
 // Command-block register offsets. Offsets 1 and 7 read and write different registers.
 pub(super) const DATA: u16 = 0;
 pub(super) const ERROR: u16 = 1;
+/// Offset 1 written: the features register.
+pub(super) const FEATURES: u16 = 1;
 pub(super) const SECTOR_COUNT: u16 = 2;
 pub(super) const LBA_LOW: u16 = 3;
 pub(super) const LBA_MID: u16 = 4;
@@ -43,6 +45,16 @@ pub const READ_MULTIPLE: u8 = 0xC4;
 pub const WRITE_MULTIPLE: u8 = 0xC5;
 /// SET MULTIPLE MODE (non-data): the sector count register names the block size.
 pub const SET_MULTIPLE_MODE: u8 = 0xC6;
+/// READ DMA and WRITE DMA (LBA28): the sectors move by the controller's bus master, one
+/// interrupt when the whole command is done.
+pub const READ_DMA: u8 = 0xC8;
+pub const WRITE_DMA: u8 = 0xCA;
+/// SET FEATURES (non-data): the features register names the subcommand.
+pub const SET_FEATURES: u8 = 0xEF;
+/// SET FEATURES' subcommand that sets the transfer mode the sector count register names.
+pub const SET_TRANSFER_MODE: u8 = 0x03;
+/// The transfer-mode value of multiword DMA mode `n`: 0x20 | n.
+pub const MULTIWORD_DMA: u8 = 0x20;
 /// FLUSH CACHE (non-data): the drive writes its write cache to the medium.
 pub const FLUSH_CACHE: u8 = 0xE7;
 /// FLUSH CACHE EXT (non-data): FLUSH CACHE for a drive of the 48-bit address feature set.
@@ -77,3 +89,23 @@ pub const POLL_BOUND: u32 = 100_000;
 /// as timed out: a drive may take tens of seconds to write a large cache out, where a sector's
 /// transfer takes one wait.
 pub const FLUSH_WAITS: u32 = 30;
+
+// The bus master's registers (the PCI IDE controller's BAR 4, eight ports per channel; Intel's
+// PIIX and the SFF-8038i layout every PCI IDE controller follows).
+/// Bus master command: bit 0 starts the engine, bit 3 sets the direction.
+pub const BM_COMMAND: u16 = 0;
+/// Bus master status: bit 0 active, bit 1 error, bit 2 interrupt (bits 1 and 2 clear when written
+/// as ones), bits 5-6 the drives' DMA-capable flags (firmware's, kept as read).
+pub const BM_STATUS: u16 = 2;
+/// The physical address of the descriptor table (a dword, 4-byte aligned).
+pub const BM_TABLE: u16 = 4;
+/// Command bit 0: start (set) or stop (clear) the engine.
+pub const BM_START: u8 = 0x01;
+/// Command bit 3: the transfer writes memory (a device read); clear, it reads memory.
+pub const BM_TO_MEMORY: u8 = 0x08;
+/// Status bit 0: the engine is moving data.
+pub const BM_ACTIVE: u8 = 0x01;
+/// Status bit 1: the transfer failed on the bus.
+pub const BM_ERROR: u8 = 0x02;
+/// Status bit 2: the drive raised its interrupt.
+pub const BM_INTERRUPT: u8 = 0x04;

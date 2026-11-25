@@ -5,9 +5,20 @@
 //! read. Data out: settle after the command, then per block poll for the device's request, fill
 //! it, and wait for the interrupt that reports it taken. No data: wait for the interrupt that
 //! reports the command done, then check the status.
+//!
+//! DMA: the bus master set up (stopped, its direction, the descriptor table, its status bits
+//! cleared), the command written, the engine started; one interrupt when the command is done, then
+//! the engine stopped and both its status and the device's checked.
 
 use super::latch::{Completion, Latch};
 use super::regs::{
+    BM_COMMAND,
+    BM_ERROR,
+    BM_INTERRUPT,
+    BM_START,
+    BM_STATUS,
+    BM_TABLE,
+    BM_TO_MEMORY,
     BUSY,
     COMMAND,
     DATA,
@@ -16,13 +27,17 @@ use super::regs::{
     DRQ,
     ERR,
     ERROR,
+    FEATURES,
     LBA_HIGH,
     LBA_LOW,
     LBA_MID,
     POLL_BOUND,
+    READ_DMA,
     SECTOR_COUNT,
     SECTOR_SIZE,
+    SET_FEATURES,
     STATUS,
+    WRITE_DMA,
 };
 use super::taskfile::TaskFile;
 use crate::hal::Io;
@@ -236,6 +251,83 @@ impl<IoT: Io> Channel<IoT> {
         }
     }
 
+    /// Run one SET FEATURES subcommand `feature` with `count` in the sector count register (a
+    /// non-data command; see [`Channel::non_data`]).
+    #[must_use]
+    pub fn set_features<C: Completion<IoT>>(
+        &mut self,
+        latch: &Latch,
+        completion: &mut C,
+        feature: u8,
+        count: u8,
+    ) -> NtStatus {
+        if self.poll(|status| status & (BUSY | DRQ) == 0).is_none() {
+            return STATUS_IO_TIMEOUT;
+        }
+        self.io.out(self.base + FEATURES, feature);
+        let task_file = TaskFile {
+            count,
+            ..TaskFile::master()
+        };
+        self.non_data(latch, completion, task_file, SET_FEATURES, 1)
+    }
+
+    /// Run one DMA command (READ DMA when `to_memory`, else WRITE DMA) through the bus master at
+    /// `bus_master` over the descriptor table at physical `table`, which names the transfer's
+    /// memory: the engine set up (stopped, its direction, the table, its status bits cleared), the
+    /// command written, the engine started; then the one interrupt the device raises when the
+    /// command is done, the engine stopped, and both the device's status and the engine's checked.
+    /// Returns an NT status: success, timeout, or device error.
+    #[must_use]
+    pub fn dma<C: Completion<IoT>>(
+        &mut self,
+        latch: &Latch,
+        completion: &mut C,
+        bus_master: u16,
+        table: u32,
+        task_file: TaskFile,
+        to_memory: bool,
+    ) -> NtStatus {
+        let direction = if to_memory { BM_TO_MEMORY } else { 0 };
+        let command = if to_memory { READ_DMA } else { WRITE_DMA };
+        if self.poll(|status| status & (BUSY | DRQ) == 0).is_none() {
+            return STATUS_IO_TIMEOUT;
+        }
+        self.io.out(bus_master + BM_COMMAND, direction);
+        self.io.out_dword(bus_master + BM_TABLE, table);
+        let engine = self.io.read(bus_master + BM_STATUS);
+        self.io
+            .out(bus_master + BM_STATUS, engine | BM_ERROR | BM_INTERRUPT);
+        self.write_task_file(task_file);
+        self.settle();
+        // Armed before the command write: the completion can follow the engine's start at once.
+        latch.arm();
+        self.io.out(self.base + COMMAND, command);
+        self.io.out(bus_master + BM_COMMAND, direction | BM_START);
+        let completed = completion.wait(&mut self.io, latch);
+        let engine = self.io.read(bus_master + BM_STATUS);
+        // Stop the engine whatever happened, and clear its interrupt and error bits.
+        self.io.out(bus_master + BM_COMMAND, direction);
+        self.io
+            .out(bus_master + BM_STATUS, engine | BM_ERROR | BM_INTERRUPT);
+        if !completed {
+            latch.disarm();
+            return STATUS_IO_TIMEOUT;
+        }
+        if latch.status() & ERR != 0 {
+            return self.device_error();
+        }
+        if engine & BM_ERROR != 0 {
+            return STATUS_IO_DEVICE_ERROR;
+        }
+        match self.poll(|status| status & BUSY == 0) {
+            None => STATUS_IO_TIMEOUT,
+            Some(status) if status & ERR != 0 => self.device_error(),
+            Some(status) if status & DRQ != 0 => STATUS_IO_DEVICE_ERROR,
+            Some(_) => STATUS_SUCCESS,
+        }
+    }
+
     /// Fill one block into the data port, 256 words per sector.
     fn fill(&mut self, block: &[u8]) {
         for pair in block.chunks_exact(2) {
@@ -302,6 +394,116 @@ mod tests {
     };
     use super::super::taskfile::pack_lba28;
     use super::*;
+
+    // --- DMA -----------------------------------------------------------------------------------
+
+    /// A descriptor table at `at` in the simulated memory, over `runs` (address, length).
+    fn table(channel: &mut Channel<super::super::sim::SimChannel>, at: usize, runs: &[(u32, u32)]) {
+        let mut entries = [super::super::busmaster::Descriptor::default(); 8];
+        let count = super::super::busmaster::descriptors(
+            runs.iter()
+                .map(|&(address, length)| (u64::from(address), length)),
+            &mut entries,
+        )
+        .unwrap();
+        for (index, entry) in entries[..count].iter().enumerate() {
+            channel.io().memory[at + 8 * index..at + 8 * index + 8].copy_from_slice(&entry.bytes());
+        }
+    }
+
+    /// READ DMA: the engine moves the sectors into memory along the table, in its pieces, with
+    /// one interrupt for the whole command; the engine ends stopped with its bits clear.
+    #[test]
+    fn a_dma_read_fills_memory_along_the_table() {
+        use super::super::sim::BUS_MASTER;
+        let mut channel = ready();
+        let latch = Latch::new();
+        let mut deliver = Deliver { delivered: 0 };
+        // 3 sectors: one into 0x1000, two into 0x8000 (a second run).
+        table(&mut channel, 0x100, &[(0x1000, 512), (0x8000, 1024)]);
+        let status = channel.dma(
+            &latch,
+            &mut deliver,
+            BUS_MASTER,
+            0x100,
+            pack_lba28(40, 3),
+            true,
+        );
+        assert_eq!(status, STATUS_SUCCESS);
+        assert_eq!(deliver.delivered, 1, "one interrupt for the command");
+        let want = expected(40, 3);
+        assert_eq!(channel.io().memory[0x1000..0x1200], want[..512]);
+        assert_eq!(channel.io().memory[0x8000..0x8400], want[512..]);
+        assert_eq!(channel.io().commands(), vec![READ_DMA]);
+        assert_eq!(
+            channel.io().bm_command,
+            BM_TO_MEMORY,
+            "stopped, the direction kept"
+        );
+        assert_eq!(channel.io().bm_status & (BM_INTERRUPT | BM_ERROR | 1), 0);
+    }
+
+    /// WRITE DMA: the engine moves memory onto the disk.
+    #[test]
+    fn a_dma_write_reaches_the_disk() {
+        use super::super::sim::BUS_MASTER;
+        let mut channel = ready();
+        let latch = Latch::new();
+        let mut deliver = Deliver { delivered: 0 };
+        for (index, byte) in channel.io().memory[0x4000..0x4400].iter_mut().enumerate() {
+            *byte = (index * 3) as u8;
+        }
+        table(&mut channel, 0x200, &[(0x4000, 1024)]);
+        let status = channel.dma(
+            &latch,
+            &mut deliver,
+            BUS_MASTER,
+            0x200,
+            pack_lba28(7, 2),
+            false,
+        );
+        assert_eq!(status, STATUS_SUCCESS);
+        let written = channel.io().memory[0x4000..0x4400].to_vec();
+        assert_eq!(channel.io().sectors_at(7, 2), &written[..]);
+        assert_eq!(channel.io().commands(), vec![WRITE_DMA]);
+        assert_eq!(channel.io().bm_command, 0);
+    }
+
+    /// A command the device aborts (a range past the disk) is a device error, the engine stopped.
+    #[test]
+    fn an_aborted_dma_command_is_a_device_error() {
+        use super::super::sim::BUS_MASTER;
+        let mut channel = ready();
+        let latch = Latch::new();
+        let mut deliver = Deliver { delivered: 0 };
+        table(&mut channel, 0x100, &[(0x1000, 1024)]);
+        let status = channel.dma(
+            &latch,
+            &mut deliver,
+            BUS_MASTER,
+            0x100,
+            pack_lba28(DISK - 1, 2),
+            true,
+        );
+        assert_eq!(status, STATUS_IO_DEVICE_ERROR);
+        assert_eq!(channel.io().bm_command & BM_START, 0);
+    }
+
+    /// SET FEATURES writes the subcommand to the features register and the value to the count:
+    /// a multiword DMA mode is taken, anything else aborted.
+    #[test]
+    fn set_features_sets_the_transfer_mode() {
+        use super::super::regs::{MULTIWORD_DMA, SET_TRANSFER_MODE};
+        let mut channel = ready();
+        let latch = Latch::new();
+        let mut deliver = Deliver { delivered: 0 };
+        let status =
+            channel.set_features(&latch, &mut deliver, SET_TRANSFER_MODE, MULTIWORD_DMA | 2);
+        assert_eq!(status, STATUS_SUCCESS);
+        assert_eq!(channel.io().transfer_mode, Some(0x22));
+        let status = channel.set_features(&latch, &mut deliver, SET_TRANSFER_MODE, 0x45);
+        assert_eq!(status, STATUS_IO_DEVICE_ERROR);
+    }
 
     // --- The INTRQ discipline -----------------------------------------------------------------
 
