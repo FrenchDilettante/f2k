@@ -40,6 +40,11 @@ pub const QUERY_WINDOW_CLASS: u32 = 7;
 /// The window's thread and process, as their client ids, a [`WindowThread`]
 /// (GetWindowThreadProcessId's answers).
 pub const QUERY_WINDOW_THREAD: u32 = 8;
+/// The window's scroll bars as Windows 2000's SBINFO holds them, an rtl::scroll::ScrollBars (the
+/// arrows' disabled bits, the horizontal bar, the vertical one); ERROR_NO_SCROLLBARS, carried, for
+/// a window with none. What GetScrollInfo, GetScrollPos and GetScrollRange read of a window's own
+/// bars, and what the default procedure draws them from.
+pub const QUERY_WINDOW_SCROLL_BARS: u32 = 9;
 /// The window's extra bytes (its class's cbWndExtra) at the offset this index carries in its low
 /// bits (`QUERY_WINDOW_EXTRA | offset`): as many as the answer's length asks, 2 (a WORD) or 4 (a
 /// LONG). An offset whose bytes are not all inside the extra bytes is refused.

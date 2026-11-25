@@ -19,13 +19,13 @@
 //! - the call answers the new position, the old one with SIF_RETURNOLDPOS (SetScrollPos's);
 //! - a call with SIF_RANGE or SIF_PAGE decides whether the bar has anything to scroll: a range of
 //!   more than one value that the page does not cover whole. A window's bar that has nothing to
-//!   scroll is hidden, one that has something is shown, unless SIF_DISABLENOSCROLL asks a shown
-//!   bar to be kept and its arrows disabled instead; a call that changes nothing changes nothing
-//!   of that either.
+//!   scroll is hidden, one that has something is shown, unless SIF_DISABLENOSCROLL asks a shown bar
+//!   to be kept and its arrows disabled instead; a call that changes nothing changes nothing of
+//!   that either.
 //!
 //! EnableScrollBar's arrows ([`enable_arrows`]): a window's SBINFO holds ESB_DISABLE_LEFT and
-//! ESB_DISABLE_RIGHT in its low two bits, the vertical bar's ESB_DISABLE_UP and ESB_DISABLE_DOWN two
-//! bits up, each set by the flags asked (whatever bits they carry: a bad flag of 7 sets three),
+//! ESB_DISABLE_RIGHT in its low two bits, the vertical bar's ESB_DISABLE_UP and ESB_DISABLE_DOWN
+//! two bits up, each set by the flags asked (whatever bits they carry: a bad flag of 7 sets three),
 //! ESB_ENABLE_BOTH clearing the bar's two; the call answers whether the bits changed.
 //!
 //! The layout a bar is drawn in ([`Layout`]): an arrow at each end, square, halved when the bar is
@@ -126,19 +126,18 @@ pub struct ScrollData {
 unsafe impl Pod for ScrollData {}
 
 impl ScrollData {
+    /// A ScrollBar control's bar as it is made: all zeros (the scroll capture's `control`).
+    pub const CONTROL: ScrollData = ScrollData {
+        min: 0,
+        max: 0,
+        page: 0,
+        pos: 0,
+    };
     /// A window's bar as it is made: a range of 0 to 100, no page, at 0 (Windows 2000's
     /// _InitPwSB; the scroll capture's `info` and `show`).
     pub const WINDOW: ScrollData = ScrollData {
         min: 0,
         max: 100,
-        page: 0,
-        pos: 0,
-    };
-
-    /// A ScrollBar control's bar as it is made: all zeros (the scroll capture's `control`).
-    pub const CONTROL: ScrollData = ScrollData {
-        min: 0,
-        max: 0,
         page: 0,
         pos: 0,
     };
@@ -151,8 +150,11 @@ impl ScrollData {
 
     /// The highest position: `max - page + 1` (`max` with no page).
     pub fn max_pos(&self) -> i32 {
-        self.max
-            .wrapping_sub(if self.page != 0 { self.page.wrapping_sub(1) } else { 0 })
+        self.max.wrapping_sub(if self.page != 0 {
+            self.page.wrapping_sub(1)
+        } else {
+            0
+        })
     }
 }
 
@@ -244,7 +246,11 @@ pub fn set_parms(data: &mut ScrollData, info: &ScrollInfo) -> SetParms {
     }
     if mask & SIF_PAGE != 0 {
         // The page is clipped to the range's size, unsigned (a range of 0 to MAXLONG is 2^31).
-        let most = data.max.wrapping_sub(data.min).unsigned_abs().wrapping_add(1);
+        let most = data
+            .max
+            .wrapping_sub(data.min)
+            .unsigned_abs()
+            .wrapping_add(1);
         let page = page.min(most) as i32;
         if data.page != page {
             data.page = page;
@@ -573,7 +579,10 @@ mod tests {
         assert_eq!((set.result, set.scrollable), (50, Some(false)));
         assert_eq!(bar, data(50, 50, 0, 50));
         assert_eq!(set_parms(&mut bar, &info(SIF_ALL, 0, 20, 5, 30)).result, 16);
-        assert_eq!(set_parms(&mut bar, &info(SIF_ALL, -10, 10, 4, -20)).result, -10);
+        assert_eq!(
+            set_parms(&mut bar, &info(SIF_ALL, -10, 10, 4, -20)).result,
+            -10
+        );
         // SIF_TRACKPOS sets nothing.
         let set = set_parms(&mut bar, &info(SIF_TRACKPOS, 0, 0, 0, 3));
         assert_eq!((set.result, set.changed), (-10, false));
@@ -641,7 +650,10 @@ mod tests {
             track_pos: -7,
         };
         assert!(get_parms(&bar, &mut out));
-        assert_eq!((out.min, out.max, out.page, out.pos, out.track_pos), (-7, -7, 7, 30, -7));
+        assert_eq!(
+            (out.min, out.max, out.page, out.pos, out.track_pos),
+            (-7, -7, 7, 30, -7)
+        );
         out.mask = SIF_TRACKPOS;
         assert!(get_parms(&bar, &mut out));
         assert_eq!(out.track_pos, 30);
@@ -660,21 +672,30 @@ mod tests {
     fn the_arrows_of_a_windows_bars() {
         let (flags, changed) = enable_arrows(0, SB_VERT, ESB_DISABLE_BOTH);
         assert_eq!((flags, changed), (0xC, true));
-        assert_eq!(enable_arrows(flags, SB_VERT, ESB_DISABLE_BOTH), (0xC, false));
+        assert_eq!(
+            enable_arrows(flags, SB_VERT, ESB_DISABLE_BOTH),
+            (0xC, false)
+        );
         let (flags, _) = enable_arrows(flags, SB_VERT, ESB_ENABLE_BOTH);
         assert_eq!(enable_arrows(flags, SB_VERT, ESB_ENABLE_BOTH), (0, false));
         let (flags, _) = enable_arrows(flags, SB_VERT, ESB_DISABLE_LTUP);
         assert_eq!(enable_arrows(flags, SB_VERT, ESB_DISABLE_LTUP), (4, false));
         let (flags, changed) = enable_arrows(flags, SB_VERT, ESB_DISABLE_RTDN);
         assert!(changed);
-        assert_eq!(enable_arrows(flags, SB_VERT, ESB_DISABLE_BOTH), (0xC, false));
+        assert_eq!(
+            enable_arrows(flags, SB_VERT, ESB_DISABLE_BOTH),
+            (0xC, false)
+        );
         let (flags, _) = enable_arrows(flags, SB_BOTH, ESB_ENABLE_BOTH);
         let (flags, _) = enable_arrows(flags, SB_BOTH, ESB_DISABLE_BOTH);
         assert_eq!(flags, 0xF);
         let (flags, _) = enable_arrows(flags, SB_BOTH, ESB_ENABLE_BOTH);
         let (flags, changed) = enable_arrows(flags, SB_VERT, 7);
         assert_eq!((flags, changed), (0x1C, true));
-        assert_eq!(enable_arrows(flags, SB_VERT, ESB_DISABLE_BOTH), (0x1C, false));
+        assert_eq!(
+            enable_arrows(flags, SB_VERT, ESB_DISABLE_BOTH),
+            (0x1C, false)
+        );
         let bars = ScrollBars {
             flags: 0x1D,
             ..ScrollBars::WINDOW
@@ -700,7 +721,8 @@ mod tests {
     }
 
     /// A bar's layout: square arrows at its ends, the thumb as long as the page is of the range
-    /// and placed as the position is; no thumb with nothing to scroll; halved arrows on a short bar.
+    /// and placed as the position is; no thumb with nothing to scroll; halved arrows on a short
+    /// bar.
     #[test]
     fn a_bars_layout() {
         let rect = Rect::new(0, 0, 16, 116);
@@ -727,26 +749,38 @@ mod tests {
         let client = Rect::new(0, 0, 200, 100);
         let area = |scroll, clip, dx, dy| scroll_area(client, scroll, clip, dx, dy);
         let up = area(None, None, 0, -10);
-        assert_eq!((up.complexity, up.bounds), (SIMPLEREGION, Rect::new(0, 90, 200, 100)));
+        assert_eq!(
+            (up.complexity, up.bounds),
+            (SIMPLEREGION, Rect::new(0, 90, 200, 100))
+        );
         assert_eq!(up.destination, Rect::new(0, 0, 200, 90));
         assert_eq!(area(None, None, 0, 10).bounds, Rect::new(0, 0, 200, 10));
         assert_eq!(area(None, None, 20, 0).bounds, Rect::new(0, 0, 20, 100));
         assert_eq!(area(None, None, -20, 0).bounds, Rect::new(180, 0, 200, 100));
         let diagonal = area(None, None, 5, 5);
-        assert_eq!((diagonal.complexity, diagonal.bounds), (COMPLEXREGION, client));
+        assert_eq!(
+            (diagonal.complexity, diagonal.bounds),
+            (COMPLEXREGION, client)
+        );
         let away = area(None, None, 0, -150);
         assert_eq!((away.complexity, away.bounds), (SIMPLEREGION, client));
         assert!(away.destination.is_empty());
         let none = area(None, None, 0, 0);
         assert_eq!((none.complexity, none.bounds), (NULLREGION, Rect::EMPTY));
         let scroll = Some(Rect::new(50, 0, 150, 100));
-        assert_eq!(area(scroll, None, 0, -10).bounds, Rect::new(50, 90, 150, 100));
+        assert_eq!(
+            area(scroll, None, 0, -10).bounds,
+            Rect::new(50, 90, 150, 100)
+        );
         let clip = Some(Rect::new(0, 0, 200, 50));
         let clipped = area(None, clip, 0, 10);
         assert_eq!(clipped.bounds, Rect::new(0, 0, 200, 10));
         assert_eq!(clipped.destination, Rect::new(0, 10, 200, 50));
         let clip = Some(Rect::new(0, 50, 200, 100));
         let both = area(scroll, clip, 0, -10);
-        assert_eq!((both.complexity, both.bounds), (SIMPLEREGION, Rect::new(50, 90, 150, 100)));
+        assert_eq!(
+            (both.complexity, both.bounds),
+            (SIMPLEREGION, Rect::new(50, 90, 150, 100))
+        );
     }
 }

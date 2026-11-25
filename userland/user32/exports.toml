@@ -3535,6 +3535,41 @@ impl = { stub = "not yet implemented" }
 ordinal = 622
 fails = "FALSE"
 
+# win32k's scroll bar services: user32's internal calls (a window's own bars; the ScrollBar
+# control's bar is user32's). A window's bars are read through NtUserQueryWindow's
+# QUERY_WINDOW_SCROLL_BARS.
+
+[[export]]
+name = "NtUserSetScrollInfo"
+group = "scroll"
+args = ["handle Window", "i32 Bar", "ptr Info", "bool Redraw", "ptr<u32> Result"]
+impl = { syscall = "crate::win32k::scroll::set_scroll_info" }
+internal = true
+
+[[export]]
+name = "NtUserShowScrollBar"
+group = "scroll"
+args = ["handle Window", "i32 Bar", "bool Show"]
+impl = { syscall = "crate::win32k::scroll::show_scroll_bar" }
+internal = true
+
+[[export]]
+name = "NtUserEnableScrollBar"
+group = "scroll"
+args = ["handle Window", "u32 Bar", "u32 Arrows", "ptr<u32> Result"]
+impl = { syscall = "crate::win32k::scroll::enable_scroll_bar" }
+internal = true
+
+[[export]]
+name = "NtUserScrollWindowEx"
+group = "scroll"
+args = [
+    "handle Window", "i32 Dx", "i32 Dy", "ptr Scroll", "ptr Clip", "u32 Flags", "ptr Update",
+    "ptr<u32> Result",
+]
+impl = { syscall = "crate::win32k::scroll::scroll_window_ex" }
+internal = true
+
 # --- the caret ------------------------------------------------------------------------------------
 
 [[export]]

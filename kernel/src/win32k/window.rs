@@ -1782,6 +1782,18 @@ impl Windows {
         }
     }
 
+    /// Set or clear the window's scroll bar style bits `bits` (WS_HSCROLL, WS_VSCROLL): a bar shown
+    /// or hidden by the scroll bar calls ([`super::scroll`]), with no message (the caller takes the
+    /// frame again).
+    pub fn set_scroll_styles(&mut self, id: WindowId, bits: u32, on: bool) {
+        let w = self.at_mut(id);
+        if on {
+            w.style |= bits;
+        } else {
+            w.style &= !bits;
+        }
+    }
+
     /// The default window procedure's WM_SETREDRAW: the window's WS_VISIBLE set (`redraw`) or
     /// cleared, and nothing else, as Windows 2000's does it (guimsg `redraw`): no WM_SHOWWINDOW, no
     /// position change, nothing painted or uncovered. While it is clear the window is not shown,
@@ -5060,6 +5072,8 @@ pub struct WindowManager {
     pub accels: super::accel::Accelerators,
     /// The windows' properties ([`super::prop`]).
     pub props: super::prop::Props,
+    /// The windows' scroll bars ([`super::scroll`]).
+    pub scroll_bars: super::scroll::WindowBars,
     /// The icon-change notification's windows (see [`Windows::class_views`]).
     pub views: [class::WindowView; WINDOWS],
 }
@@ -5082,6 +5096,7 @@ impl WindowManager {
             super::clipboard::Clipboard::write_empty(addr_of_mut!((*manager).clipboard));
             super::accel::Accelerators::write_empty(addr_of_mut!((*manager).accels));
             super::prop::Props::write_empty(addr_of_mut!((*manager).props));
+            super::scroll::WindowBars::write_empty(addr_of_mut!((*manager).scroll_bars));
             let views = addr_of_mut!((*manager).views) as *mut class::WindowView;
             core::ptr::write_bytes(views, 0, WINDOWS);
         }
@@ -5562,6 +5577,7 @@ pub fn query_accepts(index: u32, length: usize) -> Result<(), NtStatus> {
         QUERY_WINDOW_LINKS => length == size_of::<WindowLinks>(),
         QUERY_WINDOW_CLASS => length == size_of::<WindowClass>(),
         QUERY_WINDOW_THREAD => length == size_of::<WindowThread>(),
+        QUERY_WINDOW_SCROLL_BARS => length == size_of::<rtl::scroll::ScrollBars>(),
         index if index & (QUERY_WINDOW_EXTRA | QUERY_CLASS_EXTRA) != 0 => {
             length == 2 || length == 4
         }
@@ -5845,6 +5861,9 @@ pub fn query_window(
     query_accepts(index, length as usize)?;
     if index == rtl::window::QUERY_WINDOW_THREAD {
         return query_window_thread(call, window, information);
+    }
+    if index == rtl::window::QUERY_WINDOW_SCROLL_BARS {
+        return super::scroll::query_window_scroll_bars(call, window, information);
     }
     if index == rtl::window::QUERY_WINDOW_TEXT {
         return query_window_text(call, window, information, length);

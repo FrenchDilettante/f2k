@@ -1,6 +1,6 @@
 //! win32k: the window manager's and GDI's kernel side, as far as F2K has them: window classes
 //! ([`class`]), windows ([`window`]) and their properties ([`prop`]), their focus, enabling and
-//! activation ([`focus`]), the
+//! activation ([`focus`]), their scroll bars and ScrollWindowEx ([`scroll`]), the
 //! threads' message queues ([`queue`]), their timers ([`timer`]) and the windows' painting
 //! ([`paint`]), their carets ([`caret`]), menus ([`menu`]), keyboard accelerators ([`accel`]),
 //! cursors and icons ([`icon`]), the one handle table every one of those user objects' handles
@@ -55,6 +55,7 @@ pub mod posted;
 pub mod prop;
 pub mod queue;
 pub mod raster;
+pub mod scroll;
 pub mod text;
 pub mod timer;
 pub mod window;
