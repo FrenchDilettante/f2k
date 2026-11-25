@@ -117,7 +117,8 @@ impl FrameFlags {
     pub const IN_PAGE_ERROR: Self = Self(1 << 4);
     /// Page contents were modified while in use.
     pub const MODIFIED: Self = Self(1 << 0);
-    /// The frame backs a prototype PTE (shared transition accounting).
+    /// The frame backs a prototype PTE (shared transition accounting): it is an image segment's,
+    /// and its entry's [`FrameEntry::prototype`] names the frame-table slot naming it.
     pub const PROTOTYPE_PTE: Self = Self(1 << 3);
     /// A read is in flight for this frame.
     pub const READ_IN_PROGRESS: Self = Self(1 << 1);
@@ -167,6 +168,29 @@ pub struct FrameEntry {
     /// mapping its frame, besides the section, or the transition entry naming a standby frame.
     /// Zero for a frame with one holder, and for every frame on a list no entry names.
     pub share_count: u32,
+    /// The image segment's frame-table slot naming the frame (NT's PteAddress back to the
+    /// prototype PTE), while [`FrameFlags::PROTOTYPE_PTE`] is set: kept while the frame is in use
+    /// and while it waits on Standby for its segment's revival; gone once the frame leaves for any
+    /// other list or is handed out again (the slot then names a frame that is no longer its own).
+    pub prototype: Option<Prototype>,
+}
+
+/// A frame's back-link to the slot of an image segment's frame table naming it: the table's frame
+/// and the slot's index there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Prototype {
+    pub table: core::num::NonZeroU32,
+    pub slot: u16,
+}
+
+impl Prototype {
+    /// The slot `slot` of the frame table in frame `table` (never frame 0, which is reserved).
+    pub fn new(table: FrameId, slot: u32) -> Prototype {
+        Prototype {
+            table: core::num::NonZeroU32::new(table).expect("a frame table is never frame 0"),
+            slot: u16::try_from(slot).expect("a frame table's slot"),
+        }
+    }
 }
 
 impl FrameEntry {
@@ -181,6 +205,7 @@ impl FrameEntry {
             flags: FrameFlags::empty(),
             refcount: 0,
             share_count: 0,
+            prototype: None,
         }
     }
 }
@@ -450,6 +475,68 @@ impl<H: FrameHooks> FrameDb<H> {
     }
 
     // -----------------------------------------------------------------
+    // Prototype back-links
+
+    /// Mark an in-use frame as slot `prototype` of an image segment's frame table names it (the
+    /// segment's frames are linked as they are made).
+    pub fn link_prototype(&mut self, frame: FrameId, prototype: Prototype) {
+        let entry = self.entry_mut(frame);
+        assert_eq!(
+            entry.state,
+            FrameState::Active,
+            "linking a frame not in use"
+        );
+        entry.flags.insert(FrameFlags::PROTOTYPE_PTE);
+        entry.prototype = Some(prototype);
+    }
+
+    /// Whether the frame is still the one slot `prototype` names: linked to it, and in use or on
+    /// Standby (a frame handed out again, or gone to another list, has lost its link).
+    pub fn is_prototype(&self, frame: FrameId, prototype: Prototype) -> bool {
+        let entry = self.entry(frame);
+        matches!(entry.state, FrameState::Active | FrameState::Standby)
+            && entry.flags.contains(FrameFlags::PROTOTYPE_PTE)
+            && entry.prototype == Some(prototype)
+    }
+
+    /// An image segment's last reference went: it drops its hold on its frame for the cache. With
+    /// no other holder the frame goes to Standby, its back-link kept (true): the allocator may hand
+    /// it out — the link then goes — or the segment take it back ([`Self::reclaim_prototype`]).
+    /// With another holder the frame stays with it, the segment's hold dropped (false).
+    pub fn park_prototype(&mut self, frame: FrameId) -> bool {
+        if !self.unshare(frame) {
+            return false;
+        }
+        self.release(frame, FrameState::Standby);
+        true
+    }
+
+    /// A parked image segment takes back the frame slot `prototype` named: true when it still is
+    /// that slot's, in use again (off Standby when it waited there: a soft fault, no read); false
+    /// when the allocator handed it out meanwhile.
+    pub fn reclaim_prototype(&mut self, frame: FrameId, prototype: Prototype) -> bool {
+        if !self.is_prototype(frame, prototype) {
+            return false;
+        }
+        if self.entry(frame).state == FrameState::Standby {
+            let unlinked = self.unlink(frame);
+            assert_eq!(
+                unlinked,
+                UnlinkOutcome::Unlinked,
+                "a parked frame has no I/O"
+            );
+        }
+        true
+    }
+
+    /// Drop the frame's back-link (it stops being an image segment's).
+    fn unlink_prototype(&mut self, frame: FrameId) {
+        let entry = self.entry_mut(frame);
+        entry.flags.remove(FrameFlags::PROTOTYPE_PTE);
+        entry.prototype = None;
+    }
+
+    // -----------------------------------------------------------------
     // Internal accessors
 
     fn entry_mut(&mut self, frame: FrameId) -> &mut FrameEntry {
@@ -629,6 +716,11 @@ impl<H: FrameHooks> FrameDb<H> {
             assert!(!entry.state.is_list_state(), "frame is already on a list");
         }
 
+        // Only Standby keeps an image segment's frame for its revival: any other list takes the
+        // frame from its segment.
+        if state != FrameState::Standby {
+            self.unlink_prototype(frame);
+        }
         let mut target = state;
         if state.counts_as_available()
             && self
@@ -826,6 +918,7 @@ impl<H: FrameHooks> FrameDb<H> {
         let entry = self.entry_mut(frame);
         entry.state = FrameState::Active;
         entry.flags = FrameFlags::empty();
+        entry.prototype = None;
         entry.next_color = None;
         frame
     }
@@ -960,6 +1053,7 @@ impl<H: FrameHooks> FrameDb<H> {
         let entry = self.entry_mut(frame);
         entry.state = FrameState::Active;
         entry.flags = FrameFlags::empty();
+        entry.prototype = None;
         entry.next_color = None;
     }
 
@@ -996,6 +1090,7 @@ impl<H: FrameHooks> FrameDb<H> {
             let entry = self.entry_mut(frame);
             entry.state = FrameState::Active;
             entry.flags = FrameFlags::empty();
+            entry.prototype = None;
             entry.next_color = None;
             return Some(frame);
         }
@@ -1370,6 +1465,53 @@ mod tests {
     /// ascending order does: list order, every color chain, counters and hooks, whatever the color
     /// count, the target list, the runs' lengths against the color count, and the frames already
     /// listed before and between them.
+    /// An image segment's frame keeps its back-link in use and parked on Standby — counted as a
+    /// shared transition frame there — and loses it once handed out again or given back to any
+    /// other list, so its old slot can tell it is no longer its own.
+    #[test]
+    fn a_prototype_link_lives_while_the_frame_is_the_segments() {
+        let mut db = new_db();
+        release_all(&mut db, Free, &[3, 4]);
+        let slot = Prototype::new(9, 5);
+        let frame = db.allocate(PRIMARY_COLOR);
+        db.link_prototype(frame, slot);
+        assert!(db.is_prototype(frame, slot));
+        assert!(
+            !db.is_prototype(frame, Prototype::new(9, 6)),
+            "another slot"
+        );
+
+        // Parked: on Standby, still linked; a holder left keeps it in use instead.
+        db.share(frame);
+        assert!(!db.park_prototype(frame), "a view still holds it");
+        assert_eq!(db.entry(frame).state, Active);
+        assert!(db.park_prototype(frame));
+        assert_eq!(db.entry(frame).state, Standby);
+        assert!(db.is_prototype(frame, slot));
+        assert_eq!((db.transition_shared, db.transition_private), (1, 0));
+        // Revived: in use again, still linked.
+        assert!(db.reclaim_prototype(frame, slot));
+        assert_eq!(db.entry(frame).state, Active);
+        assert!(db.is_prototype(frame, slot));
+        assert_eq!(db.transition_shared, 0);
+
+        // Parked again, then handed out: the link goes.
+        assert!(db.park_prototype(frame));
+        let other = db.allocate(PRIMARY_COLOR);
+        assert_ne!(other, frame, "Free comes before Standby");
+        assert_eq!(db.allocate(PRIMARY_COLOR), frame, "then the parked frame");
+        assert!(!db.is_prototype(frame, slot));
+        assert!(!db.reclaim_prototype(frame, slot));
+        assert_eq!(db.entry(frame).state, Active, "left to its new user");
+
+        // Linked, then freed: the link goes with it.
+        db.link_prototype(other, slot);
+        db.release(other, Free);
+        assert!(!db.is_prototype(other, slot));
+        assert_eq!(db.entry(other).prototype, None);
+        assert!(db.audit().is_ok());
+    }
+
     #[test]
     fn release_run_matches_releasing_each_frame() {
         let runs: [Range<FrameId>; 7] = [1..2, 3..3, 4..7, 9..24, 26..29, 30..31, 33..TABLE as u32];

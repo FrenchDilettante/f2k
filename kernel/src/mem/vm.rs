@@ -513,6 +513,25 @@ pub trait Pages {
     fn discard_backing(&mut self, slot: u32) {
         let _ = slot;
     }
+    /// Link a section's new frame to the slot `slot` of the frame table `table` naming it: the
+    /// back-link a cached image segment's frame keeps on Standby ([`SectionFrames::park`]).
+    fn link_frame(&mut self, frame: u32, table: u32, slot: u32) {
+        let _ = (frame, table, slot);
+    }
+    /// A parked segment's frame back into use for slot `slot` of `table`: true when it still is
+    /// that slot's — taken off Standby, a soft fault with no read — false when the allocator handed
+    /// it out to another use meanwhile (the slot then names nothing of the segment's).
+    fn reclaim_frame(&mut self, frame: u32, table: u32, slot: u32) -> bool {
+        let _ = (frame, table, slot);
+        true
+    }
+    /// A segment's last reference went: it drops its hold on its frame for the cache. With no
+    /// other holder the frame waits on Standby, still linked to its slot (true); with one, the
+    /// frame stays with it, the segment's hold dropped (false).
+    fn cache_frame(&mut self, frame: u32) -> bool {
+        self.free_frame(frame);
+        false
+    }
 }
 
 /// How many regions a process can hold: the kernel's own areas (about a dozen), and every
@@ -1244,6 +1263,27 @@ impl SectionFrames {
         index: u32,
         fill: impl FnOnce(u32),
     ) -> Result<u32, VmError> {
+        self.make(pages, index, fill, false)
+    }
+
+    /// An image segment's [`SectionFrames::frame`]: a frame it makes is linked to its slot, the
+    /// back-link its caching keeps ([`SectionFrames::park`]).
+    pub fn image_frame(
+        &mut self,
+        pages: &mut impl Pages,
+        index: u32,
+        fill: impl FnOnce(u32),
+    ) -> Result<u32, VmError> {
+        self.make(pages, index, fill, true)
+    }
+
+    fn make(
+        &mut self,
+        pages: &mut impl Pages,
+        index: u32,
+        fill: impl FnOnce(u32),
+        link: bool,
+    ) -> Result<u32, VmError> {
         let (table, slot) = ((index / 1024) as usize, index % 1024);
         if table >= SECTION_TABLES {
             return Err(VmError::NoMemory);
@@ -1258,6 +1298,9 @@ impl SectionFrames {
         let frame = pages.zeroed_frame().ok_or(VmError::NoMemory)?;
         fill(frame);
         pages.set_frame_word(self.tables[table], slot, frame);
+        if link {
+            pages.link_frame(frame, self.tables[table], slot);
+        }
         Ok(frame)
     }
 
@@ -1283,6 +1326,58 @@ impl SectionFrames {
             pages.free_frame(*table);
             *table = 0;
         }
+    }
+
+    /// Run `keep` over every frame the first `count` pages name (the frame, its table and its
+    /// slot there), emptying each slot whose frame it does not keep. Returns how many it kept.
+    fn sift<P: Pages>(
+        &mut self,
+        pages: &mut P,
+        count: u32,
+        mut keep: impl FnMut(&mut P, u32, u32, u32) -> bool,
+    ) -> u32 {
+        let mut kept = 0;
+        let count = count.min(SECTION_TABLES as u32 * 1024);
+        for index in 0..count {
+            let (table, slot) = (self.tables[(index / 1024) as usize], index % 1024);
+            if table == 0 {
+                continue;
+            }
+            let frame = pages.frame_word(table, slot);
+            if frame == 0 {
+                continue;
+            }
+            if keep(pages, frame, table, slot) {
+                kept += 1;
+            } else {
+                pages.set_frame_word(table, slot, 0);
+            }
+        }
+        kept
+    }
+
+    /// An image segment's last reference went and it stays cached, its first `count` pages the
+    /// image's: it parks its frames, each going to Standby with its back-link — the allocator may
+    /// take it, [`SectionFrames::revive`] takes it back — and keeps its tables. A frame another
+    /// holder still has stays with it, its slot emptied. Returns how many frames wait on Standby.
+    pub fn park(&mut self, pages: &mut impl Pages, count: u32) -> u32 {
+        self.sift(pages, count, |pages, frame, _, _| pages.cache_frame(frame))
+    }
+
+    /// A parked segment is referenced again: each frame still its own comes back into use from
+    /// Standby (no read); a slot whose frame the allocator took meanwhile is emptied, its page made
+    /// again when a view needs it. Returns how many frames came back.
+    pub fn revive(&mut self, pages: &mut impl Pages, count: u32) -> u32 {
+        self.sift(pages, count, |pages, frame, table, slot| {
+            pages.reclaim_frame(frame, table, slot)
+        })
+    }
+
+    /// A parked segment is purged: each frame still its own goes back (off Standby), its tables
+    /// with them; a frame the allocator took meanwhile is no longer the segment's to give.
+    pub fn release_parked(&mut self, pages: &mut impl Pages, count: u32) {
+        self.revive(pages, count);
+        self.release(pages);
     }
 }
 
@@ -1396,6 +1491,20 @@ impl Pages for CurrentPages {
 
     fn fill_frame(&mut self, frame: u32, bytes: &[u8]) {
         crate::mem::paging::write_frame(frame, 0, bytes);
+    }
+
+    fn link_frame(&mut self, frame: u32, table: u32, slot: u32) {
+        let prototype = crate::mem::frame::Prototype::new(table / PAGE, slot);
+        crate::mem::bootmem::with_frame_db(|db| db.link_prototype(frame / PAGE, prototype));
+    }
+
+    fn reclaim_frame(&mut self, frame: u32, table: u32, slot: u32) -> bool {
+        let prototype = crate::mem::frame::Prototype::new(table / PAGE, slot);
+        crate::mem::bootmem::with_frame_db(|db| db.reclaim_prototype(frame / PAGE, prototype))
+    }
+
+    fn cache_frame(&mut self, frame: u32) -> bool {
+        crate::mem::bootmem::with_frame_db(|db| db.park_prototype(frame / PAGE))
     }
 
     fn discard_backing(&mut self, slot: u32) {
@@ -1573,6 +1682,211 @@ mod tests {
         assert_eq!(pte::classify(entry), PteKind::DemandZero);
         assert_eq!(pte::decode(entry).unwrap().2, PAGE_READWRITE);
         assert!(!fire_guard(&mut pages, 0x1_0000));
+    }
+
+    /// Pages over a real frame database (frame ids 1..TABLE, physical = id * PAGE), its frames'
+    /// words in a map: the image cache's parking, revival and the allocator's repurposing as the
+    /// kernel's [`CurrentPages`] runs them.
+    struct DbPages {
+        db: crate::mem::frame::FrameDb,
+        words: HashMap<(u32, u32), u32>,
+    }
+
+    impl DbPages {
+        /// A database whose every frame is free.
+        fn new() -> DbPages {
+            use crate::mem::frame::{ColorTables, FrameDb, FrameEntry, NoHooks};
+            const TABLE: usize = 32;
+            let table: &'static mut [FrameEntry] =
+                Box::leak(vec![FrameEntry::new(); TABLE].into_boxed_slice());
+            let buckets: &'static mut ColorTables = Box::leak(Box::new(ColorTables::new()));
+            let mut db = FrameDb::new(
+                table,
+                buckets,
+                crate::mem::frame::DEFAULT_COLOR_COUNT,
+                NoHooks,
+            );
+            db.release_run(1..TABLE as u32, crate::mem::frame::FrameState::Free);
+            DbPages {
+                db,
+                words: HashMap::new(),
+            }
+        }
+
+        fn state(&self, frame: u32) -> crate::mem::frame::FrameState {
+            self.db.entry(frame / PAGE).state
+        }
+
+        /// Another use takes every frame the allocator has, standby ones included.
+        fn exhaust(&mut self) -> Vec<u32> {
+            let mut taken = Vec::new();
+            while let Some(fid) = self.db.try_allocate(crate::mem::frame::PRIMARY_COLOR) {
+                taken.push(fid * PAGE);
+            }
+            taken
+        }
+    }
+
+    impl Pages for DbPages {
+        fn entry(&self, _va: u32) -> u32 {
+            0
+        }
+
+        fn set_entry(&mut self, _va: u32, _entry: u32) {}
+
+        fn zeroed_frame(&mut self) -> Option<u32> {
+            let fid = self.db.try_allocate(crate::mem::frame::PRIMARY_COLOR)?;
+            self.words.retain(|&(frame, _), _| frame != fid * PAGE);
+            Some(fid * PAGE)
+        }
+
+        fn free_frame(&mut self, frame: u32) {
+            if self.db.unshare(frame / PAGE) {
+                self.db
+                    .release(frame / PAGE, crate::mem::frame::FrameState::Free);
+            }
+        }
+
+        fn share_frame(&mut self, frame: u32) {
+            self.db.share(frame / PAGE);
+        }
+
+        fn frame_shared(&self, frame: u32) -> bool {
+            self.db.entry(frame / PAGE).share_count > 0
+        }
+
+        fn copy_frame(&mut self, _from: u32, _to: u32) {}
+
+        fn frame_word(&self, frame: u32, index: u32) -> u32 {
+            *self.words.get(&(frame, index)).unwrap_or(&0)
+        }
+
+        fn set_frame_word(&mut self, frame: u32, index: u32, value: u32) {
+            self.words.insert((frame, index), value);
+        }
+
+        fn link_frame(&mut self, frame: u32, table: u32, slot: u32) {
+            let prototype = crate::mem::frame::Prototype::new(table / PAGE, slot);
+            self.db.link_prototype(frame / PAGE, prototype);
+        }
+
+        fn reclaim_frame(&mut self, frame: u32, table: u32, slot: u32) -> bool {
+            let prototype = crate::mem::frame::Prototype::new(table / PAGE, slot);
+            self.db.reclaim_prototype(frame / PAGE, prototype)
+        }
+
+        fn cache_frame(&mut self, frame: u32) -> bool {
+            self.db.park_prototype(frame / PAGE)
+        }
+    }
+
+    /// A cached image's frames wait on Standby, still available to the allocator, and its revival
+    /// takes them back as they were: no page is made (read) again.
+    #[test]
+    fn a_cached_image_revives_without_reading() {
+        use crate::mem::frame::FrameState;
+        let mut pages = DbPages::new();
+        let mut image = SectionFrames::empty();
+        let mut reads = 0;
+        let frames: Vec<u32> = (0..3)
+            .map(|page| image.image_frame(&mut pages, page, |_| reads += 1).unwrap())
+            .collect();
+        pages.set_frame_word(frames[1], 0, 0x5A5A);
+        let available = pages.db.available();
+
+        assert_eq!(image.park(&mut pages, 3), 3, "every frame parked");
+        assert!(frames
+            .iter()
+            .all(|&frame| pages.state(frame) == FrameState::Standby));
+        assert_eq!(pages.db.available(), available + 3, "available again");
+        assert_eq!(image.made(&pages, 1), Some(frames[1]), "still named");
+
+        assert_eq!(image.revive(&mut pages, 3), 3, "every frame came back");
+        assert!(frames
+            .iter()
+            .all(|&frame| pages.state(frame) == FrameState::Active));
+        assert_eq!(pages.db.available(), available);
+        for (page, &frame) in frames.iter().enumerate() {
+            assert_eq!(
+                image.image_frame(&mut pages, page as u32, |_| reads += 1),
+                Ok(frame)
+            );
+        }
+        assert_eq!(reads, 3, "nothing read again");
+        assert_eq!(pages.frame_word(frames[1], 0), 0x5A5A, "the page as it was");
+        assert!(pages.db.audit().is_ok());
+    }
+
+    /// The allocator may take a cached image's frames: the frame loses its link to the segment's
+    /// slot, so the revival finds the slot no longer its own, empties it, and the page is made
+    /// again when a view needs it — the frame's new user is never handed to the segment.
+    #[test]
+    fn a_cached_frame_the_allocator_takes_is_no_longer_the_images() {
+        use crate::mem::frame::FrameState;
+        let mut pages = DbPages::new();
+        let mut image = SectionFrames::empty();
+        let frames: Vec<u32> = (0..2)
+            .map(|page| image.image_frame(&mut pages, page, |_| ()).unwrap())
+            .collect();
+        image.park(&mut pages, 2);
+        // Another use takes every frame, the parked ones last (Standby comes after Free).
+        let taken = pages.exhaust();
+        assert!(frames.iter().all(|frame| taken.contains(frame)));
+        // It gives one back, to the free list; the other stays in use.
+        pages.free_frame(frames[0]);
+        assert_eq!(pages.state(frames[0]), FrameState::Free);
+
+        assert_eq!(image.revive(&mut pages, 2), 0, "neither is the image's");
+        assert_eq!(image.made(&pages, 0), None, "the slots are emptied");
+        assert_eq!(image.made(&pages, 1), None);
+        assert_eq!(
+            pages.state(frames[1]),
+            FrameState::Active,
+            "left to its user"
+        );
+        // The page is made again from a fresh frame.
+        let mut reads = 0;
+        let again = image.image_frame(&mut pages, 0, |_| reads += 1).unwrap();
+        assert_eq!(reads, 1);
+        assert_ne!(again, frames[1]);
+        assert!(pages.db.audit().is_ok());
+    }
+
+    /// A cached image purged (its file deleted, cut or written, or its record needed) gives back
+    /// the frames still its own, and its tables, and nothing it no longer owns.
+    #[test]
+    fn a_purged_image_gives_back_only_its_own_frames() {
+        use crate::mem::frame::FrameState;
+        let mut pages = DbPages::new();
+        let free = pages.db.available();
+        let mut image = SectionFrames::empty();
+        let frames: Vec<u32> = (0..3)
+            .map(|page| image.image_frame(&mut pages, page, |_| ()).unwrap())
+            .collect();
+        image.park(&mut pages, 3);
+        // One parked frame goes to another use, which keeps it.
+        let mut taken = Vec::new();
+        while let Some(fid) = pages.db.try_allocate(crate::mem::frame::PRIMARY_COLOR) {
+            taken.push(fid * PAGE);
+            if taken.contains(&frames[0]) {
+                break;
+            }
+        }
+        for &frame in taken.iter().filter(|&&frame| frame != frames[0]) {
+            pages.free_frame(frame);
+        }
+
+        image.release_parked(&mut pages, 3);
+        assert_eq!(pages.state(frames[0]), FrameState::Active, "its user's");
+        assert_eq!(pages.state(frames[1]), FrameState::Free);
+        assert_eq!(pages.state(frames[2]), FrameState::Free);
+        assert_eq!(
+            pages.db.available(),
+            free - 1,
+            "everything but the taken frame is back, the table too"
+        );
+        assert_eq!(pages.db.list_total(FrameState::Standby), 0);
+        assert!(pages.db.audit().is_ok());
     }
 
     /// A section's frames are made once, as first needed, and held by the section and by each view
