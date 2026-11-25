@@ -2018,7 +2018,7 @@ pub fn device_control(
     input: Source<'_>,
     output: Destination<'_>,
 ) -> NtStatus {
-    const FILE_DEVICE_FILE_SYSTEM: u32 = 9;
+    use rtl::device::FILE_DEVICE_FILE_SYSTEM;
     let (event, context, _) = transfer.arguments();
     let service = if code >> 16 == FILE_DEVICE_FILE_SYSTEM {
         nt::NtFsControlFile

@@ -62,6 +62,7 @@ pub mod console;
 pub mod cp1252;
 pub mod critsec;
 pub mod cstr;
+pub mod device;
 pub mod dib;
 pub mod display;
 pub mod edge;

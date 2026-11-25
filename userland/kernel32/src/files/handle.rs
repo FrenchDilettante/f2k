@@ -662,6 +662,7 @@ pub extern "system" fn get_file_type(file: u32) -> u32 {
 
 /// GetFileType's work.
 fn file_type(file: u32) -> Result<u32, Failure> {
+    use rtl::device::*;
     let file = standard_handle(file);
     if is_console_handle(file) {
         if console::verify_console_io_handle(file) {
@@ -675,12 +676,24 @@ fn file_type(file: u32) -> Result<u32, Failure> {
     let mut device = [0u8; 8];
     checked(query_volume(file, FILE_FS_DEVICE_INFORMATION, &mut device))?;
     Ok(match word(&device, 0) {
-        // Screen, keyboard, mouse, null, parallel, printer, serial, sound, modem.
-        0x1C | 0x0B | 0x0F | 0x15 | 0x16 | 0x18 | 0x1B | 0x1D | 0x2B => FILE_TYPE_CHAR,
-        0x11 => FILE_TYPE_PIPE,
-        // CD-ROM and its file system, controller, datalink, DFS, disk and its file system, virtual
-        // disk.
-        0x02 | 0x03 | 0x04 | 0x05 | 0x06 | 0x07 | 0x08 | 0x24 => FILE_TYPE_DISK,
+        FILE_DEVICE_SCREEN
+        | FILE_DEVICE_KEYBOARD
+        | FILE_DEVICE_MOUSE
+        | FILE_DEVICE_NULL
+        | FILE_DEVICE_PARALLEL_PORT
+        | FILE_DEVICE_PRINTER
+        | FILE_DEVICE_SERIAL_PORT
+        | FILE_DEVICE_SOUND
+        | FILE_DEVICE_MODEM => FILE_TYPE_CHAR,
+        FILE_DEVICE_NAMED_PIPE => FILE_TYPE_PIPE,
+        FILE_DEVICE_CD_ROM
+        | FILE_DEVICE_CD_ROM_FILE_SYSTEM
+        | FILE_DEVICE_CONTROLLER
+        | FILE_DEVICE_DATALINK
+        | FILE_DEVICE_DFS
+        | FILE_DEVICE_DISK
+        | FILE_DEVICE_DISK_FILE_SYSTEM
+        | FILE_DEVICE_VIRTUAL_DISK => FILE_TYPE_DISK,
         _ => {
             set_last_error(0);
             FILE_TYPE_UNKNOWN
