@@ -106,8 +106,6 @@ fn ask_overwrite(path: &[u16]) -> Answer {
 
 /// ASCII `text` as UTF-16, in `buffer` (as long as it).
 fn wide<'a>(text: &str, buffer: &'a mut [u16]) -> &'a [u16] {
-    for (unit, byte) in buffer.iter_mut().zip(text.bytes()) {
-        *unit = u16::from(byte);
-    }
-    &buffer[..text.len().min(buffer.len())]
+    let length = exe::ascii_into(buffer, text.as_bytes());
+    &buffer[..length]
 }

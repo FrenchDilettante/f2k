@@ -253,10 +253,8 @@ pub fn run<H: Host>(
 /// A command's help printed in place of running it: it returns 1, the ERRORLEVEL kept.
 fn help<H: Host>(name: &str, state: &mut State, host: &mut H) -> Flow {
     let mut word = [0; 3];
-    for (unit, byte) in word.iter_mut().zip(name.bytes()) {
-        *unit = u16::from(byte);
-    }
-    if let Some(help) = crate::help::of(&word[..name.len()]) {
+    let length = exe::ascii_into(&mut word, name.as_bytes());
+    if let Some(help) = crate::help::of(&word[..length]) {
         host.print(format_args!("{help}"));
     }
     state.return_code = crate::help::SHOWN;
