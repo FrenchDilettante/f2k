@@ -27,6 +27,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use super::frame::{FrameDb, FrameHooks};
 use super::layout;
 use super::phys::{Pfn, PhysAddr};
+use super::pte::{self, Pte};
 #[cfg(target_arch = "x86")]
 use super::{frame::PRIMARY_COLOR, with_database, Parts};
 
@@ -37,18 +38,6 @@ pub const KERNEL_BASE: u32 = layout::KERNEL_IMAGE.start;
 /// window's entry span, which the kernel keeps until it no longer pages through the loader's
 /// tables.
 pub const LOADER_PHYS_BASE: PhysAddr = PhysAddr::new(0x0010_0000);
-
-/// Page-table flag: page/directory entry is present.
-pub const PAGE_PRESENT: u32 = 1 << 0;
-/// Entry bit 1: writable.
-pub const PAGE_WRITE: u32 = 1 << 1;
-/// Entry bit 2: user-accessible (supervisor-only when clear).
-pub const PAGE_USER: u32 = 1 << 2;
-/// Entry bit 3: the page's caches disabled (PCD) — for device memory such as the display's
-/// framebuffer, whose writes must reach the device rather than sit in a cache line.
-pub const PAGE_CACHE_DISABLE: u32 = 1 << 3;
-/// Mask selecting the address bits of a page-table entry.
-pub const PAGE_ADDR_MASK: u32 = 0xFFFF_F000;
 
 /// Page-table entries per table (32-bit paging: 1024).
 pub const PT_ENTRIES: usize = 1024;
@@ -317,54 +306,6 @@ fn fill_new_table(frame_phys: PhysAddr, fill: impl FnOnce(&mut [u32; PT_ENTRIES]
     fill(unsafe { &mut *((KERNEL_BASE + frame_phys.get()) as *mut [u32; PT_ENTRIES]) });
 }
 
-/// A page-directory or page-table entry: the frame (or page table) it names and its flag bits.
-#[repr(transparent)]
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Pte(u32);
-
-impl Pte {
-    /// The entry that maps nothing.
-    pub const EMPTY: Pte = Pte(0);
-
-    /// The entry whose bits are `raw`, as the processor reads them.
-    pub const fn from_raw(raw: u32) -> Pte {
-        Pte(raw)
-    }
-
-    /// The entry's bits, as the processor reads them.
-    pub const fn raw(self) -> u32 {
-        self.0
-    }
-
-    /// Whether the entry maps anything.
-    pub const fn present(self) -> bool {
-        self.0 & PAGE_PRESENT != 0
-    }
-
-    /// The frame (or page table) the entry names, present or not.
-    pub const fn frame(self) -> PhysAddr {
-        PhysAddr::new(self.0 & PAGE_ADDR_MASK)
-    }
-
-    /// A present, writable, supervisor-only entry for `frame`: the kernel's own pages and tables,
-    /// and the runtime access windows' directory entries.
-    pub const fn kernel_rw(frame: PhysAddr) -> Pte {
-        Pte(frame.get() | PAGE_PRESENT | PAGE_WRITE)
-    }
-
-    /// A present, writable, supervisor-only, uncached entry for `frame`: device memory such as the
-    /// display's framebuffer (see [`PAGE_CACHE_DISABLE`]).
-    pub const fn kernel_rw_uncached(frame: PhysAddr) -> Pte {
-        Pte(frame.get() | PAGE_PRESENT | PAGE_WRITE | PAGE_CACHE_DISABLE)
-    }
-
-    /// A present entry ring 3 can reach for `frame`, with the further `flags` ([`PAGE_WRITE`] for a
-    /// writable one).
-    pub const fn user(frame: PhysAddr, flags: u32) -> Pte {
-        Pte(frame.get() | PAGE_PRESENT | PAGE_USER | flags)
-    }
-}
-
 /// Remove the boot directory's low identity window (called once the Multiboot info is consumed),
 /// through the self-map: clears entries `[0, BOOT_TABLE_COUNT)` and flushes the TLB via a CR3
 /// reload. User space is unmapped from here on.
@@ -507,13 +448,13 @@ mod self_map {
     pub fn pde(window: usize) -> Pte {
         // SAFETY: the self-map is installed in every directory (see the module notes), so the
         // directory's view page is mapped, and the slot lies on it (the index is checked).
-        Pte(unsafe { directory_slot(window).read_volatile() })
+        Pte::from_raw(unsafe { directory_slot(window).read_volatile() })
     }
 
     /// Set the current directory's entry `window`.
     pub fn set_pde(window: usize, entry: Pte) {
         // SAFETY: as in `pde`; the caller owns the entry (see the module notes).
-        unsafe { directory_slot(window).write_volatile(entry.0) }
+        unsafe { directory_slot(window).write_volatile(entry.raw()) }
     }
 
     /// The current directory's page-table entry for `va`; none when `va`'s window has no table.
@@ -523,7 +464,7 @@ mod self_map {
         }
         // SAFETY: the window's table is present, so the self-map window maps it, and the slot is
         // the address's entry in it.
-        Some(Pte(unsafe { table_slot(va).read_volatile() }))
+        Some(Pte::from_raw(unsafe { table_slot(va).read_volatile() }))
     }
 
     /// Set the current directory's page-table entry for `va`.
@@ -537,7 +478,7 @@ mod self_map {
             "a page-table entry set in a window with no table"
         );
         // SAFETY: as in `pte`; the caller owns the entry (see the module notes).
-        unsafe { table_slot(va).write_volatile(entry.0) }
+        unsafe { table_slot(va).write_volatile(entry.raw()) }
     }
 }
 
@@ -907,7 +848,7 @@ pub fn set_user_pte(vaddr: u32, entry: u32) {
             } = database.parts();
             new_table_in(frames, scratch)
         });
-        self_map::set_pde(window, Pte::user(table_phys, PAGE_WRITE));
+        self_map::set_pde(window, Pte::user_page(table_phys, pte::WRITE));
     }
     self_map::set_pte(vaddr, Pte::from_raw(entry));
     invlpg(vaddr);
@@ -953,12 +894,12 @@ pub fn assemble_process_directory(
 /// The value CR3 takes for a directory at `dir_phys`: the address bits only, so a sloppy caller's
 /// low flag bits cannot leak into the load.
 pub const fn directory_cr3(dir_phys: PhysAddr) -> u32 {
-    dir_phys.get() & PAGE_ADDR_MASK
+    pte::frame_bits(dir_phys.get())
 }
 
 /// The directory a CR3 value `cr3` loads: its address bits, the flag bits dropped.
 pub const fn cr3_directory(cr3: u32) -> PhysAddr {
-    PhysAddr::new(cr3 & PAGE_ADDR_MASK)
+    Pte::from_raw(cr3).frame()
 }
 
 /// The shared scratch table's physical address (one of the boot's tables, never released).
@@ -1427,6 +1368,12 @@ pub fn read_frame_word(frame_phys: PhysAddr, index: usize) -> u32 {
 mod tests {
     use super::*;
     use crate::mem::phys::frame_run;
+    use crate::mem::pte::{
+        FRAME_MASK,
+        PRESENT as PAGE_PRESENT,
+        USER as PAGE_USER,
+        WRITE as PAGE_WRITE,
+    };
 
     /// Identity table `index` as the boot builds it, over a frame holding garbage.
     fn identity(index: usize) -> Box<[u32; PT_ENTRIES]> {
@@ -1465,8 +1412,8 @@ mod tests {
     fn every_entry_is_present_writable_and_in_window() {
         for t in 0..BOOT_TABLE_COUNT {
             for (i, &entry) in identity(t).iter().enumerate() {
-                assert_eq!(entry & PAGE_ADDR_MASK, ((t * PT_ENTRIES + i) * 4096) as u32);
-                assert_eq!(entry & !PAGE_ADDR_MASK, PAGE_PRESENT | PAGE_WRITE);
+                assert_eq!(entry & FRAME_MASK, ((t * PT_ENTRIES + i) * 4096) as u32);
+                assert_eq!(entry & !FRAME_MASK, PAGE_PRESENT | PAGE_WRITE);
             }
         }
     }
@@ -1672,9 +1619,12 @@ mod tests {
         assert!(kernel.present());
         assert_eq!(kernel.frame(), PhysAddr::new(0x0090_0000));
 
-        assert_eq!(Pte::user(PhysAddr::new(0x0050_0000), 0).raw(), 0x0050_0005);
         assert_eq!(
-            Pte::user(PhysAddr::new(0x0050_0000), PAGE_WRITE).raw(),
+            Pte::user_page(PhysAddr::new(0x0050_0000), 0).raw(),
+            0x0050_0005
+        );
+        assert_eq!(
+            Pte::user_page(PhysAddr::new(0x0050_0000), PAGE_WRITE).raw(),
             0x0050_0007
         );
 
@@ -1799,8 +1749,8 @@ mod tests {
 
         for i in KERNEL_HALF_START..PT_ENTRIES {
             if i == SELF_MAP_SLOT {
-                assert_eq!(first[i] & PAGE_ADDR_MASK, 0x0090_0000);
-                assert_eq!(second[i] & PAGE_ADDR_MASK, 0x0095_0000);
+                assert_eq!(first[i] & FRAME_MASK, 0x0090_0000);
+                assert_eq!(second[i] & FRAME_MASK, 0x0095_0000);
             } else {
                 assert_eq!(first[i], second[i], "entry {i}");
             }

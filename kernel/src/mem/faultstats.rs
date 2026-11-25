@@ -98,8 +98,8 @@ mod tests {
     /// transition kind, the one the performance class's TransitionCount reports.
     #[test]
     fn a_transition_entry_counts_the_transition_kind() {
-        let entry = crate::mem::vm::encode_backing(
-            crate::mem::vm::TAG_TRANSITION,
+        let entry = crate::mem::pte::encode_backing(
+            crate::mem::pte::TRANSITION,
             0x0050_0000,
             PAGE_READWRITE,
         );

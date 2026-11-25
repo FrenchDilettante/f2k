@@ -959,11 +959,7 @@ mod tests {
                     page_writable(&image, page * PAGE_SIZE),
                     "{name} page {page}"
                 );
-                assert_eq!(
-                    entry & crate::mem::paging::PAGE_WRITE,
-                    0,
-                    "{name} page {page}"
-                );
+                assert_eq!(entry & crate::mem::pte::WRITE, 0, "{name} page {page}");
             }
         }
     }

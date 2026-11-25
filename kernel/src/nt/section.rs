@@ -465,13 +465,14 @@ pub fn write_back_pages(
     read_frame: &mut impl FnMut(u32, &mut [u8]) -> bool,
     write_file: &mut impl FnMut(u32, &[u8]) -> bool,
 ) -> bool {
-    use crate::mem::vm::{PAGE, PTE_FRAME_MASK, PTE_PRESENT};
+    use crate::mem::pte::{FRAME_MASK, PRESENT};
+    use crate::mem::vm::PAGE;
     let mut buf = [0u8; PAGE as usize];
     let mut va = base;
     while va < end {
         let entry = pages.entry(va);
-        if entry & PTE_PRESENT != 0 {
-            let frame = entry & PTE_FRAME_MASK;
+        if entry & PRESENT != 0 {
+            let frame = entry & FRAME_MASK;
             if !read_frame(frame, &mut buf) {
                 return false;
             }
@@ -1205,8 +1206,8 @@ mod target {
             // A file's view: prototype entries, the pages faulted in from the file on first touch.
             for page in 0..pages {
                 let index = offset / PAGE + page;
-                let entry = crate::mem::vm::encode_backing(
-                    crate::mem::fault::PROTOTYPE,
+                let entry = crate::mem::pte::encode_backing(
+                    crate::mem::pte::PROTOTYPE,
                     index << 12,
                     protect,
                 );

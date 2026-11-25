@@ -293,9 +293,10 @@ fn walk(mut ebp: u32, cs: u32, frames: &mut [u32; MAX_STACK]) -> usize {
 /// lock) are out of reach.
 #[cfg(target_arch = "x86")]
 fn user_mapped(address: u32) -> bool {
-    use crate::mem::paging::{KERNEL_BASE, PAGE_PRESENT, PAGE_SIZE};
+    use crate::mem::paging::{KERNEL_BASE, PAGE_SIZE};
+    use crate::mem::pte::PRESENT;
     use crate::mem::vm::{CurrentPages, Pages};
-    address < KERNEL_BASE && CurrentPages.entry(address & !(PAGE_SIZE - 1)) & PAGE_PRESENT != 0
+    address < KERNEL_BASE && CurrentPages.entry(address & !(PAGE_SIZE - 1)) & PRESENT != 0
 }
 
 /// Stop the trace and dump it on COM1: the header and one line per kept sample. Runs on the idle

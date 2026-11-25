@@ -46,7 +46,25 @@
 //! copy-on-write or read-only view's section stay as their holders made them.
 
 use super::phys::PhysAddr;
-use super::pte::{self, PteKind};
+use super::pte::{
+    self,
+    backing_payload,
+    backing_tag,
+    encode_backing,
+    index_bits,
+    protection_index,
+    protection_of_index,
+    soft_protect,
+    PteKind,
+    COMMITTED,
+    FRAME_MASK,
+    FRAME_SHIFT,
+    GUARD,
+    INDEX_SHIFT,
+    PRESENT,
+    USER,
+    WRITE,
+};
 use super::quota::CommitQuota;
 
 /// The page size and the allocation granularity.
@@ -76,70 +94,6 @@ pub const MEM_PRIVATE: u32 = 0x2_0000;
 pub const MEM_MAPPED: u32 = 0x4_0000;
 pub const MEM_IMAGE: u32 = 0x100_0000;
 
-/// The page-table entry bits.
-const PRESENT: u32 = 1 << 0;
-const WRITE: u32 = 1 << 1;
-const USER: u32 = 1 << 2;
-/// A non-present entry's committed marker and guard flag (the CPU ignores a non-present entry's
-/// other bits).
-const COMMITTED: u32 = 1 << 1;
-const GUARD: u32 = 1 << 2;
-/// The protection index's place: the software bits.
-const INDEX_SHIFT: u32 = 9;
-/// The frame/payload field's shift: bits 12-31.
-const FRAME_SHIFT: u32 = 12;
-const FRAME_MASK: u32 = 0xFFFF_F000;
-
-/// The present bit, as the soft-entry helpers read it.
-pub const PTE_PRESENT: u32 = PRESENT;
-/// The hardware write bit on a present entry (the committed marker on a non-present one).
-pub const PTE_WRITE: u32 = WRITE;
-/// The hardware dirty bit on a present entry: set by the processor on a write, clear when the
-/// manager maps the page. A writable page with it clear is clean — its frame's contents are the
-/// page's only copy, so the frame may go to standby without a page-out.
-pub const PTE_DIRTY: u32 = 1 << 6;
-/// The frame/payload field's mask (bits 12-31), as the soft-entry helpers read it.
-pub const PTE_FRAME_MASK: u32 = FRAME_MASK;
-
-/// A non-present entry's backing tags (bits 3-5, as [`super::fault`] marks them): the page is off
-/// its mapping and its backing is named — a frame on a backing list ([`TAG_TRANSITION`]), a slot
-/// in the paging file ([`TAG_PAGE_FILE`]), or a section's page ([`TAG_PROTOTYPE`]).
-pub const TAG_TRANSITION: u32 = super::fault::TRANSITION;
-pub const TAG_PROTOTYPE: u32 = super::fault::PROTOTYPE;
-pub const TAG_PAGE_FILE: u32 = super::fault::PAGE_FILE;
-/// All the backing tags.
-const SOFT_TAGS: u32 = TAG_TRANSITION | TAG_PROTOTYPE | TAG_PAGE_FILE;
-
-/// The entry's backing tag: one of the `TAG_` bits, or zero for a hard (present, committed or
-/// uncommitted) entry. On a present entry bits 3-5 are the hardware's cache and accessed bits,
-/// not a tag, so the tags read only on a non-present one — a soft entry is never present.
-pub fn backing_tag(entry: u32) -> u32 {
-    if entry & PTE_PRESENT != 0 {
-        0
-    } else {
-        entry & SOFT_TAGS
-    }
-}
-
-/// A soft entry's payload (bits 12-31): the named frame, or the paging-file slot / section page
-/// index shifted up into the field.
-pub fn backing_payload(entry: u32) -> u32 {
-    entry & FRAME_MASK
-}
-
-/// The base protection a soft entry records in its protection index bits.
-pub fn soft_protect(entry: u32) -> u32 {
-    base_of((entry >> INDEX_SHIFT) & 7)
-}
-
-/// The soft entry for a page backed by `tag` with `payload` (a frame, or a slot/index shifted up)
-/// and `protect`: the CPU ignores a non-present entry's bits, so they carry the page's state.
-pub fn encode_backing(tag: u32, payload: u32, protect: u32) -> u32 {
-    debug_assert!(tag != 0 && tag & !SOFT_TAGS == 0, "one backing tag");
-    debug_assert!(payload & !FRAME_MASK == 0, "the payload is page-aligned");
-    tag | payload | (index_of(protect & 0xFF) << INDEX_SHIFT)
-}
-
 /// Whether the entry says the page is committed: a hard committed entry, or a soft backing one (a
 /// view's page is committed with its view; a paged-out private page keeps its commit charge).
 pub fn committed_entry(entry: u32) -> bool {
@@ -153,33 +107,6 @@ pub fn valid_protect(protect: u32) -> bool {
     base.is_power_of_two()
         && protect & !(0xFF | PAGE_GUARD | PAGE_NOCACHE) == 0
         && !(base == PAGE_NOACCESS && protect & PAGE_GUARD != 0)
-}
-
-/// The protection index of a base protection (1-7 present, 0 no-access).
-fn index_of(base: u32) -> u32 {
-    match base {
-        PAGE_READONLY => 1,
-        PAGE_READWRITE => 2,
-        PAGE_WRITECOPY => 3,
-        PAGE_EXECUTE => 4,
-        PAGE_EXECUTE_READ => 5,
-        PAGE_EXECUTE_READWRITE => 6,
-        PAGE_EXECUTE_WRITECOPY => 7,
-        _ => 0,
-    }
-}
-
-fn base_of(index: u32) -> u32 {
-    match index {
-        1 => PAGE_READONLY,
-        2 => PAGE_READWRITE,
-        3 => PAGE_WRITECOPY,
-        4 => PAGE_EXECUTE,
-        5 => PAGE_EXECUTE_READ,
-        6 => PAGE_EXECUTE_READWRITE,
-        7 => PAGE_EXECUTE_WRITECOPY,
-        _ => PAGE_NOACCESS,
-    }
 }
 
 /// Whether a base protection lets the hardware write: a copy-on-write page does not, its first
@@ -211,7 +138,7 @@ fn copy_on_write_of(protect: u32) -> Option<u32> {
 /// The entry for a committed page of `frame` with `protect`.
 pub fn encode(frame: u32, protect: u32) -> u32 {
     let base = protect & 0xFF;
-    let index = index_of(base) << INDEX_SHIFT;
+    let index = protection_index(base) << INDEX_SHIFT;
     if base == PAGE_NOACCESS || protect & PAGE_GUARD != 0 {
         let guard = if protect & PAGE_GUARD != 0 { GUARD } else { 0 };
         frame | COMMITTED | guard | index
@@ -222,17 +149,17 @@ pub fn encode(frame: u32, protect: u32) -> u32 {
 
 /// A committed page's frame and protection, from its entry; none for an uncommitted page.
 pub fn decode(entry: u32) -> Option<(u32, u32)> {
-    let index = (entry >> INDEX_SHIFT) & 7;
+    let index = index_bits(entry);
     if entry & PRESENT != 0 {
         let protect = match index {
             0 if entry & WRITE != 0 => PAGE_READWRITE,
             0 => PAGE_READONLY,
-            index => base_of(index),
+            index => protection_of_index(index),
         };
         Some((entry & FRAME_MASK, protect))
     } else if entry & COMMITTED != 0 {
         let guard = if entry & GUARD != 0 { PAGE_GUARD } else { 0 };
-        Some((entry & FRAME_MASK, base_of(index) | guard))
+        Some((entry & FRAME_MASK, protection_of_index(index) | guard))
     } else {
         None
     }
@@ -314,7 +241,7 @@ pub fn map_named_frame(pages: &mut impl Pages, page: u32, frame: u32, protect: u
 pub fn soften_to_transition(pages: &mut impl Pages, va: u32, frame: u32, protect: u32) {
     pages.set_entry(
         page_down(va),
-        encode_backing(TAG_TRANSITION, frame, protect),
+        encode_backing(pte::TRANSITION, frame, protect),
     );
 }
 
@@ -324,7 +251,7 @@ pub fn soften_to_transition(pages: &mut impl Pages, va: u32, frame: u32, protect
 pub fn name_page_file(pages: &mut impl Pages, va: u32, slot: u32, protect: u32) {
     pages.set_entry(
         page_down(va),
-        encode_backing(TAG_PAGE_FILE, slot << FRAME_SHIFT, protect),
+        encode_backing(pte::PAGE_FILE, slot << FRAME_SHIFT, protect),
     );
 }
 
@@ -989,15 +916,15 @@ impl AddressSpace {
             if committed_entry(entry) {
                 pages.set_entry(va, 0);
                 match backing_tag(entry) {
-                    TAG_PAGE_FILE => {
+                    pte::PAGE_FILE => {
                         pages.discard_backing(backing_payload(entry) >> FRAME_SHIFT);
                         charged += 1;
                     }
-                    TAG_TRANSITION => {
+                    pte::TRANSITION => {
                         pages.free_frame(backing_payload(entry));
                         charged += 1;
                     }
-                    TAG_PROTOTYPE => {}
+                    pte::PROTOTYPE => {}
                     _ => {
                         if let Some((_, frame, _)) = pte::decode(entry) {
                             if frame != 0 {
@@ -2769,9 +2696,9 @@ mod tests {
     #[test]
     fn soft_entries_round_trip_and_count_as_committed() {
         for (tag, payload) in [
-            (TAG_TRANSITION, 0x0070_0000u32),
-            (TAG_PAGE_FILE, 5u32 << 12),
-            (TAG_PROTOTYPE, 0x10u32 << 12),
+            (pte::TRANSITION, 0x0070_0000u32),
+            (pte::PAGE_FILE, 5u32 << 12),
+            (pte::PROTOTYPE, 0x10u32 << 12),
         ] {
             let entry = encode_backing(tag, payload, PAGE_READONLY);
             assert_eq!(backing_tag(entry), tag);
@@ -2794,13 +2721,13 @@ mod tests {
         vm.map_soft(
             &mut pages,
             base,
-            encode_backing(TAG_PROTOTYPE, 0x10 << 12, PAGE_READONLY),
+            encode_backing(pte::PROTOTYPE, 0x10 << 12, PAGE_READONLY),
         )
         .unwrap();
         vm.map_soft(
             &mut pages,
             base + PAGE,
-            encode_backing(TAG_PROTOTYPE, 0x11 << 12, PAGE_READONLY),
+            encode_backing(pte::PROTOTYPE, 0x11 << 12, PAGE_READONLY),
         )
         .unwrap();
         assert_eq!(
@@ -2820,7 +2747,7 @@ mod tests {
         );
         assert_eq!(
             pages.entry(base),
-            encode_backing(TAG_PROTOTYPE, 0x10 << 12, PAGE_READWRITE)
+            encode_backing(pte::PROTOTYPE, 0x10 << 12, PAGE_READWRITE)
         );
         // A decommit clears them and charges nothing (a view's pages were never charged).
         assert_eq!(vm.decommit(&mut pages, base, 0x2000).unwrap(), 0);
@@ -2832,10 +2759,13 @@ mod tests {
             .unwrap();
         vm.commit_demand(&mut pages, base, 0x2000, PAGE_READWRITE)
             .unwrap();
-        pages.set_entry(base, encode_backing(TAG_PAGE_FILE, 7 << 12, PAGE_READWRITE));
+        pages.set_entry(
+            base,
+            encode_backing(pte::PAGE_FILE, 7 << 12, PAGE_READWRITE),
+        );
         pages.set_entry(
             base + PAGE,
-            encode_backing(TAG_TRANSITION, 0x0070_0000, PAGE_READWRITE),
+            encode_backing(pte::TRANSITION, 0x0070_0000, PAGE_READWRITE),
         );
         assert_eq!(vm.uncommitted_pages(&pages, base, 0x2000), Ok(0));
         assert_eq!(vm.decommit(&mut pages, base, 0x2000).unwrap(), 2);
@@ -2851,14 +2781,17 @@ mod tests {
             "the transition frame went back"
         );
         // A recommit over a paged-out page keeps its backing and charges nothing fresh.
-        pages.set_entry(base, encode_backing(TAG_PAGE_FILE, 7 << 12, PAGE_READWRITE));
+        pages.set_entry(
+            base,
+            encode_backing(pte::PAGE_FILE, 7 << 12, PAGE_READWRITE),
+        );
         let (_, fresh) = vm
             .commit_demand(&mut pages, base, PAGE, PAGE_READONLY)
             .unwrap();
         assert_eq!(fresh, 0);
         assert_eq!(
             pages.entry(base),
-            encode_backing(TAG_PAGE_FILE, 7 << 12, PAGE_READONLY),
+            encode_backing(pte::PAGE_FILE, 7 << 12, PAGE_READONLY),
             "the slot rides along, re-protected"
         );
         // map_soft refuses a page outside every region or one already holding an entry.
@@ -2866,7 +2799,7 @@ mod tests {
             vm.map_soft(
                 &mut pages,
                 0x6000_0000,
-                encode_backing(TAG_PROTOTYPE, 0, PAGE_READONLY)
+                encode_backing(pte::PROTOTYPE, 0, PAGE_READONLY)
             ),
             Err(VmError::InvalidAddress)
         );
@@ -2874,7 +2807,7 @@ mod tests {
             vm.map_soft(
                 &mut pages,
                 base,
-                encode_backing(TAG_PROTOTYPE, 0, PAGE_READONLY)
+                encode_backing(pte::PROTOTYPE, 0, PAGE_READONLY)
             ),
             Err(VmError::InvalidAddress)
         );
@@ -2888,7 +2821,7 @@ mod tests {
         use crate::mem::pte::{self, PteKind};
         for hardware_bits in [0x20, 0x40, 0x60] {
             let entry = encode(0x0070_0000, PAGE_READWRITE) | hardware_bits;
-            assert_ne!(entry & PTE_PRESENT, 0);
+            assert_ne!(entry & PRESENT, 0);
             assert_eq!(backing_tag(entry), 0, "no tag on a present entry");
             assert!(committed_entry(entry));
             assert_eq!(pte::classify(entry), PteKind::Present);
@@ -2911,7 +2844,7 @@ mod tests {
         pages.set_entry(page, encode(0x0070_0000, PAGE_READWRITE));
         soften_to_transition(&mut pages, page + 0x10, 0x0070_0000, PAGE_READWRITE);
         let entry = pages.entry(page);
-        assert_eq!(backing_tag(entry), TAG_TRANSITION);
+        assert_eq!(backing_tag(entry), pte::TRANSITION);
         assert_eq!(backing_payload(entry), 0x0070_0000);
         assert_eq!(soft_protect(entry), PAGE_READWRITE);
         assert!(committed_entry(entry));
@@ -2922,7 +2855,10 @@ mod tests {
         );
         name_page_file(&mut pages, page + 0x20, 9, PAGE_READONLY);
         let entry = pages.entry(page);
-        assert_eq!(entry, encode_backing(TAG_PAGE_FILE, 9 << 12, PAGE_READONLY));
+        assert_eq!(
+            entry,
+            encode_backing(pte::PAGE_FILE, 9 << 12, PAGE_READONLY)
+        );
         assert_eq!(fault::resolve(entry, false, true), Resolution::PageFile);
         assert_eq!(
             fault::resolve(entry, true, true),

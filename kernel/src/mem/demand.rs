@@ -16,14 +16,12 @@
 //! allocation is retried once. Without a frame after that the fault stands, the entry as it was.
 
 use super::fault::{self, Resolution};
+use super::pte;
 use super::vm::{self, Pages, PAGE, USER_HIGH};
-
-/// The frame's place in an entry: bits 12-31.
-const FRAME_MASK: u32 = 0xFFFF_F000;
 
 /// The base protection an entry's index bits record.
 fn protect_of(entry: u32) -> u32 {
-    vm::soft_protect(entry)
+    pte::soft_protect(entry)
 }
 
 /// Classify the faulting access at `va` — `write` for a store, `user` when it came from ring 3 —
@@ -66,7 +64,7 @@ pub fn map_with(
             vm::map_demand_zero(pages, page, protect)
         }
         Resolution::Transition => {
-            let frame = entry & FRAME_MASK;
+            let frame = pte::frame_bits(entry);
             // The frame is on a backing list and held by this entry: take it back into use — off
             // the list, the hold dropped — before mapping it again.
             pages.activate_frame(frame);
@@ -164,11 +162,11 @@ pub fn scan_pages(
                 return false;
             }
             let e = entry(va);
-            let frame = e & vm::PTE_FRAME_MASK;
-            if e & vm::PTE_PRESENT != 0 && frame != 0 {
+            let frame = pte::frame_bits(e);
+            if e & pte::PRESENT != 0 && frame != 0 {
                 let protect = vm::decode(e)
                     .map(|(_, protect)| protect)
-                    .unwrap_or_else(|| vm::soft_protect(e));
+                    .unwrap_or_else(|| pte::soft_protect(e));
                 victims[count] = super::backing::Victim { va, frame, protect };
                 count += 1;
             }
@@ -198,6 +196,7 @@ pub mod target {
     use super::super::phys::{Pfn, PhysAddr};
     use crate::mem::pageout::{self, SlotId, PAGE_SIZE};
     use crate::mem::pagingfile::with_paging_file;
+    use crate::mem::pte;
     use crate::mem::vm::{self, CurrentPages, Pages};
     use crate::mem::{self, Parts};
 
@@ -359,8 +358,8 @@ pub mod target {
             // The entry as it is now, inside the borrow: one re-faulted meanwhile names another
             // frame, and is left alone.
             let entry = CurrentPages.entry(victim.va);
-            if vm::backing_tag(entry) == vm::TAG_TRANSITION
-                && vm::backing_payload(entry) == victim.frame
+            if pte::backing_tag(entry) == pte::TRANSITION
+                && pte::backing_payload(entry) == victim.frame
             {
                 let held = frames.entry(fid).state == FrameState::Standby
                     && frames.entry(fid).share_count > 0;
@@ -376,7 +375,7 @@ pub mod target {
             if frames.entry(fid).share_count > 0 {
                 return;
             }
-            if entry & vm::PTE_PRESENT == 0 || vm::backing_payload(entry) != victim.frame {
+            if entry & pte::PRESENT == 0 || pte::backing_payload(entry) != victim.frame {
                 return;
             }
             if frames.entry(fid).state != FrameState::Active {
@@ -564,14 +563,13 @@ pub mod target {
             }
             let slot = first + u64::from(page_of[index]);
             let current = CurrentPages.entry(victim.va);
-            if vm::backing_tag(current) == vm::TAG_TRANSITION
-                && vm::backing_payload(current) == victim.frame
+            if pte::backing_tag(current) == pte::TRANSITION
+                && pte::backing_payload(current) == victim.frame
             {
                 mem::with_database(|db| db.parts().frames.release(fid, FrameState::Standby));
                 vm::name_page_file(&mut CurrentPages, victim.va, slot as u32, victim.protect);
                 freed += 1;
-            } else if current & vm::PTE_PRESENT != 0 && vm::backing_payload(current) == victim.frame
-            {
+            } else if current & pte::PRESENT != 0 && pte::backing_payload(current) == victim.frame {
                 // Re-faulted while the write was in flight: the frame is in use again (its entry
                 // is present, naming it); the slot goes back.
                 let _ = with_paging_file(|file| {
@@ -632,8 +630,7 @@ mod tests {
         apply(pages, va, write, user)
     }
 
-    /// The protection index's place in a test entry: bits 9-11.
-    const INDEX_SHIFT: u32 = 9;
+    use crate::mem::pte::INDEX_SHIFT;
 
     /// The frame a transition entry names.
     const FRAME: u32 = 0x0050_0000;
@@ -731,7 +728,7 @@ mod tests {
         plant(
             pages,
             page,
-            fault::TRANSITION | frame | (index << INDEX_SHIFT),
+            pte::TRANSITION | frame | (index << INDEX_SHIFT),
         );
     }
 

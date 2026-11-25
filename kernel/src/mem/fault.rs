@@ -7,40 +7,28 @@
 //! then says read-write, its absence read-only). A non-present entry is one the CPU ignores, so
 //! its bits carry the state instead: bit 1 marks the page committed, bit 2 the guard flag, bits
 //! 9-11 the protection as above, bits 12-31 the frame, and the free bits 3-8 where the page is
-//! ([`TRANSITION`], [`PROTOTYPE`], [`PAGE_FILE`]).
+//! ([`TRANSITION`], [`PROTOTYPE`], [`PAGE_FILE`]). The layout is [`super::pte`]'s.
 //!
 //! [`resolve`] is the table: given the entry and the access's kind — a store (`write`), from user
 //! mode (`user`) — it says what the fault path does with the page. It is pure: the region table,
 //! the frame database and the thread's stack are the caller's, and every resolution but
 //! [`Resolution::Raise`] names the state the entry already records.
 
+use super::pte::{
+    frame_bits,
+    index_bits,
+    protection_of_index,
+    COMMITTED,
+    GUARD,
+    PAGE_FILE,
+    PRESENT,
+    PROTOTYPE,
+    SOFT_TAGS,
+    TRANSITION,
+    USER,
+    WRITE,
+};
 use super::vm;
-
-/// The entry bits, as [`vm::encode`] writes them.
-const PRESENT: u32 = 1 << 0;
-const WRITE: u32 = 1 << 1;
-const USER: u32 = 1 << 2;
-/// A non-present entry's markers, on the same bits as `WRITE`/`USER` above (the CPU ignores a
-/// non-present entry's bits 1 and 2).
-const COMMITTED: u32 = WRITE;
-const GUARD: u32 = USER;
-/// The protection index's place: the software bits 9-11.
-const INDEX_SHIFT: u32 = 9;
-/// The frame's place: bits 12-31.
-const FRAME_MASK: u32 = 0xFFFF_F000;
-
-/// A non-present entry naming a frame on a backing list: the page is in memory still, off its
-/// working set, and making it present again takes no I/O. The frame rides in bits 12-31.
-pub const TRANSITION: u32 = 1 << 3;
-/// A non-present entry naming a page of a section, its slot in the section's frame table (bits
-/// 12-31): the page comes in from the section — its file, or a copy-on-write sever of a shared
-/// frame — not from private memory.
-pub const PROTOTYPE: u32 = 1 << 4;
-/// A non-present entry naming a private page's slot in the paging file, counted from one (bits
-/// 12-31): the page comes back with a read.
-pub const PAGE_FILE: u32 = 1 << 5;
-/// All the backing tags.
-const BACKING: u32 = TRANSITION | PROTOTYPE | PAGE_FILE;
 
 /// What a faulting access resolves to.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -92,13 +80,13 @@ pub fn resolve(entry: u32, write: bool, user: bool) -> Resolution {
     // A non-present entry: the CPU ignores its bits, so they carry the page's state. A page whose
     // recorded protection allows no access at all — or no write, short of a copy-on-write sever,
     // which the page-in resolves — is the violation whatever its backing state.
-    let index = (entry >> INDEX_SHIFT) & 7;
-    let protect = base_of_index(index);
+    let index = index_bits(entry);
+    let protect = protection_of_index(index);
     if index == 0 || (write && !writable(protect) && !copy_on_write(protect)) {
         return Resolution::Raise;
     }
-    let frame = entry & FRAME_MASK;
-    let backing = entry & BACKING;
+    let frame = frame_bits(entry);
+    let backing = entry & SOFT_TAGS;
     if entry & GUARD != 0 {
         // A guard page: committed, its frame named, no backing tag.
         return if entry & COMMITTED != 0 && backing == 0 && frame != 0 {
@@ -124,20 +112,6 @@ pub fn resolve(entry: u32, write: bool, user: bool) -> Resolution {
     }
 }
 
-/// The base protection of a protection index (an entry's bits 9-11).
-fn base_of_index(index: u32) -> u32 {
-    match index {
-        1 => vm::PAGE_READONLY,
-        2 => vm::PAGE_READWRITE,
-        3 => vm::PAGE_WRITECOPY,
-        4 => vm::PAGE_EXECUTE,
-        5 => vm::PAGE_EXECUTE_READ,
-        6 => vm::PAGE_EXECUTE_READWRITE,
-        7 => vm::PAGE_EXECUTE_WRITECOPY,
-        _ => vm::PAGE_NOACCESS,
-    }
-}
-
 /// Whether a base protection lets the hardware write.
 fn writable(base: u32) -> bool {
     matches!(base, vm::PAGE_READWRITE | vm::PAGE_EXECUTE_READWRITE)
@@ -152,6 +126,7 @@ fn copy_on_write(base: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mem::pte::INDEX_SHIFT;
 
     /// A frame the entries below name.
     const FRAME: u32 = 0x0050_0000;

@@ -19,7 +19,7 @@
 use super::frame::{FrameDb, FrameHooks, FrameState};
 use super::pageout::{self, SlotId};
 use super::phys::{Pfn, PhysAddr};
-use super::vm;
+use super::pte;
 use super::ws::WorkingSet;
 
 /// One victim page, as the caller resolves it from the page's entry and the frame database: the
@@ -94,14 +94,14 @@ impl TrimPolicy {
 /// not present — the page is already off its mapping, a soft entry or none at all — or that names
 /// no frame.
 pub fn victim_of(entry: u32) -> Option<Victim> {
-    if entry & vm::PTE_PRESENT == 0 {
+    if entry & pte::PRESENT == 0 {
         return None;
     }
-    let frame = vm::backing_payload(entry);
+    let frame = pte::backing_payload(entry);
     if frame == 0 {
         return None;
     }
-    let dirty = entry & vm::PTE_WRITE != 0 && entry & vm::PTE_DIRTY != 0;
+    let dirty = entry & pte::WRITE != 0 && entry & pte::DIRTY != 0;
     Some(Victim {
         frame: PhysAddr::new(frame).pfn(),
         dirty,
@@ -207,6 +207,7 @@ mod tests {
     use crate::mem::frame::{ColorTables, FrameEntry, FrameState, NoHooks, DEFAULT_COLOR_COUNT};
     use crate::mem::pageout;
     use crate::mem::paging::PAGE_SIZE;
+    use crate::mem::vm;
 
     /// Page `n`'s base address.
     fn page(n: u32) -> u32 {
@@ -729,7 +730,7 @@ mod tests {
     fn victim_of_classifies_a_present_entry_clean_or_dirty_from_its_bits() {
         let frame = 0x0050_0000u32;
         // A written page: writable, the dirty bit set.
-        let written = vm::encode(frame, vm::PAGE_READWRITE) | vm::PTE_DIRTY;
+        let written = vm::encode(frame, vm::PAGE_READWRITE) | pte::DIRTY;
         assert_eq!(
             victim_of(written),
             Some(Victim {
@@ -744,7 +745,7 @@ mod tests {
             assert_eq!(victim_of(read).map(|v| v.dirty), Some(false));
         }
         // A read-only page: the write bit is clear, so it is clean even with the dirty bit set.
-        let read_only = vm::encode(frame, vm::PAGE_READONLY) | vm::PTE_DIRTY;
+        let read_only = vm::encode(frame, vm::PAGE_READONLY) | pte::DIRTY;
         assert_eq!(victim_of(read_only).map(|v| v.dirty), Some(false));
         // A copy-on-write page's present entry is held read-only by the hardware: clean.
         let cow = vm::encode(frame, vm::PAGE_WRITECOPY);
@@ -762,16 +763,16 @@ mod tests {
     fn victim_of_reads_no_victim_off_a_non_present_entry() {
         let frame = 0x0050_0000u32;
         assert_eq!(
-            victim_of(vm::encode_backing(
-                vm::TAG_TRANSITION,
+            victim_of(pte::encode_backing(
+                pte::TRANSITION,
                 frame,
                 vm::PAGE_READWRITE
             )),
             None
         );
         assert_eq!(
-            victim_of(vm::encode_backing(
-                vm::TAG_PAGE_FILE,
+            victim_of(pte::encode_backing(
+                pte::PAGE_FILE,
                 7 << 12,
                 vm::PAGE_READWRITE
             )),
@@ -787,6 +788,6 @@ mod tests {
         );
         assert_eq!(victim_of(0), None);
         // A present entry naming the null frame is malformed: no victim.
-        assert_eq!(victim_of(vm::PTE_PRESENT | 1 << 1 | 1 << 2), None);
+        assert_eq!(victim_of(pte::PRESENT | 1 << 1 | 1 << 2), None);
     }
 }

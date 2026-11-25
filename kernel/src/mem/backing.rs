@@ -2,9 +2,9 @@
 //! page's slot in the paging file, a section's page — plus the page-out pass that makes room.
 //!
 //! The entries are the address-space manager's to write ([`vm::Pages`]); a soft entry carries its
-//! backing in its tag and payload bits: [`vm::TAG_PAGE_FILE`] names the paging-file slot (counted
-//! from one) holding a private page that was paged out, [`vm::TAG_PROTOTYPE`] names a section's
-//! page (its index), and [`vm::TAG_TRANSITION`] names the frame a page still holds on a backing
+//! backing in its tag and payload bits: [`pte::PAGE_FILE`] names the paging-file slot (counted
+//! from one) holding a private page that was paged out, [`pte::PROTOTYPE`] names a section's
+//! page (its index), and [`pte::TRANSITION`] names the frame a page still holds on a backing
 //! list (mapped back by [`super::demand`], no I/O).
 //!
 //! [`apply`] applies the two I/O arms: [`page_file_in`] decodes the slot from the entry and reads
@@ -24,16 +24,17 @@
 use super::frame::{FrameDb, FrameHooks, FrameState};
 use super::pageout::{self, FrameMemory, PageWriter, PagingIo, SlotId, PAGE_SIZE};
 use super::phys::PhysAddr;
+use super::pte;
 use super::vm::{self, Pages, PAGE};
 
-/// The paging-file slot a [`vm::TAG_PAGE_FILE`] entry names (bits 12-31 hold it counted from one).
+/// The paging-file slot a [`pte::PAGE_FILE`] entry names (bits 12-31 hold it counted from one).
 pub fn slot_of(entry: u32) -> SlotId {
-    vm::backing_payload(entry) >> 12
+    pte::backing_payload(entry) >> 12
 }
 
-/// The section page index a [`vm::TAG_PROTOTYPE`] entry names (bits 12-31 hold it).
+/// The section page index a [`pte::PROTOTYPE`] entry names (bits 12-31 hold it).
 pub fn section_index_of(entry: u32) -> u32 {
-    vm::backing_payload(entry) >> 12
+    pte::backing_payload(entry) >> 12
 }
 
 /// Where a section's page comes from on a fault: its bytes, a page at a time.
@@ -59,7 +60,7 @@ pub fn page_file_in<H: FrameHooks, Io: PagingIo, Mem: FrameMemory>(
     relieve: &mut impl FnMut() -> bool,
 ) -> bool {
     let slot = slot_of(entry);
-    let protect = vm::soft_protect(entry);
+    let protect = pte::soft_protect(entry);
     let frame = match fresh_frame(pages, relieve) {
         Some(frame) => frame,
         None => return false,
@@ -84,7 +85,7 @@ pub fn section_in<S: SectionPages>(
     relieve: &mut impl FnMut() -> bool,
 ) -> bool {
     let index = section_index_of(entry);
-    let protect = vm::soft_protect(entry);
+    let protect = pte::soft_protect(entry);
     let frame = match fresh_frame(pages, relieve) {
         Some(frame) => frame,
         None => return false,
@@ -146,12 +147,12 @@ pub fn relieve_pass<H: FrameHooks, Io: PagingIo, Mem: FrameMemory>(
     let mut va = start;
     while va < end && count < victims.len() && db.available() < want {
         let entry = pages.entry(va);
-        if entry & vm::PTE_PRESENT != 0 {
-            let frame = entry & vm::PTE_FRAME_MASK;
+        if entry & pte::PRESENT != 0 {
+            let frame = entry & pte::FRAME_MASK;
             if frame != 0 && !pages.frame_shared(frame) && private(va) {
                 let protect = vm::decode(entry)
                     .map(|(_, protect)| protect)
-                    .unwrap_or_else(|| vm::soft_protect(entry));
+                    .unwrap_or_else(|| pte::soft_protect(entry));
                 victims[count] = Victim { va, frame, protect };
                 count += 1;
             }
@@ -183,7 +184,7 @@ pub fn relieve_pass<H: FrameHooks, Io: PagingIo, Mem: FrameMemory>(
             return false;
         };
         let current = pages.entry(victim.va);
-        if vm::backing_tag(current) == vm::TAG_TRANSITION && vm::backing_payload(current) == frame {
+        if pte::backing_tag(current) == pte::TRANSITION && pte::backing_payload(current) == frame {
             vm::name_page_file(pages, victim.va, slot, victim.protect);
             freed += 1;
             true
@@ -230,6 +231,7 @@ pub mod target {
     use crate::mem::fault::{self, Resolution};
     use crate::mem::pageout::PAGE_SIZE;
     use crate::mem::pagingfile::{with_paging_file, PagingFileIo};
+    use crate::mem::pte;
     use crate::mem::vm::{self, Kind, Pages, PAGE, USER_HIGH};
 
     /// A fresh zeroed frame, or none: when the allocator finds none, `relieve` runs once and the
@@ -254,7 +256,7 @@ pub mod target {
         relieve: &mut impl FnMut() -> bool,
     ) -> bool {
         let slot = slot_of(entry);
-        let protect = vm::soft_protect(entry);
+        let protect = pte::soft_protect(entry);
         let Some(frame) = fresh_frame(pages, relieve) else {
             return false;
         };
@@ -361,7 +363,7 @@ pub mod target {
         relieve: &mut impl FnMut() -> bool,
     ) -> bool {
         let index = section_index_of(entry);
-        let protect = vm::soft_protect(entry);
+        let protect = pte::soft_protect(entry);
         let Some(section) = SectionInfo::of_page(page) else {
             return false;
         };
@@ -624,12 +626,12 @@ mod tests {
 
     /// A paging-file entry: slot `slot` counted from one, with `protect`.
     fn page_file_entry(slot: SlotId, protect: u32) -> u32 {
-        vm::encode_backing(vm::TAG_PAGE_FILE, slot << 12, protect)
+        pte::encode_backing(pte::PAGE_FILE, slot << 12, protect)
     }
 
     /// A prototype entry: section page `index`, with `protect`.
     fn prototype_entry(index: u32, protect: u32) -> u32 {
-        vm::encode_backing(vm::TAG_PROTOTYPE, index << 12, protect)
+        pte::encode_backing(pte::PROTOTYPE, index << 12, protect)
     }
 
     /// The slot and section index a soft entry names decode from its payload.
@@ -638,11 +640,11 @@ mod tests {
         assert_eq!(slot_of(page_file_entry(7, PAGE_READWRITE)), 7);
         assert_eq!(section_index_of(prototype_entry(0x10, PAGE_READONLY)), 0x10);
         assert_eq!(
-            vm::backing_tag(page_file_entry(7, PAGE_READWRITE)),
-            vm::TAG_PAGE_FILE
+            pte::backing_tag(page_file_entry(7, PAGE_READWRITE)),
+            pte::PAGE_FILE
         );
         assert_eq!(
-            vm::soft_protect(page_file_entry(7, PAGE_READWRITE)),
+            pte::soft_protect(page_file_entry(7, PAGE_READWRITE)),
             PAGE_READWRITE
         );
     }
@@ -678,7 +680,7 @@ mod tests {
         let entry = pages.entry(page);
         let (frame, protect) = vm::decode(entry).unwrap();
         assert_eq!(protect, PAGE_READWRITE);
-        assert!(vm::PTE_PRESENT & entry != 0);
+        assert!(pte::PRESENT & entry != 0);
         assert_eq!(
             mem.pages[(frame / PAGE) as usize],
             [0xAB; PAGE_SIZE],
@@ -806,7 +808,7 @@ mod tests {
         ));
         let entry = pages.entry(page);
         assert_eq!(vm::decode(entry).unwrap().1, PAGE_WRITECOPY);
-        assert_eq!(entry & vm::PTE_PRESENT != 0, true);
+        assert_eq!(entry & pte::PRESENT != 0, true);
         assert_eq!(entry & 0b10 != 0, false, "read-only to the hardware");
 
         // A failed read gives the frame back and leaves the entry as it was.
@@ -846,7 +848,7 @@ mod tests {
                 true
             },
         ));
-        assert!(vm::PTE_PRESENT & pages.entry(page) != 0);
+        assert!(pte::PRESENT & pages.entry(page) != 0);
     }
 
     /// A relief pass under pressure: present private pages are evicted — entries softened to
@@ -911,7 +913,7 @@ mod tests {
         assert_eq!(db.available(), 10 + 4, "their frames are available again");
         for page in 0..4u32 {
             let entry = pages.entry(base + page * PAGE);
-            assert_eq!(vm::backing_tag(entry), vm::TAG_PAGE_FILE, "page {page}");
+            assert_eq!(pte::backing_tag(entry), pte::PAGE_FILE, "page {page}");
             let slot = slot_of(entry);
             assert_ne!(slot, 0);
             assert_eq!(
@@ -958,7 +960,7 @@ mod tests {
                 mem.pages[(frame / PAGE) as usize],
                 [0xA0 + page as u8; PAGE_SIZE]
             );
-            assert_eq!(vm::backing_tag(pages.entry(va)), 0, "present again");
+            assert_eq!(pte::backing_tag(pages.entry(va)), 0, "present again");
         }
         assert_eq!(db.audit(), Ok(()));
     }
@@ -1006,7 +1008,7 @@ mod tests {
             &mut victims,
         );
         assert_eq!(freed, 1, "only the in-use frame was written out");
-        assert_eq!(vm::backing_tag(pages.entry(base)), vm::TAG_PAGE_FILE);
+        assert_eq!(pte::backing_tag(pages.entry(base)), pte::PAGE_FILE);
         assert_eq!(
             pages.entry(base + PAGE),
             vm::encode(2 * PAGE, PAGE_READWRITE),

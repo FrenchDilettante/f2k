@@ -435,7 +435,7 @@ mod target {
                         if let Some(victim) = victim {
                             let protect = vm::decode(entry)
                                 .map(|(_, protect)| protect)
-                                .unwrap_or_else(|| vm::soft_protect(entry));
+                                .unwrap_or_else(|| crate::mem::pte::soft_protect(entry));
                             crate::mem::demand::target::record_victim(
                                 va,
                                 victim.frame.addr().get(),
@@ -451,7 +451,7 @@ mod target {
                         let entry = vm::Pages::entry(&vm::CurrentPages, va);
                         let protect = vm::decode(entry)
                             .map(|(_, protect)| protect)
-                            .unwrap_or_else(|| vm::soft_protect(entry));
+                            .unwrap_or_else(|| crate::mem::pte::soft_protect(entry));
                         vm::soften_to_transition(
                             &mut vm::CurrentPages,
                             va,

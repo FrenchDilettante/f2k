@@ -1240,7 +1240,8 @@ pub fn release_address_space(
     read_entry: impl Fn(PhysAddr, usize) -> u32,
     mut release: impl FnMut(PhysAddr),
 ) {
-    use crate::mem::paging::{Pte, KERNEL_HALF_START, PT_ENTRIES};
+    use crate::mem::paging::{KERNEL_HALF_START, PT_ENTRIES};
+    use crate::mem::pte::Pte;
     for window in 0..KERNEL_HALF_START {
         let pde = Pte::from_raw(read_entry(dir_phys, window));
         if !pde.present() {
@@ -1507,7 +1508,8 @@ mod tests {
     use super::*;
     use crate::mem::kstacks::{GateSlots, GateStack, KernelStacks};
     use crate::mem::layout::KERNEL_STACKS;
-    use crate::mem::paging::{KERNEL_HALF_START, PAGE_PRESENT, PT_ENTRIES};
+    use crate::mem::paging::{KERNEL_HALF_START, PT_ENTRIES};
+    use crate::mem::pte::PRESENT as PAGE_PRESENT;
     use crate::mem::vm::{encode, PAGE_GUARD, PAGE_NOACCESS, PAGE_READWRITE};
     use crate::sched::thread::{Thread, ThreadId, NO_GATE_SLOT};
 
