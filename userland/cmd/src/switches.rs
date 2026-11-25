@@ -1,7 +1,7 @@
 //! cmd.exe's own command line, as `cmd /?` documents it: its switches, and the string after `/C`
 //! or `/K` with its quotes handled.
 
-use crate::{is_blank, skip_blanks, QUOTE};
+use crate::{is_blank, is_named, skip_blanks, QUOTE};
 
 /// What the string after `/C` or `/K` is followed by.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
@@ -23,6 +23,11 @@ pub struct Switches<'a> {
     pub help: bool,
     /// `/U` (and not a later `/A`): the built-ins' output to a file or a pipe is UTF-16LE.
     pub unicode: bool,
+    /// `/V:ON` (and not a later `/V:OFF`): delayed expansion starts on.
+    pub delayed: bool,
+    /// `/E:OFF` (and not a later `/E:ON`): command extensions start off (F2K keeps them on: see
+    /// [`crate::State::extensions`]).
+    pub extensions: bool,
     /// `/C` or `/K` and what follows it (the rest of the command line, its leading blanks
     /// skipped); None without either, for an interactive shell.
     pub run: Option<(Then, &'a [u16])>,
@@ -32,9 +37,10 @@ pub struct Switches<'a> {
 /// a quoted name runs to its closing quote, another to the first blank). Each switch is `/` and a
 /// letter, whatever its case, and may run into the next (`/q/c`). `/C` and `/K` end the switches:
 /// the rest of the line is their string. `/Q`, `/S` and `/U` are kept, and `/A` undoes a `/U`
-/// before it (the last of the two counts); `/D`, `/E:...`, `/F:...`, `/V:...` and `/T:...` (and
-/// any other letter) are accepted and ignored, their `:` values with them. A word that is not a
-/// switch ends the switches, the shell interactive.
+/// before it (the last of the two counts); `/V:ON` and `/V:OFF` turn delayed expansion on and
+/// off, `/E:ON` and `/E:OFF` command extensions (whatever their case, the last counting); `/D`,
+/// `/F:...` and `/T:...` (and any other letter, or another value) are accepted and ignored, their
+/// `:` values with them. A word that is not a switch ends the switches, the shell interactive.
 pub fn switches(command_line: &[u16]) -> Switches<'_> {
     let mut rest = skip_program(command_line);
     let mut switches = Switches {
@@ -42,6 +48,8 @@ pub fn switches(command_line: &[u16]) -> Switches<'_> {
         strip: false,
         help: false,
         unicode: false,
+        delayed: false,
+        extensions: true,
         run: None,
     };
     loop {
@@ -78,6 +86,21 @@ pub fn switches(command_line: &[u16]) -> Switches<'_> {
                     .iter()
                     .position(|&unit| is_blank(unit) || unit == u16::from(b'/'))
                     .unwrap_or(value.len());
+                let on = if is_named(&value[..end], "on") {
+                    Some(true)
+                } else if is_named(&value[..end], "off") {
+                    Some(false)
+                } else {
+                    None
+                };
+                match (
+                    u8::try_from(letter).map(|letter| letter.to_ascii_lowercase()),
+                    on,
+                ) {
+                    (Ok(b'v'), Some(on)) => switches.delayed = on,
+                    (Ok(b'e'), Some(on)) => switches.extensions = on,
+                    _ => {}
+                }
                 &value[end..]
             }
             _ => after,
@@ -172,6 +195,8 @@ mod tests {
                 strip: false,
                 help: false,
                 unicode: false,
+                delayed: false,
+                extensions: true,
                 run: None
             }
         );
@@ -214,6 +239,23 @@ mod tests {
         let switches = super::switches(&line);
         assert!(switches.echo_off && !switches.strip);
         assert_eq!(switches.run.map(|(_, rest)| narrow(rest)), Some("x".into()));
+    }
+
+    #[test]
+    fn v_and_e_turn_delayed_expansion_and_extensions_on_and_off() {
+        let modes = |line: &str| {
+            let line = wide(line);
+            let switches = switches(&line);
+            (switches.delayed, switches.extensions)
+        };
+        assert_eq!(modes("cmd /c x"), (false, true));
+        assert_eq!(modes("cmd /V:ON /c x"), (true, true));
+        assert_eq!(modes("cmd /v:on/e:off/c x"), (true, false));
+        // The last counts; a value that is neither is ignored.
+        assert_eq!(modes("cmd /v:on /v:off /c x"), (false, true));
+        assert_eq!(modes("cmd /v:yes /v /c x"), (false, true));
+        // In the string, they are the string's.
+        assert_eq!(modes("cmd /c cmd /v:on"), (false, true));
     }
 
     #[test]

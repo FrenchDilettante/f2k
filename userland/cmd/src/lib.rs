@@ -19,6 +19,7 @@ pub mod builtins;
 pub mod control;
 pub mod flow;
 pub mod help;
+pub mod locals;
 pub mod search;
 pub mod switches;
 pub mod syntax;
@@ -125,6 +126,11 @@ pub struct State {
     /// file's line expands past [`MAX_LINE`] (see [`syntax::FATAL`], [`State::keep_label`]).
     pub found: [u16; FOUND],
     pub found_length: usize,
+    /// Whether delayed expansion is on (`/V:ON`, `setlocal ENABLEDELAYEDEXPANSION`).
+    pub delayed: bool,
+    /// Whether command extensions are on (`/E:OFF`, `setlocal DISABLEEXTENSIONS` turn them off):
+    /// kept and put back by `setlocal` and `endlocal` only, as F2K's are always on.
+    pub extensions: bool,
 }
 
 /// The units [`State::found`] keeps: a path's.
@@ -142,6 +148,8 @@ impl Default for State {
             directories: builtins::console::Directories::default(),
             found: [0; FOUND],
             found_length: 0,
+            delayed: false,
+            extensions: true,
         }
     }
 }
@@ -212,6 +220,10 @@ pub enum Command<'a> {
     Goto(&'a [u16]),
     /// `rem`: a remark, nothing done.
     Remark,
+    /// `setlocal`, its argument (see [`locals`]): the environment saved, in a batch file.
+    Setlocal(&'a [u16]),
+    /// `endlocal`: the environment the last `setlocal` saved put back, in a batch file.
+    Endlocal,
     /// `cd` or `chdir`: without an argument, print the current directory; with one, change to it
     /// (the quotes around it dropped).
     ChangeDirectory(Option<&'a [u16]>),
@@ -447,6 +459,12 @@ pub fn parse(line: &[u16]) -> Command<'_> {
     }
     if is_named(word, "rem") {
         return Command::Remark;
+    }
+    if is_named(word, "setlocal") {
+        return Command::Setlocal(trim_blanks(argument));
+    }
+    if is_named(word, "endlocal") {
+        return Command::Endlocal;
     }
     if is_named(word, "call") {
         return Command::Call(argument);

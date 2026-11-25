@@ -33,6 +33,7 @@ use cmd::builtins::files;
 use cmd::control::{Flow, Host, BLOCK};
 use cmd::flow::label::{self, Goto};
 use cmd::flow::repeat::{self, Scope};
+use cmd::locals::{self, Locals};
 use cmd::switches::{self, Then};
 use cmd::syntax::{self, Element, Join, Kind, Redirection, Redirections, Syntax, Target};
 use cmd::{search, Command, Echo, Set, TooLong, Unexpanded};
@@ -106,6 +107,8 @@ struct Batch {
     /// Where its file is read: the bytes before the line after the one running, where `call
     /// :label` starts looking for its label.
     offset: Cell<u64>,
+    /// The `setlocal`s it holds, undone when it ends.
+    locals: RefCell<Locals<exe::Buffer<u16>>>,
 }
 
 impl Batch {
@@ -116,6 +119,7 @@ impl Batch {
             cmd_script,
             label: RefCell::new(([0; label::LONGEST], 0)),
             offset: Cell::new(0),
+            locals: RefCell::new(Locals::default()),
         }
     }
 }
@@ -153,6 +157,8 @@ fn main() -> u32 {
         return cmd::help::SHOWN;
     }
     state.echo = !switches.echo_off;
+    state.delayed = switches.delayed;
+    state.extensions = switches.extensions;
     match switches.run {
         None => {
             let _ = exe::stdout().print(format_args!("{}", cmd::BANNER));
@@ -427,6 +433,56 @@ impl cmd::Variables for Shell {
     fn written(&mut self, path: &[u16]) -> Option<cmd::Time> {
         let found = exe::find(path).ok()?.next()?;
         found.written().map(|time| shell_time(&time))
+    }
+}
+
+/// The process's environment and current directory, as `setlocal` saves them and `endlocal` puts
+/// them back ([`locals::Environment`]): the directory, a NUL, then the environment block's
+/// entries, each ended by a NUL, on the process heap.
+struct Process;
+
+impl locals::Environment for Process {
+    type Saved = exe::Buffer<u16>;
+
+    #[inline(never)]
+    fn save(&mut self) -> Option<exe::Buffer<u16>> {
+        let mut buffer = [0; exe::MAX_PATH];
+        let directory = exe::current_directory(&mut buffer).unwrap_or(&[]);
+        let environment = exe::environment().ok()?;
+        let units: usize = environment.entries().map(|entry| entry.len() + 1).sum();
+        let mut saved = exe::Buffer::new(directory.len() + 1 + units, 0).ok()?;
+        saved[..directory.len()].copy_from_slice(directory);
+        let mut at = directory.len() + 1;
+        for entry in environment.entries() {
+            saved[at..at + entry.len()].copy_from_slice(entry);
+            at += entry.len() + 1;
+        }
+        Some(saved)
+    }
+
+    #[inline(never)]
+    fn restore(&mut self, saved: exe::Buffer<u16>) {
+        let split = saved
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(saved.len());
+        let (directory, block) = saved.split_at(split);
+        let block = block.get(1..).unwrap_or_default();
+        // The environment as it is now, copied: its variables change as the changes are made.
+        let Some(current) = Process.save() else {
+            return;
+        };
+        let now = current
+            .iter()
+            .position(|&unit| unit == 0)
+            .unwrap_or(current.len());
+        let now = current.get(now + 1..).unwrap_or_default();
+        locals::changes(block, now, &mut |name, value| {
+            let _ = exe::set_environment_variable(name, value);
+        });
+        if !directory.is_empty() {
+            let _ = exe::set_current_directory(directory);
+        }
     }
 }
 
@@ -1213,6 +1269,21 @@ fn dispatch(
     }
     match command {
         Command::Empty | Command::Remark => {}
+        Command::Setlocal(argument) => {
+            if let Some(batch) = batch {
+                batch
+                    .locals
+                    .borrow_mut()
+                    .setlocal(argument, state, &mut Process, &mut |text| {
+                        let _ = exe::stderr().print(format_args!("{text}"));
+                    });
+            }
+        }
+        Command::Endlocal => {
+            if let Some(batch) = batch {
+                batch.locals.borrow_mut().endlocal(state, &mut Process);
+            }
+        }
         Command::Call(argument) => return call(argument, state, batch),
         Command::Exit(argument) => {
             let exit = batch::exit(argument);
@@ -1912,6 +1983,7 @@ fn run_batch(
             flow => break flow,
         }
     };
+    batch.locals.borrow_mut().end(state, &mut Process);
     if depth == 0 {
         state.echo = echo;
     }

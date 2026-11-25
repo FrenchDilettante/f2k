@@ -1,0 +1,5 @@
+# F2K capture of batlocal (tests\capture.bat)
+
+>>> cmd /c batlocal.cmd
+(not captured yet: tests\capture.bat batlocal replaces this placeholder)
+<<< exit code=0

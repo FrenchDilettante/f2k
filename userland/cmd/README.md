@@ -12,20 +12,21 @@ cmd [/Q] [/S] [/A | /U] [/D] [/E:ON | /E:OFF] [/F:ON | /F:OFF] [/V:ON | /V:OFF] 
 
 ## Switches
 
-| Switch                       | Effect                                                                           |
-| ---------------------------- | -------------------------------------------------------------------------------- |
-| `/C string`                  | Runs `string`, then ends, with its last command's return code (see below).       |
-| `/K string`                  | Runs `string`, then goes on interactively.                                       |
-| `/Q`                         | Starts with echo off: no prompt, and batch files' lines are not echoed.          |
-| `/S`                         | Removes the first and the last quote of `string`, whatever it holds (see below). |
-| `/U`                         | Writes to a file or a pipe in UTF-16LE (see below).                              |
-| `/A`                         | Writes to a file or a pipe in the OEM code page, the default (see below).        |
-| `/D`, `/E`, `/F`, `/V`, `/T` | Accepted and ignored, with their `:` values (`/E:ON`, `/T:1F`).                  |
-| `/?`                         | Prints the shell's help and ends with 1, running nothing else, `/C` or `/K` too. |
+| Switch                 | Effect                                                                           |
+| ---------------------- | -------------------------------------------------------------------------------- |
+| `/C string`            | Runs `string`, then ends, with its last command's return code (see below).       |
+| `/K string`            | Runs `string`, then goes on interactively.                                       |
+| `/Q`                   | Starts with echo off: no prompt, and batch files' lines are not echoed.          |
+| `/S`                   | Removes the first and the last quote of `string`, whatever it holds (see below). |
+| `/U`                   | Writes to a file or a pipe in UTF-16LE (see below).                              |
+| `/A`                   | Writes to a file or a pipe in the OEM code page, the default (see below).        |
+| `/E:ON`, `/E:OFF`      | Command extensions on or off: `setlocal` saves the mode, and they stay on.       |
+| `/D`, `/F`, `/V`, `/T` | Accepted and ignored, with their `:` values (`/F:ON`, `/T:1F`).                  |
+| `/?`                   | Prints the shell's help and ends with 1, running nothing else, `/C` or `/K` too. |
 
 A switch is `/` and a letter, in either case, and switches may run together (`/q/c`); the program's name ends at a blank or at a `/` (`cmd/c x`).
 Any other letter is ignored too.
-Of `/A` and `/U`, the last one counts.
+Of `/A` and `/U`, the last one counts, as does the last of `/E:ON` and `/E:OFF`.
 `/C` and `/K` end the switches: the rest of the command line, its leading blanks skipped, is `string`.
 A word that is not a switch ends the switches, and the shell starts interactively, ignoring the rest.
 
@@ -651,6 +652,22 @@ The line is the console's, or the next one of the file or pipe the standard inpu
 An empty line, or none (the input's end, or Ctrl+C at the console), leaves the variable as it is and sets ERRORLEVEL to 1.
 Without a `=` or a name, `set /p` prints `The syntax of the command is incorrect.` and sets ERRORLEVEL to 1.
 
+### setlocal, endlocal
+
+```text
+setlocal [enableextensions | disableextensions] [enabledelayedexpansion | disabledelayedexpansion]
+endlocal
+```
+
+In a batch file, `setlocal` saves the environment, the current directory and two modes, command extensions and delayed expansion, and `endlocal` puts back what the last `setlocal` saved.
+A batch file (and what `call :label` runs) has its own `setlocal`s: its `endlocal` never undoes one of the batch file that called it, and its end undoes every `setlocal` it left.
+A batch file holds 32 `setlocal`s at once: one more prints `Maximum setlocal recursion level reached.` and saves nothing.
+Outside a batch file, both do nothing.
+
+`setlocal`'s arguments, in any case and in any number, turn the modes on and off until the matching `endlocal`; `disableextensions` is accepted, and command extensions stay on.
+Given an argument, `setlocal` sets ERRORLEVEL to 0 when it knows every one, and to 1 otherwise (the modes it knows applied, the environment saved all the same); without one, it leaves ERRORLEVEL as it is.
+`endlocal` ignores its arguments and leaves ERRORLEVEL as it is.
+
 ### shift
 
 ```text
@@ -844,6 +861,7 @@ A file found with the extension `.bat` or `.cmd` runs in the shell, line by line
 - Batch files (and what `call :label` runs) may nest 32 deep, fewer when their lines nest `for`, `if` and blocks deeply: the shell's stack is 1 MiB.
   Past that, the shell prints `****** B A T C H   R E C U R S I O N  exceeds STACK limits ******` and every batch file ends.
 - `exit /b [code]` ends the batch file; `exit [code]` ends the shell.
+- When a batch file ends, the environment, the current directory and the modes every `setlocal` it left saved are put back (see [setlocal, endlocal](#setlocal-endlocal)).
 - A line that cannot be read (see [Commands on a line](#commands-on-a-line)), or a line whose variables expand past 2,047 characters, ends every batch file, its return code 255 (`cmd /c` of the batch file ends with 255).
   After `The input line is too long.`, the shell prints `C:\path\program.exe was unexpected at this time.`, naming the last program it found, as Windows 2000's does; after a `goto` or `call :label` since, it names the label's line instead, its line break printed with it: `:label` on a line, then a blank and `was unexpected at this time.` on the next.
 - When a batch file ends, the ERRORLEVEL is its last command's, or the code `exit /b` gave, and its return code is its last command's (0 for `exit /b`); run by `call`, its return code is the ERRORLEVEL.
@@ -950,7 +968,6 @@ Anything else leaves the ERRORLEVEL as it is: `echo`, `rem`, `cls`, `title`, `pa
 
 What Windows 2000's cmd.exe has and this one does not:
 
-- `setlocal` and `endlocal`: a batch file's variables are the shell's, and stay set when it ends.
 - Delayed expansion: `/V:ON` and `!VAR!`.
 - The built-in commands `assoc`, `break`, `ftype`, `verify` and `vol`.
 - The `HKCU`/`HKLM\Software\Microsoft\Command Processor` settings: `AutoRun`, `EnableExtensions`, `DelayedExpansion`, `CompletionChar`, `PathCompletionChar` and `DefaultColor`.
@@ -970,7 +987,7 @@ What Windows 2000's cmd.exe has and this one does not:
 - `>>` appends after the file's last byte, whatever it is: Windows' cmd writes over a Ctrl+Z ending the file.
 - A command a pipe runs in a shell of its own is handed as the line holds it, its escapes kept, only a group rebuilt: Windows rebuilds every command from what it read, so `echo a^&b | x` runs `echo a&b` there.
 - Handles 3 to 9 reach no program: Windows hands them to a C runtime's program through its startup information.
-- These built-in commands of Windows 2000's are not there: `assoc`, `break`, `endlocal`, `ftype`, `setlocal`, `verify` and `vol`.
+- These built-in commands of Windows 2000's are not there: `assoc`, `break`, `ftype`, `verify` and `vol`.
   Their names are looked for as programs, and are not recognized (ERRORLEVEL 9009).
 - The help `/?` prints is F2K's own text, and describes F2K's shell.
 - `%~$PATH:` on a batch file's argument (a `for` variable takes it), and delayed expansion (`!VAR!`), are not expanded.
@@ -982,7 +999,9 @@ What Windows 2000's cmd.exe has and this one does not:
 - `copy`'s `/V`, `/N` and `/Z` do nothing, and joining text onto a file that already ends with a Ctrl+Z (`copy /a a+b`) leaves that Ctrl+Z in the middle.
 - `color` alone puts back the colours the screen had before the first `color`, not a DefaultColor setting or `/T`'s; a wrong argument prints the syntax error rather than `color`'s help.
 - `ren`, `copy`, `del` and `move` match long names only, never the short (8.3) names Windows also matches.
-- `/D`, `/E`, `/F`, `/V` and `/T` are ignored: command extensions are always on, and there is no AutoRun command, no file name completion and no delayed expansion, and `/T`'s colours are not applied (Windows 2000 has no `/T`).
+- `/D`, `/F`, `/V` and `/T` are ignored, and `/E:OFF` and `setlocal disableextensions` only set a mode `setlocal` saves: command extensions are always on, and there is no AutoRun command, no file name completion and no delayed expansion, and `/T`'s colours are not applied (Windows 2000 has no `/T`).
+- `setlocal` past 32 deep, `setlocal` with an argument it does not know, and either outside a batch file are not captured: F2K follows `setlocal /?`'s text and newer versions' messages.
+  A batch file run without `call` keeps the `setlocal`s of the one it replaces until it ends.
 - A batch file is opened once and read through: changing it while it runs changes nothing.
 - Batch files nest 32 deep at most, fewer when the shell's stack runs short first.
 - A program that cannot be started for another reason than its absence is reported as `'word' cannot be run (error N).`.

@@ -78,7 +78,7 @@ pub static CMD: Help = Help {
         ("/D", "Accepted and ignored: there is no AutoRun command."),
         (
             "/E:ON, /E:OFF",
-            "Accepted and ignored: command extensions are always on.",
+            "Command extensions on or off: SETLOCAL saves the mode, and they stay on.",
         ),
         (
             "/F:ON, /F:OFF",
@@ -347,6 +347,18 @@ pub static HELP: &[Help] = &[
         notes: &[
             "ECHO alone shows whether echo is on, and ECHO. prints an empty line. A line \
              starting with @ is not echoed, whatever the echo.",
+        ],
+    },
+    Help {
+        names: &["endlocal"],
+        summary: "Ends the last SETLOCAL of a batch file: its environment back as it was.",
+        syntax: &["ENDLOCAL"],
+        parameters: &[],
+        notes: &[
+            "The variables, the current directory and the modes SETLOCAL saved are put back, \
+             and ERRORLEVEL is kept. ENDLOCAL never ends a SETLOCAL of the batch file that \
+             called this one, and does nothing outside a batch file or without a SETLOCAL.",
+            "A batch file's end ends every SETLOCAL it left.",
         ],
     },
     Help {
@@ -693,6 +705,39 @@ pub static HELP: &[Help] = &[
         ],
     },
     Help {
+        names: &["setlocal"],
+        summary: "Makes the environment changes a batch file makes from here local to it, until \
+                  ENDLOCAL or its end.",
+        syntax: &["SETLOCAL [ENABLEEXTENSIONS | DISABLEEXTENSIONS]",
+            "    [ENABLEDELAYEDEXPANSION | DISABLEDELAYEDEXPANSION]"],
+        parameters: &[
+            (
+                "ENABLEEXTENSIONS",
+                "Turns command extensions on until the matching ENDLOCAL.",
+            ),
+            (
+                "DISABLEEXTENSIONS",
+                "Accepted: command extensions stay on.",
+            ),
+            (
+                "ENABLEDELAYEDEXPANSION",
+                "Turns delayed expansion on until the matching ENDLOCAL: !variable! is \
+                 replaced by its value as each command runs, not as the line is read.",
+            ),
+            (
+                "DISABLEDELAYEDEXPANSION",
+                "Turns delayed expansion off until the matching ENDLOCAL.",
+            ),
+        ],
+        notes: &[
+            "SETLOCAL saves the variables, the current directory and the two modes; ENDLOCAL \
+             puts them back. A batch file may hold 32 SETLOCALs at once. Outside a batch file, \
+             SETLOCAL does nothing.",
+            "Given an argument, SETLOCAL sets ERRORLEVEL to 0 when it knows every one, and to 1 \
+             otherwise; without one, it leaves ERRORLEVEL as it is.",
+        ],
+    },
+    Help {
         names: &["shift"],
         summary: "Moves a batch file's arguments down one: %1 takes %2's value, and so on.",
         syntax: &["SHIFT [/n]"],
@@ -954,9 +999,9 @@ mod tests {
     }
 
     /// The built-in commands the shell runs today.
-    const BUILT_INS: [&str; 13] = [
-        "call", "cd", "chdir", "cls", "echo", "exit", "path", "prompt", "rem", "set", "shift",
-        "type", "ver",
+    const BUILT_INS: [&str; 15] = [
+        "call", "cd", "chdir", "cls", "echo", "endlocal", "exit", "path", "prompt", "rem", "set",
+        "setlocal", "shift", "type", "ver",
     ];
 
     #[test]
