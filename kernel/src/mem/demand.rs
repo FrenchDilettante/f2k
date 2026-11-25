@@ -108,10 +108,10 @@ pub fn apply_with(
     }
 }
 
-/// One 4 MiB chunk of the user range: a page directory entry's span, 1024 pages.
+/// One chunk of the user range: a page directory entry's span, a page table's pages.
 // Host-test helper: the target's relief walks the working set, not the user range.
 #[cfg_attr(not(test), allow(dead_code))]
-pub const CHUNK: u32 = 4 * 1024 * 1024;
+pub const CHUNK: u32 = super::layout::ENTRY_SPAN;
 
 /// Walk the user pages `[start, end)` in order, visiting each with `visit` until it returns
 /// false. A 4 MiB chunk whose table `chunk_live` says is absent is skipped whole — one read

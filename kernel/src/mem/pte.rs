@@ -15,8 +15,9 @@
 //! payload in bits 12-31 is a frame, a section page's index or a paging-file slot. Bits 3-8 of an
 //! entry without a tag stay clear, and [`classify`] ignores them.
 //!
-//! PAE (64-bit entries, frame bits 12-35) changes this module and [`super::phys`]'s width, and the
-//! self-map arithmetic in [`super::paging::self_map`]; nothing else spells an entry's layout out.
+//! PAE (64-bit entries, frame bits 12-35) changes this module, [`super::phys`]'s width and the
+//! tables' geometry in [`super::paging`] ([`super::paging::directory_index`] and its neighbors);
+//! nothing else spells an entry's layout out.
 //!
 //! The kinds:
 //! - [`PteKind::Present`] — mapped now; the write bit says whether the hardware may write it.

@@ -1390,19 +1390,15 @@ fn release_address_space_of(process: &Process) {
     for mapping in gone.iter().flatten() {
         crate::ob::release_mapping(*mapping);
     }
-    release_process(
-        process,
-        |frame, index| paging::read_frame_word(frame, index),
-        |frame_phys| {
-            // A frame goes back with its last holder: the system DLLs' pages and the shared data
-            // page are the kernel's, every process one more holder of them.
-            crate::mem::bootmem::with_frame_db(|db| {
-                if db.unshare(frame_phys.pfn()) {
-                    db.release(frame_phys.pfn(), FrameState::Free);
-                }
-            });
-        },
-    );
+    release_process(process, paging::read_table_entry, |frame_phys| {
+        // A frame goes back with its last holder: the system DLLs' pages and the shared data
+        // page are the kernel's, every process one more holder of them.
+        crate::mem::bootmem::with_frame_db(|db| {
+            if db.unshare(frame_phys.pfn()) {
+                db.release(frame_phys.pfn(), FrameState::Free);
+            }
+        });
+    });
 }
 
 /// The object audit. With its handles closed, its waits returned and its threads ended, the

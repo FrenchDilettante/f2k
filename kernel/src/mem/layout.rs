@@ -63,8 +63,10 @@
 //! tables made at boot and shared by every address space, so a loaded module is reachable from any
 //! thread. The loader hands the region's pages out lowest free run first.
 
-/// One page-directory entry's span: the 4 MiB a page table maps.
-pub const ENTRY_SPAN: u32 = 0x0040_0000;
+use super::paging::{PAGE_SIZE, PT_ENTRIES};
+
+/// One page-directory entry's span: the 4 MiB a page table maps, its entries' pages.
+pub const ENTRY_SPAN: u32 = PT_ENTRIES as u32 * PAGE_SIZE;
 
 /// A run of whole page-directory entries in the kernel half: `entries` windows of [`ENTRY_SPAN`]
 /// from `start`.

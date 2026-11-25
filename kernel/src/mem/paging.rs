@@ -39,11 +39,55 @@ pub const KERNEL_BASE: u32 = layout::KERNEL_IMAGE.start;
 /// tables.
 pub const LOADER_PHYS_BASE: PhysAddr = PhysAddr::new(0x0010_0000);
 
-/// Page-table entries per table (32-bit paging: 1024).
+// --- The tables' geometry ---------------------------------------------------------------
+//
+// How the tables divide an address, and where the self-map shows them: the one place that knows
+// a directory entry spans 4 MiB, a table holds 1024 entries of 4 bytes, and the self-map shows
+// window `i`'s table at `SELF_MAP_VA + i*4096`. Callers ask these instead of shifting by 22 or 12
+// and multiplying by 4; PAE (three levels, 512 entries of 8 bytes, 2 MiB per directory entry)
+// changes them here.
+
+/// Page-table entries per table, and directory entries per directory (32-bit paging: 1024).
 pub const PT_ENTRIES: usize = 1024;
 
 /// Page size (32-bit paging: 4 KiB).
 pub const PAGE_SIZE: u32 = 4096;
+
+/// The bytes one entry takes in a directory or a table (32-bit paging: a word).
+pub const ENTRY_BYTES: u32 = core::mem::size_of::<u32>() as u32;
+
+/// The directory entry (the 4 MiB window, [`layout::ENTRY_SPAN`]) mapping `va`.
+pub const fn directory_index(va: u32) -> usize {
+    (va / layout::ENTRY_SPAN) as usize
+}
+
+/// The entry mapping `va` in its window's page table.
+#[cfg_attr(not(test), allow(dead_code))]
+pub const fn table_index(va: u32) -> usize {
+    (va / PAGE_SIZE) as usize % PT_ENTRIES
+}
+
+/// The first address directory entry `index` maps.
+pub const fn window_start(index: usize) -> u32 {
+    index as u32 * layout::ENTRY_SPAN
+}
+
+/// Where window `index`'s page table shows through the self-map ([`SELF_MAP_SLOT`]).
+pub const fn self_map_table(index: usize) -> u32 {
+    SELF_MAP_VA + index as u32 * PAGE_SIZE
+}
+
+/// Where the page-table entry mapping `va` sits through the self-map: in its window's table
+/// ([`self_map_table`]), at its [`table_index`].
+pub const fn self_map_pte(va: u32) -> u32 {
+    SELF_MAP_VA + (va / PAGE_SIZE) * ENTRY_BYTES
+}
+
+/// Where directory entry `index` sits through the self-map: the directory doubles as the
+/// self-map window's own table ([`DIRECTORY_ENTRY_VA`]).
+pub const fn self_map_pde(index: usize) -> u32 {
+    DIRECTORY_ENTRY_VA + index as u32 * ENTRY_BYTES
+}
 
 /// The identity entry for page `page`: present, writable, mapping physical page `page`.
 const fn identity_entry(page: usize) -> u32 {
@@ -344,28 +388,28 @@ pub fn teardown_low_identity() {
 // direct map of physical memory:
 //
 // - the self-map ([`SELF_MAP_SLOT`]): the directory maps itself, so directory entry i sits at
-//   SELF_MAP_VA + i*4 and window i's page table at SELF_MAP_VA + i*4096;
+//   [`self_map_pde`] and window i's page table at [`self_map_table`];
 // - the scratch table ([`SCRATCH_SLOT`]): entry 0 aliases whichever frame the kernel is
 //   initializing, so fresh frames can be zeroed and written before they are mapped anywhere else.
 
 /// Directory entry that maps the directory into its own window (NT-style: self-map at 0xC0000000,
 /// [`layout::PAGE_TABLES`]).
 pub const SELF_MAP_SLOT: usize = layout::PAGE_TABLES.first_entry();
-/// Virtual address of the self-mapped directory (SELF_MAP_SLOT << 22).
-pub const SELF_MAP_VA: u32 = (SELF_MAP_SLOT as u32) << 22;
+/// Virtual address of the self-map's window: window 0's page table.
+pub const SELF_MAP_VA: u32 = window_start(SELF_MAP_SLOT);
 /// Directory entry that holds the scratch page table (NT-style: scratch/hyperspace at 0xC0400000,
 /// [`layout::HYPERSPACE`]).
 pub const SCRATCH_SLOT: usize = layout::HYPERSPACE.first_entry();
 /// Virtual address of scratch entry 0: the one-page alias of the frame being initialized.
-pub const SCRATCH_VA: u32 = (SCRATCH_SLOT as u32) << 22;
+pub const SCRATCH_VA: u32 = window_start(SCRATCH_SLOT);
 /// First directory entry of the kernel half (KERNEL_BASE's own window): entries below it belong to
 /// user space.
-pub const KERNEL_HALF_START: usize = (KERNEL_BASE >> 22) as usize;
+pub const KERNEL_HALF_START: usize = directory_index(KERNEL_BASE);
 /// Virtual address of directory entry 0 through the self-map's own window: the directory doubles as
 /// window `SELF_MAP_SLOT`'s page table (its entry `SELF_MAP_SLOT` points at itself), so entry `i`
-/// sits at `DIRECTORY_ENTRY_VA + i*4`. Distinct from the table window below, which addresses any
-/// window's page *table*.
-pub const DIRECTORY_ENTRY_VA: u32 = SELF_MAP_VA + ((SELF_MAP_SLOT as u32) << 12);
+/// sits at [`self_map_pde`]`(i)`. Distinct from [`self_map_table`], which addresses any window's
+/// page *table*.
+pub const DIRECTORY_ENTRY_VA: u32 = self_map_table(SELF_MAP_SLOT);
 /// The ring-0 gate stacks' window: the kernel stack region ([`layout::KERNEL_STACKS`], entries
 /// 656-659), its tables made at boot and shared by every directory, sub-allocated into per-thread
 /// slots numbered across the whole region (one ledger for the system, [`crate::mem::kstacks`]),
@@ -418,8 +462,8 @@ pub fn init_table_access() {
 }
 
 /// The current directory's entries and page tables, reached through its self-map: the directory
-/// maps itself at [`SELF_MAP_SLOT`], so its entry `i` sits at `DIRECTORY_ENTRY_VA + i*4` and the
-/// page-table entry for an address `va` at `SELF_MAP_VA + (va >> 12)*4`. Both go through the
+/// maps itself at [`SELF_MAP_SLOT`], so its entry `i` sits at [`self_map_pde`] and the page-table
+/// entry for an address `va` at [`self_map_pte`]. Both go through the
 /// **current** directory, the one CR3 points at, so they reach the active address space. The
 /// processor sets accessed and dirty bits in these entries as a side effect of ordinary memory
 /// traffic, so every access is volatile.
@@ -431,17 +475,17 @@ pub fn init_table_access() {
 /// window), the kernel half's.
 #[cfg(target_arch = "x86")]
 mod self_map {
-    use super::{Pte, DIRECTORY_ENTRY_VA, PT_ENTRIES, SELF_MAP_VA};
+    use super::{directory_index, self_map_pde, self_map_pte, Pte, PT_ENTRIES};
 
     /// Where directory entry `window` sits, on the directory's view of itself.
     fn directory_slot(window: usize) -> *mut u32 {
         assert!(window < PT_ENTRIES, "directory index past the directory");
-        (DIRECTORY_ENTRY_VA + window as u32 * 4) as *mut u32
+        self_map_pde(window) as *mut u32
     }
 
     /// Where the page-table entry for `va` sits, in its window's table through the self-map window.
     fn table_slot(va: u32) -> *mut u32 {
-        (SELF_MAP_VA + (va >> 12) * 4) as *mut u32
+        self_map_pte(va) as *mut u32
     }
 
     /// The current directory's entry `window`.
@@ -459,7 +503,7 @@ mod self_map {
 
     /// The current directory's page-table entry for `va`; none when `va`'s window has no table.
     pub fn pte(va: u32) -> Option<Pte> {
-        if !pde((va >> 22) as usize).present() {
+        if !pde(directory_index(va)).present() {
             return None;
         }
         // SAFETY: the window's table is present, so the self-map window maps it, and the slot is
@@ -474,7 +518,7 @@ mod self_map {
     /// `va`'s window has no table.
     pub fn set_pte(va: u32, entry: Pte) {
         assert!(
-            pde((va >> 22) as usize).present(),
+            pde(directory_index(va)).present(),
             "a page-table entry set in a window with no table"
         );
         // SAFETY: as in `pte`; the caller owns the entry (see the module notes).
@@ -834,7 +878,7 @@ pub fn set_user_pte(vaddr: u32, entry: u32) {
         vaddr < KERNEL_BASE,
         "user entries live below the kernel window"
     );
-    let window = (vaddr >> 22) as usize;
+    let window = directory_index(vaddr);
     if !self_map::pde(window).present() {
         if entry == 0 {
             return;
@@ -1018,7 +1062,7 @@ fn map_kernel_page_pte_in(
 ) {
     assert!(vaddr % PAGE_SIZE == 0, "kernel address not page-aligned");
     assert!(entry.frame().is_page_aligned(), "frame not page-aligned");
-    let window = (vaddr >> 22) as usize;
+    let window = directory_index(vaddr);
     assert!(
         vaddr >= KERNEL_BASE,
         "kernel mappings live in the kernel half"
@@ -1144,7 +1188,7 @@ fn reload_cr3() {
 #[cfg(target_arch = "x86")]
 pub fn unmap_kernel_page(vaddr: u32) -> PhysAddr {
     assert!(vaddr % PAGE_SIZE == 0, "kernel address not page-aligned");
-    let window = (vaddr >> 22) as usize;
+    let window = directory_index(vaddr);
     assert!(
         vaddr >= KERNEL_BASE,
         "kernel mappings live in the kernel half"
@@ -1362,6 +1406,18 @@ pub fn gate_slot_mapped(index: u32) -> bool {
 #[cfg(target_arch = "x86")]
 pub fn read_frame_word(frame_phys: PhysAddr, index: usize) -> u32 {
     with_database(|database| database.scratch.read_word(frame_phys, index))
+}
+
+/// Entry `index` of the directory or page table at `table`, through the scratch window: the
+/// teardown walk's read of a dead process's tables, which are mapped nowhere. An entry is a word
+/// ([`ENTRY_BYTES`]).
+///
+/// # Panics
+///
+/// `index` past the table's end.
+#[cfg(target_arch = "x86")]
+pub fn read_table_entry(table: PhysAddr, index: usize) -> u32 {
+    read_frame_word(table, index)
 }
 
 #[cfg(test)]
@@ -1672,6 +1728,47 @@ mod tests {
         }
     }
 
+    /// The tables' geometry, against the hand arithmetic of 32-bit paging: a directory entry
+    /// spans 4 MiB (`va >> 22`), a table entry 4 KiB (`(va >> 12) & 0x3FF`), entries are words,
+    /// and the self-map shows window `i`'s table at `0xC0000000 + i*4096`, entry `i` of the
+    /// directory at `0xC0300000 + i*4` and the entry for `va` at `0xC0000000 + (va >> 12)*4`.
+    #[test]
+    fn the_geometry_is_32_bit_pagings() {
+        assert_eq!((PT_ENTRIES, PAGE_SIZE, ENTRY_BYTES), (1024, 4096, 4));
+        assert_eq!(layout::ENTRY_SPAN, 1 << 22);
+        for va in [
+            0,
+            0xFFF,
+            0x1000,
+            0x0040_0000,
+            0x7FFE_F123,
+            0x8040_0000,
+            0xC030_0C00,
+            u32::MAX,
+        ] {
+            assert_eq!(directory_index(va), (va >> 22) as usize, "{va:#x}");
+            assert_eq!(table_index(va), ((va >> 12) & 0x3FF) as usize, "{va:#x}");
+            assert_eq!(window_start(directory_index(va)), va & !0x3F_FFFF);
+            assert_eq!(self_map_pte(va), 0xC000_0000 + (va >> 12) * 4, "{va:#x}");
+            // The entry lies in its window's table, at its index there.
+            assert_eq!(
+                self_map_pte(va),
+                self_map_table(directory_index(va)) + table_index(va) as u32 * ENTRY_BYTES
+            );
+        }
+        for index in [0, 1, 511, 512, 768, 1023] {
+            assert_eq!(window_start(index), (index as u32) << 22);
+            assert_eq!(self_map_table(index), 0xC000_0000 + (index as u32) * 4096);
+            assert_eq!(self_map_pde(index), 0xC030_0000 + (index as u32) * 4);
+            // A directory entry is the self-map window's table's entry for the window's start.
+            assert_eq!(self_map_pde(index), self_map_pte(self_map_table(index)));
+        }
+        assert_eq!(
+            window_start(PT_ENTRIES - 1) as u64 + layout::ENTRY_SPAN as u64,
+            1 << 32
+        );
+    }
+
     /// Assemble a directory from `base` into a buffer pre-filled with garbage: creation must not
     /// depend on the target frame's prior contents.
     fn assembled(base: &[u32; PT_ENTRIES], own: u32, scratch: u32) -> [u32; PT_ENTRIES] {
@@ -1791,7 +1888,7 @@ mod tests {
             .find(|&index| gate_slot_base(index) >> 22 != (gate_slot_top(index) - 1) >> 22)
             .expect("a slot straddles a table boundary");
         for vaddr in [gate_slot_base(straddling), gate_slot_top(straddling) - 1] {
-            let window = (vaddr >> 22) as usize;
+            let window = directory_index(vaddr);
             assert!(stacks.holds_entry(window));
             assert_eq!(first[window], second[window]);
             assert_ne!(first[window] & PAGE_PRESENT, 0);
