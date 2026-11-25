@@ -31,8 +31,20 @@ const SEGMENT_OVERHEAD: usize = 16;
 /// A segment's memory: a block of the nonpaged pool (on the host, a boxed buffer).
 #[cfg(target_arch = "x86")]
 type Memory = crate::mem::pool::Block;
+
+/// A segment's memory on the host: a boxed buffer, held by its raw pointer (from
+/// `Box::into_raw`) so that moving the segment does not move a `Box`, whose uniqueness would
+/// invalidate the heap's and the segment's pointers into the buffer.
 #[cfg(not(target_arch = "x86"))]
-type Memory = std::boxed::Box<[u64]>;
+struct Memory(NonNull<[u64]>);
+
+#[cfg(not(target_arch = "x86"))]
+impl Drop for Memory {
+    fn drop(&mut self) {
+        // SAFETY: the pointer came from `Box::into_raw` (in `take_memory`) and is given back once.
+        drop(unsafe { std::boxed::Box::from_raw(self.0.as_ptr()) });
+    }
+}
 
 /// The memory for a segment of `bytes` bytes (a multiple of 8): none when the pool has no room.
 fn take_memory(bytes: usize) -> Option<Memory> {
@@ -42,7 +54,9 @@ fn take_memory(bytes: usize) -> Option<Memory> {
     }
     #[cfg(not(target_arch = "x86"))]
     {
-        Some(std::vec![0u64; bytes / 8].into_boxed_slice())
+        let buffer = std::boxed::Box::into_raw(std::vec![0u64; bytes / 8].into_boxed_slice());
+        // SAFETY: `Box::into_raw` returns a non-null pointer.
+        Some(Memory(unsafe { NonNull::new_unchecked(buffer) }))
     }
 }
 
@@ -55,8 +69,10 @@ fn memory_bytes(memory: &mut Memory) -> &mut [u8] {
     #[cfg(not(target_arch = "x86"))]
     {
         // SAFETY: the buffer's u64s viewed as their bytes: any bits make a byte, and the length is
-        // the buffer's own.
-        unsafe { core::slice::from_raw_parts_mut(memory.as_mut_ptr().cast(), 8 * memory.len()) }
+        // the buffer's own; the buffer lives as long as `memory`, borrowed here.
+        unsafe {
+            core::slice::from_raw_parts_mut(memory.0.as_ptr().cast::<u8>(), 8 * memory.0.len())
+        }
     }
 }
 

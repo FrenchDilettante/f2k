@@ -840,7 +840,7 @@ mod target {
     use crate::mem::pool::Block;
     use crate::sched::event::{Event, EventKind, EVENT_WAKE_INCREMENT};
     use crate::sched::wait::{WaitMode, WaitReason, WaitableId};
-    use crate::sync::StaticBuf;
+    use crate::sync::{StaticBuf, SyncCell};
 
     /// The arena's size: every driver's, device's, file object's and IRP's block.
     const ARENA: usize = 256 * 1024;
@@ -944,9 +944,9 @@ mod target {
     #[repr(C, align(16))]
     struct DriverStack([u8; DRIVER_STACK]);
 
-    // The drivers' stacks: each reached only by the thread [`Stacks`] gives it to.
-    static mut STACKS: [DriverStack; DRIVER_STACKS] =
-        [const { DriverStack([0; DRIVER_STACK]) }; DRIVER_STACKS];
+    // The drivers' stacks: each reached only by the thread [`Stacks`] gives it to, by address.
+    static STACKS: SyncCell<[DriverStack; DRIVER_STACKS]> =
+        SyncCell::new([const { DriverStack([0; DRIVER_STACK]) }; DRIVER_STACKS]);
 
     /// The event a thread waiting for a free stack waits on, set as each is given up.
     // An event embedded in a static: named by its header's address (`WaitableId::Embedded`), and
@@ -998,8 +998,9 @@ mod target {
             };
             let mut result = None;
             let mut call = Some(|| result = Some(body()));
-            // SAFETY: the stacks' addresses, computed without a reference.
-            let top = unsafe { (&raw const STACKS[index]) as u32 } + DRIVER_STACK as u32;
+            // SAFETY: the stack's address, computed without a reference (a place projection
+            // through the cell's pointer, bounds-checked).
+            let top = unsafe { (&raw const (*STACKS.get())[index]) as u32 } + DRIVER_STACK as u32;
             // SAFETY: the stack is this thread's alone until it gives it up; the trampoline runs
             // `call` there and returns to this one.
             unsafe { switch_and_call(top, trampoline_of(&call), (&raw mut call).cast()) };
@@ -1179,14 +1180,16 @@ mod target {
     #[repr(C, align(16))]
     struct StandIns<const N: usize>([[u8; STAND_IN]; N]);
 
-    // The stand-ins: zeroed kernel memory a driver may read (and write: its own business).
-    static mut THREADS: StandIns<THREAD_STAND_INS> = StandIns([[0; STAND_IN]; THREAD_STAND_INS]);
-    static mut PROCESSES: StandIns<PROCESS_STAND_INS> =
-        StandIns([[0; STAND_IN]; PROCESS_STAND_INS]);
+    // The stand-ins: zeroed kernel memory a driver may read (and write: its own business), by
+    // address.
+    static THREADS: SyncCell<StandIns<THREAD_STAND_INS>> =
+        SyncCell::new(StandIns([[0; STAND_IN]; THREAD_STAND_INS]));
+    static PROCESSES: SyncCell<StandIns<PROCESS_STAND_INS>> =
+        SyncCell::new(StandIns([[0; STAND_IN]; PROCESS_STAND_INS]));
 
     /// The System process's stand-in: PsInitialSystemProcess.
     pub fn system_process() -> u32 {
-        (&raw const PROCESSES) as u32 + (PROCESS_STAND_INS - 1) as u32 * STAND_IN as u32
+        PROCESSES.get() as u32 + (PROCESS_STAND_INS - 1) as u32 * STAND_IN as u32
     }
 
     /// Whether the running thread stands in for the system worker (a load or an unload).
@@ -1198,7 +1201,7 @@ mod target {
     /// The running thread's stand-in: KeGetCurrentThread.
     pub fn current_thread() -> u32 {
         let index = crate::sched::try_current_thread().map_or(0, |thread| thread.index());
-        (&raw const THREADS) as u32 + u32::from(index) * STAND_IN as u32
+        THREADS.get() as u32 + u32::from(index) * STAND_IN as u32
     }
 
     /// The current process's stand-in: IoGetCurrentProcess. The System process's while the
@@ -1206,7 +1209,7 @@ mod target {
     pub fn current_process() -> u32 {
         match crate::pcr::pcr().threads.process() {
             Some(index) if !in_worker() => {
-                (&raw const PROCESSES) as u32 + u32::from(index) * STAND_IN as u32
+                PROCESSES.get() as u32 + u32::from(index) * STAND_IN as u32
             }
             _ => system_process(),
         }

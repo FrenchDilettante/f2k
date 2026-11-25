@@ -165,6 +165,28 @@ impl<T> StaticBuf<T> {
     }
 }
 
+/// Static memory reached only by address: a stack, or a block a driver reads and writes as its own.
+/// Never borrowed: [`SyncCell::get`] hands out the raw pointer, and every access goes through it
+/// (where a `static mut` would invite a reference to the whole).
+#[repr(transparent)]
+pub struct SyncCell<T>(UnsafeCell<T>);
+
+// SAFETY: the cell hands out only its address; what is done through it is its users' contract
+// (each names who reaches the memory, and when).
+unsafe impl<T> Sync for SyncCell<T> {}
+
+impl<T> SyncCell<T> {
+    /// A cell holding `value`.
+    pub const fn new(value: T) -> Self {
+        SyncCell(UnsafeCell::new(value))
+    }
+
+    /// The value's address. Forming it reads and borrows nothing.
+    pub const fn get(&self) -> *mut T {
+        self.0.get()
+    }
+}
+
 /// How many short locks are held, by whichever threads hold them (a holder may be preempted, so
 /// they need not be the running thread's).
 static HOLDS: AtomicU32 = AtomicU32::new(0);
