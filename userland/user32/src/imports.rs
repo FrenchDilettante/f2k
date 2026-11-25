@@ -207,6 +207,11 @@ mod raw {
         /// RtlAllocateHeap and RtlFreeHeap: a block of the heap, and its release.
         pub fn RtlAllocateHeap(heap: usize, flags: u32, size: usize) -> *mut u8;
         pub fn RtlFreeHeap(heap: usize, flags: u32, block: *mut u8) -> u32;
+        /// RtlInitializeCriticalSection, RtlEnterCriticalSection and RtlLeaveCriticalSection: a
+        /// critical section made free, entered and left.
+        pub fn RtlInitializeCriticalSection(section: *mut u8) -> u32;
+        pub fn RtlEnterCriticalSection(section: *mut u8) -> u32;
+        pub fn RtlLeaveCriticalSection(section: *mut u8) -> u32;
         /// RtlUnicodeToMultiByteN: UTF-16 to the ANSI code page, what fits.
         pub fn RtlUnicodeToMultiByteN(
             multi_byte: *mut u8,
@@ -1118,6 +1123,47 @@ impl<T: Pod> LocalFixed<T> {
 }
 
 // --- ntdll -------------------------------------------------------------------------------------------
+
+/// user32's lock over the state its threads share (the records it keeps per window,
+/// [`crate::records`]): a critical section of its data, made free at the process attach
+/// ([`attach_lock`]), as Windows 2000's user32 initializes its own sections there. Its holders
+/// call out to nothing that could run a window procedure.
+#[cfg(all(target_arch = "x86", not(test)))]
+pub struct UserLock;
+
+/// The section [`UserLock`] enters.
+#[cfg(all(target_arch = "x86", not(test)))]
+static USER_SECTION: rtl::critsec::CriticalSection = rtl::critsec::CriticalSection::new();
+
+/// The process attach's: [`UserLock`]'s section made free, before any export can take it.
+#[cfg(all(target_arch = "x86", not(test)))]
+pub fn attach_lock() {
+    // SAFETY: the section is this DLL's own 24 bytes (atomics: written in place), initialized once,
+    // under the loader lock, before any thread enters it.
+    unsafe {
+        raw::RtlInitializeCriticalSection(core::ptr::from_ref(&USER_SECTION).cast_mut().cast())
+    };
+}
+
+// SAFETY: RtlEnterCriticalSection returns once the calling thread owns the section, which no other
+// thread owns until the owner's last RtlLeaveCriticalSection; its interlocked operations order one
+// owner's accesses before the next's. The process attach made it free before any export ran.
+#[cfg(all(target_arch = "x86", not(test)))]
+unsafe impl rtl::sync::RawLock for UserLock {
+    fn lock(&self) {
+        // SAFETY: the section, made free at the process attach, live for the process's life.
+        unsafe {
+            raw::RtlEnterCriticalSection(core::ptr::from_ref(&USER_SECTION).cast_mut().cast())
+        };
+    }
+
+    fn unlock(&self) {
+        // SAFETY: as for `lock`; the calling thread entered it (`RawLock`'s pairing).
+        unsafe {
+            raw::RtlLeaveCriticalSection(core::ptr::from_ref(&USER_SECTION).cast_mut().cast())
+        };
+    }
+}
 
 /// DbgPrint of `text`, as is (through `"%s"`).
 pub fn debug_print(text: &CStr) {

@@ -4,8 +4,9 @@
 //! ES_MULTILINE.
 //!
 //! An edit's state is a fixed local block of its own ([`State`], Windows 2000's PED), found by its
-//! window in a table of the process's ([`kept`]): F2K's window manager frees a window before its
-//! WM_NCDESTROY reaches the procedure, so the window's extra bytes cannot name it then. Its text is
+//! window in a table of the process's that grows with its edits ([`kept`], over
+//! [`crate::records`]): F2K's window manager can free a window before its WM_NCDESTROY reaches the
+//! procedure (another thread's), so the window's extra bytes cannot name it then. Its text is
 //! a movable local block of UTF-16 units (Windows 2000's hText; an ANSI edit's text is kept wide
 //! too, converted where a narrow message reads or writes it), locked for each step that reads it;
 //! as kernel32's LocalUnlock leaves the last error NO_ERROR when the last lock goes, each such step
@@ -85,7 +86,6 @@
 //! (F2K has none), IME.
 
 use core::ffi::CStr;
-use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use rtl::edge::{In, InStr, InWStr, Out, OutBuf};
 use rtl::gdi::{Rect, ETO_OPAQUE, OPAQUE, TRANSPARENT};
@@ -342,50 +342,34 @@ impl State {
 
 /// The edits' state blocks, by window: the process's table (see the module notes).
 mod kept {
-    use super::*;
+    use crate::records::Table;
 
-    /// How many edits a process keeps at once; past them an edit has no state (and logs).
-    const KEPT: usize = 256;
+    /// Each edit's record: its window, its state block.
+    static EDITS: Table<2> = Table::new();
 
-    static WINDOWS: [AtomicU32; KEPT] = [const { AtomicU32::new(0) }; KEPT];
-    static BLOCKS: [AtomicUsize; KEPT] = [const { AtomicUsize::new(0) }; KEPT];
-
-    fn slot(window: usize) -> Option<usize> {
-        let window = window as u32;
-        (window != 0)
-            .then(|| {
-                WINDOWS
-                    .iter()
-                    .position(|w| w.load(Ordering::Acquire) == window)
-            })
-            .flatten()
-    }
-
-    /// The state block `block` kept for `window`; false when the table is full.
+    /// The state block `block` kept for `window`; false when the heap has no room for its record.
     pub fn keep(window: usize, block: usize) -> bool {
-        for (index, slot) in WINDOWS.iter().enumerate() {
-            if slot
-                .compare_exchange(0, window as u32, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                BLOCKS[index].store(block, Ordering::Release);
-                return true;
-            }
-        }
-        false
+        EDITS.with(|edits| edits.set([window, block]))
     }
 
     /// The state block of `window`.
     pub fn block(window: usize) -> Option<usize> {
-        slot(window).map(|index| BLOCKS[index].load(Ordering::Acquire))
+        EDITS
+            .with(|edits| edits.get(window))
+            .map(|[_, block]| block)
     }
 
     /// The state block of `window`, no longer kept.
     pub fn forget(window: usize) -> Option<usize> {
-        let index = slot(window)?;
-        let block = BLOCKS[index].swap(0, Ordering::AcqRel);
-        WINDOWS[index].store(0, Ordering::Release);
-        Some(block)
+        EDITS
+            .with(|edits| edits.take(window))
+            .map(|[_, block]| block)
+    }
+
+    /// How many edits the process keeps state for.
+    #[cfg(test)]
+    pub fn count() -> usize {
+        EDITS.with(|edits| edits.len())
     }
 }
 
@@ -1719,7 +1703,6 @@ fn create(window: usize) -> bool {
         ..State::default()
     };
     if !kept::keep(window, block) {
-        unsupported(c"user32 Edit: more edits than a process keeps not yet implemented\n");
         for block in [block, text, starts] {
             imports::local_free(block);
         }
@@ -1741,18 +1724,21 @@ fn create(window: usize) -> bool {
     true
 }
 
-/// WM_NCDESTROY: the edit's state and its blocks freed.
+/// WM_NCDESTROY: the edit's state and its blocks freed, its record dropped first (a second
+/// WM_NCDESTROY, or a step of the edit's own still running further out, finds none).
 fn destroy(window: usize) {
-    if let Some(s) = load(window) {
+    let Some(block) = kept::forget(window) else {
+        return;
+    };
+    let state = fixed::<State>(block).and_then(|held| held.as_slice().first().copied());
+    if let Some(s) = state {
         for block in [s.text, s.starts, s.deleted, s.narrow] {
             if block != 0 {
                 imports::local_free(block);
             }
         }
     }
-    if let Some(block) = kept::forget(window) {
-        imports::local_free(block);
-    }
+    imports::local_free(block);
 }
 
 // --- The procedure -------------------------------------------------------------------------------
@@ -2527,5 +2513,92 @@ mod tests {
         assert_eq!((s.inserted_start, s.inserted_end), (0, 1));
         record(&mut s, 0, 0, 0, 3, false);
         assert_eq!((s.inserted_start, s.inserted_end), (0, 3));
+    }
+
+    /// The local blocks the calling thread holds: fixed, then movable.
+    fn locals_held() -> (usize, usize) {
+        crate::imports::host::LOCALS.with(|locals| {
+            let locals = locals.borrow();
+            (
+                locals.fixed.len(),
+                locals
+                    .movable
+                    .iter()
+                    .filter(|block| block.is_some())
+                    .count(),
+            )
+        })
+    }
+
+    /// More edits than the process's old fixed table held (256): each made with its own state,
+    /// then destroyed (its WM_NCDESTROY reaching the procedure after the window is gone, as for
+    /// another thread's window), leaving no record and no block behind. The handles' records are
+    /// made again after.
+    #[test]
+    fn more_edits_than_a_fixed_table_held() {
+        crate::class::SYSTEM_CLASSES_WANTED.with(|wanted| wanted.set(true));
+        let class = wide("Edit\0");
+        let make = || {
+            crate::window::create_window_ex_w(
+                0,
+                class.as_ptr(),
+                core::ptr::null(),
+                0,
+                0,
+                0,
+                40,
+                14,
+                0,
+                0,
+                0,
+                0,
+            )
+        };
+        // The first edit: the class's registration's own blocks out of the count.
+        let first = make();
+        assert_ne!(first, 0);
+        let held = locals_held();
+        let records = kept::count();
+        let edits: std::vec::Vec<usize> = (0..300).map(|_| make()).collect();
+        assert!(edits.iter().all(|&edit| edit != 0));
+        assert_eq!(kept::count(), records + 300);
+        let mut blocks: std::vec::Vec<usize> = edits
+            .iter()
+            .map(|&edit| kept::block(edit).unwrap())
+            .collect();
+        blocks.sort_unstable();
+        blocks.dedup();
+        assert_eq!(blocks.len(), 300, "each edit has a state of its own");
+        let last = edits[299];
+        assert!(set_text(last, &wide("the 301st")));
+        assert_eq!(text_of(last), "the 301st");
+        for &edit in &edits {
+            assert_eq!(crate::window::destroy_window(edit), 1);
+        }
+        assert_eq!(kept::count(), records);
+        assert!(edits.iter().all(|&edit| load(edit).is_none()));
+        assert_eq!(locals_held(), held, "no block of the edits' is left");
+        // A second round, past the old size again, from the emptied table.
+        let again: std::vec::Vec<usize> = (0..300).map(|_| make()).collect();
+        assert!(again.iter().all(|&edit| load(edit).is_some()));
+        for &edit in &again {
+            crate::window::destroy_window(edit);
+        }
+        crate::window::destroy_window(first);
+        assert_eq!(kept::count(), 0);
+    }
+
+    /// A second WM_NCDESTROY (an edit's destruction reached twice) finds no record and frees
+    /// nothing again.
+    #[test]
+    fn a_second_destroy_frees_nothing() {
+        let window = 0x7_0090;
+        let held = locals_held();
+        edit_with(window, "text");
+        destroy(window);
+        assert_eq!(locals_held(), held);
+        destroy(window);
+        assert_eq!(locals_held(), held);
+        assert!(load(window).is_none());
     }
 }

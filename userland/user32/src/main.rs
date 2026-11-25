@@ -17,10 +17,12 @@ extern crate user32;
 const DLL_PROCESS_ATTACH: u32 = 1;
 
 /// The DLL's entry point: every reason succeeds (DLL_PROCESS_ATTACH answers TRUE); the process's
-/// attach points the PEB's KernelCallbackTable at user32's callback table.
+/// attach makes user32's lock free and points the PEB's KernelCallbackTable at user32's callback
+/// table.
 #[unsafe(no_mangle)]
 extern "system" fn DllMain(_instance: usize, reason: u32, _reserved: usize) -> u32 {
     if reason == DLL_PROCESS_ATTACH {
+        user32::imports::attach_lock();
         user32::callback::attach();
     }
     1
