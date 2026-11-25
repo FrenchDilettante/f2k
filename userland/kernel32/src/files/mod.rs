@@ -116,8 +116,8 @@ pub const FILE_FS_DEVICE_INFORMATION: u32 = 4;
 pub const FILE_FS_ATTRIBUTE_INFORMATION: u32 = 5;
 pub const FILE_FS_FULL_SIZE_INFORMATION: u32 = 7;
 
-/// OBJECT_ATTRIBUTES' OBJ_CASE_INSENSITIVE.
-pub const OBJ_CASE_INSENSITIVE: u32 = 0x40;
+// OBJECT_ATTRIBUTES' OBJ_CASE_INSENSITIVE.
+pub use rtl::nt::OBJ_CASE_INSENSITIVE;
 
 /// Whether a name is written `\\?\` (exactly: not `//?/`), the prefix that passes a path to the
 /// NT namespace untouched, with no MAX_PATH limit.

@@ -385,10 +385,6 @@ fn report(body: impl FnOnce(&mut Line) -> core::fmt::Result) {
     crate::dbgprint::print(&shown[..shown.len() - 1]);
 }
 
-// The open, section and view arguments a load passes, as Windows 2000's loader passes them: the
-// file opened to read and execute, shared for reading and deleting, synchronously, never a
-// directory; an image section mapped for reading and executing; the view shared, PAGE_READWRITE
-// (an image's pages take their sections' protections).
 use rtl::file::{
     FILE_NON_DIRECTORY_FILE,
     FILE_SHARE_DELETE,
@@ -396,8 +392,12 @@ use rtl::file::{
     FILE_SYNCHRONOUS_IO_NONALERT,
 };
 use rtl::nt::access::{FILE_EXECUTE, FILE_READ_DATA, SYNCHRONIZE};
-const OBJ_CASE_INSENSITIVE: u32 = 0x40;
 use rtl::nt::access::{SECTION_MAP_EXECUTE, SECTION_MAP_READ, SECTION_QUERY};
+use rtl::nt::OBJ_CASE_INSENSITIVE;
+/// The open, section and view arguments a load passes, as Windows 2000's loader passes them: the
+/// file opened to read and execute, shared for reading and deleting, synchronously, never a
+/// directory; an image section mapped for reading and executing; the view shared, PAGE_READWRITE
+/// (an image's pages take their sections' protections).
 const PAGE_READWRITE: u32 = 0x4;
 const PAGE_EXECUTE: u32 = 0x10;
 const SEC_IMAGE: u32 = 0x0100_0000;

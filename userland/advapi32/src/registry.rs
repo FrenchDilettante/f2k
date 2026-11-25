@@ -25,6 +25,10 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use rtl::cstr;
+// The key rights the calls ask for.
+use rtl::nt::access::{DELETE, KEY_QUERY_VALUE, KEY_SET_VALUE, MAXIMUM_ALLOWED};
+// OBJECT_ATTRIBUTES' attributes: the handle inherited, the name compared case-insensitively.
+use rtl::nt::{OBJ_CASE_INSENSITIVE, OBJ_INHERIT};
 use rtl::status::{
     NtStatus,
     STATUS_BUFFER_OVERFLOW,
@@ -45,13 +49,6 @@ use rtl::winerror::{
 
 use crate::imports::{self as nt, Counted, HeapBlock, KeyAttributes, Wide};
 use crate::{caller_bytes, caller_bytes_mut, Out};
-
-/// OBJECT_ATTRIBUTES' attributes: the handle inherited, the name compared case-insensitively.
-const OBJ_INHERIT: u32 = 0x02;
-const OBJ_CASE_INSENSITIVE: u32 = 0x40;
-
-// The key rights the calls ask for.
-use rtl::nt::access::{DELETE, KEY_QUERY_VALUE, KEY_SET_VALUE, MAXIMUM_ALLOWED};
 
 /// The value types whose data is text.
 pub const REG_SZ: u32 = 1;

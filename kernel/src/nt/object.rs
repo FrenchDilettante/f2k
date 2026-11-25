@@ -302,9 +302,8 @@ pub const OBJECT_BASIC_INFORMATION_SIZE: u32 =
     core::mem::size_of::<ObjectBasicInformation>() as u32;
 const _: () = assert!(OBJECT_BASIC_INFORMATION_SIZE == 56);
 
-/// A handle's attributes as ObjectBasicInformation reports them: OBJ_PROTECT_CLOSE and OBJ_INHERIT.
-const OBJ_PROTECT_CLOSE: u32 = 0x1;
-const OBJ_INHERIT: u32 = 0x2;
+// A handle's attributes as ObjectBasicInformation reports them: OBJ_PROTECT_CLOSE and OBJ_INHERIT.
+use rtl::nt::{OBJ_INHERIT, OBJ_PROTECT_CLOSE};
 
 /// ObjectBasicInformation for the handle `entry` is, its object's counts (pointer, handle) as they
 /// stand: the handle's attributes and access, the counts, and the reserved dwords zero (F2K keeps

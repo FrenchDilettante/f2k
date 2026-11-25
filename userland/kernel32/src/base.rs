@@ -86,10 +86,9 @@ pub fn format_timeout(milliseconds: u32) -> Option<i64> {
     (milliseconds != INFINITE).then(|| -(i64::from(milliseconds) * 10_000))
 }
 
-/// OBJECT_ATTRIBUTES' Attributes: OBJ_INHERIT, OBJ_CASE_INSENSITIVE, OBJ_OPENIF.
-pub const OBJ_INHERIT: u32 = 0x02;
-pub const OBJ_CASE_INSENSITIVE: u32 = 0x40;
-const OBJ_OPENIF: u32 = 0x80;
+// OBJECT_ATTRIBUTES' Attributes: OBJ_INHERIT, OBJ_CASE_INSENSITIVE, OBJ_OPENIF.
+use rtl::nt::OBJ_OPENIF;
+pub use rtl::nt::{OBJ_CASE_INSENSITIVE, OBJ_INHERIT};
 
 /// The directory access kernel32 opens `\BaseNamedObjects` with: DIRECTORY_ALL_ACCESS less DELETE,
 /// WRITE_DAC and WRITE_OWNER.

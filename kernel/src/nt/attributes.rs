@@ -12,16 +12,14 @@ use core::mem::size_of;
 
 use rtl::array_vec::ArrayVec;
 use rtl::nt::{ObjectAttributes, UnicodeString};
+// OBJECT_ATTRIBUTES' Attributes: OBJ_INHERIT, OBJ_CASE_INSENSITIVE and OBJ_OPENIF.
+pub use rtl::nt::{OBJ_CASE_INSENSITIVE, OBJ_INHERIT, OBJ_OPENIF};
 
 use super::call::UserAddr;
 use crate::status::*;
 
-/// OBJECT_ATTRIBUTES' size, and its Attributes' OBJ_INHERIT, OBJ_CASE_INSENSITIVE and
-/// OBJ_OPENIF.
+/// OBJECT_ATTRIBUTES' size.
 const OBJECT_ATTRIBUTES_SIZE: u32 = size_of::<ObjectAttributes<u32>>() as u32;
-pub const OBJ_INHERIT: u32 = 0x2;
-pub const OBJ_CASE_INSENSITIVE: u32 = 0x40;
-pub const OBJ_OPENIF: u32 = 0x80;
 
 /// The longest name read, in units.
 pub const MAX_NAME: usize = 1024;

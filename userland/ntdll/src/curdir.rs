@@ -17,6 +17,7 @@ use rtl::file::{FILE_SHARE_READ, FILE_SHARE_WRITE};
 // current), a directory, synchronous I/O; OBJ_CASE_INSENSITIVE | OBJ_INHERIT.
 use rtl::nt::access::{FILE_TRAVERSE, SYNCHRONIZE};
 use rtl::nt::info::FileBasicInformation;
+use rtl::nt::{OBJ_CASE_INSENSITIVE, OBJ_INHERIT};
 use rtl::path::{
     dos_path_to_nt,
     full_path_name,
@@ -33,8 +34,6 @@ use rtl::sys;
 
 use crate::params::{with_own_parameters, OwnParameters};
 use crate::service::{self, ObjectAttributes};
-const OBJ_INHERIT: u32 = 0x2;
-const OBJ_CASE_INSENSITIVE: u32 = 0x40;
 
 /// The OBJECT_ATTRIBUTES naming `name` (the namespace's root its directory), with `attributes`.
 fn attributes(name: &UnicodeString, attributes: u32) -> ObjectAttributes<'_> {

@@ -59,6 +59,18 @@ pub struct ObjectAttributes<P, Name = P, Security = P> {
     pub security_quality_of_service: Security,
 }
 
+/// OBJECT_ATTRIBUTES' Attributes, the OBJ_* flags (ntdef.h), and a handle's own OBJ_PROTECT_CLOSE
+/// (its other attribute is OBJ_INHERIT).
+pub const OBJ_PROTECT_CLOSE: u32 = 0x01;
+pub const OBJ_INHERIT: u32 = 0x02;
+pub const OBJ_PERMANENT: u32 = 0x10;
+pub const OBJ_EXCLUSIVE: u32 = 0x20;
+pub const OBJ_CASE_INSENSITIVE: u32 = 0x40;
+pub const OBJ_OPENIF: u32 = 0x80;
+pub const OBJ_OPENLINK: u32 = 0x100;
+pub const OBJ_KERNEL_HANDLE: u32 = 0x200;
+pub const OBJ_VALID_ATTRIBUTES: u32 = 0x3F2;
+
 /// A CLIENT_ID: a process's id and one of its threads' (zero for none).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

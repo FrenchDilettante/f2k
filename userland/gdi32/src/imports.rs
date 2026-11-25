@@ -617,7 +617,7 @@ pub type ObjectAttributes = rtl::nt::ObjectAttributes<u32, *const UnicodeString,
 // OBJ_CASE_INSENSITIVE.
 use rtl::file::{FILE_NON_DIRECTORY_FILE, FILE_SHARE_READ, FILE_SYNCHRONOUS_IO_NONALERT};
 use rtl::nt::access::{FILE_READ_DATA, SYNCHRONIZE};
-const OBJ_CASE_INSENSITIVE: u32 = 0x40;
+use rtl::nt::OBJ_CASE_INSENSITIVE;
 
 /// SearchPathW: the full path of the file `name` (NUL-terminated) in the directory `directory`
 /// (NUL-terminated; none: the search path, the current directory on it) into `out`: its length,

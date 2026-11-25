@@ -4,6 +4,10 @@
 //! Execution Options), read through the key services, NtOpenKey and NtQueryValueKey.
 
 use rtl::execution_options::{self, OPTIONS_KEY};
+// KEY_QUERY_VALUE: the access the options' key is opened with.
+use rtl::nt::access::KEY_QUERY_VALUE;
+// OBJECT_ATTRIBUTES' OBJ_CASE_INSENSITIVE.
+use rtl::nt::OBJ_CASE_INSENSITIVE;
 use rtl::pod::Pod;
 use rtl::status::{
     STATUS_BUFFER_OVERFLOW,
@@ -14,12 +18,6 @@ use rtl::status::{
 use rtl::string::UnicodeString;
 
 use crate::service::{self, ObjectAttributes};
-
-/// OBJECT_ATTRIBUTES' OBJ_CASE_INSENSITIVE.
-const OBJ_CASE_INSENSITIVE: u32 = 0x40;
-
-// KEY_QUERY_VALUE: the access the options' key is opened with.
-use rtl::nt::access::KEY_QUERY_VALUE;
 
 /// NtQueryValueKey's KeyValuePartialInformation class.
 const KEY_VALUE_PARTIAL_INFORMATION: u32 = 2;
