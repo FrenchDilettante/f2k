@@ -159,6 +159,16 @@ mod target {
         pub fn virtual_address(&self) -> u32 {
             page_address(self.first)
         }
+
+        /// The block kept for the kernel's life: its bytes, which nothing gives back (a cache a
+        /// mount holds for as long as the system runs).
+        pub fn leak(self) -> &'static mut [u8] {
+            let (at, len) = (self.address(), self.len);
+            core::mem::forget(self);
+            // SAFETY: the block's pages are mapped in every address space and its alone (see
+            // `as_ref`); forgotten, the block never unmaps them, and nothing else names them.
+            unsafe { core::slice::from_raw_parts_mut(at, len) }
+        }
     }
 
     /// Release the block at virtual address `va` that [`allocate`] handed out for `bytes`:

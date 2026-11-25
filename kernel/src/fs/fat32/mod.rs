@@ -4,8 +4,8 @@
 //! The logic is pure over `&dyn BlockDevice`, so the host tests run it against in-memory volumes;
 //! the boot mounts the first registered partition and keeps it for later users (`volume`). The
 //! on-disk structures' little-endian fields are [`raw`], the boot sector and its gates
-//! [`boot_sector`], the mount state and cluster math [`layout`], the entry decode and the FAT
-//! sector cache [`fat`], the mount and the boot volume [`volume`], directory records [`dirent`],
+//! [`boot_sector`], the mount state and cluster math [`layout`], the sector caches [`cache`], the
+//! entry decode [`fat`], the mount and the boot volume [`volume`], directory records [`dirent`],
 //! path components [`path`], the directory walk with its long names [`dir`], path lookup
 //! [`lookup`], the chain read [`read`], the runs a file's clusters make [`extent`], the writes
 //! (allocation, data, sizes and directory entries) [`write`], the FSInfo sector's free-cluster
@@ -13,6 +13,7 @@
 //! [`fixtures`].
 
 pub mod boot_sector;
+pub mod cache;
 pub mod dir;
 pub mod dirent;
 pub mod extent;

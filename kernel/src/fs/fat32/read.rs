@@ -2,9 +2,10 @@
 //!
 //! A read is a span of the file — an offset and a length — bounded by the size: the clusters before
 //! the offset's are skipped through the FAT reader without being read, and within a cluster only
-//! the sectors the span touches are read; a sector the span covers partly is read whole and only
-//! its covered bytes copied. An end that arrives before the size is satisfied, a free or bad entry
-//! mid-chain, or a link outside the volume is corruption, reported as a status.
+//! the sectors the span touches are read; a sector the span covers partly is read whole, through
+//! the volume's cache, and only its covered bytes copied. An end that arrives before the size is
+//! satisfied, a free or bad entry mid-chain, or a link outside the volume is corruption, reported
+//! as a status.
 
 use super::fat::FatEntry;
 use super::lookup::File;
@@ -84,8 +85,8 @@ fn next_cluster(volume: &mut Volume, cluster: u32) -> Result<u32, NtStatus> {
 }
 
 /// Read the bytes from `start` within the cluster at `lba` into `out`: whole sectors straight into
-/// it in one device read, a partly covered sector through a bounce sector.
-fn read_span(volume: &Volume, lba: u64, start: usize, out: &mut [u8]) -> Result<(), NtStatus> {
+/// it in one device read, a partly covered sector through the volume's cache.
+fn read_span(volume: &mut Volume, lba: u64, start: usize, out: &mut [u8]) -> Result<(), NtStatus> {
     let mut at = start;
     let mut done = 0;
     while done < out.len() {
@@ -98,7 +99,7 @@ fn read_span(volume: &Volume, lba: u64, start: usize, out: &mut [u8]) -> Result<
             whole
         } else {
             let mut bounce = [0u8; 512];
-            volume.device().read(sector, &mut bounce)?;
+            volume.read_sector(sector, &mut bounce)?;
             let take = (512 - within).min(remaining);
             out[done..done + take].copy_from_slice(&bounce[within..within + take]);
             take

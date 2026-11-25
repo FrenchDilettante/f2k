@@ -27,23 +27,29 @@
 use rtl::pod::Pod;
 
 use super::boot_sector::{validate, Refusal};
+use super::cache::{Sector, SectorCache};
 use super::fat::{
     decode_entry,
     entry_position,
-    FatCache,
+    raw_entry,
+    set_raw_entry,
     FatEntry,
-    FatSector,
+    CACHE_SECTORS,
     ENTRIES_PER_SECTOR,
     ENTRY_MASK,
 };
 use super::fsinfo::{FsInfo, UNKNOWN};
 use super::layout::Layout;
-use super::raw::to_block;
 use crate::block::BlockDevice;
 use crate::status::{NtStatus, STATUS_TOO_LATE, STATUS_UNRECOGNIZED_VOLUME};
 
 /// How many changed FAT sectors a batch holds.
 const PENDING: usize = 2;
+
+/// How many directory and data sectors the volume's cache holds ([`Volume::read_sector`]): a long
+/// directory's sectors, scanned on every lookup in it, and the entries and partial sectors a
+/// file's writes read back.
+pub const BLOCK_CACHE_SECTORS: usize = 64;
 
 /// FAT[1]'s clean-shutdown bit: set while the volume on disk is consistent, clear (dirty) from a
 /// writer's first change until it marks the volume clean again — a volume found dirty gets a check
@@ -76,11 +82,14 @@ impl MountError {
 pub struct Volume {
     device: &'static dyn BlockDevice,
     layout: Layout,
-    cache: FatCache,
+    /// The FAT sectors read lately (FAT1's).
+    cache: SectorCache<CACHE_SECTORS>,
+    /// The directory and data sectors read lately through [`Volume::read_sector`].
+    blocks: SectorCache<BLOCK_CACHE_SECTORS>,
     /// Whether a batch holds FAT changes back.
     holding: bool,
     /// The FAT sectors a batch changed and has not written yet, oldest first: LBA and contents.
-    pending: [Option<(u64, FatSector)>; PENDING],
+    pending: [Option<(u64, Sector)>; PENDING],
     /// Where the next free-cluster search starts (an allocation's hint).
     next_free: u32,
     /// Whether this mount has marked the volume dirty since it was mounted or last marked clean.
@@ -126,7 +135,8 @@ impl Volume {
         Ok(Volume {
             device,
             layout,
-            cache: FatCache::new(),
+            cache: SectorCache::new(),
+            blocks: SectorCache::new(),
             holding: false,
             pending: [None; PENDING],
             next_free: 2,
@@ -159,11 +169,11 @@ impl Volume {
         let (sector, index) = entry_position(cluster);
         let max = self.layout.max_cluster();
         let data = self.fat_sector(self.layout.fat_start + sector)?;
-        Ok(decode_entry(data[index].get(), max))
+        Ok(decode_entry(raw_entry(data, index), max))
     }
 
     /// The FAT sector at `lba`: the batch's unwritten copy, else through the cache.
-    fn fat_sector(&mut self, lba: u64) -> Result<&FatSector, NtStatus> {
+    fn fat_sector(&mut self, lba: u64) -> Result<&Sector, NtStatus> {
         match self.pending.iter().flatten().find(|(at, _)| *at == lba) {
             Some((_, data)) => Ok(data),
             None => self.cache.sector(self.device, lba),
@@ -212,12 +222,12 @@ impl Volume {
     ) -> Result<u32, NtStatus> {
         let lba = self.layout.fat_start + sector;
         let mut data = *self.fat_sector(lba)?;
-        let old = data[index].get();
+        let old = raw_entry(&data, index);
         let raw = update(old);
         if raw == old {
             return Ok(old);
         }
-        data[index].set(raw);
+        set_raw_entry(&mut data, index, raw);
         let held = self
             .pending
             .iter()
@@ -237,15 +247,14 @@ impl Volume {
             self.write_pending()?;
             self.write_fat(lba, &data)?;
         }
-        self.cache.store(lba, &data);
+        self.cache.wrote(lba, &data);
         Ok(old)
     }
 
     /// Write FAT sector `lba`'s `data` to every FAT copy.
-    fn write_fat(&self, lba: u64, data: &FatSector) -> Result<(), NtStatus> {
-        let bytes = to_block(data);
+    fn write_fat(&mut self, lba: u64, data: &Sector) -> Result<(), NtStatus> {
         for copy in 0..self.fat_copies() as u64 {
-            self.write_raw(lba + copy * self.layout.sectors_per_fat as u64, &bytes)?;
+            self.write_raw(lba + copy * self.layout.sectors_per_fat as u64, data)?;
         }
         Ok(())
     }
@@ -336,9 +345,9 @@ impl Volume {
         for sector in 0..=max / ENTRIES_PER_SECTOR {
             let data = self.fat_sector(self.layout.fat_start + sector as u64)?;
             let base = sector * ENTRIES_PER_SECTOR;
-            for (index, entry) in data.iter().enumerate() {
+            for (index, entry) in data.as_chunks::<4>().0.iter().enumerate() {
                 let cluster = base + index as u32;
-                if !(2..=max).contains(&cluster) || entry.get() & ENTRY_MASK != 0 {
+                if !(2..=max).contains(&cluster) || u32::from_le_bytes(*entry) & ENTRY_MASK != 0 {
                     continue;
                 }
                 count += 1;
@@ -361,7 +370,7 @@ impl Volume {
         if let Some(free) = self.free {
             return Ok(free);
         }
-        let fat1 = self.fat_sector(self.layout.fat_start)?[1].get();
+        let fat1 = raw_entry(self.fat_sector(self.layout.fat_start)?, 1);
         let mut free = None;
         if let (true, Some(lba)) = (fat1 & CLEAN_SHUTDOWN != 0, self.layout.fsinfo_sector) {
             self.device.read(lba, self.fsinfo.as_bytes_mut())?;
@@ -389,14 +398,18 @@ impl Volume {
                 continue;
             }
             self.fsinfo.set_hints(free_count, next_free);
-            self.device.write(lba, self.fsinfo.as_bytes())?;
+            let written = self.device.write(lba, self.fsinfo.as_bytes());
+            self.track_write(lba, 1, written)?;
+            self.blocks.wrote(lba, self.fsinfo.as_bytes());
         }
         Ok(())
     }
 
-    /// Read one sector of the volume.
-    pub fn read_sector(&self, lba: u64, data: &mut [u8; 512]) -> Result<(), NtStatus> {
-        self.device.read(lba, data)
+    /// Read one sector of the volume, through the volume's cache: a directory's sectors, an
+    /// entry, a partly written data sector.
+    pub fn read_sector(&mut self, lba: u64, data: &mut [u8; 512]) -> Result<(), NtStatus> {
+        data.copy_from_slice(self.blocks.sector(self.device, lba)?);
+        Ok(())
     }
 
     /// Write one sector of the volume (a change: the dirty mark goes first).
@@ -405,22 +418,49 @@ impl Volume {
         self.write_raw(lba, data)
     }
 
-    /// Read sectors from `lba` straight off the device.
+    /// Write whole sectors from `lba` in one device request (a change: the dirty mark goes first).
+    pub fn write_sectors(&mut self, lba: u64, data: &[u8]) -> Result<(), NtStatus> {
+        self.changing()?;
+        self.write_raw(lba, data)
+    }
+
+    /// Read sectors from `lba` straight off the device (the cache is write-through: the device
+    /// holds every cached sector's bytes).
     pub fn read_sectors(&self, lba: u64, data: &mut [u8]) -> Result<(), NtStatus> {
         self.device.read(lba, data)
     }
 
     /// Overwrite sectors inside a file's clusters straight on the device. Refused once the volume
     /// is closed, but no dirty mark: neither the FAT nor a directory changes.
-    pub fn write_in_place(&self, lba: u64, data: &[u8]) -> Result<(), NtStatus> {
+    pub fn write_in_place(&mut self, lba: u64, data: &[u8]) -> Result<(), NtStatus> {
         if self.closed {
             return Err(STATUS_TOO_LATE);
         }
-        self.device.write(lba, data)
+        self.write_raw(lba, data)
     }
 
-    fn write_raw(&self, lba: u64, data: &[u8; 512]) -> Result<(), NtStatus> {
-        self.device.write(lba, data)
+    /// Write sectors to the device, the cached copies kept in step.
+    fn write_raw(&mut self, lba: u64, data: &[u8]) -> Result<(), NtStatus> {
+        let written = self.device.write(lba, data);
+        self.track_write(lba, (data.len() / 512) as u64, written)?;
+        self.blocks.wrote(lba, data);
+        self.cache.wrote(lba, data);
+        Ok(())
+    }
+
+    /// A write's outcome for the caches: a failed one leaves the disk's sectors unknown, so their
+    /// cached copies go.
+    fn track_write(
+        &mut self,
+        lba: u64,
+        sectors: u64,
+        written: Result<(), NtStatus>,
+    ) -> Result<(), NtStatus> {
+        if written.is_err() {
+            self.blocks.forget(lba, sectors);
+            self.cache.forget(lba, sectors);
+        }
+        written
     }
 
     /// Where the next free-cluster search starts, and its update.

@@ -238,8 +238,7 @@ pub fn walk(
         let first = layout.cluster_lba(cluster);
         for offset in 0..layout.sectors_per_cluster as u64 {
             volume
-                .device()
-                .read(first + offset, &mut sector)
+                .read_sector(first + offset, &mut sector)
                 .map_err(LookupError::Device)?;
             for bytes in sector.as_chunks::<ENTRY_SIZE>().0 {
                 let record = decode(bytes);
