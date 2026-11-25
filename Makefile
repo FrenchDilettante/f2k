@@ -144,6 +144,8 @@ help:
 	@echo "                 and the DLL compatibility report written (target/compat/report.html)"
 	@echo "  check-all    - run-tests, then compat, then test"
 	@echo "  check        - cargo check + clippy"
+	@echo "  miri         - The kernel's host tests (those MIRI_TESTS names) under Miri, the"
+	@echo "                 undefined-behaviour checker (MIRI_TESTS=:: for every test)"
 	@echo "  fmt          - Format the Rust sources (rustfmt) and the Markdown files (rumdl)"
 	@echo "  fmt-check    - Fail if a Rust source or a Markdown file is not formatted"
 	@echo "  disk         - Create Limine-bootable hard disk image (needs mtools), the one the tests boot"
@@ -306,6 +308,50 @@ TEST_PROFILE ?= dev-opt
 .PHONY: test
 test:
 	F2K_KERNEL_PROFILE=$(TEST_PROFILE) $(PYTEST) tests $(PYTEST_FLAGS)
+
+# Miri, the interpreter that checks for undefined behaviour, over the kernel's host tests: each of
+# MIRI_TESTS (libtest filters, matching any part of a test's path) runs as its own Miri process,
+# MIRI_JOBS at a time, its output in target/miri/logs/; a failing one's tail is shown. Cargo runs
+# from a directory outside the repository, naming the kernel's manifest: the repository's
+# .cargo/config.toml (build-std, the kernel target) breaks Miri, and cargo reads its configuration
+# from the working directory up. The build lives in its own target directory; the toolchain is the
+# repository's (rust-toolchain), with the miri component. The rig leaks its dispatchers and records
+# on purpose, hence -Zmiri-ignore-leaks; some tests read the repository's files (the export specs),
+# hence -Zmiri-disable-isolation.
+#
+# The default set is the code with the most unsafe aliasing to check (the dispatcher and its
+# records, the level cells and locks, the processor's slots, the heap and the pool, the frame and
+# page tables, the I/O manager, the object directory) and takes minutes. Left out: sched's wait,
+# apc, timer, waitable_timer, mutex and event modules (and block::lock, nt::signal, nt::wait,
+# nt::tests), which stop at the embedded waitable headers (a `&mut` to a header made from a stored
+# pointer: track A2 of the speed plan); hal::tests (its fake platform reads the level from inside
+# the ledger's own change) and interrupt::tests (a test compares function addresses, which Miri
+# does not keep equal); and the modules too slow to interpret (whole DLL images, file systems: an
+# hour and more). `make miri MIRI_TESTS=::` runs every test.
+MIRI_TOOLCHAIN = $(shell sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain)
+MIRI_DIR ?= $(patsubst %/,%,$(or $(TMPDIR),/tmp))/f2k-miri
+MIRI_TARGET_DIR ?= $(CURDIR)/$(BUILD_DIR)/miri
+MIRI_MANIFEST = $(CURDIR)/$(KERNEL_DIR)/Cargo.toml
+MIRIFLAGS ?= -Zmiri-ignore-leaks -Zmiri-disable-isolation
+MIRI_JOBS ?= 6
+MIRI_TESTS ?= sched::dispatcher sched::thread sched::switch sched::semaphore sched::process \
+	sched::idle sched::object sched::tests sched::census sched::pool sched::list sched::startup \
+	level:: sync:: pcr:: slots:: mem::heap mem::dma mem::pool mem::frame mem::paging:: mem::pte \
+	dev::io hal::exports csr:: win32k::text ob:: process:: fs::file interrupt::clock user::apc
+MIRI_CARGO = cd $(MIRI_DIR) && CARGO_TARGET_DIR=$(MIRI_TARGET_DIR) MIRIFLAGS="$(MIRIFLAGS)" \
+	cargo +$(MIRI_TOOLCHAIN) miri test --manifest-path $(MIRI_MANIFEST) --lib
+
+.PHONY: miri
+miri: userland
+	@mkdir -p $(MIRI_DIR) $(MIRI_TARGET_DIR)/logs
+	$(MIRI_CARGO) --no-run
+	@printf '%s\n' $(MIRI_TESTS) | xargs -P $(MIRI_JOBS) -n 1 sh -c '\
+		log="$(MIRI_TARGET_DIR)/logs/$$1.log"; \
+		if ($(MIRI_CARGO) -q -- "$$1") > "$$log" 2>&1; then \
+			echo "miri ok: $$1 ($$(grep -o "[0-9]* passed" "$$log"))"; \
+		else \
+			echo "miri FAILED: $$1 (see $$log)"; tail -40 "$$log"; exit 1; \
+		fi' sh
 
 # Everything a change is verified with, fastest first, stopping at the first failure: the host unit
 # tests, the pins and the host scenarios (every scenario run), and the on-target suite
