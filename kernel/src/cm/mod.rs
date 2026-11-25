@@ -52,6 +52,8 @@ use core::ptr::NonNull;
 #[cfg(target_arch = "x86")]
 use core::sync::atomic::{AtomicU32, Ordering as Atomic};
 
+use rtl::cstr::ascii_units;
+
 #[cfg(target_arch = "x86")]
 use crate::level::{self, High, LevelCell};
 use crate::mem::heap::KernelHeap;
@@ -459,7 +461,7 @@ impl Registry {
 
     /// The keys and the value the registry starts with.
     fn seed(&mut self) {
-        let name = wide::<8>("REGISTRY");
+        let name = ascii_units::<8>("REGISTRY");
         let node = &mut self.nodes[0];
         *node = Node {
             live: true,
@@ -478,7 +480,7 @@ impl Registry {
         let make = |registry: &mut Registry, path: &str, permanent: bool| {
             let mut key = root;
             for name in path.split('\\') {
-                let name = wide::<32>(name);
+                let name = ascii_units::<32>(name);
                 let length = name
                     .iter()
                     .position(|&unit| unit == 0)
@@ -500,9 +502,9 @@ impl Registry {
             "MACHINE\\SYSTEM\\CurrentControlSet\\Control\\ComputerName\\ComputerName",
             false,
         );
-        let name = wide::<12>("ComputerName");
+        let name = ascii_units::<12>("ComputerName");
         let mut data = [0; 10];
-        put_units(&mut data, &wide::<5>("QEMU"));
+        put_units(&mut data, &ascii_units::<5>("QEMU"));
         self.set_bytes(computer, &name, REG_SZ, &data, 0)
             .expect("the registry holds the seed");
     }
@@ -966,15 +968,6 @@ pub fn put_units(out: &mut [u8], units: &[u16]) {
     for (pair, &unit) in out.chunks_exact_mut(2).zip(units) {
         pair.copy_from_slice(&unit.to_le_bytes());
     }
-}
-
-/// `text` (ASCII) as units, NUL-padded to `N`.
-fn wide<const N: usize>(text: &str) -> [u16; N] {
-    let mut out = [0u16; N];
-    for (unit, byte) in out.iter_mut().zip(text.bytes()) {
-        *unit = byte as u16;
-    }
-    out
 }
 
 // --- The kernel's registry ---------------------------------------------------------------------

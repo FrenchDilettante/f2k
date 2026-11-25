@@ -50,9 +50,7 @@ pub fn constant_fields() -> KUserSharedData {
     page.tick_count_multiplier = tick_count_multiplier(crate::interrupt::clock::INTERVAL_100NS);
     page.image_number_low = MACHINE_I386;
     page.image_number_high = MACHINE_I386;
-    for (unit, &byte) in page.nt_system_root.iter_mut().zip(NT_SYSTEM_ROOT) {
-        *unit = u16::from(byte);
-    }
+    rtl::cstr::ascii_into(&mut page.nt_system_root, NT_SYSTEM_ROOT);
     page.nt_product_type = PRODUCT_WIN_NT;
     page.product_type_is_valid = 1;
     page.nt_major_version = 5;

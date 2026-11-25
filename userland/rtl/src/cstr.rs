@@ -1,5 +1,12 @@
 //! NUL-terminated strings: a caller's string read once, to its terminator, into a slice the code
-//! after it works on safely, and the length of a string held in a buffer.
+//! after it works on safely, and the length of a string held in a buffer; and ASCII text widened to
+//! UTF-16, the system's own names and literals ([`ascii_units`] at compile time, [`ascii_into`] at
+//! run time).
+//!
+//! The widening makes each byte its own unit. That is Latin-1, not the ANSI code page (1252's
+//! 0x80-0x9F differ: 0x80 is the euro sign, U+20AC), and the two agree on ASCII only: the helpers
+//! take nothing else. Text that may hold any byte, a caller's or a file's, goes through the code
+//! page ([`crate::string::multi_byte_to_unicode`]).
 
 /// The bytes of the NUL-terminated string at `string`, its terminator excluded.
 ///
@@ -61,6 +68,34 @@ pub fn nul_len<T: Copy + Default + PartialEq>(buffer: &[T]) -> usize {
         .unwrap_or(buffer.len())
 }
 
+/// `text` (ASCII) as UTF-16 units, NUL-padded to `N`: a wide literal made at compile time
+/// (`const DEBUGGER: [u16; 9] = ascii_units("Debugger");`, its terminator the padding). A non-ASCII
+/// byte or a text longer than `N` fails the build in a constant, and panics at run time.
+pub const fn ascii_units<const N: usize>(text: &str) -> [u16; N] {
+    let bytes = text.as_bytes();
+    assert!(bytes.len() <= N, "the text is longer than its units");
+    let mut units = [0u16; N];
+    let mut at = 0;
+    while at < bytes.len() {
+        assert!(bytes[at].is_ascii(), "the text is not ASCII");
+        units[at] = bytes[at] as u16;
+        at += 1;
+    }
+    units
+}
+
+/// `text` (ASCII) as UTF-16 units into `out`, as many as it has room for: the units written. The
+/// text is checked to be ASCII in a debug build only; text that may hold any byte goes through
+/// [`crate::string::multi_byte_to_unicode`] instead.
+pub fn ascii_into(out: &mut [u16], text: &[u8]) -> usize {
+    debug_assert!(text.is_ascii(), "the text is not ASCII");
+    let count = out.len().min(text.len());
+    for (unit, &byte) in out.iter_mut().zip(&text[..count]) {
+        *unit = u16::from(byte);
+    }
+    count
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,5 +130,36 @@ mod tests {
         assert_eq!(nul_len(b"abc"), 3);
         assert_eq!(nul_len::<u16>(&[]), 0);
         assert_eq!(nul_len(&[0x41u16, 0x42, 0]), 2);
+    }
+
+    #[test]
+    fn ascii_widens_a_unit_for_each_byte() {
+        const EXE: [u16; 5] = ascii_units(".exe");
+        assert_eq!(EXE, [0x2E, 0x65, 0x78, 0x65, 0]);
+        assert_eq!(ascii_units::<3>("\\??"), [0x5C, 0x3F, 0x3F]);
+        let mut out = [0xFFFFu16; 4];
+        assert_eq!(ascii_into(&mut out, b"ab"), 2);
+        assert_eq!(out, [0x61, 0x62, 0xFFFF, 0xFFFF]);
+        assert_eq!(ascii_into(&mut out[..1], b"xyz"), 1);
+        assert_eq!(out[0], 0x78);
+    }
+
+    #[test]
+    #[should_panic(expected = "longer")]
+    fn a_literal_past_its_units_is_refused() {
+        let _ = ascii_units::<2>("abc");
+    }
+
+    #[test]
+    #[should_panic(expected = "not ASCII")]
+    fn a_literal_past_ascii_is_refused() {
+        let _ = ascii_units::<4>("\u{e9}");
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "not ASCII")]
+    fn run_time_text_past_ascii_is_refused_in_a_debug_build() {
+        ascii_into(&mut [0; 2], &[0x80]);
     }
 }

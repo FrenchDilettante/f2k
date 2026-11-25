@@ -342,16 +342,9 @@ const NAMED_OBJECTS_PREFIX: &[u8] = b"\\BaseNamedObjects\\";
 /// `prefix` (ASCII) then `name` (UTF-16 units, as the namespace keeps names) into `out`: the units
 /// written.
 fn name_units(prefix: &[u8], name: &[u16], out: &mut [u16]) -> usize {
-    let units = prefix
-        .iter()
-        .map(|&byte| u16::from(byte))
-        .chain(name.iter().copied());
-    let mut count = 0;
-    for unit in units {
-        out[count] = unit;
-        count += 1;
-    }
-    count
+    let at = rtl::cstr::ascii_into(&mut out[..prefix.len()], prefix);
+    out[at..at + name.len()].copy_from_slice(name);
+    at + name.len()
 }
 
 /// OBJECT_NAME_INFORMATION's layout for a name of `units` units, the caller's structure at

@@ -38,6 +38,7 @@
 use core::mem::{offset_of, size_of};
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use rtl::cstr::ascii_into;
 use rtl::display::*;
 use rtl::gdi::Rect;
 use rtl::pod::Pod;
@@ -469,9 +470,7 @@ pub fn enum_display_devices(
 /// Write `text` (ASCII) at `at` as a NUL-padded UTF-16 field of `room` characters.
 fn write_text(at: UserAddr, room: usize, text: &str) -> Result<(), Fault> {
     let mut units = [0u16; DEVICE_STRING_CHARS];
-    for (unit, byte) in units[..room - 1].iter_mut().zip(text.bytes()) {
-        *unit = byte as u16;
-    }
+    ascii_into(&mut units[..room - 1], text.as_bytes());
     at.write(&units.as_bytes()[..2 * room])
 }
 

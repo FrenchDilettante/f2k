@@ -994,11 +994,7 @@ impl Registry {
         }
         // The ANSI copy holds the integer form already: '#' and ASCII digits.
         let ansi = &class.ansi_name[..class.ansi_len as usize];
-        let written = ansi.len().min(out.len());
-        for (unit, &byte) in out.iter_mut().zip(&ansi[..written]) {
-            *unit = u16::from(byte);
-        }
-        written
+        rtl::cstr::ascii_into(out, ansi)
     }
 
     /// The atom of a registered name (RegisterClipboardFormat's, and RegisterWindowMessage's on
