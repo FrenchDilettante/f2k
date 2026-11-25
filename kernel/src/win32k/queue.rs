@@ -47,7 +47,8 @@
 //! has no queue, waiting on an event of its own ([`wait_for_server`]). SendMessageTimeout's
 //! sender waits no longer than its timeout, a message its receiver has not read by then taken back
 //! ([`abandon_send`]); SendNotifyMessage's waits for nothing, its message answered to nobody
-//! ([`send_notify`]).
+//! ([`send_notify`]). Sent messages are records of a slot pool ([`crate::slots`]) that grows a
+//! page at a time and keeps its peak, each named by an id its slot's count checks ([`SentId`]).
 //!
 //! A queue keeps what Windows 2000 keeps of its thread's reads: the kinds of message given it
 //! since a read last looked for them (the change bits WaitMessage wakes on, [`wait_ready`]: a
@@ -149,6 +150,7 @@ use super::window::{
     THREADS,
 };
 use crate::sched::thread::ThreadId;
+use crate::slots::{self, Codec, Match, Record, Reuse, Slots};
 use crate::status::*;
 
 /// How many messages posted to a thread its queue holds at once: Windows 2000's
@@ -157,8 +159,11 @@ use crate::status::*;
 pub const POSTED_LIMIT: u32 = 10_000;
 // ERROR_NOT_ENOUGH_QUOTA: the post past [`POSTED_LIMIT`]'s refusal, as win32k carries it.
 use rtl::winerror::{ERROR_INVALID_THREAD_ID, ERROR_MESSAGE_SYNC_ONLY, ERROR_NOT_ENOUGH_QUOTA};
-/// How many sent messages can be on their way at once.
-pub const SENT: usize = 128;
+/// Where the sent messages' pool takes its pages: the nonpaged pool on target.
+#[cfg(target_arch = "x86")]
+static PAGES: slots::NonpagedPages = slots::NonpagedPages;
+#[cfg(not(target_arch = "x86"))]
+static PAGES: slots::HostPages = slots::HostPages::new();
 
 /// The words of the wake set: a bit a queue.
 const WAKE_WORDS: usize = THREADS.div_ceil(32);
@@ -185,11 +190,96 @@ pub struct QueueId {
     generation: u16,
 }
 
-/// A sent message's id: its record and the record's generation.
+/// A sent message's id: its slot in the sent messages' pool and the slot's uniqueness count
+/// ([`SentToken`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SentId {
     index: u16,
     generation: u16,
+}
+
+/// How a [`SentId`] carries its slot: the slot pool's codec for the sent messages, whose index
+/// ceiling is [`SentId::token`]'s 15 bits.
+pub struct SentToken;
+
+impl Codec for SentToken {
+    type Id = SentId;
+
+    const LANES: usize = 1;
+    /// The token's low word carries the index under its 0x8000 bit: 32,768 sends on their way at
+    /// once, F2K's representation limit (a send waits on its receiver, so a thread has one or
+    /// two on their way, a few for the messages it delivers meanwhile).
+    const MAX_INDEX: u32 = 0x7FFF;
+    const MAX_UNIQ: u16 = 0xFFFE;
+    const RESERVED_LOW: u32 = 0;
+    const REUSE: Reuse = Reuse::Fifo;
+
+    fn encode(index: u32, uniq: u16) -> SentId {
+        SentId {
+            index: index as u16,
+            generation: uniq,
+        }
+    }
+
+    fn decode(id: SentId) -> Option<(u32, Match)> {
+        Some((id.index as u32, Match::Exact(id.generation)))
+    }
+}
+
+/// The sent messages a chunk of their pool holds: a page's worth.
+const SENT_PER: usize = slots::per_page::<Sent>();
+// A 96-byte record in a 104-byte slot: 39 to a page on target.
+#[cfg(target_arch = "x86")]
+const _: () = assert!(SENT_PER == 39 && Slots::<Sent, SentToken, SENT_PER>::CHUNK_PAGES == 1);
+
+/// The sent messages: a slot pool that grows a page at a time and keeps its peak (the slot-pool
+/// plan's rule), linked into their receivers' lists by [`SentId`]. A link names a live record
+/// (a record leaves every list before it is freed), so [`SentPool::at`] holds it to that.
+struct SentPool(Slots<Sent, SentToken, SENT_PER>);
+
+impl SentPool {
+    const EMPTY: Self = SentPool(Slots::new());
+
+    /// The live sent message `id` names; none for a stale or forged id.
+    fn get(&self, id: SentId) -> Option<&Sent> {
+        self.0.get(id)
+    }
+
+    /// The live sent message a list links to.
+    fn at(&self, id: SentId) -> &Sent {
+        self.0.get(id).expect("a linked sent message is live")
+    }
+
+    /// [`SentPool::at`], to change.
+    fn at_mut(&mut self, id: SentId) -> &mut Sent {
+        self.0.get_mut(id).expect("a linked sent message is live")
+    }
+
+    /// `record` in a fresh slot, the pool grown by a page when it needs one: its id; none when no
+    /// page can be had, or 32,768 sends are on their way.
+    fn allocate(&mut self, record: Sent) -> Option<SentId> {
+        let (id, slot) = self.0.allocate_or_grow(0, &PAGES).ok()?;
+        *slot = record;
+        Some(id)
+    }
+
+    /// Free the live sent message `id`: its id names nothing after.
+    fn free(&mut self, id: SentId) {
+        let freed = self.0.free(id);
+        debug_assert!(freed, "a live sent message freed");
+    }
+
+    /// The live sent messages' ids, in slot order, one at a time: none of the pool borrowed
+    /// between them, so a record can be freed on the way.
+    fn next_live(&self, from: u32) -> Option<(u32, SentId)> {
+        (from..self.0.high_water()).find_map(|index| Some((index, self.0.id_at(index)?)))
+    }
+
+    /// How many sent messages are live.
+    #[cfg(test)]
+    fn live(&self) -> u32 {
+        self.0.live()
+    }
 }
 
 impl SentId {
@@ -203,18 +293,18 @@ impl SentId {
     /// The id a [`SentId::token`] names; none for 0 or a token naming no record.
     pub fn from_token(token: u32) -> Option<SentId> {
         let index = token as u16 & !0x8000;
-        (token & 0x8000 != 0 && (index as usize) < SENT).then_some(SentId {
+        (token & 0x8000 != 0).then_some(SentId {
             index,
             generation: (token >> 16) as u16,
         })
     }
 }
 
-/// A singly linked list of pool entries, oldest first.
+/// A singly linked list of sent messages, oldest first.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct List {
-    head: Option<u16>,
-    tail: Option<u16>,
+    head: Option<SentId>,
+    tail: Option<SentId>,
 }
 
 impl List {
@@ -256,7 +346,7 @@ struct Queue {
     /// The sent messages not handed out yet, oldest first.
     sent: List,
     /// The sent messages handed out and not answered yet, innermost first.
-    receiving: Option<u16>,
+    receiving: Option<SentId>,
     /// PostQuitMessage's exit code, until a read takes the WM_QUIT.
     quit: Option<u32>,
     /// The kinds of message (queue-status bits) given the queue since a read last looked for them:
@@ -360,8 +450,6 @@ struct CarriedText {
 /// A sent message.
 #[derive(Clone, Copy)]
 struct Sent {
-    live: bool,
-    generation: u16,
     receiver: Option<QueueId>,
     /// The thread waiting for the answer; none for a message the window manager or the server
     /// sent.
@@ -384,13 +472,11 @@ struct Sent {
     state: State,
     result: LResult,
     /// The next one on the receiver's list or receiving stack.
-    next: Option<u16>,
+    next: Option<SentId>,
 }
 
 impl Sent {
     const EMPTY: Self = Sent {
-        live: false,
-        generation: 0,
         receiver: None,
         sender: None,
         server: false,
@@ -409,13 +495,21 @@ impl Sent {
     };
 }
 
+// SAFETY: `write_fresh` writes a whole record.
+unsafe impl Record for Sent {
+    unsafe fn write_fresh(at: *mut Self, _index: u32) {
+        // SAFETY: the caller's contract; a record a page holds dozens of passes through the stack.
+        unsafe { at.write(Sent::EMPTY) };
+    }
+}
+
 /// The queues, the pools their messages come from, the timers ([`super::timer`]) and the windows'
 /// update regions ([`super::paint`]): the message layer's state, in the window registry, behind the
 /// window manager's lock.
 pub struct Queues {
     queues: [Queue; THREADS],
     posted: super::posted::Pool<Posted>,
-    sent: [Sent; SENT],
+    sent: SentPool,
     /// The texts the sent messages carry: a text to another process's window.
     store: Texts,
     pub timers: super::timer::Timers,
@@ -445,10 +539,7 @@ impl Queues {
                 records.add(index).write(Queue::EMPTY);
             }
             addr_of_mut!((*queues).posted).write(super::posted::Pool::EMPTY);
-            let sent = addr_of_mut!((*queues).sent) as *mut Sent;
-            for index in 0..SENT {
-                sent.add(index).write(Sent::EMPTY);
-            }
+            addr_of_mut!((*queues).sent).write(SentPool::EMPTY);
             addr_of_mut!((*queues).store).write(Texts::EMPTY);
             super::timer::Timers::write_empty(addr_of_mut!((*queues).timers));
             super::paint::Updates::write_empty(addr_of_mut!((*queues).updates));
@@ -580,52 +671,37 @@ impl Queues {
 
     /// The live sent message `id` names.
     fn sent_at(&self, id: SentId) -> Option<&Sent> {
-        let sent = &self.sent[id.index as usize];
-        (sent.live && sent.generation == id.generation).then_some(sent)
+        self.sent.get(id)
     }
 
-    /// A fresh sent message from the pool; none when it is exhausted.
+    /// A fresh sent message from the pool; none when it cannot grow.
     fn allocate_sent(&mut self, record: Sent) -> Option<SentId> {
-        let index = self.sent.iter().position(|s| !s.live)?;
-        let generation = self.sent[index].generation;
-        self.sent[index] = Sent {
-            live: true,
-            generation,
-            ..record
-        };
-        Some(SentId {
-            index: index as u16,
-            generation,
-        })
+        self.sent.allocate(record)
     }
 
-    /// Give the sent message at `index` back to the pool, the text it carries with it.
-    fn free_sent(&mut self, index: u16) {
-        if let Carried::Text(carried) = self.sent[index as usize].carried {
+    /// Give the sent message `id` back to the pool, the text it carries with it.
+    fn free_sent(&mut self, id: SentId) {
+        if let Carried::Text(carried) = self.sent.at(id).carried {
             self.store.free(carried.text);
         }
-        let generation = self.sent[index as usize].generation.wrapping_add(1);
-        self.sent[index as usize] = Sent {
-            generation,
-            ..Sent::EMPTY
-        };
+        self.sent.free(id);
     }
 
-    /// Append the sent message at `index` to its receiver's list, and wake the receiver.
-    fn push_sent(&mut self, receiver: QueueId, index: u16) {
+    /// Append the sent message `id` to its receiver's list, and wake the receiver.
+    fn push_sent(&mut self, receiver: QueueId, id: SentId) {
         let queue = &mut self.queues[receiver.index as usize];
         match queue.sent.tail {
-            Some(tail) => self.sent[tail as usize].next = Some(index),
-            None => queue.sent.head = Some(index),
+            Some(tail) => self.sent.at_mut(tail).next = Some(id),
+            None => queue.sent.head = Some(id),
         }
-        queue.sent.tail = Some(index);
+        queue.sent.tail = Some(id);
         self.change(receiver, QS_SENDMESSAGE);
     }
 
-    /// Answer the sent message at `index` with `result`: its sender, if it still waits, or the
-    /// server, collects the answer; one nobody waits on goes back to the pool.
-    fn answer(&mut self, index: u16, result: LResult) {
-        let sent = &mut self.sent[index as usize];
+    /// Answer the sent message `id` with `result`: its sender, if it still waits, or the server,
+    /// collects the answer; one nobody waits on goes back to the pool.
+    fn answer(&mut self, id: SentId, result: LResult) {
+        let sent = self.sent.at_mut(id);
         sent.next = None;
         if sent.server {
             sent.state = State::Answered;
@@ -639,30 +715,30 @@ impl Queues {
                 sent.result = result;
                 self.wake(sender);
             }
-            _ => self.free_sent(index),
+            _ => self.free_sent(id),
         }
     }
 
-    /// The sent message at `index` will never be answered (its window or its receiver's queue
-    /// went): a send the server waits on is dropped, for the server to see, as no answer of the
-    /// window's; any other is answered 0, what SendMessage gives back then.
-    fn drop_unanswered(&mut self, index: u16) {
-        let sent = &mut self.sent[index as usize];
+    /// The sent message `id` will never be answered (its window or its receiver's queue went): a
+    /// send the server waits on is dropped, for the server to see, as no answer of the window's;
+    /// any other is answered 0, what SendMessage gives back then.
+    fn drop_unanswered(&mut self, id: SentId) {
+        let sent = self.sent.at_mut(id);
         if sent.server {
             sent.next = None;
             sent.state = State::Dropped;
             self.server_wake = true;
         } else {
-            self.answer(index, 0);
+            self.answer(id, 0);
         }
     }
 
-    /// The sent message at `index` will never be answered: its receiver's queue ended, its thread
-    /// gone. A send the server or a thread waits on is dropped, for the sender to see — the
-    /// thread's SendMessage then fails, as Windows 2000's fails when its receiver dies; one nobody
-    /// waits on goes back to the pool.
-    fn receiver_gone(&mut self, index: u16) {
-        let sent = &mut self.sent[index as usize];
+    /// The sent message `id` will never be answered: its receiver's queue ended, its thread gone.
+    /// A send the server or a thread waits on is dropped, for the sender to see — the thread's
+    /// SendMessage then fails, as Windows 2000's fails when its receiver dies; one nobody waits on
+    /// goes back to the pool.
+    fn receiver_gone(&mut self, id: SentId) {
+        let sent = self.sent.at_mut(id);
         sent.next = None;
         match sent.sender {
             Some(sender) if self.queues[sender.index as usize].generation == sender.generation => {
@@ -673,26 +749,26 @@ impl Queues {
                 sent.state = State::Dropped;
                 self.server_wake = true;
             }
-            _ => self.free_sent(index),
+            _ => self.free_sent(id),
         }
     }
 
-    /// Take the sent message at `index` off its receiver's list, where it waits to be handed out.
-    fn unlink_sent(&mut self, receiver: QueueId, index: u16) {
+    /// Take the sent message `id` off its receiver's list, where it waits to be handed out.
+    fn unlink_sent(&mut self, receiver: QueueId, id: SentId) {
         let mut previous = None;
         let mut at = self.queues[receiver.index as usize].sent.head;
         while let Some(entry) = at {
-            let next = self.sent[entry as usize].next;
-            if entry == index {
+            let next = self.sent.at(entry).next;
+            if entry == id {
                 let list = &mut self.queues[receiver.index as usize].sent;
                 match previous {
-                    Some(p) => self.sent[p as usize].next = next,
+                    Some(p) => self.sent.at_mut(p).next = next,
                     None => list.head = next,
                 }
                 if list.tail == Some(entry) {
                     list.tail = previous;
                 }
-                self.sent[entry as usize].next = None;
+                self.sent.at_mut(entry).next = None;
                 return;
             }
             previous = Some(entry);
@@ -701,42 +777,42 @@ impl Queues {
     }
 
     /// The queue's next sent message, taken off its list; none when there is none.
-    fn pop_sent(&mut self, id: QueueId) -> Option<u16> {
+    fn pop_sent(&mut self, id: QueueId) -> Option<SentId> {
         let queue = &mut self.queues[id.index as usize];
-        let index = queue.sent.head?;
-        queue.sent.head = self.sent[index as usize].next;
+        let sent = queue.sent.head?;
+        queue.sent.head = self.sent.at(sent).next;
         if queue.sent.head.is_none() {
             queue.sent.tail = None;
         }
-        self.sent[index as usize].next = None;
-        Some(index)
+        self.sent.at_mut(sent).next = None;
+        Some(sent)
     }
 
-    /// The sent message at `index`, which ReplyMessage answered ([`State::Replied`]), leaves its
+    /// The sent message `id`, which ReplyMessage answered ([`State::Replied`]), leaves its
     /// receiver's stack: back to the pool when its answer was taken already (or nobody waits for
     /// it), else answered, for its sender or the server to take.
-    fn leave_stack(&mut self, index: u16) {
-        let sent = &mut self.sent[index as usize];
+    fn leave_stack(&mut self, id: SentId) {
+        let sent = self.sent.at_mut(id);
         sent.next = None;
         if sent.state != State::Replied {
             return;
         }
         if sent.sender.is_none() && !sent.server {
-            self.free_sent(index);
+            self.free_sent(id);
         } else {
             sent.state = State::Answered;
         }
     }
 
-    /// The sender or the server took the answer to the sent message at `index`: back to the pool,
-    /// unless its receiver still delivers it ([`State::Replied`]), whose delivery's end frees it.
-    fn collected(&mut self, index: u16) {
-        let sent = &mut self.sent[index as usize];
+    /// The sender or the server took the answer to the sent message `id`: back to the pool, unless
+    /// its receiver still delivers it ([`State::Replied`]), whose delivery's end frees it.
+    fn collected(&mut self, id: SentId) {
+        let sent = self.sent.at_mut(id);
         if sent.state == State::Replied {
             sent.sender = None;
             sent.server = false;
         } else {
-            self.free_sent(index);
+            self.free_sent(id);
         }
     }
 
@@ -753,8 +829,8 @@ impl Queues {
             self.receiver_gone(sent);
         }
         while let Some(sent) = self.queues[index as usize].receiving {
-            self.queues[index as usize].receiving = self.sent[sent as usize].next;
-            if self.sent[sent as usize].state == State::Received {
+            self.queues[index as usize].receiving = self.sent.at(sent).next;
+            if self.sent.at(sent).state == State::Received {
                 self.receiver_gone(sent);
             } else {
                 self.leave_stack(sent);
@@ -762,12 +838,14 @@ impl Queues {
         }
         // The sends it waits on, the innermost and the ones it delivered messages inside: their
         // answers go to nobody.
-        for at in 0..SENT as u16 {
-            let sent = &mut self.sent[at as usize];
-            if sent.live && sent.sender == Some(id) {
+        let mut from = 0;
+        while let Some((at, live)) = self.sent.next_live(from) {
+            from = at + 1;
+            let sent = self.sent.at_mut(live);
+            if sent.sender == Some(id) {
                 sent.sender = None;
                 if sent.state == State::Answered {
-                    self.free_sent(at);
+                    self.free_sent(live);
                 }
             }
         }
@@ -1137,20 +1215,19 @@ fn read_queue(
     // is answered 0 (dropped, for the server) and skipped (the window manager's own sends are
     // delivered whatever became of the window).
     while let Some(index) = windows.queues.pop_sent(id) {
-        let sent = windows.queues.sent[index as usize];
+        let sent = *windows.queues.sent.at(index);
         let window_gone = sent.window.is_none_or(|w| !windows.is_live(w));
         if (sent.sender.is_some() || sent.server || sent.notify) && window_gone {
             windows.queues.drop_unanswered(index);
             continue;
         }
         let queues = &mut windows.queues;
-        queues.sent[index as usize].state = State::Received;
-        queues.sent[index as usize].next = queues.queues[id.index as usize].receiving;
+        let receiving = queues.queues[id.index as usize].receiving;
+        let record = queues.sent.at_mut(index);
+        record.state = State::Received;
+        record.next = receiving;
         queues.queues[id.index as usize].receiving = Some(index);
-        return Ok(Taken::Sent(SentId {
-            index,
-            generation: sent.generation,
-        }));
+        return Ok(Taken::Sent(index));
     }
     if !filter.looks_at_queued() {
         return Ok(Taken::Nothing { due: None });
@@ -1420,7 +1497,7 @@ pub fn received_text(
 ) -> Option<&[u16]> {
     let queues = &mut windows.queues;
     let index = queues.queues[queues.queue_of(caller)?.index as usize].receiving?;
-    let sent = &mut queues.sent[index as usize];
+    let sent = queues.sent.at_mut(index);
     let text = match &mut sent.carried {
         Carried::Text(carried) => {
             if sent.message == WM_GETTEXT {
@@ -1440,7 +1517,7 @@ pub fn received_text(
 pub fn text_reply_buffer(windows: &Windows, caller: ThreadId) -> Option<(u32, usize)> {
     let queues = &windows.queues;
     let index = queues.queues[queues.queue_of(caller)?.index as usize].receiving?;
-    let sent = &queues.sent[index as usize];
+    let sent = queues.sent.at(index);
     match (sent.carried, sent.message) {
         (Carried::Text(carried), WM_GETTEXT) if carried.buffer != 0 => Some((
             carried.buffer,
@@ -1461,7 +1538,7 @@ pub fn keep_text_reply(windows: &mut Windows, caller: ThreadId, units: &[u16]) {
     let Some(index) = queues.queues[queue.index as usize].receiving else {
         return;
     };
-    let sent = &mut queues.sent[index as usize];
+    let sent = queues.sent.at_mut(index);
     if let (Carried::Text(carried), WM_GETTEXT) = (&mut sent.carried, sent.message) {
         if !queues.store.replace(&mut carried.text, units) {
             queues.store.free(carried.text);
@@ -1520,11 +1597,11 @@ pub fn end_sent(windows: &mut Windows, caller: ThreadId, result: LResult) -> boo
     let Some(index) = queues.queues[id.index as usize].receiving else {
         return false;
     };
-    queues.queues[id.index as usize].receiving = queues.sent[index as usize].next;
+    queues.queues[id.index as usize].receiving = queues.sent.at(index).next;
     let Sent {
         message, window, ..
-    } = queues.sent[index as usize];
-    if queues.sent[index as usize].state == State::Received {
+    } = *queues.sent.at(index);
+    if queues.sent.at(index).state == State::Received {
         queues.answer(index, result);
     } else {
         // ReplyMessage answered it: the sender takes that answer, or took it already.
@@ -1546,7 +1623,7 @@ pub fn reply(windows: &mut Windows, caller: ThreadId, result: LResult) -> bool {
     let Some(index) = queues.queues[id.index as usize].receiving else {
         return false;
     };
-    let sent = &mut queues.sent[index as usize];
+    let sent = queues.sent.at_mut(index);
     if (sent.sender.is_none() && !sent.server) || sent.state != State::Received {
         return false;
     }
@@ -1571,7 +1648,7 @@ pub fn in_send(windows: &Windows, caller: ThreadId) -> bool {
     let Some(index) = queues.queues[id.index as usize].receiving else {
         return false;
     };
-    let sent = &queues.sent[index as usize];
+    let sent = queues.sent.at(index);
     sent.sender.is_some() || sent.server || sent.notify
 }
 
@@ -1590,7 +1667,7 @@ pub enum Sending {
 }
 
 /// SendMessage's step: see [`Sending`]. STATUS_INVALID_HANDLE for a handle naming no window,
-/// STATUS_NO_MEMORY when the sent messages' pool is full. (The service sends through
+/// STATUS_NO_MEMORY when the sent messages' pool cannot grow. (The service sends through
 /// [`send_carrying`].)
 #[cfg(test)]
 pub fn send(
@@ -1670,7 +1747,7 @@ pub fn send_carrying(
         }
         return Err(STATUS_NO_MEMORY);
     };
-    queues.push_sent(receiver, id.index);
+    queues.push_sent(receiver, id);
     Ok(Sending::Waiting(id))
 }
 
@@ -1687,7 +1764,7 @@ pub const INVALID_THREAD_ID: NtStatus = NtStatus::from_win32(ERROR_INVALID_THREA
 /// thread's window has the message queued for its thread as a sent one, its answer waited for by
 /// nobody ([`Sending::Answered`] 0 at once). STATUS_INVALID_HANDLE for a handle naming no window,
 /// [`MESSAGE_SYNC_ONLY`] for a message whose pointer cannot go to another thread, STATUS_NO_MEMORY
-/// when the sent messages' pool is full.
+/// when the sent messages' pool cannot grow.
 pub fn send_notify(
     windows: &mut Windows,
     caller: ThreadId,
@@ -1726,7 +1803,7 @@ pub fn send_notify(
             ..Sent::EMPTY
         })
         .ok_or(STATUS_NO_MEMORY)?;
-    queues.push_sent(receiver, id.index);
+    queues.push_sent(receiver, id);
     Ok(Sending::Answered(0))
 }
 
@@ -1743,11 +1820,11 @@ pub fn abandon_send(windows: &mut Windows, caller: ThreadId, id: SentId) {
     }
     match (sent.state, sent.receiver) {
         (State::Queued, Some(receiver)) => {
-            queues.unlink_sent(receiver, id.index);
-            queues.free_sent(id.index);
+            queues.unlink_sent(receiver, id);
+            queues.free_sent(id);
         }
-        (State::Answered | State::Dropped, _) => queues.free_sent(id.index),
-        _ => queues.sent[id.index as usize].sender = None,
+        (State::Answered | State::Dropped, _) => queues.free_sent(id),
+        _ => queues.sent.at_mut(id).sender = None,
     }
 }
 
@@ -1762,7 +1839,7 @@ pub fn collect_reply(windows: &mut Windows, caller: ThreadId, id: SentId) -> Opt
         return None;
     }
     let result = sent.result;
-    queues.collected(id.index);
+    queues.collected(id);
     Some(result)
 }
 
@@ -1795,7 +1872,7 @@ pub fn await_reply(windows: &mut Windows, caller: ThreadId, id: SentId) -> Await
     if queues.sent_at(id).is_some_and(|s| {
         s.state == State::Dropped && s.sender.is_some() && s.sender == queues.queue_of(caller)
     }) {
-        queues.free_sent(id.index);
+        queues.free_sent(id);
         return Awaited::Failed;
     }
     match queues.queue_of(caller) {
@@ -1824,7 +1901,7 @@ pub fn resume_send(
 /// Keep the caller's send `id`'s `deadline` with it, for the wait's resumption ([`resume_send`]).
 pub fn keep_deadline(windows: &mut Windows, id: SentId, deadline: Option<u64>) {
     if windows.queues.sent_at(id).is_some() {
-        windows.queues.sent[id.index as usize].deadline = deadline;
+        windows.queues.sent.at_mut(id).deadline = deadline;
     }
 }
 
@@ -1836,7 +1913,7 @@ pub enum ServerSending {
     /// Queued for the window's thread: the server waits for the answer ([`server_reply`]).
     Waiting(SentId),
     /// Nowhere: the handle names no window, the window's procedure is the window manager's, its
-    /// thread has no queue, or the sent messages' pool is full.
+    /// thread has no queue, or the sent messages' pool cannot grow.
     Unreachable,
 }
 
@@ -1885,7 +1962,7 @@ pub fn server_send(
     }) else {
         return ServerSending::Unreachable;
     };
-    queues.push_sent(receiver, id.index);
+    queues.push_sent(receiver, id);
     ServerSending::Waiting(id)
 }
 
@@ -1899,7 +1976,7 @@ pub fn server_reply(windows: &mut Windows, id: SentId) -> Option<ServerReply> {
         State::Dropped => ServerReply::Dropped,
         State::Queued | State::Received | State::Answered | State::Replied => return None,
     };
-    queues.collected(id.index);
+    queues.collected(id);
     Some(reply)
 }
 
@@ -1914,12 +1991,12 @@ pub fn server_abandon(windows: &mut Windows, id: SentId) {
     match sent.state {
         State::Queued => {
             if let Some(receiver) = sent.receiver {
-                queues.unlink_sent(receiver, id.index);
+                queues.unlink_sent(receiver, id);
             }
-            queues.free_sent(id.index);
+            queues.free_sent(id);
         }
-        State::Received | State::Replied => queues.sent[id.index as usize].server = false,
-        State::Answered | State::Dropped => queues.free_sent(id.index),
+        State::Received | State::Replied => queues.sent.at_mut(id).server = false,
+        State::Answered | State::Dropped => queues.free_sent(id),
     }
 }
 
@@ -1941,9 +2018,9 @@ pub fn dispatch_target(windows: &Windows, msg: &Msg) -> Result<u32, NtStatus> {
 
 /// Queue `message` for the window `target`'s thread as a message the window manager sent (no
 /// thread waits for its answer): see the module notes. Nothing for a window whose procedure is the
-/// window manager's, or a thread with no queue; nothing either when the pool is full (the message
-/// is lost), nor for a creation message, which goes to the creating thread's own window, by
-/// callback ([`QueueSession`]).
+/// window manager's, or a thread with no queue; nothing either when the pool cannot grow (the
+/// message is lost), nor for a creation message, which goes to the creating thread's own window,
+/// by callback ([`QueueSession`]).
 pub fn defer(windows: &mut Windows, target: WindowId, message: &Message) {
     let Some(proc) = windows.client_proc(target) else {
         return;
@@ -1974,7 +2051,7 @@ pub fn defer(windows: &mut Windows, target: WindowId, message: &Message) {
     }) else {
         return;
     };
-    queues.push_sent(receiver, id.index);
+    queues.push_sent(receiver, id);
 }
 
 /// The callback a message the window manager sends to `target` (whose procedure is `proc`) is
@@ -3984,6 +4061,77 @@ mod tests {
         assert_eq!(live_sends(m), 0);
     }
 
+    /// The sent messages' pool grows past a page and past the old fixed 128 records: 300 sends
+    /// on their way at once, each answered in its order. A token's high word is its slot's count,
+    /// 1 at first and one more once the slot is freed, the slot freed first taken first, so a
+    /// collected send's token names nothing after; a token naming a slot never made names nothing
+    /// either.
+    #[test]
+    fn sends_on_their_way_grow_the_pool_and_stale_tokens_name_nothing() {
+        let (m, atom) = manager();
+        let a = thread(m, 1, 0x100);
+        let b = thread(m, 2, 0x200);
+        let hb = popup(m, atom, b);
+        deliver(m, b);
+        // The creation's own sends used the first slots already.
+        let fresh = m.windows.queues.sent.0.high_water();
+        let ids: Vec<SentId> = (0..300)
+            .map(|n| {
+                let Ok(Sending::Waiting(id)) = send(&mut m.windows, a, hb, WM_USER, n, 0) else {
+                    panic!("queued");
+                };
+                id
+            })
+            .collect();
+        assert_eq!(live_sends(m), 300);
+        assert!(
+            ids.iter()
+                .filter(|id| u32::from(id.index) >= fresh)
+                .all(|id| id.token() >> 16 == 1),
+            "a slot's first count is 1"
+        );
+        for (n, id) in ids.iter().enumerate() {
+            let Taken::Sent(got) = read(m, b, &all(), 0) else {
+                panic!("the receiver reads send {n}");
+            };
+            assert_eq!(got, *id, "in the order sent");
+            assert!(end_sent(&mut m.windows, b, n as LResult + 1));
+            assert_eq!(
+                collect_reply(&mut m.windows, a, *id),
+                Some(n as LResult + 1)
+            );
+        }
+        assert_eq!(live_sends(m), 0);
+
+        let stale = SentId::from_token(ids[0].token()).unwrap();
+        assert_eq!(receipt_head(&m.windows, b, stale, 0, 0), None);
+        assert_eq!(
+            resume_send(&m.windows, a, stale),
+            Err(STATUS_INVALID_PARAMETER)
+        );
+        let unmade = SentId::from_token(0x0001_8000 | 0x7FFF).unwrap();
+        assert_eq!(
+            resume_send(&m.windows, a, unmade),
+            Err(STATUS_INVALID_PARAMETER)
+        );
+        assert_eq!(SentId::from_token(0x0001_0005), None, "no 0x8000 bit");
+
+        let Ok(Sending::Waiting(again)) = send(&mut m.windows, a, hb, WM_USER, 0, 0) else {
+            panic!("queued");
+        };
+        assert_eq!(
+            again.token() & 0x7FFF,
+            ids[0].token() & 0x7FFF,
+            "the oldest freed first"
+        );
+        assert_eq!(
+            again.token() >> 16,
+            (ids[0].token() >> 16) + 1,
+            "its count moved on"
+        );
+        assert_eq!(collect_reply(&mut m.windows, a, ids[0]), None);
+    }
+
     /// A message another thread sent to a window destroyed before it was read is answered 0 and
     /// never handed out; a queue that ends fails what was sent to it, and what was posted to it
     /// goes.
@@ -4160,10 +4308,7 @@ mod tests {
         assert!(end_sent(&mut m.windows, b, 1));
         assert!(!m.windows.queues.take_server_wake());
         assert_eq!(server_reply(&mut m.windows, id), None);
-        assert!(
-            m.windows.queues.sent.iter().all(|s| !s.live),
-            "every record back"
-        );
+        assert!(m.windows.queues.sent.live() == 0, "every record back");
     }
 
     /// The session's end's walk of a process's windows: its top-level windows only (not its
@@ -4298,7 +4443,7 @@ mod tests {
 
     /// The sent messages in the pool, live.
     fn live_sends(m: &WindowManager) -> usize {
-        m.windows.queues.sent.iter().filter(|s| s.live).count()
+        m.windows.queues.sent.live() as usize
     }
 
     /// WaitMessage wakes on what came to the queue since a read last looked for it, as the wait

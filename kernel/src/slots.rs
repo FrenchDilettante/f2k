@@ -25,8 +25,8 @@
 //! ([`Slots::on`] with a `&'static Paged`), which the reader resolves through alone
 //! ([`Slots::address_in`], [`SideTable::address_in`], [`SideTable::index_at_in`]).
 
-// Only the process records (a `SideTable`) and win32k's menus, menu items and accelerator tables
-// (`Slots`) have moved onto these types; the rest waits for its consumers.
+// Only the process records (a `SideTable`) and win32k's menus, menu items, accelerator tables and
+// sent messages (`Slots`) have moved onto these types; the rest waits for its consumers.
 #![allow(dead_code)]
 
 use core::cell::Cell;
@@ -590,6 +590,11 @@ const fn pages_of<T>(count: usize) -> usize {
 
 // --- Slots --------------------------------------------------------------------------------------
 
+/// How many slots of `T` a page holds: the `PER` of a pool whose chunk is one page.
+pub const fn per_page<T>() -> usize {
+    PAGE / core::mem::size_of::<Slot<T>>()
+}
+
 /// A slot's state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -931,6 +936,17 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
     pub fn get_mut(&mut self, id: C::Id) -> Option<&mut T> {
         let index = self.find(id, State::Live)?;
         Some(self.value(index))
+    }
+
+    /// The id of the live slot `index`; none for a slot not live, or not made.
+    pub fn id_at(&self, index: u32) -> Option<C::Id> {
+        if !(C::RESERVED_LOW..=Self::LIMIT).contains(&index) {
+            return None;
+        }
+        let slot = self.slot(index)?;
+        // SAFETY: a made chunk's slot, written whole; only the meta is read.
+        let (uniq, state) = unsafe { ((*slot.as_ptr()).uniq, (*slot.as_ptr()).state) };
+        (state == State::Live).then(|| C::encode(index, uniq))
     }
 
     /// The index `id` names while its slot is live.
@@ -1527,7 +1543,8 @@ impl Pages for NonpagedPages {
 }
 
 /// Pages from the host allocator, counted, with a budget a test lowers to make `take` fail: the
-/// host builds' [`KERNEL_PAGES`], and the pools' own tests'.
+/// host builds' [`KERNEL_PAGES`] (the unit tests, and the plain library the documentation tests
+/// build against), and the pools' own tests'.
 #[cfg(not(target_arch = "x86"))]
 pub struct HostPages {
     /// How many more pages `take` hands out.
@@ -1704,6 +1721,41 @@ mod tests {
         assert!(ids.iter().all(|id| pool.get(*id).is_some()));
         pages.set_budget(1);
         assert!(pool.allocate_or_grow(0, &pages).is_ok());
+    }
+
+    /// `id_at` names a live slot's current id, and nothing for a freed, reserved, unmade or
+    /// out-of-range slot; `per_page` fills a page with slots and no more.
+    #[test]
+    fn id_at_names_live_slots_only() {
+        let pages = HostPages::new();
+        let mut pool = boxed(Slots::<Rec, Small<9, false>, 4, Inline<8>>::new());
+        let a = pool.allocate_or_grow(0, &pages).unwrap().0;
+        let b = pool.allocate_or_grow(0, &pages).unwrap().0;
+        let reserved = pool.reserve(0).unwrap();
+        assert_eq!(pool.id_at(0), Some(a));
+        assert_eq!(pool.id_at(1), Some(b));
+        assert_eq!(pool.id_at(2), None, "reserved");
+        assert_eq!(pool.id_at(3), None, "fresh");
+        assert_eq!(pool.id_at(4), None, "an unmade chunk");
+        assert_eq!(pool.id_at(10), None, "past the limit");
+        assert!(pool.free(a));
+        assert_eq!(pool.id_at(0), None, "freed");
+        assert!(pool.unreserve(reserved));
+        let again = pool.allocate(0).unwrap().0;
+        assert_eq!(
+            (again.index, again.uniq),
+            (0, 2),
+            "the oldest freed, its count on"
+        );
+        assert_eq!(pool.id_at(0), Some(again));
+
+        let per = per_page::<Rec>();
+        assert!(per * core::mem::size_of::<Slot<Rec>>() <= PAGE);
+        assert!((per + 1) * core::mem::size_of::<Slot<Rec>>() > PAGE);
+        assert_eq!(
+            Slots::<Rec, Small<9, false>, { per_page::<Rec>() }, Paged>::CHUNK_PAGES,
+            1
+        );
     }
 
     /// A fixed directory of N chunks reaches Limit at N × PER slots.
