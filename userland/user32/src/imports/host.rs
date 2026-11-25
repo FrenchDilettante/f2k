@@ -455,7 +455,6 @@ pub struct HostSent {
     pub wparam: u32,
     pub lparam: i32,
     pub proc: u32,
-    pub create: Option<CreateStructW>,
 }
 
 /// The stand-ins' window manager.
@@ -468,7 +467,7 @@ pub struct Wm {
     pub sent: VecDeque<HostSent>,
     /// The messages handed out and not answered yet, innermost last.
     pub receiving: Vec<u32>,
-    /// The answers the procedures gave, by message, in order.
+    /// The answers the procedures gave, by message, in order (a receipt's, or a callback's).
     pub answers: Vec<(u32, i32)>,
     pub posted: VecDeque<Msg>,
     pub quit: Option<u32>,
@@ -530,7 +529,6 @@ impl Wm {
             wparam,
             lparam,
             proc,
-            create: None,
         });
     }
 
@@ -777,18 +775,18 @@ pub unsafe extern "system" fn NtUserCreateWindowEx(
     });
     // SAFETY: the caller's out-pointer.
     unsafe { window.write(0) };
-    wm(|wm| {
+    let created = wm(|wm| {
         wm.created.push(Created {
             ex_style,
             class: class_name.clone(),
-            name: text,
+            name: text.clone(),
             version,
         });
         let Some(class) = wm.class(&class_name) else {
-            return CANNOT_FIND_WND_CLASS;
+            return Err(CANNOT_FIND_WND_CLASS);
         };
         if style & 0x4000_0000 != 0 && parent == 0 {
-            return TLW_WITH_WSCHILD;
+            return Err(TLW_WITH_WSCHILD);
         }
         class.windows += 1;
         let (atom, proc, ansi) = match (class.narrow, ex_style & 0x8000_0000 != 0) {
@@ -838,20 +836,46 @@ pub unsafe extern "system" fn NtUserCreateWindowEx(
             class: atom as u32,
             ex_style,
         };
-        for message in [WM_NCCREATE, WM_CREATE] {
-            wm.sent.push_back(HostSent {
-                hwnd: handle,
-                message,
-                wparam: 0,
-                lparam: 0,
-                proc,
-                create: Some(create),
-            });
-        }
         // SAFETY: the caller's out-pointer.
         unsafe { window.write(handle) };
-        STATUS_SUCCESS
-    })
+        Ok((handle, proc, create, text))
+    });
+    let (handle, proc, create, text) = match created {
+        Ok(created) => created,
+        Err(status) => return status,
+    };
+    // The creation messages, called back as the kernel does, once the stand-ins' state is let go.
+    for message in [WM_NCCREATE, WM_CREATE] {
+        call_back_create(
+            handle,
+            proc,
+            message,
+            create,
+            text.as_deref().unwrap_or(&[]),
+        );
+    }
+    STATUS_SUCCESS
+}
+
+/// A creation message to `proc` as the kernel's callback carries it: the message, the
+/// CREATESTRUCTW and the name, NUL-terminated, in one block ([`crate::callback::serve`]).
+fn call_back_create(hwnd: u32, proc: u32, message: u32, create: CreateStructW, name: &[u16]) {
+    let head = rtl::callback::CallbackMsg {
+        proc,
+        hwnd,
+        message,
+        wparam: 0,
+        lparam: 0,
+    };
+    let mut block = Vec::new();
+    block.extend_from_slice(head.as_bytes());
+    block.extend_from_slice(create.as_bytes());
+    for &unit in name.iter().chain(&[0]) {
+        block.extend_from_slice(&unit.to_ne_bytes());
+    }
+    if let Some(answer) = crate::callback::serve(rtl::callback::FN_INLPCREATESTRUCT, &mut block) {
+        wm(|wm| wm.answers.push((message, answer)));
+    }
 }
 
 /// WS_VISIBLE.
@@ -878,7 +902,6 @@ pub unsafe extern "system" fn NtUserDestroyWindow(window: usize) -> u32 {
                 wparam: 0,
                 lparam: 0,
                 proc,
-                create: None,
             });
         }
         STATUS_SUCCESS
@@ -1430,7 +1453,6 @@ fn take(receipt: *mut Receipt, window: usize, min: u32, max: u32, flags: u32) ->
             && ((min == 0 && max == 0) || (min <= msg.message && msg.message <= max))
     };
     let mut answer = Receipt::zeroed();
-    let base = receipt as usize;
     wm(|wm| {
         if window != 0 && wm.window(window).is_err() {
             return Err(STATUS_INVALID_HANDLE);
@@ -1448,14 +1470,6 @@ fn take(receipt: *mut Receipt, window: usize, min: u32, max: u32, flags: u32) ->
                 lparam: sent.lparam,
                 ..Msg::default()
             };
-            if let Some(create) = sent.create {
-                // The structure is in the receipt, as the kernel writes it; its address is the
-                // lParam where it fits one (a 64-bit host's seldom does, and its procedures then
-                // get none to read).
-                answer.create = create;
-                let at = base + core::mem::offset_of!(Receipt, create);
-                answer.msg.lparam = i32::try_from(at).unwrap_or(0);
-            }
             return Ok(());
         }
         answer.kind = RECEIVED_NONE;
@@ -1664,7 +1678,6 @@ pub unsafe extern "system" fn NtUserCallHwndLock(window: usize, routine: u32) ->
                 wparam: 0,
                 lparam: 0,
                 proc,
-                create: None,
             });
         }
         STATUS_SUCCESS

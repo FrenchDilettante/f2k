@@ -172,7 +172,6 @@ pub unsafe extern "system" fn NtUserEmptyClipboard() -> u32 {
                     wparam: 0,
                     lparam: 0,
                     proc,
-                    create: None,
                 });
             }
             STATUS_SUCCESS

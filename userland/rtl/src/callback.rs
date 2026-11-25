@@ -3,8 +3,17 @@
 //! The kernel enters ntdll's KiUserCallbackDispatcher with an API number and an input block on the
 //! user stack; the dispatcher calls `PEB.KernelCallbackTable[api](input, length)`, a table user32
 //! sets at its process attach, and the routine answers through NtCallbackReturn (its output block,
-//! its length, a status). The table's slots are Windows 2000's `__fn*` dispatch routines as later
-//! slices fill them; [`CALLBACK_SLOTS`] of them, the last F2K's own [`SMOKE_API`].
+//! its length, a status). The table's slots are Windows 2000's `__fn*` dispatch routines
+//! ([`FN_DWORD`] and the others), [`CALLBACK_SLOTS`] of them, the last F2K's own [`SMOKE_API`].
+//!
+//! A message the window manager sends to a window of the thread it decides for (the creation's
+//! WM_NCCREATE and WM_CREATE, the destruction's WM_DESTROY and WM_NCDESTROY, what showing, moving
+//! and activating send) is a callback to the slot its lParam's kind names, as Windows 2000's
+//! win32k picks the `__fn*` thunk by message: the input block is a [`CallbackMsg`] (the procedure
+//! to call and the message), then the structure the lParam points at, if the message carries one,
+//! which the routine points the lParam at; WM_NCCREATE's and WM_CREATE's CREATESTRUCTW is followed
+//! by the window name, NUL-terminated, which the routine points its lpszName at. The routine
+//! answers the procedure's LRESULT as its output block (four bytes).
 //!
 //! The smoke slot serves the kernel's `callback-smoke` boot: each [`SmokeRequest`] names an
 //! operation ([`op`]), and a routine that calls back into the kernel for a nested level enters it
@@ -17,6 +26,39 @@ use crate::pod::Pod;
 
 /// The callback table's length: Windows 2000's `__fn*` slots and F2K's smoke slot.
 pub const CALLBACK_SLOTS: usize = 128;
+
+// The Windows 2000 slots F2K serves (apfnDispatch's order, as later Windows versions keep it): a
+// message's thunk by the kind of its lParam.
+
+/// `__fnDWORD`: a message whose parameters are plain values.
+pub const FN_DWORD: u32 = 2;
+/// `__fnNCDESTROY`: WM_NCDESTROY (a plain message, the window's client-side state let go after).
+pub const FN_NCDESTROY: u32 = 3;
+/// `__fnINLPCREATESTRUCT`: WM_NCCREATE and WM_CREATE, the CREATESTRUCTW and the window name.
+pub const FN_INLPCREATESTRUCT: u32 = 10;
+/// `__fnINLPWINDOWPOS`: WM_WINDOWPOSCHANGING and WM_WINDOWPOSCHANGED, the WINDOWPOS.
+pub const FN_INLPWINDOWPOS: u32 = 17;
+/// `__fnINOUTNCCALCSIZE`: WM_NCCALCSIZE, the window rectangle (wParam FALSE).
+pub const FN_INOUTNCCALCSIZE: u32 = 21;
+/// `__fnINOUTSTYLECHANGE`: WM_STYLECHANGING and WM_STYLECHANGED, the STYLESTRUCT.
+pub const FN_INOUTSTYLECHANGE: u32 = 39;
+
+/// The head of a message callback's input block: the procedure to call and the message. The
+/// structure the message carries follows it, if any (see the module notes).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CallbackMsg {
+    /// The window procedure's address.
+    pub proc: u32,
+    pub hwnd: u32,
+    pub message: u32,
+    pub wparam: u32,
+    /// The lParam, for a message that carries no structure.
+    pub lparam: i32,
+}
+
+// SAFETY: five 32-bit integers, no padding.
+unsafe impl Pod for CallbackMsg {}
 
 /// The smoke slot: the table's last, past every Windows 2000 slot.
 pub const SMOKE_API: u32 = CALLBACK_SLOTS as u32 - 1;
@@ -93,5 +135,16 @@ mod tests {
         assert_eq!(core::mem::size_of::<SmokeRequest>(), 12);
         assert_eq!(core::mem::size_of::<SmokeReply>(), 8);
         assert!(SMOKE_INFORMATION_CLASS > 0xFFFF);
+        assert_eq!(core::mem::size_of::<CallbackMsg>(), 20);
+        for slot in [
+            FN_DWORD,
+            FN_NCDESTROY,
+            FN_INLPCREATESTRUCT,
+            FN_INLPWINDOWPOS,
+            FN_INOUTNCCALCSIZE,
+            FN_INOUTSTYLECHANGE,
+        ] {
+            assert!(slot < SMOKE_API);
+        }
     }
 }

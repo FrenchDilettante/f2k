@@ -41,11 +41,12 @@ use rtl::gdi::Rect;
 use rtl::user::HWND_LOCK_UPDATE_WINDOW;
 use rtl::user::{QS_PAINT, UPDATE_ERASE, UPDATE_NOT_EMPTY, WM_PAINT};
 
-use super::queue::{self, Filter};
+use super::queue::Filter;
 use super::window::{
     Hwnd,
     Message,
     Payload,
+    Session,
     WindowId,
     Windows,
     WINDOWS,
@@ -362,17 +363,19 @@ pub fn begin_validate(windows: &mut Windows, window: WindowId) {
     take_out(windows, window, None);
 }
 
-/// UpdateWindow: a WM_PAINT sent to the window when its update region is not empty (queued for
-/// its thread as the window manager's sends are, [`queue::defer`]).
-pub fn update_window(windows: &mut Windows, window: WindowId) {
-    if update_of(windows, window).is_some() {
-        let message = Message {
-            message: WM_PAINT,
-            wparam: 0,
-            lparam: 0,
-            payload: Payload::None,
-        };
-        queue::defer(windows, window, &message, 0);
+/// UpdateWindow: a WM_PAINT sent to the window when its update region is not empty, through the
+/// session as the window manager's sends go.
+pub fn update_window(s: &mut dyn Session, window: WindowId) {
+    if update_of(s.windows(), window).is_some() {
+        s.send(
+            window,
+            &mut Message {
+                message: WM_PAINT,
+                wparam: 0,
+                lparam: 0,
+                payload: Payload::None,
+            },
+        );
     }
 }
 
@@ -519,7 +522,7 @@ mod services {
             let id = window_of(s.windows(), window)?;
             match routine {
                 HWND_LOCK_UPDATE_WINDOW => {
-                    update_window(s.windows(), id);
+                    update_window(s, id);
                     Ok(())
                 }
                 _ => crate::win32k::focus::call_hwnd_lock(s, caller, id, routine)
@@ -814,10 +817,16 @@ mod tests {
         let (m, atom) = manager();
         let t = thread(m, 1, 0x100);
         let (w, h) = shown(m, atom, t, 0, 0);
-        update_window(&mut m.windows, w);
+        let mut update = |m: &mut WindowManager| {
+            let WindowManager {
+                windows, classes, ..
+            } = m;
+            update_window(&mut QueueSession::new(windows, classes), w);
+        };
+        update(m);
         assert_eq!(deliver(m, t), vec![]);
         invalidate(&mut m.windows, w, None, true);
-        update_window(&mut m.windows, w);
+        update(m);
         assert_eq!(deliver(m, t), vec![(h, WM_PAINT)]);
     }
 

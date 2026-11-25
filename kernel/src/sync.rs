@@ -444,7 +444,6 @@ impl<T> ShortGuard<'_, T> {
     /// a call back to user mode, as Windows 2000's win32k leaves its critical section. The guard is
     /// borrowed meanwhile, so nothing borrowed from the value lives across `f`; another thread may
     /// change the value while `f` runs.
-    #[cfg_attr(not(test), allow(dead_code))] // Until a send calls back to user mode.
     pub fn unlocked<R>(&mut self, f: impl FnOnce(&mut At<Passive>) -> R) -> R {
         self.lock.release();
         let result = self.apc.lowered(f);

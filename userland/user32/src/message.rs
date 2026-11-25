@@ -5,14 +5,15 @@
 //! RegisterWindowMessage, and the default window procedure, DefWindowProc; each over its win32k
 //! service ([`imports`]).
 //!
-//! The kernel calls no user-mode code: a message sent to one of the calling thread's windows (by
-//! another thread, or by the window manager while it decides) reaches its procedure through the
-//! thread's own reads. win32k's GetMessage and PeekMessage services answer a receipt
-//! (rtl::user::Receipt): a posted message, WM_QUIT, or a sent message with the procedure to call,
-//! whose answer goes back through NtUserCallOneParam's ONE_PARAM_END_SENT_MESSAGE. GetMessage and
-//! PeekMessage deliver the sent messages they find and read on, as Windows 2000's do; the calls
-//! that make the window manager send (CreateWindowEx, DestroyWindow, ShowWindow...) receive them
-//! as soon as their service returns ([`receive_sent`]).
+//! A message the window manager sends to one of the calling thread's windows while it decides
+//! (CreateWindowEx's, DestroyWindow's, ShowWindow's...) reaches its procedure by a callback from
+//! inside the service, as on Windows 2000 ([`crate::callback`]), and its answer goes back to the
+//! decision. A message another thread sends reaches it through the thread's own reads: win32k's
+//! GetMessage and PeekMessage services answer a receipt (rtl::user::Receipt): a posted message,
+//! WM_QUIT, or a sent message with the procedure to call, whose answer goes back through
+//! NtUserCallOneParam's ONE_PARAM_END_SENT_MESSAGE. GetMessage and PeekMessage deliver the sent
+//! messages they find and read on, as Windows 2000's do; the calls that make the window manager
+//! send receive the ones that came meanwhile as soon as their service returns ([`receive_sent`]).
 //!
 //! SendMessage to a window of the calling thread calls its procedure here, as Windows 2000's
 //! user32 does; to another thread's window the kernel waits for that thread's answer, the messages
@@ -58,12 +59,11 @@ use crate::{
 /// The units of a carried text's buffer on the stack; a longer one is a block of the process heap.
 const RECEIVED_UNITS: usize = 260;
 
-/// The sent message `receipt` holds, delivered ([`answer`]): when it carries a text (a creation
-/// message's window name, another process's WM_SETTEXT text or WM_GETTEXT buffer, or its
-/// WM_COPYDATA's structure and data, [`point_copy_data`]), the text is
-/// asked for into a buffer of this thread's own, as long as it is (wParam's units for
-/// WM_GETTEXT), on the stack or the process heap, which the CREATESTRUCT's name or lParam then
-/// points at. A buffer the heap has no room for answers the message 0, its procedure not called.
+/// The sent message `receipt` holds, delivered ([`answer`]): when it carries a text (another
+/// process's WM_SETTEXT text or WM_GETTEXT buffer, or its WM_COPYDATA's structure and data,
+/// [`point_copy_data`]), the text is asked for into a buffer of this thread's own, as long as it
+/// is (wParam's units for WM_GETTEXT), on the stack or the process heap, which lParam then points
+/// at. A buffer the heap has no room for answers the message 0, its procedure not called.
 fn deliver(receipt: &mut Receipt) {
     if receipt.text == NO_TEXT {
         answer(receipt.proc, receipt.msg, false);
@@ -81,11 +81,7 @@ fn deliver(receipt: &mut Receipt) {
         if receipt.msg.message == WM_COPYDATA {
             point_copy_data(buffer, at);
         }
-        if matches!(receipt.msg.message, WM_NCCREATE | WM_CREATE) {
-            receipt.create.name = at;
-        } else {
-            receipt.msg.lparam = at as i32;
-        }
+        receipt.msg.lparam = at as i32;
         let carried = matches!(receipt.msg.message, WM_SETTEXT | WM_GETTEXT);
         answer(receipt.proc, receipt.msg, carried);
         true
@@ -124,13 +120,20 @@ fn with_buffer<R>(room: usize, f: impl FnOnce(&mut [u16]) -> R) -> Option<R> {
     Some(f(&mut block.units_mut()[..room]))
 }
 
-/// The procedure `proc` a sent message's receipt names, called with its message (the window
-/// manager's are wide: a narrow procedure's creation messages are translated, and a text another
-/// process's message carries, `carried_text`); the answer handed back to its sender. Both are
-/// copies: no reference to the receipt is held while the procedure runs, which may write the
-/// structure its lParam points at in the receipt (WM_NCCREATE's CREATESTRUCT).
+/// The procedure `proc` a sent message's receipt names, called with its message ([`invoke`]); the
+/// answer handed back to its sender.
 fn answer(proc: u32, msg: Msg, carried_text: bool) {
-    let answer = if proc == 0 {
+    let answer = invoke(proc, msg, carried_text);
+    let _ = imports::call_one_param(answer as u32, ONE_PARAM_END_SENT_MESSAGE);
+}
+
+/// The procedure `proc` a sent message names (a receipt's, or a callback's), called with its
+/// message (the window manager's are wide: a narrow procedure's creation messages are translated,
+/// and a text another process's message carries, `carried_text`); its answer. `msg` is a copy: no
+/// reference to where it came from is held while the procedure runs, which may write the structure
+/// its lParam points at (WM_NCCREATE's CREATESTRUCT).
+pub fn invoke(proc: u32, msg: Msg, carried_text: bool) -> i32 {
+    if proc == 0 {
         default_procedure(
             msg.hwnd as usize,
             msg.message,
@@ -145,8 +148,7 @@ fn answer(proc: u32, msg: Msg, carried_text: bool) {
             || carried_text
             || procedure::char_message(msg.message);
         call(proc, wide.then_some(false), &msg)
-    };
-    let _ = imports::call_one_param(answer as u32, ONE_PARAM_END_SENT_MESSAGE);
+    }
 }
 
 /// The window procedure `proc` the kernel answered for `msg`'s window, called with the message:
@@ -1896,7 +1898,6 @@ mod tests {
                 wparam: 1,
                 lparam: 2,
                 proc: wm.windows.last().unwrap().proc,
-                create: None,
             })
         });
         let mut msg = Msg::default();

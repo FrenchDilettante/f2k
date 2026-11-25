@@ -253,25 +253,23 @@ pub const COPY_DATA_HEAD: usize = 6;
 ///
 /// For a sent message, `proc` is the window procedure to call with `msg`'s window, message and
 /// parameters; when the message carries a structure, `msg.lparam` points at the receipt's own copy
-/// of it: `create` (WM_NCCREATE, WM_CREATE: its `class` holds the class's atom), `rect`
-/// (WM_NCCALCSIZE), `window_pos` (WM_WINDOWPOSCHANGING, WM_WINDOWPOSCHANGED) or `style`
-/// (WM_STYLECHANGING, WM_STYLECHANGED). The answer goes back with [`ONE_PARAM_END_SENT_MESSAGE`]
-/// once the procedure returns.
+/// of it: `rect` (WM_NCCALCSIZE), `window_pos` (WM_WINDOWPOSCHANGING, WM_WINDOWPOSCHANGED) or
+/// `style` (WM_STYLECHANGING, WM_STYLECHANGED), the window manager's messages to another thread's
+/// window (its own thread's are callbacks, [`crate::callback`]). The answer goes back with
+/// [`ONE_PARAM_END_SENT_MESSAGE`] once the procedure returns.
 ///
 /// A sent message that carries a text, as long as it is, says how long in `text` ([`NO_TEXT`] for
-/// none): a creation message's window name, WM_SETTEXT's text from another process; WM_GETTEXT
-/// from another process carries an empty one, its buffer wParam's units; WM_COPYDATA from another
-/// process its COPYDATASTRUCT and the data, as units ([`COPY_DATA_HEAD`]). The receiver asks for
-/// it into a buffer of its own ([`TWO_PARAM_RECEIVE_TEXT`]) and points the message at it: the
-/// CREATESTRUCT's `name`, or `msg.lparam` (both 0 until then); WM_COPYDATA's lpData at the bytes
-/// (0 when there are none).
+/// none): WM_SETTEXT's text from another process; WM_GETTEXT from another process carries an empty
+/// one, its buffer wParam's units; WM_COPYDATA from another process its COPYDATASTRUCT and the
+/// data, as units ([`COPY_DATA_HEAD`]). The receiver asks for it into a buffer of its own
+/// ([`TWO_PARAM_RECEIVE_TEXT`]) and points `msg.lparam` (0 until then) at it; WM_COPYDATA's lpData
+/// at the bytes (0 when there are none).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Receipt {
     pub kind: u32,
     pub proc: u32,
     pub msg: Msg,
-    pub create: CreateStructW,
     pub rect: Rect,
     pub window_pos: WindowPos,
     /// The length of the text the message carries, in units, its terminator excluded; [`NO_TEXT`]
@@ -477,11 +475,10 @@ mod tests {
         assert_eq!(offset_of!(CreateStructW, ex_style), 44);
         assert_eq!(size_of::<ReceiptHead>(), 36);
         assert_eq!(offset_of!(Receipt, msg), 8);
-        assert_eq!(offset_of!(Receipt, create), 36);
-        assert_eq!(offset_of!(Receipt, rect), 84);
-        assert_eq!(offset_of!(Receipt, window_pos), 100);
-        assert_eq!(offset_of!(Receipt, text), 128);
-        assert_eq!(offset_of!(Receipt, style), 132);
+        assert_eq!(offset_of!(Receipt, rect), 36);
+        assert_eq!(offset_of!(Receipt, window_pos), 52);
+        assert_eq!(offset_of!(Receipt, text), 80);
+        assert_eq!(offset_of!(Receipt, style), 84);
         assert_eq!(size_of::<StyleStruct>(), 8);
         assert_eq!(size_of::<Receipt>() % 4, 0);
         assert_eq!(size_of::<Input>(), 28);

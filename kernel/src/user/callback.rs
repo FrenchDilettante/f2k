@@ -32,9 +32,6 @@
 //! The thread's stack words change at the dispatch level, the TSS's `esp0` with them, as the
 //! context switch installs them: they are the running thread's, on its own processor.
 
-// win32k's sends issue callbacks from the next slice on; until then only the smoke boot does.
-#![cfg_attr(not(feature = "callback-smoke"), allow(dead_code))]
-
 use super::TrapFrame;
 use crate::status::*;
 
@@ -226,7 +223,8 @@ mod target {
         });
     }
 
-    /// How many callbacks the running thread has outstanding.
+    /// How many callbacks the running thread has outstanding (the smoke boot's check).
+    #[cfg_attr(not(feature = "callback-smoke"), allow(dead_code))]
     pub fn outstanding() -> u32 {
         let mut at = raised::<Dispatch, _>(|dispatch| stacks(dispatch).callback_stack);
         let mut count = 0;
@@ -248,11 +246,12 @@ mod target {
     }
 
     /// KeUserModeCallback: call `PEB.KernelCallbackTable[api]` in user mode with a copy of `input`
-    /// and wait for its answer (see the module notes). The running thread is in a system service
-    /// (the passive level's token is its), and holds nothing a nested system call could want.
-    /// Refused with STATUS_STACK_OVERFLOW when the kernel stack lacks [`CALLBACK_ROOM`], with
-    /// STATUS_ACCESS_VIOLATION when the user stack or the TEB cannot be written.
-    pub fn call_user_mode(_passive: &mut At<Passive>, api: u32, input: &[u8]) -> Reply {
+    /// (its parts one after the other, one block) and wait for its answer (see the module notes).
+    /// The running thread is in a system service (the passive level's token is its), and holds
+    /// nothing a nested system call could want. Refused with STATUS_STACK_OVERFLOW when the kernel
+    /// stack lacks [`CALLBACK_ROOM`], with STATUS_ACCESS_VIOLATION when the user stack or the TEB
+    /// cannot be written.
+    pub fn call_user_mode(_passive: &mut At<Passive>, api: u32, input: &[&[u8]]) -> Reply {
         let (words, slot, teb) = raised::<Dispatch, _>(|dispatch| {
             let record = DISPATCHER
                 .get(dispatch)
@@ -292,14 +291,20 @@ mod target {
         if !has_room(kernel_esp(), limit) {
             return Reply::refused(STATUS_STACK_OVERFLOW);
         }
-        let user = user_image(image.frame.user_esp, api, input.len() as u32);
+        let length: usize = input.iter().map(|part| part.len()).sum();
+        let user = user_image(image.frame.user_esp, api, length as u32);
         let exception_list = UserPtr::<u32>::at(teb);
         let Ok(chain) = exception_list.read() else {
             return Reply::refused(STATUS_ACCESS_VIOLATION);
         };
-        if super::super::syscall::write_user(user.input, input).is_err()
-            || UserPtr::at(user.esp).write(user.header).is_err()
-        {
+        let mut at = user.input;
+        for part in input {
+            if super::super::syscall::write_user(at, part).is_err() {
+                return Reply::refused(STATUS_ACCESS_VIOLATION);
+            }
+            at += part.len() as u32;
+        }
+        if UserPtr::at(user.esp).write(user.header).is_err() {
             return Reply::refused(STATUS_ACCESS_VIOLATION);
         }
         image.frame.eip = crate::exec::modules::callback_dispatcher();

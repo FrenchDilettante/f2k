@@ -46,7 +46,7 @@ fn call(passive: &mut At<Passive>, request: SmokeRequest) -> (NtStatus, Option<S
         status,
         output,
         length,
-    } = call_user_mode(passive, SMOKE_API, request.as_bytes());
+    } = call_user_mode(passive, SMOKE_API, &[request.as_bytes()]);
     if status == STATUS_STACK_OVERFLOW {
         REFUSED_AT.fetch_max(outstanding(), Ordering::Relaxed);
     }

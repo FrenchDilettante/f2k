@@ -23,13 +23,11 @@
 //! ([`set_focus`]) refuses a window that is disabled or has a disabled ancestor, and activates the
 //! window's top-level window first when it is not the active one.
 //!
-//! The messages go through the session: the services' session queues them for the window's
-//! thread, which receives them once the service returns, before the call does ([`super::queue`]).
-//! So a window procedure's answer reaches none of these decisions, and what the default procedure
-//! does with WM_ACTIVATE happens after the activation's other messages are queued, not inside it:
-//! SetFocus to a window of an inactive top-level window queues its focus messages before the
-//! activation's default WM_ACTIVATE runs, which then leaves the focus where it is, inside the
-//! window activated.
+//! The messages go through the session: a window of the calling thread's own is called back, its
+//! procedure running inside the decision ([`super::queue`]), and another thread's window gets them
+//! queued. So what the default procedure does with WM_ACTIVATE (the focus to the window, through
+//! [`call_hwnd_lock`]'s routine, a nested decision) happens inside the activation, as on Windows
+//! 2000; the answers themselves (WM_NCACTIVATE's veto) are not looked at yet.
 //!
 //! The services, user32's calls (F2K's argument lists, see [`crate::win32k`]; Windows 2000's
 //! numbers):

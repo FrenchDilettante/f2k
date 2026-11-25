@@ -2,14 +2,88 @@
 //! process attach points PEB.KernelCallbackTable at ([`attach`]), which ntdll's
 //! KiUserCallbackDispatcher calls through with the input block's address and length.
 //!
-//! The Windows 2000 slots (`__fnDWORD`, `__fnINLPCREATESTRUCT`, ...) are not served yet: each
-//! answers STATUS_NOT_IMPLEMENTED, by returning it (the dispatcher hands a returned value to
+//! The message slots (`__fnDWORD`, `__fnINLPCREATESTRUCT`, `__fnNCDESTROY` and the structure
+//! thunks, rtl::callback's FN_*) carry a message the window manager sends to one of the thread's
+//! windows while it decides: [`serve`] points the lParam at the structure the block carries (and a
+//! CREATESTRUCTW's lpszName at the name after it), calls the procedure as a sent message's
+//! receipt would ([`crate::message::invoke`]), and the routine answers its LRESULT through
+//! NtCallbackReturn. The other Windows 2000 slots are not served yet: each answers
+//! STATUS_NOT_IMPLEMENTED, by returning it (the dispatcher hands a returned value to
 //! NtCallbackReturn as the status). The last slot is F2K's smoke routine ([`rtl::callback`]), which
 //! the kernel calls only in its `callback-smoke` boot; [`answer`] decides what it does, over the
 //! kernel and the thread as [`Kernel`] reaches them.
 
-use rtl::callback::{op, SmokeReply, SmokeRequest};
+use rtl::callback::{
+    op,
+    CallbackMsg,
+    SmokeReply,
+    SmokeRequest,
+    FN_DWORD,
+    FN_INLPCREATESTRUCT,
+    FN_INLPWINDOWPOS,
+    FN_INOUTNCCALCSIZE,
+    FN_INOUTSTYLECHANGE,
+    FN_NCDESTROY,
+};
+use rtl::gdi::Rect;
+use rtl::pod::Pod;
 use rtl::status::{STATUS_INVALID_PARAMETER, STATUS_SUCCESS};
+use rtl::user::{CreateStructW, Msg, StyleStruct};
+use rtl::window::WindowPos;
+
+/// The size of the structure a message slot's block carries after its [`CallbackMsg`] (none for a
+/// plain message); none for a slot that is not a message's.
+fn carried_size(api: u32) -> Option<usize> {
+    Some(match api {
+        FN_DWORD | FN_NCDESTROY => 0,
+        FN_INLPCREATESTRUCT => core::mem::size_of::<CreateStructW>(),
+        FN_INLPWINDOWPOS => core::mem::size_of::<WindowPos>(),
+        FN_INOUTNCCALCSIZE => core::mem::size_of::<Rect>(),
+        FN_INOUTSTYLECHANGE => core::mem::size_of::<StyleStruct>(),
+        _ => return None,
+    })
+}
+
+/// An address in this process as a message parameter holds it (a host's may not fit: none then,
+/// as a receipt's structure on a 64-bit host).
+fn address_of(at: *const u8) -> u32 {
+    u32::try_from(at as usize).unwrap_or(0)
+}
+
+/// The message the message slot `api`'s input `block` carries, called: the lParam pointed at the
+/// structure in the block, a CREATESTRUCTW's lpszName at the name after it (the block is the
+/// kernel's copy on this thread's stack, the procedure's to read and write). The procedure's
+/// answer; none for a slot that is not a message's, or a block too short for its slot.
+pub fn serve(api: u32, block: &mut [u8]) -> Option<i32> {
+    let head = CallbackMsg::from_bytes(block.get(..core::mem::size_of::<CallbackMsg>())?)?;
+    let carried = carried_size(api)?;
+    let rest = &mut block[core::mem::size_of::<CallbackMsg>()..];
+    let mut msg = Msg {
+        hwnd: head.hwnd,
+        message: head.message,
+        wparam: head.wparam,
+        lparam: head.lparam,
+        ..Msg::default()
+    };
+    if carried != 0 {
+        if rest.len() < carried {
+            return None;
+        }
+        let (structure, name) = rest.split_at_mut(carried);
+        if api == FN_INLPCREATESTRUCT {
+            let mut create = CreateStructW::from_bytes(structure)?;
+            // The name, NUL-terminated (a block too short for the terminator names none).
+            create.name = if name.len() >= 2 {
+                address_of(name.as_ptr())
+            } else {
+                0
+            };
+            structure.copy_from_slice(create.as_bytes());
+        }
+        msg.lparam = address_of(structure.as_ptr()) as i32;
+    }
+    Some(crate::message::invoke(head.proc, msg, false))
+}
 
 /// What the smoke routine reaches: the kernel's smoke entry, and the thread's memory.
 pub trait Kernel {
@@ -76,12 +150,24 @@ pub use target::attach;
 mod target {
     use core::sync::atomic::{AtomicU32, Ordering};
 
-    use rtl::callback::{op, SmokeReply, SmokeRequest, CALLBACK_SLOTS, SMOKE_API};
+    use rtl::callback::{
+        op,
+        SmokeReply,
+        SmokeRequest,
+        CALLBACK_SLOTS,
+        FN_DWORD,
+        FN_INLPCREATESTRUCT,
+        FN_INLPWINDOWPOS,
+        FN_INOUTNCCALCSIZE,
+        FN_INOUTSTYLECHANGE,
+        FN_NCDESTROY,
+        SMOKE_API,
+    };
     use rtl::pod::Pod;
-    use rtl::status::{STATUS_INVALID_PARAMETER, STATUS_NOT_IMPLEMENTED};
+    use rtl::status::{STATUS_INVALID_PARAMETER, STATUS_NOT_IMPLEMENTED, STATUS_SUCCESS};
     use rtl::stub::Memory;
 
-    use super::{answer, Kernel};
+    use super::{answer, serve, Kernel};
     use crate::imports;
 
     /// A slot's routine: the input block's address and length.
@@ -90,6 +176,12 @@ mod target {
     /// The table KernelCallbackTable points at.
     static TABLE: [Routine; CALLBACK_SLOTS] = {
         let mut table = [unserved as Routine; CALLBACK_SLOTS];
+        table[FN_DWORD as usize] = fn_dword;
+        table[FN_NCDESTROY as usize] = fn_ncdestroy;
+        table[FN_INLPCREATESTRUCT as usize] = fn_inlpcreatestruct;
+        table[FN_INLPWINDOWPOS as usize] = fn_inlpwindowpos;
+        table[FN_INOUTNCCALCSIZE as usize] = fn_inoutnccalcsize;
+        table[FN_INOUTSTYLECHANGE as usize] = fn_inoutstylechange;
         table[SMOKE_API as usize] = smoke;
         table
     };
@@ -102,6 +194,58 @@ mod target {
     /// A slot not served yet.
     unsafe extern "system" fn unserved(_input: usize, _length: u32) -> u32 {
         STATUS_NOT_IMPLEMENTED
+    }
+
+    /// A message slot's routine: the message the block at `input` carries served ([`serve`]), its
+    /// answer handed back through NtCallbackReturn.
+    ///
+    /// # Safety
+    ///
+    /// `input` and `length` are the dispatcher's: the kernel's copy of the block, on this
+    /// callback's stack, writable.
+    unsafe fn message(api: u32, input: usize, length: u32) -> u32 {
+        // SAFETY: the caller's contract.
+        let block = unsafe { core::slice::from_raw_parts_mut(input as *mut u8, length as usize) };
+        match serve(api, block) {
+            Some(result) => imports::callback_return(&result.to_ne_bytes(), STATUS_SUCCESS),
+            None => STATUS_INVALID_PARAMETER,
+        }
+    }
+
+    /// `__fnDWORD`.
+    unsafe extern "system" fn fn_dword(input: usize, length: u32) -> u32 {
+        // SAFETY: the dispatcher's block.
+        unsafe { message(FN_DWORD, input, length) }
+    }
+
+    /// `__fnNCDESTROY`.
+    unsafe extern "system" fn fn_ncdestroy(input: usize, length: u32) -> u32 {
+        // SAFETY: the dispatcher's block.
+        unsafe { message(FN_NCDESTROY, input, length) }
+    }
+
+    /// `__fnINLPCREATESTRUCT`.
+    unsafe extern "system" fn fn_inlpcreatestruct(input: usize, length: u32) -> u32 {
+        // SAFETY: the dispatcher's block.
+        unsafe { message(FN_INLPCREATESTRUCT, input, length) }
+    }
+
+    /// `__fnINLPWINDOWPOS`.
+    unsafe extern "system" fn fn_inlpwindowpos(input: usize, length: u32) -> u32 {
+        // SAFETY: the dispatcher's block.
+        unsafe { message(FN_INLPWINDOWPOS, input, length) }
+    }
+
+    /// `__fnINOUTNCCALCSIZE`.
+    unsafe extern "system" fn fn_inoutnccalcsize(input: usize, length: u32) -> u32 {
+        // SAFETY: the dispatcher's block.
+        unsafe { message(FN_INOUTNCCALCSIZE, input, length) }
+    }
+
+    /// `__fnINOUTSTYLECHANGE`.
+    unsafe extern "system" fn fn_inoutstylechange(input: usize, length: u32) -> u32 {
+        // SAFETY: the dispatcher's block.
+        unsafe { message(FN_INOUTSTYLECHANGE, input, length) }
     }
 
     /// The smoke slot: the request answered through NtCallbackReturn.
@@ -265,10 +409,86 @@ mod target {
 
 #[cfg(test)]
 mod tests {
+    use core::cell::RefCell;
+
     use rtl::callback::op;
     use rtl::status::STATUS_STACK_OVERFLOW;
+    use rtl::user::{WM_CREATE, WM_DESTROY};
 
     use super::*;
+    use crate::imports::host::procedure;
+
+    std::thread_local! {
+        static HEARD: RefCell<std::vec::Vec<(u32, u32, u32, u32)>> =
+            const { RefCell::new(std::vec::Vec::new()) };
+    }
+
+    fn listener(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+        HEARD.with(|heard| {
+            heard
+                .borrow_mut()
+                .push((window, message, wparam, lparam as u32))
+        });
+        -7
+    }
+
+    fn block(head: CallbackMsg, carried: &[u8]) -> std::vec::Vec<u8> {
+        let mut block = head.as_bytes().to_vec();
+        block.extend_from_slice(carried);
+        block
+    }
+
+    /// A plain message reaches the procedure as it is, and its answer is the routine's; a
+    /// structure's lParam points at the block's copy (where an address fits one), a
+    /// CREATESTRUCTW's lpszName at the name after it.
+    #[test]
+    fn a_message_slot_calls_the_procedure() {
+        let proc = procedure(listener);
+        let head = |message, lparam| CallbackMsg {
+            proc,
+            hwnd: 0x40,
+            message,
+            wparam: 9,
+            lparam,
+        };
+        let mut plain = block(head(WM_DESTROY, 77), &[]);
+        assert_eq!(serve(FN_DWORD, &mut plain), Some(-7));
+        let heard = HEARD.with(|heard| heard.take());
+        assert_eq!(heard, [(0x40, WM_DESTROY, 9, 77)]);
+
+        let create = CreateStructW {
+            x: 5,
+            class: 0xC123,
+            ..CreateStructW::default()
+        };
+        let mut carried = create.as_bytes().to_vec();
+        carried.extend_from_slice(&[b'a', 0, 0, 0]);
+        let mut created = block(head(WM_CREATE, 0), &carried);
+        assert_eq!(serve(FN_INLPCREATESTRUCT, &mut created), Some(-7));
+        let at = created.as_ptr() as usize + core::mem::size_of::<CallbackMsg>();
+        let written =
+            CreateStructW::read_from(&created, core::mem::size_of::<CallbackMsg>()).unwrap();
+        assert_eq!((written.x, written.class), (5, 0xC123));
+        assert_eq!(written.name, address_of((at + 48) as *const u8));
+        let heard = HEARD.with(|heard| heard.take());
+        assert_eq!(heard.len(), 1);
+        assert_eq!(heard[0].3, address_of(at as *const u8));
+    }
+
+    /// A block too short for its slot's structure, or a slot that is not a message's, calls
+    /// nothing.
+    #[test]
+    fn a_short_block_or_another_slot_calls_nothing() {
+        let proc = procedure(listener);
+        let head = CallbackMsg {
+            proc,
+            ..CallbackMsg::default()
+        };
+        assert_eq!(serve(FN_INOUTNCCALCSIZE, &mut block(head, &[0; 8])), None);
+        assert_eq!(serve(FN_DWORD, &mut [0; 8]), None);
+        assert_eq!(serve(rtl::callback::SMOKE_API, &mut block(head, &[])), None);
+        assert!(HEARD.with(|heard| heard.take()).is_empty());
+    }
 
     /// A kernel that answers NEST itself, as the real one does by calling back, until `refuse_at`
     /// levels deep; records what else the routine asked for.

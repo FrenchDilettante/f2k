@@ -3,9 +3,6 @@ description = "guiwin - the window lifecycle in user32: CreateWindowExA/W (hwnd 
 kind = "sectioned"
 gate = true
 
-[pending]
-refuse = "F2K is expected to create the window anyway, since a client procedure's WM_NCCREATE and WM_CREATE answers never reach win32k (no user-mode callback)"
-
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
 # calls); scripts/compat.py derives each export's coverage from them.
@@ -36,3 +33,9 @@ uniq = [
     "user32.DestroyWindow",
     "user32.IsWindow",
 ]
+
+[masks]
+# The process's first window, a popup, leaves ERROR_ALREADY_EXISTS (183) as the last error on the
+# real machine: something Windows 2000's user32 makes along with a thread's first window (F2K makes
+# nothing then, and leaves it alone). The creation itself and its messages are pinned literally.
+refuse = ["CreateWindowExA, let through: NULL no err=*"]

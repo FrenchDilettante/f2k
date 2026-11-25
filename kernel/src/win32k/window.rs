@@ -255,6 +255,10 @@ pub enum Failure {
     TlwWithWsChild,
     /// ERROR_CANNOT_FIND_WND_CLASS (1407): the class name resolved to no visible class.
     CannotFindWindowClass,
+    /// The window procedure refused the creation (WM_NCCREATE answering 0, WM_CREATE -1), or the
+    /// window went while it was being created: no error, the last error left as it was (guiwin
+    /// `refuse`); the creation's answer is NULL.
+    Refused,
 }
 
 impl Failure {
@@ -268,12 +272,14 @@ impl Failure {
             Failure::InvalidIndex => 1413,
             Failure::TlwWithWsChild => 1406,
             Failure::CannotFindWindowClass => 1407,
+            Failure::Refused => 0,
         }
     }
 
     /// The NTSTATUS the service answers: the Win32 error itself ([`Failure::code`]) in a
     /// FACILITY_NTWIN32 status, which user32 hands to GetLastError as is (ntdll's mapping answers
-    /// the low word), as Windows 2000's win32k sets the thread's last error itself.
+    /// the low word), as Windows 2000's win32k sets the thread's last error itself. A refused
+    /// creation sets none: its service answers success and a null window instead.
     pub const fn status(self) -> NtStatus {
         NtStatus::from_win32(self.code())
     }
@@ -600,9 +606,8 @@ pub trait Session {
 
     /// WM_NCCALCSIZE to `target` for the window rectangle `rect`: the client rectangle. The send
     /// goes through [`Session::send`]; the answer is the default procedure's, the frame the
-    /// window's styles give taken off ([`Windows::default_client`]): the window manager cannot
-    /// wait for a client-side procedure's own answer (its sends are queued for the window's
-    /// thread).
+    /// window's styles give taken off ([`Windows::default_client`]): the rectangle the procedure
+    /// hands back is not read back yet. A window the procedure destroyed meanwhile answers `rect`.
     fn calc_client(&mut self, target: WindowId, rect: Rect) -> Rect {
         let mut message = Message {
             message: WM_NCCALCSIZE,
@@ -611,7 +616,11 @@ pub trait Session {
             payload: Payload::Rect(rect),
         };
         self.send(target, &mut message);
-        self.windows().default_client(target, rect)
+        let windows = self.windows();
+        if !windows.pool.is_live(target) {
+            return rect;
+        }
+        windows.default_client(target, rect)
     }
 
     /// The frame of `target` to be painted: WM_NCPAINT sent, wParam 1 (the whole frame).
@@ -723,6 +732,16 @@ pub trait Session {
 pub trait Hold {
     /// Both registries.
     fn parts(&mut self) -> (&mut Windows, &mut class::Registry);
+
+    /// Run `f` with the window manager's lock let go, as a callback to user mode runs, and take
+    /// the lock back: what `f` answers. None when the holder has no lock to let go of (the
+    /// registries borrowed at the boot and in the tests), `f` not run.
+    fn unlocked<R>(
+        &mut self,
+        _f: impl FnOnce(&mut crate::level::At<crate::level::Passive>) -> R,
+    ) -> Option<R> {
+        None
+    }
 }
 
 /// The two registries, borrowed for the session's life.
@@ -742,6 +761,20 @@ impl Hold for Locked<'_> {
     fn parts(&mut self) -> (&mut Windows, &mut class::Registry) {
         let manager: &mut WindowManager = self;
         (&mut manager.windows, &mut manager.classes)
+    }
+
+    /// The lock let go around `f`, the input state published and the queues' events set first,
+    /// as the session's end does ([`super::queue::Signals`]).
+    #[cfg(target_arch = "x86")]
+    fn unlocked<R>(
+        &mut self,
+        f: impl FnOnce(&mut crate::level::At<crate::level::Passive>) -> R,
+    ) -> Option<R> {
+        let signals = super::queue::Signals::take(self);
+        Some(crate::sync::ShortGuard::unlocked(self, |passive| {
+            signals.raise(passive);
+            f(passive)
+        }))
     }
 }
 
@@ -802,6 +835,9 @@ struct Flags {
     destroyed: bool,
     /// The window is in the middle of being destroyed.
     in_destroy: bool,
+    /// The window's destroy has begun, or the destroy cascade has reached it: a DestroyWindow of
+    /// it from one of its handlers (WM_DESTROY's, WM_NCDESTROY's) finds it on its way already.
+    destroying: bool,
     /// The create finished (WM_CREATE ran).
     initialized: bool,
     /// The create came through the ANSI entry point.
@@ -937,6 +973,7 @@ impl Window {
             sendsizemove: false,
             destroyed: false,
             in_destroy: false,
+            destroying: false,
             initialized: false,
             ansi_creator: false,
             win31_compat: false,
@@ -2431,16 +2468,21 @@ impl Windows {
         params.cx = cx;
         params.cy = cy;
 
-        // WM_NCCREATE first: a zero answer rolls the whole creation back.
+        // WM_NCCREATE first: a zero answer rolls the whole creation back, the procedure's refusal
+        // (no error). The procedure may have destroyed the window meanwhile: then it is gone.
         let mut message = Message {
             message: WM_NCCREATE,
             wparam: 0,
             lparam: 0,
             payload: Payload::Create(params),
         };
-        if s.send(id, &mut message) == 0 {
+        let answer = s.send(id, &mut message);
+        if Windows::gone_in_creation(s, id) {
+            return Err(Failure::Refused);
+        }
+        if answer == 0 {
             Windows::rollback_create(s, caller, id);
-            return Err(Failure::OutOfMemory);
+            return Err(Failure::Refused);
         }
         let windows = s.windows();
         let Payload::Create(mut params) = message.payload else {
@@ -2483,19 +2525,27 @@ impl Windows {
         // WM_NCCALCSIZE: the client rect, the window's less the frame.
         let window_rect = windows.at(id).window_rect;
         let client = s.calc_client(id, window_rect);
+        if Windows::gone_in_creation(s, id) {
+            return Err(Failure::Refused);
+        }
         let windows = s.windows();
         windows.at_mut(id).client_rect = client;
 
-        // WM_CREATE: a -1 answer destroys the window for real and fails the create.
+        // WM_CREATE: a -1 answer destroys the window for real and fails the create, the
+        // procedure's refusal (no error; -2 and the rest go on, guiwin `refuse`).
         let mut message = Message {
             message: WM_CREATE,
             wparam: 0,
             lparam: 0,
             payload: Payload::Create(params),
         };
-        if s.send(id, &mut message) == -1 {
+        let answer = s.send(id, &mut message);
+        if Windows::gone_in_creation(s, id) {
+            return Err(Failure::Refused);
+        }
+        if answer == -1 {
             let _ = Windows::destroy_window(s, caller, id);
-            return Err(Failure::OutOfMemory);
+            return Err(Failure::Refused);
         }
         let windows = s.windows();
         // The creation's name is the sends' no longer (the queue's sends keep their own copy).
@@ -2508,6 +2558,9 @@ impl Windows {
         // WM_SIZE/WM_MOVE, unless they are deferred to show time (tiled windows).
         if !windows.at(id).flags.sendsizemove {
             s.send_size(id, SIZENORMAL);
+            if Windows::gone_in_creation(s, id) {
+                return Err(Failure::Refused);
+            }
             let windows = s.windows();
             let mut rc = windows.at(id).client_rect;
             if let Some(p) = parent {
@@ -2527,6 +2580,9 @@ impl Windows {
                     payload: Payload::None,
                 },
             );
+            if Windows::gone_in_creation(s, id) {
+                return Err(Failure::Refused);
+            }
         }
         let windows = s.windows();
 
@@ -2549,10 +2605,10 @@ impl Windows {
             let windows = s.windows();
             let deferred = windows.at(id).flags.sendsizemove;
             let _ = Windows::min_maximize(s, id, command);
-            let windows = s.windows();
-            if !windows.pool.is_live(id) {
-                return Err(Failure::OutOfMemory);
+            if Windows::gone_in_creation(s, id) {
+                return Err(Failure::Refused);
             }
+            let windows = s.windows();
             windows.at_mut(id).flags.sendsizemove = deferred;
         }
         let windows = s.windows();
@@ -2573,6 +2629,9 @@ impl Windows {
                         payload: Payload::None,
                     },
                 );
+                if Windows::gone_in_creation(s, id) {
+                    return Err(Failure::Refused);
+                }
             }
         }
 
@@ -2580,6 +2639,9 @@ impl Windows {
         // carried out).
         if args.style & WS_VISIBLE != 0 {
             let _ = Windows::show_window(s, id, sw);
+            if Windows::gone_in_creation(s, id) {
+                return Err(Failure::Refused);
+            }
         }
         let windows = s.windows();
 
@@ -2598,10 +2660,22 @@ impl Windows {
                 );
                 let windows = s.windows();
                 windows.thread_mut(caller).hotkey = 0;
+                if Windows::gone_in_creation(s, id) {
+                    return Err(Failure::Refused);
+                }
             }
         }
 
         Ok(id)
+    }
+
+    /// Whether the window `id` went while its creation sent it a message: freed, or on its way
+    /// (a procedure that destroyed it, WM_DESTROY sent already); its creation then answers NULL.
+    fn gone_in_creation(s: &mut dyn Session, id: WindowId) -> bool {
+        let windows = s.windows();
+        !windows.pool.is_live(id)
+            || windows.at(id).flags.destroyed
+            || windows.at(id).flags.destroying
     }
 
     /// The shared rollback path of the create's failure points: mark the window destroyed, make
@@ -2613,6 +2687,7 @@ impl Windows {
         {
             let w = windows.at_mut(id);
             w.flags.destroyed = true;
+            w.flags.destroying = true;
             w.style &= !WS_VISIBLE;
         }
         Windows::free_window(s, caller, id);
@@ -2637,10 +2712,18 @@ impl Windows {
         caller: ThreadId,
         window: WindowId,
     ) -> Result<bool, Failure> {
+        // A window on its way already (destroyed again from one of its own handlers, its
+        // creation's included) is left to the destroy under way.
+        if s.windows().on_its_way(window) {
+            return Ok(true);
+        }
         if !Windows::begin_destroy(s, caller, window)? {
             return Ok(false);
         }
         Windows::destroy_prologue(s, window);
+        if !s.windows().pool.is_live(window) {
+            return Ok(true);
+        }
         let mut current = window;
         loop {
             let windows = s.windows();
@@ -2697,6 +2780,9 @@ impl Windows {
         window: WindowId,
     ) -> Result<bool, Failure> {
         let windows = s.windows();
+        if windows.on_its_way(window) {
+            return Ok(false);
+        }
         let handle = windows.at(window).handle;
         let Some(entry) = windows.handles.window(handle) else {
             return Err(Failure::InvalidWindowHandle);
@@ -2739,7 +2825,19 @@ impl Windows {
             saved_hooks,
             ..Walk::NONE
         };
+        windows.at_mut(window).flags.destroying = true;
         Ok(true)
+    }
+
+    /// Whether `window`'s destroy is under way (begun, or reached by its parent's cascade) and it
+    /// is not a zombie's re-entry (a window marked for destruction, which its destroy adopts).
+    fn on_its_way(&self, window: WindowId) -> bool {
+        let w = self.at(window);
+        w.flags.destroying
+            && !self
+                .handles
+                .window(w.handle)
+                .is_some_and(|e| e.marked_destroy)
     }
 
     /// The first part of `window`'s destroy, before the windows it owns go: a cross-thread
@@ -2965,6 +3063,7 @@ impl Windows {
     /// One window's step of the WM_DESTROY cascade, before its children's: the focus check, the
     /// clipboard, and WM_DESTROY itself.
     fn send_destroy(s: &mut dyn Session, window: WindowId) {
+        s.windows().at_mut(window).flags.destroying = true;
         s.check_focus(window);
         let windows = s.windows();
         if windows.clipboard_owner == Some(window) {
@@ -3002,6 +3101,8 @@ impl Windows {
                 windows.unlink_window(child, current);
                 let child_thread = windows.at(child).thread;
                 if child_thread != caller {
+                    // Its own thread destroys it, in full.
+                    windows.at_mut(child).flags.destroying = false;
                     s.post_destroy_event(child_thread, child);
                 } else {
                     windows.adopt_marked(caller, child);
@@ -4713,7 +4814,8 @@ const MESSAGE_CLASS: [u16; 7] = [
 /// into.
 ///
 /// One lock guards both registries, as one lock guards all of Windows 2000's window-manager state:
-/// the create and destroy decisions hold both at once, through every callback; and a short lock's
+/// the create and destroy decisions hold both at once, letting go of them only around a callback
+/// to user mode ([`Hold::unlocked`]), after which they read both again; and a short lock's
 /// guard keeps its taker's passive token borrowed, so no second short lock can be taken under it,
 /// in any order.
 pub struct WindowManager {
@@ -5341,8 +5443,12 @@ pub fn create_window_ex(
     };
     let created = super::queue::with_session(call.passive(), |s| {
         WindowManager::create_window(s, caller, parent.raw(), &mut args)
-    })
-    .map_err(Failure::status)?;
+    });
+    let created = match created {
+        // The procedure's refusal: NULL, the last error untouched.
+        Err(Failure::Refused) => 0,
+        created => created.map_err(Failure::status)?,
+    };
     window.write(created)?;
     Ok(STATUS_SUCCESS)
 }
@@ -5591,8 +5697,9 @@ fn query_window_thread(call: &mut NtCall, window: Handle, information: UserAddr)
 /// change through the narrow (`ansi` nonzero) or wide entry point
 /// ([`Windows::set_window_long`]): the value the field held into `previous`, and for
 /// GWL_WNDPROC whether the procedure it held took the narrow forms of the messages into
-/// `previous_ansi` (0 for another index). The messages the change sends are queued for the
-/// window's thread; both answers are written once the window manager's lock is let go.
+/// `previous_ansi` (0 for another index). The messages the change sends go through the session
+/// ([`super::queue::QueueSession`]); both answers are written once the window manager's lock is
+/// let go.
 #[cfg(target_arch = "x86")]
 pub fn set_window_long(
     call: &mut NtCall,
@@ -6110,6 +6217,8 @@ mod tests {
         title_done: bool,
         /// When WM_DESTROY reaches `watch`, destroy `victim` (a handler destroying a sibling).
         destroy_on_destroy: Option<(WindowId, WindowId)>,
+        /// When this message reaches any window, its handler destroys that window.
+        destroy_self_on: Option<u32>,
         next_menu_handle: Hwnd,
     }
 
@@ -6136,6 +6245,7 @@ mod tests {
                 title_on_nccreate: None,
                 title_done: false,
                 destroy_on_destroy: None,
+                destroy_self_on: None,
                 next_menu_handle: 0x5000,
             }
         }
@@ -6260,6 +6370,10 @@ mod tests {
                     r.right -= self.rec.nccalc_inset;
                     r.bottom -= self.rec.nccalc_inset;
                 }
+            }
+            if self.rec.destroy_self_on == Some(message.message) {
+                let caller = self.rec.caller;
+                let _ = Windows::destroy_window(self, caller, target);
             }
             if message.message == WM_DESTROY {
                 if let Some((watch, victim)) = self.rec.destroy_on_destroy {
@@ -7291,16 +7405,16 @@ mod tests {
         );
     }
 
-    /// A WM_NCCREATE answered with 0 rolls the creation back: the only messages are WM_NCCREATE
-    /// and WM_NCDESTROY (no WM_DESTROY — the window was never linked), and the record, handle,
-    /// class reference and window count are all released.
+    /// A WM_NCCREATE answered with 0 rolls the creation back, the procedure's refusal (no error):
+    /// the only messages are WM_NCCREATE and WM_NCDESTROY (no WM_DESTROY — the window was never
+    /// linked), and the record, handle, class reference and window count are all released.
     #[test]
     fn a_failed_nccreate_rolls_back() {
         let (w, c, t, atom, _, _) = setup();
         let mut pump = Rec::new(t);
         pump.nccreate_answer = 0;
         let err = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap_err();
-        assert_eq!(err, Failure::OutOfMemory);
+        assert_eq!(err, Failure::Refused);
         assert_eq!(pump.messages(), vec![WM_NCCREATE, WM_NCDESTROY]);
         assert_eq!(live(w), 2, "only the desktop windows remain");
         assert_eq!(w.thread(t).window_count, 0);
@@ -7316,14 +7430,14 @@ mod tests {
     }
 
     /// A WM_CREATE answered with -1 runs the full destroy (WM_DESTROY and all) and fails the
-    /// create.
+    /// create, the procedure's refusal (no error).
     #[test]
     fn a_failed_create_destroys_the_window() {
         let (w, c, t, atom, _, _) = setup();
         let mut pump = Rec::new(t);
         pump.create_answer = -1;
         let err = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap_err();
-        assert_eq!(err, Failure::OutOfMemory);
+        assert_eq!(err, Failure::Refused);
         assert_eq!(
             pump.messages(),
             vec![
@@ -7768,6 +7882,38 @@ mod tests {
                 (p, WM_NCDESTROY),
             ]
         );
+    }
+
+    /// A window destroyed from its own WM_DESTROY or WM_NCDESTROY handler is on its way already:
+    /// the nested DestroyWindow succeeds and does nothing, so each message comes once.
+    #[test]
+    fn a_handler_destroying_its_own_window_changes_nothing() {
+        for message in [WM_DESTROY, WM_NCDESTROY] {
+            let (w, c, t, atom, _, _) = setup();
+            let mut pump = Rec::new(t);
+            let top = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
+            pump.events.clear();
+            pump.destroy_self_on = Some(message);
+            assert!(Windows::destroy_window(&mut pump.on(w, c), t, top).unwrap());
+            assert_eq!(pump.sends(), vec![(top, WM_DESTROY), (top, WM_NCDESTROY)]);
+            assert!(!w.pool.is_live(top));
+        }
+    }
+
+    /// A window its procedure destroys while it is being created (from WM_NCCREATE, WM_CREATE or
+    /// WM_MOVE) makes the creation answer NULL, the procedure's refusal (no error), the window
+    /// gone.
+    #[test]
+    fn a_window_destroyed_in_its_creation_fails_it() {
+        for message in [WM_NCCREATE, WM_CREATE, WM_MOVE] {
+            let (w, c, t, atom, _, _) = setup();
+            let mut pump = Rec::new(t);
+            pump.destroy_self_on = Some(message);
+            let err = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap_err();
+            assert_eq!(err, Failure::Refused, "destroyed in {message:#x}");
+            assert_eq!(live(w), 2, "only the desktop windows remain");
+            assert_eq!(w.thread(t).window_count, 0);
+        }
     }
 
     /// A chain of children as deep as the nesting limit allows goes in one destroy: WM_DESTROY

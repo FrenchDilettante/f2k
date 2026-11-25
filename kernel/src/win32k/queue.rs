@@ -22,22 +22,22 @@
 //! invalidation. The wait is the scheduler's, outside the lock; its timeout is the thread's next
 //! timer's due.
 //!
-//! A sent message reaches its window procedure through the receiving thread's own GetMessage or
-//! PeekMessage: there is no way for the kernel to call user-mode code and return (Windows 2000's
-//! KeUserModeCallback). Every message the window manager's decisions send to a window with a
+//! A message the window manager's decisions send to a window of the deciding thread's own, with a
 //! client-side procedure — the creation's WM_NCCREATE to WM_MOVE, the destruction's WM_DESTROY and
-//! WM_NCDESTROY, what showing and moving send — is queued for the window's thread as a sent
-//! message ([`QueueSession`]), and the decision goes on with the default procedure's answer (1 to
-//! WM_NCCREATE, 0 to the rest). The thread's next read hands it out first, before anything posted,
-//! with the procedure to call and a copy of the structure the message points at
-//! ([`rtl::user::Receipt`]); user32 calls the procedure and hands the answer back
-//! ([`end_sent`]). user32 reads them right after the service that sent them returns, so a program
-//! sees its procedure called before CreateWindowEx or DestroyWindow returns, in the order the
-//! decisions sent. What this cannot do: a procedure's answer never reaches the decision (a zero
-//! answer to WM_NCCREATE does not cancel the creation, nor -1 to WM_CREATE fail it), and nothing
-//! the procedure changes in the structure it was handed (WM_NCCALCSIZE's rectangle) comes back.
+//! WM_NCDESTROY, what showing, moving and activating send — is a callback into user mode
+//! (KeUserModeCallback, [`crate::user::callback`]): the decision lets the window manager's lock go,
+//! user32 calls the procedure, and its answer comes back to the decision ([`QueueSession`]), as
+//! Windows 2000's `xxx` routines call back. So a zero answer to WM_NCCREATE cancels the creation,
+//! -1 to WM_CREATE fails it, and whatever the procedure does meanwhile (SetFocus from WM_ACTIVATE,
+//! another window made from WM_CREATE) happens inside the decision, in Windows' order. What the
+//! procedure changes in the structure it was handed (WM_NCCALCSIZE's rectangle) does not come back
+//! yet. A message to another thread's window is queued for that thread as a sent message, and the
+//! decision goes on with the default procedure's answer (1 to WM_NCCREATE, 0 to the rest): the
+//! thread's next read hands it out first, before anything posted, with the procedure to call and a
+//! copy of the structure the message points at ([`rtl::user::Receipt`]); user32 calls the
+//! procedure and hands the answer back ([`end_sent`]), which nobody waits for.
 //!
-//! SendMessage to another thread's window goes the same way, its sender waiting for the answer
+//! SendMessage to another thread's window is queued the same way, its sender waiting for the answer
 //! ([`send`], [`await_reply`]) and, as Windows 2000's sender does, handling the messages sent to
 //! its own thread meanwhile: the wait hands them to user32, which delivers them and resumes it
 //! ([`resume_send`]), so two threads that send to each other do not wait on each other; to a
@@ -78,8 +78,18 @@
 //!   IsHungAppWindow, and the end of a sent message's delivery ([`rtl::user`]'s ONE_PARAM_*
 //!   routines).
 
-use core::mem::offset_of;
+use core::mem::{offset_of, size_of};
 
+use rtl::callback::{
+    CallbackMsg,
+    FN_DWORD,
+    FN_INLPCREATESTRUCT,
+    FN_INLPWINDOWPOS,
+    FN_INOUTNCCALCSIZE,
+    FN_INOUTSTYLECHANGE,
+    FN_NCDESTROY,
+};
+use rtl::pod::Pod;
 use rtl::user::{
     sync_only,
     CreateStructW,
@@ -123,7 +133,6 @@ use super::text::{Text, Texts};
 use super::window::{
     self,
     ClassArg,
-    CreateParams,
     Hold,
     Hwnd,
     LParam,
@@ -150,8 +159,6 @@ pub const POSTED_LIMIT: u32 = 10_000;
 use rtl::winerror::{ERROR_INVALID_THREAD_ID, ERROR_MESSAGE_SYNC_ONLY, ERROR_NOT_ENOUGH_QUOTA};
 /// How many sent messages can be on their way at once.
 pub const SENT: usize = 128;
-/// How many sent creation messages, each with its create parameters, can be on their way at once.
-pub const CREATES: usize = 16;
 
 /// The words of the wake set: a bit a queue.
 const WAKE_WORDS: usize = THREADS.div_ceil(32);
@@ -326,8 +333,6 @@ enum Carried {
     None,
     /// WM_NCCALCSIZE's rectangle.
     Rect(rtl::gdi::Rect),
-    /// WM_NCCREATE's and WM_CREATE's create parameters: a slot of the creates' pool.
-    Create(u16),
     /// WM_WINDOWPOSCHANGING's and WM_WINDOWPOSCHANGED's WINDOWPOS.
     WindowPos(window::WindowPos),
     /// WM_STYLECHANGING's and WM_STYLECHANGED's STYLESTRUCT.
@@ -400,18 +405,6 @@ impl Sent {
     };
 }
 
-/// A sent creation message's create parameters, and the class's atom (CREATESTRUCT's lpszClass
-/// for a class named by its string).
-#[derive(Clone, Copy)]
-struct CreateSlot {
-    live: bool,
-    class_atom: class::Atom,
-    params: CreateParams,
-    /// The window name the message carries, a block of the queues' store ([`Queues::store`]):
-    /// copied as it is queued, the creation's own going once the creation ends.
-    name: Text,
-}
-
 /// The queues, the pools their messages come from, the timers ([`super::timer`]) and the windows'
 /// update regions ([`super::paint`]): the message layer's state, in the window registry, behind the
 /// window manager's lock.
@@ -419,9 +412,7 @@ pub struct Queues {
     queues: [Queue; THREADS],
     posted: super::posted::Pool<Posted>,
     sent: [Sent; SENT],
-    creates: [CreateSlot; CREATES],
-    /// The texts the sent messages carry: a creation message's window name, a text to another
-    /// process's window.
+    /// The texts the sent messages carry: a text to another process's window.
     store: Texts,
     pub timers: super::timer::Timers,
     pub updates: super::paint::Updates,
@@ -453,28 +444,6 @@ impl Queues {
             let sent = addr_of_mut!((*queues).sent) as *mut Sent;
             for index in 0..SENT {
                 sent.add(index).write(Sent::EMPTY);
-            }
-            let creates = addr_of_mut!((*queues).creates) as *mut CreateSlot;
-            for index in 0..CREATES {
-                creates.add(index).write(CreateSlot {
-                    live: false,
-                    class_atom: 0,
-                    params: CreateParams {
-                        ex_style: 0,
-                        class_name: ClassArg::Atom(0),
-                        name: window::CreateName::Given,
-                        style: 0,
-                        x: 0,
-                        y: 0,
-                        cx: 0,
-                        cy: 0,
-                        parent: 0,
-                        menu: 0,
-                        instance: 0,
-                        params: 0,
-                    },
-                    name: Text::EMPTY,
-                });
             }
             addr_of_mut!((*queues).store).write(Texts::EMPTY);
             super::timer::Timers::write_empty(addr_of_mut!((*queues).timers));
@@ -626,17 +595,10 @@ impl Queues {
         })
     }
 
-    /// Give the sent message at `index` back to the pool, its create parameters with it.
+    /// Give the sent message at `index` back to the pool, the text it carries with it.
     fn free_sent(&mut self, index: u16) {
-        match self.sent[index as usize].carried {
-            Carried::Create(slot) => {
-                let record = &mut self.creates[slot as usize];
-                record.live = false;
-                let name = core::mem::take(&mut record.name);
-                self.store.free(name);
-            }
-            Carried::Text(carried) => self.store.free(carried.text),
-            _ => {}
+        if let Carried::Text(carried) = self.sent[index as usize].carried {
+            self.store.free(carried.text);
         }
         let generation = self.sent[index as usize].generation.wrapping_add(1);
         self.sent[index as usize] = Sent {
@@ -1391,7 +1353,6 @@ pub fn receipt_head(
     let lparam = match sent.carried {
         Carried::None => sent.lparam,
         Carried::Rect(_) => receipt.wrapping_add(offset_of!(Receipt, rect) as u32) as LParam,
-        Carried::Create(_) => receipt.wrapping_add(offset_of!(Receipt, create) as u32) as LParam,
         Carried::WindowPos(_) => {
             receipt.wrapping_add(offset_of!(Receipt, window_pos) as u32) as LParam
         }
@@ -1406,41 +1367,11 @@ pub fn receipt_head(
     })
 }
 
-/// The CREATESTRUCTW the sent message `id` carries, when it carries one, its class the class's
-/// atom, its name 0: the receiver points it at a buffer of its own ([`received_text`]).
-pub fn receipt_create(windows: &Windows, id: SentId) -> Option<CreateStructW> {
-    let Carried::Create(slot) = windows.queues.sent_at(id)?.carried else {
-        return None;
-    };
-    let slot = &windows.queues.creates[slot as usize];
-    let p = &slot.params;
-    let class = match p.class_name {
-        ClassArg::Atom(atom) => atom,
-        ClassArg::Name | ClassArg::AnsiName => slot.class_atom,
-    };
-    Some(CreateStructW {
-        create_params: p.params,
-        instance: p.instance,
-        menu: p.menu,
-        parent: p.parent,
-        cy: p.cy,
-        cx: p.cx,
-        y: p.y,
-        x: p.x,
-        style: p.style,
-        name: 0,
-        class: u32::from(class),
-        ex_style: p.ex_style,
-    })
-}
-
-/// The length of the text the sent message `id` carries (the receipt's `text`): a creation
-/// message's window name, a text message's to another process (WM_GETTEXT's empty); NO_TEXT for
-/// none.
+/// The length of the text the sent message `id` carries (the receipt's `text`): a text message's
+/// to another process (WM_GETTEXT's empty); NO_TEXT for none.
 pub fn receipt_text(windows: &Windows, id: SentId) -> u32 {
     let queues = &windows.queues;
     match queues.sent_at(id).map(|sent| sent.carried) {
-        Some(Carried::Create(slot)) => queues.creates[slot as usize].name.len() as u32,
         Some(Carried::Text(carried)) => carried.text.len() as u32,
         _ => NO_TEXT,
     }
@@ -1459,7 +1390,6 @@ pub fn received_text(
     let index = queues.queues[queues.queue_of(caller)?.index as usize].receiving?;
     let sent = &mut queues.sent[index as usize];
     let text = match &mut sent.carried {
-        Carried::Create(slot) => queues.creates[*slot as usize].name,
         Carried::Text(carried) => {
             if sent.message == WM_GETTEXT {
                 carried.buffer = at;
@@ -1977,9 +1907,10 @@ pub fn dispatch_target(windows: &Windows, msg: &Msg) -> Result<u32, NtStatus> {
 
 /// Queue `message` for the window `target`'s thread as a message the window manager sent (no
 /// thread waits for its answer): see the module notes. Nothing for a window whose procedure is the
-/// window manager's, or a thread with no queue; nothing either when the pools are full (the
-/// message is lost). `class_atom` is the window's class's atom, for a creation message.
-pub fn defer(windows: &mut Windows, target: WindowId, message: &Message, class_atom: class::Atom) {
+/// window manager's, or a thread with no queue; nothing either when the pool is full (the message
+/// is lost), nor for a creation message, which goes to the creating thread's own window, by
+/// callback ([`QueueSession`]).
+pub fn defer(windows: &mut Windows, target: WindowId, message: &Message) {
     let Some(proc) = windows.client_proc(target) else {
         return;
     };
@@ -1988,38 +1919,14 @@ pub fn defer(windows: &mut Windows, target: WindowId, message: &Message, class_a
     let Some(receiver) = windows.queues.queue_of(thread) else {
         return;
     };
-    // A creation message carries its own copy of the window name.
-    let name = match message.payload {
-        Payload::Create(ref params) => {
-            let name = windows.create_text(target, params.name);
-            match windows.queues.store.store(windows.texts.units(name)) {
-                Some(name) => name,
-                None => return,
-            }
-        }
-        _ => Text::EMPTY,
-    };
-    let queues = &mut windows.queues;
     let carried = match message.payload {
         Payload::None => Carried::None,
         Payload::Rect(r) => Carried::Rect(r),
         Payload::WindowPos(w) => Carried::WindowPos(w),
         Payload::Style(style) => Carried::Style(style),
-        // The parameters are copied in place: by value they would cross the stack under the
-        // creation's own large frame.
-        Payload::Create(ref params) => {
-            let Some(slot) = queues.creates.iter().position(|s| !s.live) else {
-                queues.store.free(name);
-                return;
-            };
-            let record = &mut queues.creates[slot];
-            record.live = true;
-            record.class_atom = class_atom;
-            record.params = *params;
-            record.name = name;
-            Carried::Create(slot as u16)
-        }
+        Payload::Create(_) => return,
     };
+    let queues = &mut windows.queues;
     let Some(id) = queues.allocate_sent(Sent {
         receiver: Some(receiver),
         window: Some(target),
@@ -2031,14 +1938,86 @@ pub fn defer(windows: &mut Windows, target: WindowId, message: &Message, class_a
         carried,
         ..Sent::EMPTY
     }) else {
-        if let Carried::Create(slot) = carried {
-            queues.creates[slot as usize].live = false;
-            queues.creates[slot as usize].name = Text::EMPTY;
-        }
-        queues.store.free(name);
         return;
     };
     queues.push_sent(receiver, id.index);
+}
+
+/// The callback a message the window manager sends to `target` (whose procedure is `proc`) is
+/// (rtl::callback's notes): the `__fn*` slot its payload's kind names, the input block's head, and
+/// the structure the block carries after it (its first `length` bytes). A creation message's
+/// window name follows the structure in the block ([`Windows::create_text`]); its CREATESTRUCTW's
+/// lpszClass is the class's atom, as a receipt's was.
+pub fn callback_input(
+    windows: &Windows,
+    classes: &class::Registry,
+    target: WindowId,
+    proc: u32,
+    message: &Message,
+) -> CallbackInput {
+    let mut input = CallbackInput {
+        api: FN_DWORD,
+        head: CallbackMsg {
+            proc,
+            hwnd: windows.handle_of(target),
+            message: message.message,
+            wparam: message.wparam,
+            lparam: message.lparam,
+        },
+        carried: [0; CARRIED],
+        length: 0,
+    };
+    let (api, bytes): (u32, &[u8]) = match &message.payload {
+        Payload::None if message.message == WM_NCDESTROY => (FN_NCDESTROY, &[]),
+        Payload::None => (FN_DWORD, &[]),
+        Payload::Rect(r) => (FN_INOUTNCCALCSIZE, r.as_bytes()),
+        Payload::WindowPos(p) => (FN_INLPWINDOWPOS, p.as_bytes()),
+        Payload::Style(style) => (FN_INOUTSTYLECHANGE, style.as_bytes()),
+        Payload::Create(p) => {
+            let class = match p.class_name {
+                ClassArg::Atom(atom) => atom,
+                ClassArg::Name | ClassArg::AnsiName => windows
+                    .class_window(input.head.hwnd)
+                    .map_or(0, |w| classes.atom(w.class)),
+            };
+            let create = CreateStructW {
+                create_params: p.params,
+                instance: p.instance,
+                menu: p.menu,
+                parent: p.parent,
+                cy: p.cy,
+                cx: p.cx,
+                y: p.y,
+                x: p.x,
+                style: p.style,
+                name: 0,
+                class: u32::from(class),
+                ex_style: p.ex_style,
+            };
+            input.carried.copy_from_slice(create.as_bytes());
+            input.api = FN_INLPCREATESTRUCT;
+            input.length = CARRIED;
+            return input;
+        }
+    };
+    input.api = api;
+    input.carried[..bytes.len()].copy_from_slice(bytes);
+    input.length = bytes.len();
+    input
+}
+
+/// The longest structure a callback's block carries: a CREATESTRUCTW.
+const CARRIED: usize = core::mem::size_of::<CreateStructW>();
+
+/// A message's callback, as [`callback_input`] makes it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CallbackInput {
+    /// The `__fn*` slot.
+    pub api: u32,
+    pub head: CallbackMsg,
+    /// The structure, its first `length` bytes.
+    pub carried: [u8; CARRIED],
+    pub length: usize,
 }
 
 /// The window `window` is being freed: the messages posted to it go, its timers, its update
@@ -2056,12 +2035,16 @@ pub fn window_gone(windows: &mut Windows, window: WindowId) {
     queues.updates.window_gone(window);
 }
 
-/// The session the services run the window manager's decisions in: every message to a window
-/// with a client-side procedure is queued for its thread ([`defer`]) and answered as the default
-/// procedure answers; a window's end takes its posted messages, timers and update region with it;
-/// the activation and the destroy's focus check are [`super::focus`]'s. The other window-manager
-/// calls are [`Session`]'s defaults. The services hold it by the window manager's lock
-/// ([`with_session`]), which a send may let go of; the host tests by the registries.
+/// The session the services run the window manager's decisions in. A message to a window of the
+/// deciding thread's own, with a client-side procedure, is a callback to it: the lock let go
+/// meanwhile ([`Hold::unlocked`]), the procedure's answer the send's, as Windows 2000's `xxx`
+/// routines call back (rtl::callback's notes); a message to another thread's window is queued for
+/// that thread ([`defer`]) and answered as the default procedure answers. A window whose procedure
+/// is the window manager's is answered as the default procedure answers. A window's end takes its
+/// posted messages, timers and update region with it; the activation and the destroy's focus
+/// check are [`super::focus`]'s. The other window-manager calls are [`Session`]'s defaults. The
+/// services hold it by the window manager's lock ([`with_session`]); the host tests by the
+/// registries, which cannot be let go of: their sends are all queued.
 pub struct QueueSession<H: Hold>(pub H);
 
 #[cfg(test)]
@@ -2086,14 +2069,14 @@ impl<H: Hold> Session for QueueSession<H> {
     }
 
     fn send(&mut self, target: WindowId, message: &mut Message) -> LResult {
-        let (windows, classes) = self.parts();
-        let class_atom = match message.payload {
-            Payload::Create(_) => windows
-                .class_window(windows.handle_of(target))
-                .map_or(0, |w| classes.atom(w.class)),
-            _ => 0,
+        let windows = self.windows();
+        let Some(proc) = windows.client_proc(target) else {
+            return default_answer(message.message);
         };
-        defer(windows, target, message, class_atom);
+        if let Some(answer) = call_back(&mut self.0, target, proc, message) {
+            return answer;
+        }
+        defer(self.windows(), target, message);
         default_answer(message.message)
     }
 
@@ -2110,7 +2093,95 @@ impl<H: Hold> Session for QueueSession<H> {
     }
 
     fn disown_clipboard(&mut self, target: WindowId) {
-        crate::win32k::clipboard::disown(self.windows(), target);
+        crate::win32k::clipboard::disown(self, target);
+    }
+}
+
+/// The callback `message` to `target` is, when `target` is a window of the running thread's and
+/// `hold` can let the lock go: the procedure `proc`'s answer, or 0 when the callback failed (the
+/// kernel stack has no room for it, the user stack cannot take its block, the routine took an
+/// exception or answered no LRESULT). None when the message is not one to call back.
+#[cfg(target_arch = "x86")]
+fn call_back<H: Hold>(
+    hold: &mut H,
+    target: WindowId,
+    proc: u32,
+    message: &Message,
+) -> Option<LResult> {
+    use crate::win32k::text::Staged;
+    // The running thread, by its client id: a window's thread record is the window registry's,
+    // whose queue keeps the id.
+    crate::sched::try_current_thread()?;
+    let running = crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+        crate::sched::DISPATCHER
+            .get(dispatch)
+            .thread(crate::sched::current_thread())
+            .thread_id()
+    });
+    let (windows, classes) = hold.parts();
+    if client_id_of(windows, windows.window_thread(target)) != Some(running) {
+        return None;
+    }
+    let input = callback_input(windows, classes, target, proc, message);
+    // A creation message's window name, copied out of the registry before the lock goes.
+    let name = match message.payload {
+        Payload::Create(ref params) => {
+            let text = windows.create_text(target, params.name);
+            match Staged::copy_of(windows.texts.units(text)) {
+                Some(name) => Some(name),
+                None => return Some(0),
+            }
+        }
+        _ => None,
+    };
+    let units = name.as_ref().map_or(&[][..], |name| name.units());
+    let terminator: &[u8] = if name.is_some() { &[0, 0] } else { &[] };
+    let parts = [
+        input.head.as_bytes(),
+        &input.carried[..input.length],
+        rtl::pod::slice_bytes(units),
+        terminator,
+    ];
+    hold.unlocked(|passive| {
+        let reply = crate::user::callback::call_user_mode(passive, input.api, &parts);
+        if reply.status != STATUS_SUCCESS || (reply.length as usize) < size_of::<LResult>() {
+            return 0;
+        }
+        crate::user::args::UserPtr::<LResult>::at(reply.output)
+            .read()
+            .unwrap_or(0)
+    })
+}
+
+/// The host has no user mode to call back: every send is queued.
+#[cfg(not(target_arch = "x86"))]
+fn call_back<H: Hold>(
+    _hold: &mut H,
+    _target: WindowId,
+    _proc: u32,
+    _message: &Message,
+) -> Option<LResult> {
+    None
+}
+
+/// What a session's work left for after the lock: the input state published, the queues it gave
+/// something to and whether the server's send was answered, whose events are set once the lock is
+/// let go ([`Signals::raise`]).
+pub struct Signals {
+    wakes: [u32; WAKE_WORDS],
+    server: bool,
+}
+
+impl Signals {
+    /// Publish `manager`'s input state and take its pending wakes: before the lock is let go, at a
+    /// session's end or around a callback.
+    pub fn take(manager: &mut WindowManager) -> Signals {
+        crate::win32k::input::publish(&manager.windows);
+        let queues = &mut manager.windows.queues;
+        Signals {
+            wakes: queues.take_wakes(),
+            server: queues.take_server_wake(),
+        }
     }
 }
 
@@ -2205,15 +2276,23 @@ mod target {
         passive: &mut At<Passive>,
         f: impl FnOnce(&mut QueueSession<Locked<'_>>) -> R,
     ) -> R {
-        let (result, wakes, server) = {
+        let (result, signals) = {
             let mut session = QueueSession(crate::win32k::window::lock(passive));
             let result = f(&mut session);
-            let manager = session.manager();
-            crate::win32k::input::publish(&manager.windows);
-            let queues = &mut manager.windows.queues;
-            (result, queues.take_wakes(), queues.take_server_wake())
+            (result, Signals::take(session.manager()))
         };
-        if server || wakes.iter().any(|&word| word != 0) {
+        signals.raise(passive);
+        result
+    }
+
+    impl Signals {
+        /// Set the events of the queues given something, and the server's when its send was
+        /// answered: outside the window manager's lock.
+        pub fn raise(self, passive: &mut At<Passive>) {
+            let Signals { wakes, server } = self;
+            if !server && wakes.iter().all(|&word| word == 0) {
+                return;
+            }
             let mut dispatch = passive.raise::<Dispatch>();
             let dispatcher = crate::sched::DISPATCHER.get(&mut dispatch);
             for (word, bits) in wakes.iter().enumerate() {
@@ -2227,7 +2306,6 @@ mod target {
                 dispatcher.set_event(SERVER.id(), EVENT_WAKE_INCREMENT);
             }
         }
-        result
     }
 
     /// [`with_manager`] for a caller that holds no passive token: the console's control thread,
@@ -2501,11 +2579,10 @@ mod services {
             Taken::Sent(id) => id,
         };
         let base = receipt.raw();
-        let (first, create, rect, style, pos, text) = with_manager(call.passive(), |m| {
+        let (first, rect, style, pos, text) = with_manager(call.passive(), |m| {
             let w = &m.windows;
             (
                 receipt_head(w, caller, id, base, time),
-                receipt_create(w, id),
                 receipt_rect(w, id),
                 receipt_style(w, id),
                 receipt_window_pos(w, id),
@@ -2536,12 +2613,6 @@ mod services {
                 .offset(offset_of!(Receipt, style) as u32)
                 .cast::<StyleStruct>()
                 .write(style)?;
-        }
-        if let Some(create) = create {
-            receipt
-                .offset(offset_of!(Receipt, create) as u32)
-                .cast::<CreateStructW>()
-                .write(create)?;
         }
         Ok(STATUS_SUCCESS)
     }
@@ -3205,10 +3276,10 @@ mod tests {
     use super::*;
     use crate::win32k::window::{WindowManager, WS_CHILD, WS_POPUP};
 
-    /// A window's creation reaches its procedure as the capture counts it: WM_NCCREATE,
-    /// WM_NCCALCSIZE, WM_CREATE, WM_SIZE and WM_MOVE, in that order, queued for its thread as
-    /// sent messages; the window exists at once (the default procedure's answers carried the
-    /// decisions).
+    /// A window's creation, in the host's session (which cannot call back): WM_NCCALCSIZE,
+    /// WM_SIZE and WM_MOVE queued for its thread as sent messages, in that order, WM_NCCREATE and
+    /// WM_CREATE answered as the default procedure answers them (a creation's messages go to the
+    /// creating thread's own window, by callback alone); the window exists at once.
     #[test]
     fn a_creation_sends_its_messages_through_the_queue() {
         let (m, atom) = manager();
@@ -3217,63 +3288,109 @@ mod tests {
         assert!(m.windows.window_from_handle(h).is_some());
         assert_eq!(
             deliver(m, t),
-            vec![
-                (h, WM_NCCREATE),
-                (h, WM_NCCALCSIZE),
-                (h, WM_CREATE),
-                (h, WM_SIZE),
-                (h, WM_MOVE)
-            ]
+            vec![(h, WM_NCCALCSIZE), (h, WM_SIZE), (h, WM_MOVE)]
         );
         assert_eq!(deliver(m, t), vec![], "each one once");
     }
 
-    /// The receipt of a creation message: the class's procedure, lParam pointing at the receipt's
-    /// CREATESTRUCTW, whose fields are the creation's (the final position, the class's atom; the
-    /// name 0, its length the receipt's `text`, the name itself the receiver's to ask for);
-    /// WM_NCCALCSIZE's lParam points at the receipt's rectangle.
+    /// A creation message's callback: `__fnINLPCREATESTRUCT`, the class's procedure, and the
+    /// CREATESTRUCTW the creation's parameters make (the class's atom for a class named by its
+    /// string, lpszName left for the routine to point at the name after it); WM_NCDESTROY's is
+    /// `__fnNCDESTROY`, another plain message's `__fnDWORD` with its lParam as it is, and
+    /// WM_NCCALCSIZE's `__fnINOUTNCCALCSIZE` with the rectangle.
     #[test]
-    fn a_creation_messages_receipt_carries_its_structure() {
+    fn a_messages_callback_carries_its_structure() {
+        let (m, atom) = manager();
+        let t = thread(m, 1, 0x100);
+        let h = window_at(m, atom, t, WS_POPUP, 0, 5, 6, 30, 40);
+        let w = m.windows.window_from_handle(h).unwrap();
+        let params = window::CreateParams {
+            ex_style: 0x8,
+            class_name: ClassArg::Name,
+            name: window::CreateName::Given,
+            style: WS_POPUP,
+            x: 5,
+            y: 6,
+            cx: 30,
+            cy: 40,
+            parent: 0,
+            menu: 0,
+            instance: MODULE,
+            params: 0x1234,
+        };
+        let message = |message, payload| Message {
+            message,
+            wparam: 3,
+            lparam: 4,
+            payload,
+        };
+        let create = message(WM_NCCREATE, Payload::Create(params));
+        let input = callback_input(&m.windows, &m.classes, w, PROC, &create);
+        assert_eq!(input.api, FN_INLPCREATESTRUCT);
+        assert_eq!(
+            input.head,
+            CallbackMsg {
+                proc: PROC,
+                hwnd: h,
+                message: WM_NCCREATE,
+                wparam: 3,
+                lparam: 4,
+            }
+        );
+        assert_eq!(input.length, 48);
+        let cs = CreateStructW::from_bytes(&input.carried).unwrap();
+        assert_eq!((cs.x, cs.y, cs.cx, cs.cy), (5, 6, 30, 40));
+        assert_eq!(cs.create_params, 0x1234);
+        assert_eq!(cs.instance, MODULE);
+        assert_eq!((cs.style, cs.ex_style), (WS_POPUP, 0x8));
+        assert_eq!(cs.name, 0);
+        assert_eq!(cs.class, u32::from(atom));
+
+        let plain = |number| {
+            let input = callback_input(
+                &m.windows,
+                &m.classes,
+                w,
+                PROC,
+                &message(number, Payload::None),
+            );
+            (input.api, input.head.lparam, input.length)
+        };
+        assert_eq!(plain(WM_NCDESTROY), (FN_NCDESTROY, 4, 0));
+        assert_eq!(plain(WM_DESTROY), (FN_DWORD, 4, 0));
+        let rect = rtl::gdi::Rect::new(1, 2, 3, 4);
+        let input = callback_input(
+            &m.windows,
+            &m.classes,
+            w,
+            PROC,
+            &message(WM_NCCALCSIZE, Payload::Rect(rect)),
+        );
+        assert_eq!((input.api, input.length), (FN_INOUTNCCALCSIZE, 16));
+        assert_eq!(&input.carried[..16], rect.as_bytes());
+    }
+
+    /// The host's session queues every message, but a creation's: WM_NCCALCSIZE first, its
+    /// lParam pointing at the receipt's rectangle.
+    #[test]
+    fn a_queued_messages_receipt_carries_its_structure() {
         let (m, atom) = manager();
         let t = thread(m, 1, 0x100);
         let h = window_at(m, atom, t, WS_POPUP, 0, 5, 6, 30, 40);
         let base = 0x0010_0000;
         let Taken::Sent(id) = read(m, t, &all(), 0) else {
-            panic!("WM_NCCREATE first");
+            panic!("WM_NCCALCSIZE first");
         };
         let head = receipt_head(&m.windows, t, id, base, 7).unwrap();
         assert_eq!(head.kind, RECEIVED_SENT);
         assert_eq!(head.proc, PROC);
         assert_eq!(
             (head.msg.hwnd, head.msg.message, head.msg.time),
-            (h, WM_NCCREATE, 7)
+            (h, WM_NCCALCSIZE, 7)
         );
         assert_eq!(head.msg.lparam as u32, base + 36);
-        let cs = receipt_create(&m.windows, id).unwrap();
-        assert_eq!((cs.x, cs.y, cs.cx, cs.cy), (5, 6, 30, 40));
-        assert_eq!(cs.create_params, 0x1234);
-        assert_eq!(cs.instance, MODULE);
-        assert_eq!(cs.style, WS_POPUP);
-        assert_eq!(cs.name, 0);
-        assert_eq!(cs.class, u32::from(atom));
-        assert_eq!(receipt_text(&m.windows, id), 5);
-        let title: Vec<u16> = "Title".encode_utf16().collect();
-        assert_eq!(
-            received_text(&mut m.windows, t, 0x2000, 6),
-            Some(&title[..])
-        );
-        assert_eq!(receipt_rect(&m.windows, id), None);
-        assert!(end_sent(&mut m.windows, t, 1));
-
-        let Taken::Sent(id) = read(m, t, &all(), 0) else {
-            panic!("WM_NCCALCSIZE next");
-        };
-        let head = receipt_head(&m.windows, t, id, base, 0).unwrap();
-        assert_eq!(head.msg.message, WM_NCCALCSIZE);
-        assert_eq!(head.msg.lparam as u32, base + 84);
         let r = receipt_rect(&m.windows, id).unwrap();
         assert_eq!((r.left, r.top, r.right, r.bottom), (5, 6, 35, 46));
-        assert_eq!(receipt_create(&m.windows, id), None);
         assert_eq!(receipt_text(&m.windows, id), NO_TEXT);
         assert_eq!(received_text(&mut m.windows, t, 0x2000, 6), None);
         // Another thread's message is not this one's to read.
@@ -3336,7 +3453,7 @@ mod tests {
         while let Taken::Sent(id) = read(m, t, &only_sent, 0) {
             let head = receipt_head(&m.windows, t, id, 0x1000, 0).unwrap();
             if head.msg.message == window::WM_WINDOWPOSCHANGED {
-                assert_eq!(head.msg.lparam as u32, 0x1000 + 100);
+                assert_eq!(head.msg.lparam as u32, 0x1000 + 52);
                 changed = receipt_window_pos(&m.windows, id);
             } else if head.msg.message != window::WM_WINDOWPOSCHANGING {
                 assert_eq!(receipt_window_pos(&m.windows, id), None);
@@ -3505,7 +3622,7 @@ mod tests {
         let posted_only = Filter::new(0, WM_USER, WM_USER, PM_QS_POSTMESSAGE);
         assert!(matches!(read(m, t, &posted_only, 0), Taken::Sent(_)));
         assert!(end_sent(&mut m.windows, t, 1));
-        assert_eq!(deliver(m, t).len(), 4);
+        assert_eq!(deliver(m, t).len(), 2);
         let only_sent = Filter::new(0, 0, 0, PM_QS_SENDMESSAGE);
         assert_eq!(read(m, t, &only_sent, 0), Taken::Nothing { due: None });
         assert_eq!(msg_of(read(m, t, &all(), 0)).message, WM_USER);

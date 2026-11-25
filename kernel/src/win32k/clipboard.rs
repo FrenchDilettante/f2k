@@ -50,7 +50,7 @@
 use rtl::codepage::{decode_byte, encode_unit, CodePage};
 
 use super::class;
-use super::window::{Message, Payload, WindowId, Windows};
+use super::window::{Message, Payload, Session, WindowId, Windows};
 use crate::sched::thread::ThreadId;
 use crate::status::*;
 
@@ -620,21 +620,23 @@ fn convert(from: u32, source: &[u8], to: u32, out: &mut [u8]) {
 /// The owner's destruction (the window manager's `disown_clipboard` seam): WM_RENDERALLFORMATS
 /// sent it, which every destruction of the owner sends (the clipbrd capture's owner section has
 /// no format left to render), then the clipboard has no owner; its formats stay.
-pub fn disown(windows: &mut Windows, owner: WindowId) {
-    send(windows, owner, WM_RENDERALLFORMATS);
-    windows.clipboard_owner = None;
+pub fn disown(s: &mut dyn Session, owner: WindowId) {
+    send(s, owner, WM_RENDERALLFORMATS);
+    s.windows().clipboard_owner = None;
 }
 
-/// `message` sent to `target` as the window manager sends: queued for its thread, delivered by
-/// the thread's next read (`super::queue::defer`).
-pub fn send(windows: &mut Windows, target: WindowId, message: u32) {
-    let message = Message {
-        message,
-        wparam: 0,
-        lparam: 0,
-        payload: Payload::None,
-    };
-    super::queue::defer(windows, target, &message, 0);
+/// `message` sent to `target` as the window manager sends, through the session: a callback to a
+/// window of the deciding thread's, queued for another thread's (`super::queue::QueueSession`).
+pub fn send(s: &mut dyn Session, target: WindowId, message: u32) {
+    s.send(
+        target,
+        &mut Message {
+            message,
+            wparam: 0,
+            lparam: 0,
+            payload: Payload::None,
+        },
+    );
 }
 
 // --- The services
@@ -644,7 +646,6 @@ pub fn send(windows: &mut Windows, target: WindowId, message: u32) {
 mod services {
     use super::*;
     use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
-    use crate::win32k::queue::with_manager;
     use crate::win32k::window::{lock, Failure, WindowManager};
     use crate::win32k::winsta::gui_thread;
 
@@ -678,10 +679,11 @@ mod services {
     /// NtUserEmptyClipboard(): the clipboard emptied, its owner before sent WM_DESTROYCLIPBOARD.
     pub fn empty_clipboard(call: &mut NtCall) -> NtResult {
         let caller = gui_thread(call)?.thread;
-        with_manager(call.passive(), |m| {
+        crate::win32k::queue::with_session(call.passive(), |s| {
+            let m = s.manager();
             let previous = m.clipboard.empty(&mut m.windows, caller)?;
             if let Some(previous) = previous {
-                send(&mut m.windows, previous, WM_DESTROYCLIPBOARD);
+                send(s, previous, WM_DESTROYCLIPBOARD);
             }
             Ok(())
         })
@@ -1102,7 +1104,14 @@ mod tests {
         m.clipboard.empty(&mut m.windows, t).unwrap();
         m.clipboard.open(t, Some(second)).unwrap();
         let previous = m.clipboard.empty(&mut m.windows, t).unwrap().unwrap();
-        send(&mut m.windows, previous, WM_DESTROYCLIPBOARD);
+        let WindowManager {
+            windows, classes, ..
+        } = &mut *m;
+        send(
+            &mut QueueSession::new(windows, classes),
+            previous,
+            WM_DESTROYCLIPBOARD,
+        );
         let only_sent = Filter::new(0, 0, 0, rtl::user::PM_QS_SENDMESSAGE);
         assert!(matches!(rig::read(m, t, &only_sent, 0), Taken::Sent(_)));
         assert!(!in_send(&m.windows, t));
