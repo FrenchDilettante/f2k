@@ -342,7 +342,7 @@ args = ["handle hWnd", "handle hDC"]
 impl = { native = "ReleaseDC" }
 ordinal = 520
 fails = "0"
-note = "the DCs the GetDC family handed out alone, their handles closed (NtClose)"
+note = "the DCs the GetDC family handed out alone, deleted (gdi32's DeleteDC)"
 
 [[export]]
 name = "WindowFromDC"
@@ -404,7 +404,7 @@ impl = { syscall = "crate::win32k::display::system_parameters_info" }
 internal = true
 
 # win32k's DC services behind GetDC, GetDCEx and GetWindowDC: user32's internal calls, each
-# answering a screen DC's handle (ReleaseDC closes it through ntdll's NtClose).
+# answering a screen DC's handle (ReleaseDC deletes it through gdi32's DeleteDC).
 
 [[export]]
 name = "NtUserGetDC"

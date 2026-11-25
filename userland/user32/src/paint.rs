@@ -38,7 +38,7 @@ pub extern "system" fn get_update_rect(window: usize, rect: *mut Rect, erase: u3
     if bits & UPDATE_ERASE != 0 {
         if let Ok(dc) = imports::get_dc(window) {
             let _ = message::send(window, WM_ERASEBKGND, dc, 0);
-            let _ = imports::close(dc as usize);
+            let _ = imports::delete_dc(dc as usize);
         }
     }
     (bits & UPDATE_NOT_EMPTY != 0) as u32

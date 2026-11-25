@@ -408,7 +408,7 @@ fn redraw_bar(window: usize) {
         return;
     };
     draw_bar(dc as usize, framed.menu, bar, bar_selection(window));
-    let _ = imports::close(dc as usize);
+    let _ = imports::delete_dc(dc as usize);
 }
 
 /// DrawMenuBar: the window's menu bar redrawn, its items as they now stand; TRUE, or FALSE with
@@ -588,7 +588,7 @@ fn redraw_popup(window: usize) {
         return;
     };
     draw_popup(dc as usize, menu, client, selected);
-    let _ = imports::close(dc as usize);
+    let _ = imports::delete_dc(dc as usize);
 }
 
 /// The menu class's procedure (#32768), both forms: its items painted on WM_PAINT, its background
@@ -781,7 +781,7 @@ impl Tracker {
         if let Some(previous) = previous {
             imports::select_object(screen_dc, previous);
         }
-        let _ = imports::close(screen_dc);
+        let _ = imports::delete_dc(screen_dc);
         let (x, y) = anchor.unwrap_or((0, 0));
         if self.show(menu, x, y, 0) {
             if let Some(first) = self.next_item(None, true) {
@@ -803,7 +803,7 @@ impl Tracker {
         if let Some(previous) = previous {
             imports::select_object(screen_dc, previous);
         }
-        let _ = imports::close(screen_dc);
+        let _ = imports::delete_dc(screen_dc);
         let frame = rtl::nonclient::Frame::of_styles(POPUP_STYLE, POPUP_EX_STYLE, false);
         let outer = frame.window(Rect {
             left: 0,
@@ -1307,7 +1307,7 @@ fn item_rect(window: usize, menu: usize, position: u32) -> Option<Rect> {
     if let Some(previous) = previous {
         imports::select_object(screen_dc, previous);
     }
-    let _ = imports::close(screen_dc);
+    let _ = imports::delete_dc(screen_dc);
     found
 }
 

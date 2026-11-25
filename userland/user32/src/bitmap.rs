@@ -211,7 +211,7 @@ fn made_of(dib: &Packed, cx: i32, cy: i32, flags: u32) -> usize {
             } else {
                 let screen = imports::get_dc(0).ok()? as usize;
                 let made = imports::create_di_bitmap(screen, info, rows);
-                let _ = imports::close(screen);
+                let _ = imports::delete_dc(screen);
                 made
             }
         })

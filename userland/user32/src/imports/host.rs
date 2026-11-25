@@ -55,7 +55,6 @@ pub use canvas::{
     CreateDIBitmap,
     CreateFontIndirectW,
     CreateSolidBrush,
-    DeleteDC,
     DeleteObject,
     ExtTextOutW,
     GetStockObject,
@@ -615,14 +614,16 @@ fn status(answer: Result<(), u32>) -> u32 {
     answer.err().unwrap_or(STATUS_SUCCESS)
 }
 
-pub unsafe extern "system" fn NtClose(handle: usize) -> u32 {
+/// gdi32's DeleteDC of a DC the GetDC family's stand-ins handed out (a memory DC's is the
+/// canvas's, which keeps none).
+pub unsafe extern "system" fn DeleteDC(handle: usize) -> u32 {
     wm(
         |wm| match wm.dcs.iter().position(|&dc| dc as usize == handle) {
             Some(at) => {
                 wm.dcs.remove(at);
-                STATUS_SUCCESS
+                1
             }
-            None => STATUS_INVALID_HANDLE,
+            None => 0,
         },
     )
 }
@@ -2054,7 +2055,7 @@ pub unsafe extern "system" fn NtUserEndPaint(window: usize, paint: usize) -> u32
     // SAFETY: the caller's structure.
     let hdc = unsafe { (paint as *const PaintStruct).read_unaligned() }.hdc;
     // SAFETY: no pointers.
-    unsafe { NtClose(hdc as usize) };
+    unsafe { DeleteDC(hdc as usize) };
     STATUS_SUCCESS
 }
 

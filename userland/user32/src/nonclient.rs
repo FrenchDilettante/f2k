@@ -304,7 +304,7 @@ fn paint_frame(framed: &Framed, active: bool, whole: bool) {
             menubar::draw_bar(dc, framed.menu, bar, menubar::bar_selection(framed.handle));
         }
     }
-    let _ = imports::close(dc);
+    let _ = imports::delete_dc(dc);
 }
 
 /// A system color as a fill's brush (its index plus one).

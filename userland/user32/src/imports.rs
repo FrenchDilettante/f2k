@@ -236,8 +236,6 @@ mod raw {
             api: u32,
             length: u32,
         ) -> u32;
-        /// NtClose: the handle closed (a DC's: the DC goes with it).
-        pub fn NtClose(handle: usize) -> u32;
     }
 
     // win32k's services: user32's own stubs (generated from its spec's internal syscall records),
@@ -1304,12 +1302,6 @@ pub fn multi_byte_to_unicode(destination: &mut [u16], source: &[u8]) -> usize {
     unsafe {
         rtl::string::multi_byte_to_unicode_with(raw::RtlMultiByteToUnicodeN, destination, source)
     }
-}
-
-/// NtClose: `handle` closed.
-pub fn close(handle: usize) -> Result<(), NtStatus> {
-    // SAFETY: no pointers.
-    checked(unsafe { raw::NtClose(handle) })
 }
 
 // --- win32k: window classes ----------------------------------------------------------------------
@@ -2569,10 +2561,10 @@ pub fn create_compatible_dc(dc: usize) -> Option<usize> {
     (made != 0).then_some(made)
 }
 
-/// DeleteDC: `dc` deleted.
-pub fn delete_dc(dc: usize) {
+/// DeleteDC: `dc` deleted (a memory DC, or one of the GetDC family's); false when it named none.
+pub fn delete_dc(dc: usize) -> bool {
     // SAFETY: no pointers.
-    unsafe { raw::DeleteDC(dc) };
+    unsafe { raw::DeleteDC(dc) != 0 }
 }
 
 /// CreateDIBitmap with CBM_INIT: a device-dependent bitmap of `dc`'s format, its pixels the DIB's

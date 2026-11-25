@@ -1,11 +1,10 @@
 //! The GetDC family: GetDC, GetDCEx, GetWindowDC, ReleaseDC and WindowFromDC, over win32k's DC
 //! services ([`imports`]).
 //!
-//! A DC is a kernel object the calling process holds a handle to; ReleaseDC closes the handle
-//! (ntdll's NtClose), and the DC goes with it. user32 keeps the DCs the family handed out with
-//! their windows ([`Handed`]): WindowFromDC answers from there (no service answers a DC's window:
-//! the kernel's DCs are the screen's, the window a seam), and ReleaseDC releases those alone, as
-//! its documentation says (a CreateDC DC goes to DeleteDC).
+//! A DC is a GDI object of the calling process; ReleaseDC deletes it (gdi32's DeleteDC). user32
+//! keeps the DCs the family handed out with their windows ([`Handed`]): WindowFromDC answers from
+//! there (no service answers a DC's window: the kernel's DCs are the screen's, the window a seam),
+//! and ReleaseDC releases those alone, as its documentation says (a CreateDC DC goes to DeleteDC).
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -88,7 +87,7 @@ fn handed(
                 args,
             )
         };
-        let _ = imports::close(dc as usize);
+        let _ = imports::delete_dc(dc as usize);
         return failed(ERROR_NOT_ENOUGH_MEMORY).unwrap_or(0);
     }
     dc as usize
@@ -170,7 +169,7 @@ pub extern "system" fn release_dc(_window: usize, dc: usize) -> u32 {
     if dc == 0 || !HANDED_DCS.forget(dc as u32) {
         return 0;
     }
-    imports::close(dc).is_ok() as u32
+    imports::delete_dc(dc) as u32
 }
 
 /// WindowFromDC: the window a DC of the family was handed out for (NULL for the screen's, or for

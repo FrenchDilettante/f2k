@@ -310,10 +310,6 @@ pub unsafe extern "system" fn CreateCompatibleDC(_: usize) -> usize {
     0
 }
 
-pub unsafe extern "system" fn DeleteDC(_: usize) -> u32 {
-    0
-}
-
 pub unsafe extern "system" fn CreateDIBitmap(
     _: usize,
     _: *const u8,
