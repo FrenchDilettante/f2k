@@ -62,9 +62,10 @@ unsafe extern "C" fn probe_handler() -> u32 {
         "xor eax, eax",
         "ret",
         "2:",
-        "mov eax, 1",
+        "mov eax, {search}",
         "ret",
         unwind = const crate::seh::EXCEPTION_UNWIND,
+        search = const crate::seh::disposition::CONTINUE_SEARCH,
         eip = const CONTEXT_EIP,
         eax = const CONTEXT_EAX,
     )

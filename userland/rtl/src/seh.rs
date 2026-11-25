@@ -51,11 +51,26 @@ pub const EXCEPTION_NESTED_CALL: u32 = 0x10;
 /// Either unwind flag: the handler is called for an unwind, not a search.
 pub const EXCEPTION_UNWIND: u32 = EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND;
 
-/// The handlers' dispositions.
-pub const EXCEPTION_CONTINUE_EXECUTION: u32 = 0;
-pub const EXCEPTION_CONTINUE_SEARCH: u32 = 1;
-pub const EXCEPTION_NESTED_EXCEPTION: u32 = 2;
-pub const EXCEPTION_COLLIDED_UNWIND: u32 = 3;
+/// A frame handler's answer: excpt.h's EXCEPTION_DISPOSITION, ExceptionContinueExecution (the
+/// context resumes), ExceptionContinueSearch (the next frame's handler is asked),
+/// ExceptionNestedException and ExceptionCollidedUnwind (the dispatcher's own registration's
+/// answers). Not a `__except` filter's result: those are [`filter`]'s.
+pub mod disposition {
+    pub const CONTINUE_EXECUTION: u32 = 0;
+    pub const CONTINUE_SEARCH: u32 = 1;
+    pub const NESTED_EXCEPTION: u32 = 2;
+    pub const COLLIDED_UNWIND: u32 = 3;
+}
+
+/// A `__except` filter's result (and a top-level filter's, UnhandledExceptionFilter's): excpt.h's
+/// EXCEPTION_EXECUTE_HANDLER (the frame takes the exception), EXCEPTION_CONTINUE_SEARCH (the
+/// search goes on) and EXCEPTION_CONTINUE_EXECUTION (the context resumes). Not a frame handler's
+/// answer: those are [`disposition`]'s.
+pub mod filter {
+    pub const EXECUTE_HANDLER: i32 = 1;
+    pub const CONTINUE_SEARCH: i32 = 0;
+    pub const CONTINUE_EXECUTION: i32 = -1;
+}
 
 /// The exception codes, as winbase.h defines them: each the NTSTATUS of the same meaning.
 pub const EXCEPTION_ACCESS_VIOLATION: u32 = crate::status::STATUS_ACCESS_VIOLATION;
@@ -327,18 +342,18 @@ pub fn dispatch(thread: &impl Frames, record: u32, context: u32) -> bool {
             nested = 0;
         }
         match disposition {
-            EXCEPTION_CONTINUE_EXECUTION => {
+            disposition::CONTINUE_EXECUTION => {
                 if thread.record_flags(record) & EXCEPTION_NONCONTINUABLE != 0 {
                     thread.raise_chained(STATUS_NONCONTINUABLE_EXCEPTION, record);
                 }
                 return true;
             }
-            EXCEPTION_CONTINUE_SEARCH => {
+            disposition::CONTINUE_SEARCH => {
                 if thread.record_flags(record) & EXCEPTION_STACK_INVALID != 0 {
                     return false;
                 }
             }
-            EXCEPTION_NESTED_EXCEPTION => {
+            disposition::NESTED_EXCEPTION => {
                 mark(thread, record, EXCEPTION_NESTED_CALL, true);
                 if dispatcher > nested {
                     nested = dispatcher;
@@ -387,9 +402,9 @@ pub fn unwind(thread: &impl Frames, target: u32, record: u32, context: u32) -> U
         let handler = thread.registration(frame).handler;
         let mut dispatcher = 0u32;
         match thread.execute_handler(true, record, frame, context, &mut dispatcher, handler) {
-            EXCEPTION_CONTINUE_SEARCH => {}
+            disposition::CONTINUE_SEARCH => {}
             // Another unwind is running this frame's handler: go on past that frame.
-            EXCEPTION_COLLIDED_UNWIND => frame = dispatcher,
+            disposition::COLLIDED_UNWIND => frame = dispatcher,
             _ => thread.raise_chained(STATUS_INVALID_DISPOSITION, record),
         }
         frame = thread.registration(frame).next;
@@ -417,9 +432,9 @@ pub fn own_frame_handler(
 ) -> u32 {
     let unwinding = thread.record_flags(record) & EXCEPTION_UNWIND != 0;
     let disposition = match (unwind_call, unwinding) {
-        (false, false) => EXCEPTION_NESTED_EXCEPTION,
-        (true, true) => EXCEPTION_COLLIDED_UNWIND,
-        _ => return EXCEPTION_CONTINUE_SEARCH,
+        (false, false) => disposition::NESTED_EXCEPTION,
+        (true, true) => disposition::COLLIDED_UNWIND,
+        _ => return disposition::CONTINUE_SEARCH,
     };
     let own: OwnRegistration = thread.read_value(own);
     thread.write(dispatcher, own.frame);
@@ -556,11 +571,11 @@ mod tests {
         ) {
             let code = self.handler(move |fake, call| {
                 if fake.record_flags(call.record) & EXCEPTION_UNWIND != 0 {
-                    return EXCEPTION_CONTINUE_SEARCH;
+                    return disposition::CONTINUE_SEARCH;
                 }
                 match filter(fake, call.record) {
-                    Filter::Search => EXCEPTION_CONTINUE_SEARCH,
-                    Filter::Continue => EXCEPTION_CONTINUE_EXECUTION,
+                    Filter::Search => disposition::CONTINUE_SEARCH,
+                    Filter::Continue => disposition::CONTINUE_EXECUTION,
                     Filter::Execute => {
                         let code = fake.read(call.record);
                         fake.rtl_unwind(call.frame, call.record);
@@ -609,7 +624,7 @@ mod tests {
                 if fake.record_flags(call.record) & EXCEPTION_UNWIND != 0 {
                     unwinding(fake, true);
                 }
-                EXCEPTION_CONTINUE_SEARCH
+                disposition::CONTINUE_SEARCH
             });
             self.registered(code, |fake, _| body(fake));
             finally(self, false);
@@ -867,7 +882,7 @@ mod tests {
                     call.frame,
                     call.dispatcher,
                 ]);
-                EXCEPTION_CONTINUE_EXECUTION
+                disposition::CONTINUE_EXECUTION
             });
             fake.registered(handler, |fake, frame| {
                 fake.raise(0xE000_0040, 0, 0);
@@ -1130,15 +1145,15 @@ mod tests {
         let own = fake.push(&[END_OF_CHAIN, 0, 0x0012_F000]);
         let dispatcher = fake.push(&[0]);
         for (unwind_call, flags, expected) in [
-            (false, 0, EXCEPTION_NESTED_EXCEPTION),
-            (false, EXCEPTION_UNWINDING, EXCEPTION_CONTINUE_SEARCH),
-            (true, EXCEPTION_UNWINDING, EXCEPTION_COLLIDED_UNWIND),
+            (false, 0, disposition::NESTED_EXCEPTION),
+            (false, EXCEPTION_UNWINDING, disposition::CONTINUE_SEARCH),
+            (true, EXCEPTION_UNWINDING, disposition::COLLIDED_UNWIND),
             (
                 true,
                 EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND,
-                EXCEPTION_COLLIDED_UNWIND,
+                disposition::COLLIDED_UNWIND,
             ),
-            (true, 0, EXCEPTION_CONTINUE_SEARCH),
+            (true, 0, disposition::CONTINUE_SEARCH),
         ] {
             fake.write(dispatcher, 0);
             let record = fake.push(&[0xE000_0000, flags, 0, 0, 0]);
@@ -1147,7 +1162,7 @@ mod tests {
                 expected,
                 "{unwind_call} {flags:#x}"
             );
-            let written = if expected == EXCEPTION_CONTINUE_SEARCH {
+            let written = if expected == disposition::CONTINUE_SEARCH {
                 0
             } else {
                 0x0012_F000
@@ -1219,8 +1234,8 @@ mod tests {
         let code = terminated(|fake| {
             // It continues its own exception only (continuing every one would recurse without end).
             let handler = fake.handler(|fake, call| match fake.read(call.record) {
-                0xE000_0051 => EXCEPTION_CONTINUE_EXECUTION,
-                _ => EXCEPTION_CONTINUE_SEARCH,
+                0xE000_0051 => disposition::CONTINUE_EXECUTION,
+                _ => disposition::CONTINUE_SEARCH,
             });
             fake.registered(handler, |fake, _| {
                 fake.raise(0xE000_0051, EXCEPTION_NONCONTINUABLE, 0)
@@ -1240,7 +1255,7 @@ mod tests {
                 |fake| {
                     let handler = fake.handler(|fake, call| match fake.read(call.record) {
                         0xE000_0060 => 7,
-                        _ => EXCEPTION_CONTINUE_SEARCH,
+                        _ => disposition::CONTINUE_SEARCH,
                     });
                     fake.registered(handler, |fake, _| fake.raise(0xE000_0060, 0, 0));
                 },
@@ -1272,7 +1287,7 @@ mod tests {
             let ran_too = ran.clone();
             let handler = fake.handler(move |_, _| {
                 ran_too.set(true);
-                EXCEPTION_CONTINUE_SEARCH
+                disposition::CONTINUE_SEARCH
             });
             fake.head.set(bad);
             let frame = fake.push(&[bad, handler]);
@@ -1300,7 +1315,7 @@ mod tests {
                 let handler = fake.handler(move |fake, call| {
                     log.borrow_mut()
                         .push((fake.read(call.record), fake.flags(call.record)));
-                    EXCEPTION_CONTINUE_SEARCH
+                    disposition::CONTINUE_SEARCH
                 });
                 let middle = fake.push(&[fake.head(), handler]);
                 let inner = fake.push(&[middle, handler]);
@@ -1321,7 +1336,7 @@ mod tests {
         let code = terminated(move |fake| {
             let handler = fake.handler(move |fake, call| {
                 log.borrow_mut().push(fake.flags(call.record));
-                EXCEPTION_CONTINUE_SEARCH
+                disposition::CONTINUE_SEARCH
             });
             fake.registered(handler, |fake, _| fake.rtl_unwind(0, 0));
         });
@@ -1331,7 +1346,7 @@ mod tests {
             [EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND]
         );
         let fake = Fake::new();
-        let handler = fake.handler(|_, _| EXCEPTION_CONTINUE_SEARCH);
+        let handler = fake.handler(|_, _| disposition::CONTINUE_SEARCH);
         let frame = fake.push(&[END_OF_CHAIN, handler]);
         fake.set_head(frame);
         fake.rtl_unwind(END_OF_CHAIN, 0);
@@ -1344,12 +1359,12 @@ mod tests {
     #[test]
     fn a_bad_target_or_stack_raises() {
         let code = terminated(|fake| {
-            let handler = fake.handler(|_, _| EXCEPTION_CONTINUE_SEARCH);
+            let handler = fake.handler(|_, _| disposition::CONTINUE_SEARCH);
             fake.registered(handler, |fake, frame| fake.rtl_unwind(frame - 0x40, 0));
         });
         assert_eq!(code, STATUS_INVALID_UNWIND_TARGET);
         let code = terminated(|fake| {
-            let handler = fake.handler(|_, _| EXCEPTION_CONTINUE_SEARCH);
+            let handler = fake.handler(|_, _| disposition::CONTINUE_SEARCH);
             let frame = fake.push(&[END_OF_CHAIN, handler]);
             let broken = fake.push(&[frame, 0]);
             fake.set_head(broken + 2);
@@ -1362,13 +1377,13 @@ mod tests {
     #[test]
     fn a_bad_unwind_disposition() {
         let code = terminated(|fake| {
-            let target_handler = fake.handler(|_, _| EXCEPTION_CONTINUE_SEARCH);
+            let target_handler = fake.handler(|_, _| disposition::CONTINUE_SEARCH);
             fake.registered(target_handler, |fake, target| {
                 let handler =
                     fake.handler(
                         |fake, call| match fake.flags(call.record) & EXCEPTION_UNWIND {
-                            0 => EXCEPTION_CONTINUE_SEARCH,
-                            _ => EXCEPTION_CONTINUE_EXECUTION,
+                            0 => disposition::CONTINUE_SEARCH,
+                            _ => disposition::CONTINUE_EXECUTION,
                         },
                     );
                 fake.registered(handler, |fake, _| fake.rtl_unwind(target, 0));

@@ -142,9 +142,10 @@ mod frame {
             "call dword ptr [eax+8]",
             "add esp, 4",
             "2:",
-            "mov eax, 1",
+            "mov eax, {search}",
             "ret",
             unwind = const EXCEPTION_UNWIND,
+            search = const rtl::seh::disposition::CONTINUE_SEARCH,
         )
     }
 }

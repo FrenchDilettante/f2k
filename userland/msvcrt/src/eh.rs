@@ -365,15 +365,13 @@ pub use platform::{install_unhandled_filter, remove_unhandled_filter, throw_exce
 mod platform {
     use core::mem::offset_of;
 
-    use rtl::seh::ExceptionRecord;
+    use rtl::seh::{disposition, filter, ExceptionRecord};
     // EXCEPTION_NONCONTINUABLE: a throw's flags. EXCEPTION_UNWINDING, and either unwind flag:
     // a handler's call for an unwind.
     use rtl::seh::{EXCEPTION_NONCONTINUABLE, EXCEPTION_UNWIND, EXCEPTION_UNWINDING};
 
     use super::*;
     use crate::kernel32;
-    /// ExceptionContinueSearch: every frame handler's answer when it does not take the exception.
-    const CONTINUE_SEARCH: u32 = rtl::seh::EXCEPTION_CONTINUE_SEARCH;
 
     unsafe extern "C" {
         /// src/seh.s: an unwind action run with EBP `ebp`.
@@ -632,7 +630,7 @@ mod platform {
         } else if !function.tries.is_empty() {
             find_handler(record, frame, &function, None);
         }
-        CONTINUE_SEARCH
+        disposition::CONTINUE_SEARCH
     }
 
     /// The frame's objects destroyed from its state back to `target` (an enclosing state, or -1),
@@ -933,7 +931,7 @@ mod platform {
                 find_handler(record, frame, &function, Some(guard));
             }
         }
-        CONTINUE_SEARCH
+        disposition::CONTINUE_SEARCH
     }
 
     /// _CxxThrowException(object, throw_info): the C++ exception raised, noncontinuable, with the
@@ -977,7 +975,7 @@ mod platform {
         }
         let previous = PREVIOUS_FILTER.load(Relaxed);
         if previous.is_null() {
-            return 0;
+            return filter::CONTINUE_SEARCH;
         }
         // SAFETY: the filter kernel32 had, a stdcall function of the pointers.
         unsafe {
