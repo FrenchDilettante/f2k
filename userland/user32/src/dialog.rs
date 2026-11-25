@@ -35,6 +35,7 @@ use rtl::window::{WindowData, FNID_DIALOG, QUERY_WINDOW_EXTRA, WINDOW_DIALOG};
 
 use crate::imports::{self, Creation, ResourceName};
 use crate::procedure::{self, Procedure};
+use crate::records::WindowList;
 use crate::{answered, failed, focus, message, window};
 
 // --- The public numbers (winuser.h) --------------------------------------------------------------
@@ -1576,9 +1577,6 @@ pub fn child_by_id(dialog: usize, id: u32) -> usize {
         .unwrap_or(0)
 }
 
-/// How many controls the walks take: a dialog's controls past these are not visited.
-const MOST_CONTROLS: usize = 256;
-
 /// How deep the walks descend into control parents inside control parents.
 const MOST_NESTING: usize = 8;
 
@@ -1591,35 +1589,32 @@ fn control_parent(window: usize) -> bool {
     })
 }
 
-/// The controls below `parent`, from the top of the z-order, into `out`: how many. A control
+/// The controls below `parent`, from the top of the z-order, as many as there are. A control
 /// parent among them gives its own controls in its place, depth first.
-fn control_list(parent: usize, out: &mut [usize; MOST_CONTROLS]) -> usize {
-    fn gather(parent: usize, out: &mut [usize; MOST_CONTROLS], count: &mut usize, depth: usize) {
+fn control_list(parent: usize) -> WindowList {
+    fn gather(parent: usize, out: &mut WindowList, depth: usize) {
         for child in window::children(parent) {
-            if *count == MOST_CONTROLS {
-                return;
-            }
             if depth < MOST_NESTING && control_parent(child) {
-                gather(child, out, count, depth + 1);
-            } else {
-                out[*count] = child;
-                *count += 1;
+                gather(child, out, depth + 1);
+            } else if !out.push(child) {
+                return;
             }
         }
     }
-    let mut count = 0;
-    gather(parent, out, &mut count, 0);
-    count
+    let mut controls = WindowList::new();
+    gather(parent, &mut controls, 0);
+    controls
 }
 
-/// The window's direct children, from the top of the z-order, into `out`: how many.
-fn child_list(parent: usize, out: &mut [usize; MOST_CONTROLS]) -> usize {
-    let mut count = 0;
-    for child in window::children(parent).take(MOST_CONTROLS) {
-        out[count] = child;
-        count += 1;
+/// The window's direct children, from the top of the z-order, as many as there are.
+fn child_list(parent: usize) -> WindowList {
+    let mut children = WindowList::new();
+    for child in window::children(parent) {
+        if !children.push(child) {
+            break;
+        }
     }
-    count
+    children
 }
 
 /// Whether a control may take the focus: its style visible, enabled and, for `tab`, a tab stop.
@@ -1633,14 +1628,13 @@ fn takes_focus(control: usize, tab: bool) -> bool {
 /// last with `previous`) for no `from`; `from` itself when no other is one, 0 when no control is.
 /// The walk descends into control parents (see [`control_list`]).
 pub fn next_tab_item(dialog: usize, from: usize, previous: bool) -> usize {
-    let mut controls = [0usize; MOST_CONTROLS];
-    let count = control_list(dialog, &mut controls);
+    let controls = control_list(dialog);
+    let controls = controls.as_slice();
+    let count = controls.len();
     if count == 0 {
         return 0;
     }
-    let start = controls[..count]
-        .iter()
-        .position(|&control| control == from);
+    let start = controls.iter().position(|&control| control == from);
     for step in 1..=count {
         let index = match (start, previous) {
             (Some(at), false) => (at + step) % count,
@@ -1682,12 +1676,12 @@ pub fn next_group_item(dialog: usize, from: usize, previous: bool) -> usize {
     if parent == 0 || !is_descendant(dialog, parent) {
         return from;
     }
-    let mut children = [0usize; MOST_CONTROLS];
-    let count = child_list(parent, &mut children);
-    let Some(at) = children[..count].iter().position(|&child| child == from) else {
+    let children = child_list(parent);
+    let children = children.as_slice();
+    let Some(at) = children.iter().position(|&child| child == from) else {
         return from;
     };
-    let range = group_range(&children[..count], at);
+    let range = group_range(children, at);
     let size = range.len();
     let offset = at - range.start;
     for step in 1..size {
@@ -1698,9 +1692,8 @@ pub fn next_group_item(dialog: usize, from: usize, previous: bool) -> usize {
                 (offset + step) % size
             }];
         let control = if control_parent(child) {
-            let mut inner = [0usize; MOST_CONTROLS];
-            let inner_count = control_list(child, &mut inner);
-            let mut candidates = inner[..inner_count].iter().copied();
+            let inner = control_list(child);
+            let mut candidates = inner.as_slice().iter().copied();
             let found = if previous {
                 candidates.rfind(|&control| takes_focus(control, false))
             } else {
@@ -1722,12 +1715,12 @@ pub fn next_group_item(dialog: usize, from: usize, previous: bool) -> usize {
 /// The control after `from` in its group, round the group's end, whatever its state (an automatic
 /// radio button's walk over the buttons it unchecks); `from` itself when it is alone.
 pub fn next_group_item_any(parent: usize, from: usize) -> usize {
-    let mut children = [0usize; MOST_CONTROLS];
-    let count = child_list(parent, &mut children);
-    let Some(at) = children[..count].iter().position(|&child| child == from) else {
+    let children = child_list(parent);
+    let children = children.as_slice();
+    let Some(at) = children.iter().position(|&child| child == from) else {
         return from;
     };
-    let range = group_range(&children[..count], at);
+    let range = group_range(children, at);
     let next = if at + 1 < range.end {
         at + 1
     } else {
@@ -2196,10 +2189,11 @@ fn character(dialog: usize, msg: &Msg, ansi: bool) -> bool {
         msg.wparam
     };
     let wanted = rtl::cp1252::map_case(unit as u16, true);
-    let mut controls = [0usize; MOST_CONTROLS];
-    let count = control_list(dialog, &mut controls);
+    let controls = control_list(dialog);
+    let controls = controls.as_slice();
+    let count = controls.len();
     let focus = focus::get_focus();
-    let start = controls[..count]
+    let start = controls
         .iter()
         .position(|&control| control == focus)
         .map_or(0, |at| at + 1);
@@ -2659,5 +2653,46 @@ mod tests {
             window::destroy_window(dialog);
         }
         assert_eq!(kept::count(), records);
+    }
+
+    /// A dialog of `count` controls of the dialog class's button kind `style`, the first starting
+    /// a group: its handle and its controls, in z-order.
+    fn crowded_dialog(count: u16, style: u32) -> (usize, std::vec::Vec<usize>) {
+        crate::class::SYSTEM_CLASSES_WANTED.with(|wanted| wanted.set(true));
+        let control = WS_CHILD | WS_VISIBLE | style;
+        let controls: std::vec::Vec<(u32, u16, u16)> = (1..=count)
+            .map(|id| (if id == 1 { control | WS_GROUP } else { control }, id, 0x80))
+            .collect();
+        let template = button_template(WS_POPUP | WS_VISIBLE, &controls);
+        fn nothing(_window: u32, _message: u32, _wparam: u32, _lparam: i32) -> i32 {
+            0
+        }
+        let proc = crate::imports::host::procedure(nothing) as usize;
+        // SAFETY: the template above, whole.
+        let dialog = unsafe {
+            create_dialog_indirect_param_w(0x40_0000, template.as_ptr().cast(), 0, proc, 0)
+        };
+        assert_ne!(dialog, 0);
+        let controls: std::vec::Vec<usize> = (1..=u32::from(count))
+            .map(|id| child_by_id(dialog, id))
+            .collect();
+        assert!(controls.iter().all(|&control| control != 0));
+        (dialog, controls)
+    }
+
+    /// Tab and the arrows reach every control of a dialog with more than the walks' old limit
+    /// (256): the 300th follows the 299th, and the first follows the 300th round the end.
+    #[test]
+    fn the_walks_reach_past_a_fixed_number_of_controls() {
+        let (dialog, controls) = crowded_dialog(300, WS_TABSTOP);
+        assert_eq!(next_tab_item(dialog, controls[298], false), controls[299]);
+        assert_eq!(next_tab_item(dialog, controls[299], false), controls[0]);
+        assert_eq!(next_tab_item(dialog, controls[0], true), controls[299]);
+        assert_eq!(next_tab_item(dialog, 0, true), controls[299]);
+        assert_eq!(next_group_item(dialog, controls[298], false), controls[299]);
+        assert_eq!(next_group_item(dialog, controls[299], false), controls[0]);
+        assert_eq!(next_group_item(dialog, controls[0], true), controls[299]);
+        assert_eq!(next_group_item_any(dialog, controls[299]), controls[0]);
+        window::destroy_window(dialog);
     }
 }

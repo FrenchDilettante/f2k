@@ -350,12 +350,16 @@ fn uncheck_group(window: usize) {
     if parent == 0 {
         return;
     }
+    // Round the group once: no more steps than the parent has children (a BM_SETCHECK handler
+    // that reorders or destroys them cannot keep the walk going).
+    let steps = crate::window::children(parent).count();
     let mut current = window;
-    for _ in 0..256 {
-        current = dialog::next_group_item_any(parent, current);
-        if current == window || current == 0 {
+    for _ in 0..steps {
+        let next = dialog::next_group_item_any(parent, current);
+        if next == window || next == current || next == 0 {
             break;
         }
+        current = next;
         if dialog::dialog_code(current, 0) & DLGC_RADIOBUTTON != 0 {
             let _ = message::send(current, BM_SETCHECK, 0, 0);
         }

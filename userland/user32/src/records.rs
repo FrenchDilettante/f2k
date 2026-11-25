@@ -171,6 +171,73 @@ impl<const W: usize> Records<W> {
     }
 }
 
+/// A list of windows a walk gathers (a dialog's controls, in z-order), as long as it needs: a
+/// block of the process heap, doubled as it fills, freed when the list goes. Each walk's own, so
+/// no lock.
+#[derive(Default)]
+pub struct WindowList {
+    block: Option<HeapBlock>,
+    count: usize,
+}
+
+impl WindowList {
+    /// An empty list, no block.
+    pub const fn new() -> Self {
+        WindowList {
+            block: None,
+            count: 0,
+        }
+    }
+
+    /// `window` added at the end; false when the heap has no room for it (the list as it was).
+    pub fn push(&mut self, window: usize) -> bool {
+        let size = core::mem::size_of::<usize>();
+        let capacity = self
+            .block
+            .as_ref()
+            .map_or(0, |block| block.bytes().len() / size);
+        if self.count == capacity {
+            let Some(mut block) = HeapBlock::new((2 * capacity).max(FIRST) * size) else {
+                return false;
+            };
+            if let Some(old) = self.block.as_ref() {
+                block.bytes_mut()[..self.count * size]
+                    .copy_from_slice(&old.bytes()[..self.count * size]);
+            }
+            self.block = Some(block);
+        }
+        if let Some(block) = self.block.as_mut() {
+            let at = self.count * size;
+            block.bytes_mut()[at..at + size].copy_from_slice(window.as_bytes());
+        }
+        self.count += 1;
+        true
+    }
+
+    /// The windows, in the order added.
+    pub fn as_slice(&self) -> &[usize] {
+        match self.block.as_ref() {
+            // SAFETY: the process heap's blocks are 8-aligned (its granularity), enough for a word;
+            // the first `count` words were written whole by `push`, any bits a valid `usize`; the
+            // borrow is the list's, which no one writes meanwhile.
+            Some(block) => unsafe {
+                core::slice::from_raw_parts(block.bytes().as_ptr().cast(), self.count)
+            },
+            None => &[],
+        }
+    }
+
+    /// How many windows there are.
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    /// Whether there are none.
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+}
+
 /// A process's table of records of one kind: [`Records`] shared by its threads under user32's
 /// lock.
 #[cfg(all(target_arch = "x86", not(test)))]
@@ -274,6 +341,22 @@ mod tests {
         }
         assert_eq!((records.len(), records.capacity()), (0, 0));
         assert!(!records.set([0, 1, 2]));
+    }
+
+    /// A list takes as many windows as are pushed, in order.
+    #[test]
+    fn a_window_list_grows() {
+        let mut list = WindowList::new();
+        assert!(list.as_slice().is_empty());
+        for window in 0..1000usize {
+            assert!(list.push(0x20 + 4 * window));
+        }
+        assert_eq!(list.len(), 1000);
+        assert!(list
+            .as_slice()
+            .iter()
+            .enumerate()
+            .all(|(index, &window)| window == 0x20 + 4 * index));
     }
 
     /// A table's records are the calling thread's, and leave nothing behind once taken.
