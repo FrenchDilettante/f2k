@@ -494,9 +494,16 @@ impl Thread {
     /// The thread-local half of an attach to `process`: take the process's base priority, quantum
     /// and boost policy, run on its address space, and stand Initialized. The dispatcher's attach
     /// links the thread into the process's list.
-    pub(super) fn take_process_data(&mut self, process: &mut SchedProcess) {
-        self.process = process as *mut SchedProcess;
+    ///
+    /// # Safety
+    ///
+    /// `process` is a live record, not borrowed meanwhile. The thread keeps the pointer itself,
+    /// not one derived from a borrow, so no later borrow of the record invalidates it.
+    pub(super) unsafe fn take_process_data(&mut self, process: *mut SchedProcess) {
+        self.process = process;
         self.space = process as *const SchedProcess;
+        // SAFETY: the caller's contract.
+        let process = unsafe { &*process };
         self.space_index = process.index;
         self.base_priority = process.base_priority;
         self.priority = self.base_priority;
@@ -740,7 +747,13 @@ impl Thread {
     /// # Panics
     ///
     /// The thread is attached to another process already: attaches do not nest.
-    pub(crate) fn attach_space(&mut self, target: &SchedProcess) -> Option<u32> {
+    ///
+    /// # Safety
+    ///
+    /// `target` is a live process record, not borrowed meanwhile, that outlives the scope. The
+    /// thread keeps the pointer itself, not one derived from a borrow, so the detach may change
+    /// the record through it.
+    pub(crate) unsafe fn attach_space(&mut self, target: *const SchedProcess) -> Option<u32> {
         if core::ptr::eq(self.space, target) {
             return None;
         }
@@ -749,6 +762,8 @@ impl Thread {
             "a thread attaches to another process only from its own"
         );
         self.space = target;
+        // SAFETY: the caller's contract.
+        let target = unsafe { &*target };
         self.space_index = target.index;
         Some(target.dir_phys())
     }
@@ -996,7 +1011,8 @@ mod tests {
         assert!(core::ptr::eq(thread.space(), own));
         assert!(!thread.attached());
 
-        assert_eq!(thread.attach_space(other), Some(0x00B0_0000));
+        // SAFETY: the process records are leaked at their final addresses.
+        assert_eq!(unsafe { thread.attach_space(other) }, Some(0x00B0_0000));
         assert!(thread.attached());
         assert!(core::ptr::eq(thread.space(), other));
         assert!(core::ptr::eq(thread.process, own), "the owner stays");
@@ -1013,10 +1029,13 @@ mod tests {
         let own = process_on(0x0090_0000);
         let other = process_on(0x00B0_0000);
         let mut thread = thread_of(own);
-        assert_eq!(thread.attach_space(own), None);
+        // SAFETY: the process records are leaked at their final addresses.
+        assert_eq!(unsafe { thread.attach_space(own) }, None);
         assert!(!thread.attached());
-        assert_eq!(thread.attach_space(other), Some(0x00B0_0000));
-        assert_eq!(thread.attach_space(other), None);
+        // SAFETY: as above.
+        assert_eq!(unsafe { thread.attach_space(other) }, Some(0x00B0_0000));
+        // SAFETY: as above.
+        assert_eq!(unsafe { thread.attach_space(other) }, None);
         assert!(core::ptr::eq(thread.space(), other));
     }
 
@@ -1026,8 +1045,10 @@ mod tests {
     fn attaches_do_not_nest() {
         let own = process_on(0x0090_0000);
         let mut thread = thread_of(own);
-        thread.attach_space(process_on(0x00B0_0000));
-        thread.attach_space(process_on(0x00C0_0000));
+        // SAFETY: the process records are leaked at their final addresses.
+        unsafe { thread.attach_space(process_on(0x00B0_0000)) };
+        // SAFETY: as above.
+        unsafe { thread.attach_space(process_on(0x00C0_0000)) };
     }
 
     /// A detach follows its attach, once.
@@ -1036,7 +1057,8 @@ mod tests {
     fn a_detach_follows_an_attach() {
         let own = process_on(0x0090_0000);
         let mut thread = thread_of(own);
-        thread.attach_space(process_on(0x00B0_0000));
+        // SAFETY: the process records are leaked at their final addresses.
+        unsafe { thread.attach_space(process_on(0x00B0_0000)) };
         thread.detach_space();
         thread.detach_space();
     }

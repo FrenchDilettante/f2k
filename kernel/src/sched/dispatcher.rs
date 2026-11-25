@@ -161,8 +161,6 @@ impl Dispatcher {
     /// `process` is a live record at its final address, reached by nothing else meanwhile, and
     /// outlives the thread's membership in its list.
     pub unsafe fn attach(&mut self, thread: ThreadId, process: *mut SchedProcess) {
-        // SAFETY: the caller's contract: the record is live, and this is the only reference to it.
-        let process = unsafe { &mut *process };
         let record = self.thread_mut(thread);
         // Every thread is attached at its final address before it first runs: the place the
         // switch saves its floating-point state to.
@@ -171,14 +169,18 @@ impl Dispatcher {
                 .is_multiple_of(super::thread::FPU_STATE_ALIGN),
             "a thread's floating-point area is 16-byte aligned"
         );
-        record.take_process_data(process);
-        if process.stack_count == super::process::NO_THREADS {
-            process.stack_count = 1;
+        // SAFETY: the caller's contract: the record is live, and nothing else reaches it.
+        unsafe { record.take_process_data(process) };
+        // SAFETY: as above; the thread keeps `process` itself, so this borrow (and the list's,
+        // below) leave its pointer valid.
+        let owner = unsafe { &mut *process };
+        if owner.stack_count == super::process::NO_THREADS {
+            owner.stack_count = 1;
         } else {
-            process.stack_count += 1;
+            owner.stack_count += 1;
         }
-        process.thread_seed = process.thread_seed.wrapping_add(1);
-        list::push_back(self, ProcessThreads(ProcessRef::new(process)), thread);
+        owner.thread_seed = owner.thread_seed.wrapping_add(1);
+        list::push_back(self, ProcessThreads(ProcessRef::of(process)), thread);
     }
 
     /// The owning process of `thread`, to change, for as long as this borrow of the dispatcher.
@@ -202,12 +204,13 @@ impl Dispatcher {
         thread: ThreadId,
         target: *mut SchedProcess,
     ) -> Option<u32> {
-        let target = ProcessRef::of(target);
+        let process = ProcessRef::of(target);
         // SAFETY: the target outlives the scope (the attach's contract: its caller holds it), and
         // this exclusive borrow of the dispatcher serializes every use of it; the thread record is
         // another record than the process's.
-        let target = unsafe { target.get_mut() };
-        let dir_phys = self.thread_mut(thread).attach_space(target)?;
+        let dir_phys = unsafe { self.thread_mut(thread).attach_space(target) }?;
+        // SAFETY: as above.
+        let target = unsafe { process.get_mut() };
         target.attach_count += 1;
         Some(dir_phys)
     }

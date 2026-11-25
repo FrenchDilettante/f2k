@@ -439,9 +439,9 @@ mod tests {
     #[test]
     fn cr3_follows_the_attached_address_space() {
         let (mut attacher, own_sibling, of_target) = threads();
+        let target = of_target.process;
         // SAFETY: the target's record is leaked; the thread is attached to its own process.
-        let target = unsafe { &*of_target.process };
-        assert_eq!(attacher.attach_space(target), Some(0x00B0_0000));
+        assert_eq!(unsafe { attacher.attach_space(target) }, Some(0x00B0_0000));
 
         let back_from_sibling = switch_plan(&own_sibling, &attacher, false);
         assert_eq!(
