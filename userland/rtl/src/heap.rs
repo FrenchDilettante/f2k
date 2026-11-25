@@ -10,7 +10,7 @@
 //! the image header's SizeOfHeapReserve); when a growable heap's segments cannot serve a request,
 //! it adds a segment of [`SEGMENT_RESERVE`] bytes wherever the address space has room, as Windows'
 //! heaps do. A heap created with a maximum size is its first segment and nothing more: it refuses
-//! what does not fit.
+//! what does not fit, and any request past [`BIG_THRESHOLD`].
 //!
 //! The first segment starts with the heap's header ([`Header`]): NT's signature, flags and force
 //! flags at their offsets (programs read the process heap's flags), the first segment's
@@ -67,9 +67,12 @@ pub const DEFAULT_RESERVE: usize = 64 * PAGE;
 /// A further segment's reservation (NT's default segment reserve, the PEB's HeapSegmentReserve:
 /// 1 MiB), or more when a request needs it.
 pub const SEGMENT_RESERVE: usize = 0x10_0000;
-/// The largest request a growable heap serves from its segments; larger ones get a reservation of
-/// their own (NT's virtual-block threshold).
-pub const BIG_THRESHOLD: usize = 0x7_F000;
+/// The largest request a heap serves from its segments: Windows 2000's virtual-block threshold,
+/// 0x7F000 bytes, holds the request with its 8-byte block header rounded up to 8 bytes, so 0x7EFF8
+/// is the largest (the memory capture's capped heap refuses 0x7F000). A growable heap gives a
+/// larger request a reservation of its own; a heap with a maximum size refuses it
+/// ([`Heap::refuses_size`]).
+pub const BIG_THRESHOLD: usize = 0x7_EFF8;
 /// How many heaps a process can hold (the PEB's MaximumNumberOfHeaps).
 pub const HEAPS: u32 = 16;
 /// The header's signature word (NT's HEAP.Signature).
@@ -579,7 +582,10 @@ impl Heap {
     /// A block from the first segment that serves it; a growable heap whose segments are all full
     /// adds one. A corrupt segment fails the call: a further segment would only hide it.
     fn alloc_inner(self, system: &impl Vm, request: usize, zero: bool) -> Option<usize> {
-        if self.growable() && request > BIG_THRESHOLD {
+        if request > BIG_THRESHOLD {
+            if !self.growable() {
+                return None;
+            }
             return self.big_alloc(system, request);
         }
         let mut last = self.first();
@@ -636,6 +642,14 @@ impl Heap {
             .is_some_and(|(segment, user)| segment.resize(user, request, zero))
     }
 
+    /// Whether the heap refuses `request` by its size alone, whatever room it has: past
+    /// [`BIG_THRESHOLD`] on a heap with a maximum size, which Windows 2000 reports as
+    /// STATUS_BUFFER_TOO_SMALL (the memory capture's ERROR_INSUFFICIENT_BUFFER) where a heap out of
+    /// room reports STATUS_NO_MEMORY.
+    pub fn refuses_size(self, request: usize) -> bool {
+        !self.growable() && request > BIG_THRESHOLD
+    }
+
     /// HeapAlloc's work: a block of `request` bytes (zeroed for HEAP_ZERO_MEMORY), or none.
     pub fn alloc(self, system: &(impl System + Vm), flags: u32, request: usize) -> Option<usize> {
         self.locked(system, flags, || {
@@ -656,8 +670,8 @@ impl Heap {
     /// HeapReAlloc's work: the block resized — in place when it fits (always for
     /// HEAP_REALLOC_IN_PLACE_ONLY, which otherwise refuses), else moved, its contents kept and an
     /// extension zeroed for HEAP_ZERO_MEMORY. A segment block that grows past the big-block
-    /// threshold of a growable heap moves even when it would fit. The original is untouched on
-    /// failure.
+    /// threshold of a growable heap moves even when it would fit; a heap with a maximum size
+    /// refuses that size, in place too. The original is untouched on failure.
     pub fn realloc(
         self,
         system: &(impl System + Vm),
@@ -669,6 +683,9 @@ impl Heap {
             let zero = flags & HEAP_ZERO_MEMORY != 0;
             let in_place_only = flags & HEAP_REALLOC_IN_PLACE_ONLY != 0;
             let old = self.size_inner(pointer)?;
+            if self.refuses_size(request) {
+                return None;
+            }
             let to_big =
                 self.growable() && request > BIG_THRESHOLD && self.big_at(pointer).is_none();
             if (!to_big || in_place_only) && self.resize_inner(pointer, request, zero) {
@@ -1310,6 +1327,37 @@ pub(crate) mod tests {
         assert_eq!(heap.size(&host, 0, largest), Some(BIG_THRESHOLD));
         heap.destroy(&host);
         assert!(host.live.borrow().is_empty());
+    }
+
+    /// A heap with a maximum size refuses a request past the threshold however much room it has
+    /// (the memory capture's 16 MiB heap refuses 0x7F000), takes the threshold itself, and refuses
+    /// to grow a block past it; a growable heap serves it.
+    #[test]
+    fn a_capped_heap_refuses_past_the_threshold() {
+        let host = Host::new();
+        let heap = create(&host, 0, 0, 16 << 20).unwrap();
+        assert!(heap.refuses_size(BIG_THRESHOLD + 1));
+        assert!(!heap.refuses_size(BIG_THRESHOLD));
+        assert_eq!(heap.alloc(&host, 0, 0x7_F000), None);
+        assert_eq!(heap.alloc(&host, 0, BIG_THRESHOLD + 1), None);
+        let largest = heap.alloc(&host, 0, BIG_THRESHOLD).unwrap();
+        assert_eq!(heap.realloc(&host, 0, largest, BIG_THRESHOLD + 1), None);
+        assert_eq!(
+            heap.realloc(
+                &host,
+                HEAP_REALLOC_IN_PLACE_ONLY,
+                largest,
+                BIG_THRESHOLD + 1
+            ),
+            None
+        );
+        assert!(heap.free(&host, 0, largest));
+        heap.destroy(&host);
+
+        let growable = create(&host, 0, 0, 0).unwrap();
+        assert!(!growable.refuses_size(0x10_0000));
+        assert!(growable.alloc(&host, 0, 0x10_0000).is_some());
+        growable.destroy(&host);
     }
 
     /// A capped heap is its one segment: 128 KiB serves seven 16 KiB blocks, then refuses (the

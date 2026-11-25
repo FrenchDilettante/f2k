@@ -7,11 +7,6 @@ gate = true
 virtual = ["released: state 0x10000 protect 0x1 type 0x0 region * allocprotect 0x0"]
 image = ["past the image end: state 0x10000 protect 0x1 type 0x0 region * allocprotect 0x0"]
 
-[pending]
-# Not captured yet: its output.txt block is a placeholder, which tests/capture.bat memory replaces
-# once tests/build.bat memory has rebuilt memory.exe.
-heapcap = "F2K's heap with a maximum size takes blocks past 0x7FFF8, its refusals leave the last error untouched, and HEAP_GENERATE_EXCEPTIONS raises for a NULL block's HeapReAlloc"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only what a section calls itself, through its own helpers too, never what the C runtime's

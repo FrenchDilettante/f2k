@@ -92,7 +92,12 @@ core::arch::global_asm!(
 use rtl::critsec::CriticalSection;
 use rtl::heap::{HEAP_GENERATE_EXCEPTIONS, HEAP_GROWABLE, HEAP_REALLOC_IN_PLACE_ONLY};
 use rtl::ldr;
-use rtl::status::STATUS_SUCCESS;
+use rtl::status::{
+    STATUS_BUFFER_TOO_SMALL,
+    STATUS_INVALID_PARAMETER,
+    STATUS_NO_MEMORY,
+    STATUS_SUCCESS,
+};
 use rtl::sys::{self, Native};
 
 // The critical sections' bodies, cdecl, called by src/critsec.s's exports with their caller's
@@ -213,16 +218,32 @@ pub extern "system" fn rtl_release_peb_lock() {
 // The heaps' bodies, cdecl, called by src/heap.s's exports. A handle the process's heap list does
 // not hold names no heap: the calls refuse it without touching it.
 
-/// A failed allocation's answer to its export: zero, with the high dword set when it must raise
-/// STATUS_NO_MEMORY instead (HEAP_GENERATE_EXCEPTIONS on the call or the heap): src/heap.s raises
-/// it from the export, through RtlRaiseException.
-fn refused(handle: usize, flags: u32) -> u64 {
-    let heap_flags = process::heaps().heap(handle).map_or(0, |heap| heap.flags());
-    if (flags | heap_flags) & HEAP_GENERATE_EXCEPTIONS != 0 {
-        1 << 32
-    } else {
-        0
+/// The calling thread's last status and last error set from `status`, as Windows 2000's heap
+/// reports a failure (its SET_LAST_STATUS).
+fn set_heap_status(status: u32) {
+    sys::set_last_status(status);
+    sys::set_last_error(rtl::status::dos_error(status));
+}
+
+/// A failed allocation of `size` bytes's answer to its export: zero, with the high dword set when
+/// it must raise STATUS_NO_MEMORY instead (HEAP_GENERATE_EXCEPTIONS on the call or the heap):
+/// src/heap.s raises it from the export, through RtlRaiseException, the last error untouched.
+/// Otherwise the last status is STATUS_BUFFER_TOO_SMALL for a size the heap refuses by itself (past
+/// a capped heap's threshold), else STATUS_NO_MEMORY (the memory capture's heapcap section:
+/// ERROR_INSUFFICIENT_BUFFER, ERROR_NOT_ENOUGH_MEMORY, and a raise with the error untouched).
+fn refused(handle: usize, flags: u32, size: usize) -> u64 {
+    let Some(heap) = process::heaps().heap(handle) else {
+        return 0;
+    };
+    if (flags | heap.flags()) & HEAP_GENERATE_EXCEPTIONS != 0 {
+        return 1 << 32;
     }
+    set_heap_status(if heap.refuses_size(size) {
+        STATUS_BUFFER_TOO_SMALL
+    } else {
+        STATUS_NO_MEMORY
+    });
+    0
 }
 
 /// RtlCreateHeap(Flags, HeapBase, ReserveSize, CommitSize): a heap whose first segment reserves
@@ -256,23 +277,33 @@ extern "C" fn f2k_rtl_allocate_heap(handle: usize, flags: u32, size: usize) -> u
         .and_then(|heap| heap.alloc(&Native, flags, size))
     {
         Some(block) => block as u64,
-        None => refused(handle, flags),
+        None => refused(handle, flags, size),
     }
 }
 
-/// RtlFreeHeap: TRUE once freed (a null pointer frees nothing and succeeds).
+/// RtlFreeHeap: TRUE once freed (a null pointer frees nothing and succeeds); FALSE with
+/// STATUS_INVALID_PARAMETER for what is no block of the heap.
 #[unsafe(no_mangle)]
 extern "C" fn f2k_rtl_free_heap(handle: usize, flags: u32, pointer: usize) -> u32 {
-    u32::from(
-        pointer == 0
-            || process::heaps()
-                .heap(handle)
-                .is_some_and(|heap| heap.free(&Native, flags, pointer)),
-    )
+    if pointer == 0 {
+        return 1;
+    }
+    let Some(heap) = process::heaps().heap(handle) else {
+        return 0;
+    };
+    if heap.free(&Native, flags, pointer) {
+        1
+    } else {
+        set_heap_status(STATUS_INVALID_PARAMETER);
+        0
+    }
 }
 
-/// RtlReAllocateHeap: the block, or the refusal ([`refused`]; an in-place resize that does not fit
-/// is a plain refusal).
+/// RtlReAllocateHeap: the block, or the refusal ([`refused`]). A null pointer is refused with
+/// STATUS_SUCCESS, never raised (the memory capture's heapcap section: err=0 on an exceptions heap
+/// too); what is no block of the heap with STATUS_INVALID_PARAMETER, never raised; an in-place
+/// resize that does not fit is a plain refusal, the last error untouched (the memory capture's
+/// heap section).
 #[unsafe(no_mangle)]
 extern "C" fn f2k_rtl_reallocate_heap(
     handle: usize,
@@ -280,13 +311,21 @@ extern "C" fn f2k_rtl_reallocate_heap(
     pointer: usize,
     size: usize,
 ) -> u64 {
-    match process::heaps()
-        .heap(handle)
-        .and_then(|heap| heap.realloc(&Native, flags, pointer, size))
-    {
+    let Some(heap) = process::heaps().heap(handle) else {
+        return 0;
+    };
+    if pointer == 0 {
+        set_heap_status(STATUS_SUCCESS);
+        return 0;
+    }
+    if heap.size(&Native, flags, pointer).is_none() {
+        set_heap_status(STATUS_INVALID_PARAMETER);
+        return 0;
+    }
+    match heap.realloc(&Native, flags, pointer, size) {
         Some(block) => block as u64,
         None if flags & HEAP_REALLOC_IN_PLACE_ONLY != 0 => 0,
-        None => refused(handle, flags),
+        None => refused(handle, flags, size),
     }
 }
 
