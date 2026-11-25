@@ -124,7 +124,12 @@ const VK_DOWN: u32 = 0x28;
 const SW_SHOWNORMAL: i32 = 1;
 
 // The errors of the dialog calls (winerror.h).
-use rtl::winerror::{ERROR_CONTROL_ID_NOT_FOUND, ERROR_INVALID_DATA, ERROR_WINDOW_NOT_DIALOG};
+use rtl::winerror::{
+    ERROR_CONTROL_ID_NOT_FOUND,
+    ERROR_INVALID_DATA,
+    ERROR_NOT_ENOUGH_MEMORY,
+    ERROR_WINDOW_NOT_DIALOG,
+};
 
 /// RT_DIALOG: a dialog template resource.
 const RT_DIALOG: u16 = 5;
@@ -188,85 +193,51 @@ pub fn is_dialog(window: usize) -> bool {
 }
 
 /// The dialogs of the process, as the dialog manager keeps them beside their extra bytes: each
-/// one's handle, its procedure's address and form, and the font the dialog manager made for it.
-/// The window manager frees a window before the messages of its destruction reach its procedure
-/// (it calls no user-mode code: they are delivered once its service returns), so DefDlgProc's
-/// WM_DESTROY and WM_NCDESTROY find the dialog procedure and the font here, as Windows 2000's
-/// user32 finds them in its own dialog structure. A record goes at WM_NCDESTROY.
+/// one's handle, its procedure's address and form, and the font the dialog manager made for it,
+/// in a table that grows with them ([`crate::records`]). The window manager frees another thread's
+/// window before the messages of its destruction reach its procedure (they are queued), so
+/// DefDlgProc's WM_DESTROY and WM_NCDESTROY find the dialog procedure and the font here, as
+/// Windows 2000's user32 finds them in its own dialog structure. A record goes at WM_NCDESTROY.
 mod kept {
-    use core::sync::atomic::{AtomicU32, Ordering};
+    use crate::records::Table;
 
-    /// How many dialogs a process keeps at once; past them a dialog's destruction messages do not
-    /// reach its procedure.
-    const KEPT: usize = 64;
+    /// Each dialog's record: its window, its procedure, its flags (the procedure's form, bit 0;
+    /// the font's ownership, bit 1), its font.
+    static DIALOGS: Table<4> = Table::new();
 
-    struct Kept {
-        window: AtomicU32,
-        proc: AtomicU32,
-        /// The procedure's form (bit 0) and the font's ownership (bit 1).
-        flags: AtomicU32,
-        font: AtomicU32,
-    }
-
-    static DIALOGS: [Kept; KEPT] = [const {
-        Kept {
-            window: AtomicU32::new(0),
-            proc: AtomicU32::new(0),
-            flags: AtomicU32::new(0),
-            font: AtomicU32::new(0),
-        }
-    }; KEPT];
-
-    fn find(window: u32) -> Option<&'static Kept> {
-        DIALOGS
-            .iter()
-            .find(|kept| kept.window.load(Ordering::Acquire) == window)
-    }
-
-    /// The dialog `window`'s record set (made when it has none).
-    pub fn keep(window: usize, proc: u32, ansi: bool, font: u32) {
-        let window = window as u32;
-        let record = find(window).or_else(|| {
-            DIALOGS.iter().find(|kept| {
-                kept.window
-                    .compare_exchange(0, window, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-            })
-        });
-        if let Some(record) = record {
-            record.proc.store(proc, Ordering::Release);
-            record
-                .flags
-                .store(ansi as u32 | ((font != 0) as u32) << 1, Ordering::Release);
-            record.font.store(font, Ordering::Release);
-        }
+    /// The dialog `window`'s record set (made when it has none); false when the heap has no room
+    /// for it.
+    pub fn keep(window: usize, proc: u32, ansi: bool, font: u32) -> bool {
+        let flags = ansi as usize | ((font != 0) as usize) << 1;
+        DIALOGS.with(|dialogs| dialogs.set([window, proc as usize, flags, font as usize]))
     }
 
     /// The dialog `window`'s procedure and form, as kept.
     pub fn procedure(window: usize) -> Option<(u32, bool)> {
-        let record = find(window as u32)?;
-        Some((
-            record.proc.load(Ordering::Acquire),
-            record.flags.load(Ordering::Acquire) & 1 != 0,
-        ))
+        let [_, proc, flags, _] = DIALOGS.with(|dialogs| dialogs.get(window))?;
+        Some((proc as u32, flags & 1 != 0))
     }
 
     /// The dialog `window`'s procedure changed in its record.
     pub fn set_procedure(window: usize, proc: u32, ansi: bool) {
-        if let Some(record) = find(window as u32) {
-            record.proc.store(proc, Ordering::Release);
-            let flags = record.flags.load(Ordering::Acquire) & !1;
-            record.flags.store(flags | ansi as u32, Ordering::Release);
-        }
+        DIALOGS.with(|dialogs| {
+            if let Some([_, _, flags, font]) = dialogs.get(window) {
+                let flags = flags & !1 | ansi as usize;
+                let _ = dialogs.set([window, proc as usize, flags, font]);
+            }
+        });
     }
 
     /// The dialog `window`'s record dropped: the font the dialog manager made for it, when it did.
     pub fn forget(window: usize) -> Option<u32> {
-        let record = find(window as u32)?;
-        let owned = record.flags.load(Ordering::Acquire) & 2 != 0;
-        let font = record.font.load(Ordering::Acquire);
-        record.window.store(0, Ordering::Release);
-        (owned && font != 0).then_some(font)
+        let [_, _, flags, font] = DIALOGS.with(|dialogs| dialogs.take(window))?;
+        (flags & 2 != 0 && font != 0).then_some(font as u32)
+    }
+
+    /// How many dialogs the process keeps records for.
+    #[cfg(test)]
+    pub fn count() -> usize {
+        DIALOGS.with(|dialogs| dialogs.len())
     }
 }
 
@@ -939,12 +910,21 @@ pub fn create(reader: &mut Reader, request: Request, show: bool) -> Option<usize
         write_word(dialog, UNITS, (ux as u16 & 0xFF) | (uy as u16) << 8);
     }
     write_word(dialog, FLAGS, flags);
-    kept::keep(
+    let kept = kept::keep(
         dialog,
         request.proc.address,
         request.proc.ansi,
         font.map_or(0, |font| font as u32),
     );
+    if !kept {
+        // No room for the dialog's record: without it its destruction could not reach its
+        // procedure nor free its font.
+        window::destroy_window(dialog);
+        if let Some(font) = font {
+            imports::delete_object(font);
+        }
+        return failed(ERROR_NOT_ENOUGH_MEMORY);
+    }
     if let Some(font) = font {
         let _ = message::send(dialog, WM_SETFONT, font as u32, 0);
     }
@@ -2630,5 +2610,54 @@ mod tests {
             )),
             "{printed:?}"
         );
+    }
+
+    /// More dialogs than the process's old fixed table held (64): each one's WM_DESTROY and
+    /// WM_NCDESTROY reach its dialog procedure after the window is gone (as another thread's
+    /// window's do), its record found by the handle, and none is left after.
+    #[test]
+    fn more_dialogs_than_a_fixed_table_held() {
+        use std::cell::RefCell;
+        std::thread_local! {
+            static HEARD: RefCell<std::vec::Vec<(usize, u32)>> =
+                const { RefCell::new(std::vec::Vec::new()) };
+        }
+        fn heard(window: u32, message: u32, _wparam: u32, _lparam: i32) -> i32 {
+            if matches!(message, WM_DESTROY | WM_NCDESTROY) {
+                HEARD.with(|heard| heard.borrow_mut().push((window as usize, message)));
+            }
+            0
+        }
+        crate::class::SYSTEM_CLASSES_WANTED.with(|wanted| wanted.set(true));
+        let proc = crate::imports::host::procedure(heard) as usize;
+        let template = button_template(WS_POPUP, &[]);
+        let make = || {
+            // SAFETY: the template above, whole.
+            unsafe {
+                create_dialog_indirect_param_w(0x40_0000, template.as_ptr().cast(), 0, proc, 0)
+            }
+        };
+        let records = kept::count();
+        let dialogs: std::vec::Vec<usize> = (0..100).map(|_| make()).collect();
+        assert!(dialogs.iter().all(|&dialog| dialog != 0));
+        assert_eq!(kept::count(), records + 100);
+        assert_eq!(kept::procedure(dialogs[99]), Some((proc as u32, false)));
+        for &dialog in &dialogs {
+            assert_eq!(window::destroy_window(dialog), 1);
+        }
+        let expected: std::vec::Vec<(usize, u32)> = dialogs
+            .iter()
+            .flat_map(|&dialog| [(dialog, WM_DESTROY), (dialog, WM_NCDESTROY)])
+            .collect();
+        assert_eq!(HEARD.with(|heard| heard.borrow().clone()), expected);
+        assert_eq!(kept::count(), records);
+        assert_eq!(kept::procedure(dialogs[99]), None);
+        // The emptied table takes as many again.
+        let again: std::vec::Vec<usize> = (0..100).map(|_| make()).collect();
+        assert_eq!(kept::count(), records + 100);
+        for &dialog in &again {
+            window::destroy_window(dialog);
+        }
+        assert_eq!(kept::count(), records);
     }
 }
