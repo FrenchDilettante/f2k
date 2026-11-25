@@ -21,6 +21,10 @@ sysinfo = ["memory load * <= 100: yes"]
 [pending]
 # Every block waits for the behavior it pins; tests/capture.bat vmdemand fills output.txt on the VM
 # trip, and each block un-xfails when that behavior lands.
+# The commit limit is the boot's physical pages plus the paging file: 32 MiB and the boot's 8 MiB
+# file hold one 32 MiB chunk, not two. Windows 2000 sizes its file from RAM (1.5x at least) and
+# grows it at the limit; F2K's boot file stays small for the boot's sake and grows only for page-out.
+commitlimit = "the commit limit at 32 MiB is RAM plus the boot's 8 MiB paging file: one 32 MiB chunk commits, not two (the file does not grow at the commit limit)"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

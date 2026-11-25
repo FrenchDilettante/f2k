@@ -24,7 +24,7 @@ use core::arch::asm;
 #[cfg(target_arch = "x86")]
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use super::frame::{FrameDb, FrameHooks};
+use super::frame::{FrameDb, FrameHooks, FrameId};
 use super::layout;
 #[cfg(target_arch = "x86")]
 use super::{frame::PRIMARY_COLOR, with_database, Parts};
@@ -88,6 +88,52 @@ pub struct BootTables {
     pub identity: [u32; BOOT_TABLE_COUNT],
     /// The scratch window's table ([`SCRATCH_SLOT`]), shared by every directory.
     pub scratch: u32,
+    /// The frame database region's tables ([`map_frame_database`]), made before the directory.
+    pub database: DatabaseTables,
+}
+
+/// The page tables mapping the frame database ([`layout::FRAME_DATABASE`]) from its start: `count`
+/// tables in consecutive frames from physical `first`. None (`count` 0) until the boot maps it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub struct DatabaseTables {
+    /// The first table's physical address.
+    pub first: u32,
+    /// How many tables, one per directory entry of the region from its first.
+    pub count: u32,
+}
+
+impl DatabaseTables {
+    /// Table `index`'s physical address.
+    pub const fn table(self, index: u32) -> u32 {
+        self.first + index * PAGE_SIZE
+    }
+
+    /// Fill `table` (table `index`'s frame): its entries map the database's storage `storage`
+    /// (frame numbers, consecutive) in order, from the region's start, kernel-only and writable;
+    /// the entries past the storage's end map nothing.
+    pub fn fill_table(
+        index: u32,
+        storage: core::ops::Range<FrameId>,
+        table: &mut [u32; PT_ENTRIES],
+    ) {
+        let first = storage.start + index * PT_ENTRIES as u32;
+        for (i, entry) in table.iter_mut().enumerate() {
+            let frame = first + i as u32;
+            *entry = if frame < storage.end {
+                Pte::kernel_rw(frame * PAGE_SIZE).raw()
+            } else {
+                Pte::EMPTY.raw()
+            };
+        }
+    }
+
+    /// Point `directory`'s entries for the region's first `count` windows at the tables.
+    fn install(self, directory: &mut [u32; PT_ENTRIES]) {
+        for index in 0..self.count {
+            directory[layout::FRAME_DATABASE.first_entry() + index as usize] =
+                Pte::kernel_rw(self.table(index)).raw();
+        }
+    }
 }
 
 impl BootTables {
@@ -105,14 +151,17 @@ impl BootTables {
             directory,
             identity,
             scratch,
+            database: DatabaseTables::default(),
         }
     }
 
     /// Fill `directory` (the directory's frame) as the boot loader fills its own, the self-map
     /// added: the low identity window's entries and the kernel image window's point at the identity
-    /// tables, in order, and the self-map entry ([`SELF_MAP_SLOT`]) at the directory itself, so the
-    /// directory is reached through the self-map from its first load on, like every other. Every
-    /// other entry is empty, the scratch window's included ([`init_table_access`] installs it).
+    /// tables, in order, the frame database's at its tables (the loader's directory carries them
+    /// too: [`map_frame_database`]), and the self-map entry ([`SELF_MAP_SLOT`]) at the directory
+    /// itself, so the directory is reached through the self-map from its first load on, like every
+    /// other. Every other entry is empty, the scratch window's included ([`init_table_access`]
+    /// installs it).
     pub fn fill_directory(&self, directory: &mut [u32; PT_ENTRIES]) {
         directory.fill(0);
         let image = layout::KERNEL_IMAGE.first_entry();
@@ -121,6 +170,7 @@ impl BootTables {
             directory[image + i] = Pte::kernel_rw(table).raw();
         }
         directory[SELF_MAP_SLOT] = Pte::kernel_rw(self.directory).raw();
+        self.database.install(directory);
     }
 
     /// Fill `table` (identity table `index`'s frame): pages `[index * 1024, (index + 1) * 1024)`
@@ -177,10 +227,11 @@ pub fn take_window_frame<H: FrameHooks>(frames: &mut FrameDb<H>, limit: u32) -> 
 pub fn install_boot_directory() {
     let tables = with_database(|database| {
         let frames = database.frames();
-        let tables = BootTables::allocate(|| {
+        let mut tables = BootTables::allocate(|| {
             take_window_frame(frames, IMAGE_WINDOW_FRAMES)
                 .expect("no free frame in the kernel image window for the boot tables")
         });
+        tables.database = *FRAME_DATABASE_TABLES.get();
         fill_new_table(tables.directory, |directory| {
             tables.fill_directory(directory)
         });
@@ -192,6 +243,60 @@ pub fn install_boot_directory() {
     });
     BOOT_DIRECTORY.set(tables);
     activate_address_space(tables.directory);
+}
+
+/// The frame database's tables, set once by [`map_frame_database`].
+#[cfg(target_arch = "x86")]
+static FRAME_DATABASE_TABLES: crate::sync::InitOnce<DatabaseTables> = crate::sync::InitOnce::new();
+
+/// Map the frame database's storage, `storage` (frame numbers, consecutive), at the start of its
+/// region ([`layout::FRAME_DATABASE`]) through the page tables in the frames `tables`
+/// (consecutive), in the current directory, the boot loader's: once, before the frame database
+/// exists, so its frames come from the boot's memory plan, not from the database. The tables lie
+/// in the kernel image window and are filled through it; the loader's directory, which lies there
+/// too, gets the region's entries, and [`install_boot_directory`]'s directory carries the same
+/// ([`BootTables::database`]). Neither the tables nor the storage are ever released.
+///
+/// # Panics
+///
+/// Called twice, a table or the directory lies outside the kernel image window, or the storage
+/// takes more than the tables map or the region holds.
+#[cfg(target_arch = "x86")]
+pub fn map_frame_database(tables: core::ops::Range<FrameId>, storage: core::ops::Range<FrameId>) {
+    let count = tables.end - tables.start;
+    assert!(
+        count as usize <= layout::FRAME_DATABASE.entries
+            && storage.end - storage.start <= count * PT_ENTRIES as u32,
+        "the frame database outgrows its region or its tables"
+    );
+    let mapped = DatabaseTables {
+        first: tables.start * PAGE_SIZE,
+        count,
+    };
+    for index in 0..count {
+        fill_new_table(mapped.table(index), |table| {
+            DatabaseTables::fill_table(index, storage.clone(), table)
+        });
+    }
+    let directory = current_directory_phys();
+    assert!(
+        directory / PAGE_SIZE < IMAGE_WINDOW_FRAMES,
+        "the boot loader's directory lies outside the kernel image window"
+    );
+    for index in 0..count {
+        let slot = (KERNEL_BASE + directory) as *mut u32;
+        let entry = layout::FRAME_DATABASE.first_entry() + index as usize;
+        // SAFETY: the loader's directory lies in the kernel image window (checked above), which
+        // maps physical `[0, 16 MiB)` at `KERNEL_BASE + phys`; the entry is the directory's own
+        // (index below 1024). The region's entries are empty in the loader's directory and nothing
+        // maps through them before this write: the processor walks only the window's entries.
+        unsafe {
+            slot.add(entry)
+                .write_volatile(Pte::kernel_rw(mapped.table(index)).raw())
+        };
+    }
+    FRAME_DATABASE_TABLES.set(mapped);
+    reload_cr3();
 }
 
 /// Run `fill` on the boot table at `frame_phys`, through the kernel image window, while it is
@@ -208,8 +313,9 @@ fn fill_new_table(frame_phys: u32, fill: impl FnOnce(&mut [u32; PT_ENTRIES])) {
     );
     // SAFETY: the frame lies in the kernel image window (checked above), which maps physical
     // `[0, 16 MiB)` at `KERNEL_BASE + phys` from the boot loader on; page-aligned, so aligned for
-    // words. `install_boot_directory` just took it out of the free lists, so no other owner holds
-    // it, and no directory names it yet, so the processor does not walk it: the reference, which
+    // words. Its caller (`install_boot_directory`, `map_frame_database`) just took it for the
+    // table, out of the free lists or out of the boot's memory plan, so no other owner holds it,
+    // and no directory names it yet, so the processor does not walk it: the reference, which
     // `fill` cannot keep, is the only access to it.
     fill(unsafe { &mut *((KERNEL_BASE + frame_phys) as *mut [u32; PT_ENTRIES]) });
 }
@@ -1383,8 +1489,50 @@ mod tests {
                 directory: 0x7F_0000,
                 identity: [0x7E_0000, 0x7D_0000, 0x10_5000, 0x20_0000],
                 scratch: 0x3000,
+                database: DatabaseTables::default(),
             }
         );
+    }
+
+    /// The frame database's tables map its storage in order from the region's start, kernel-only
+    /// and writable, nothing past the storage's end; the boot directory carries them at the
+    /// region's first entries, and a process directory inherits them.
+    #[test]
+    fn the_frame_database_tables_map_its_storage() {
+        let storage = 0x3_0000..0x3_0000 + 1500;
+        let mut table = Box::new([0xDEAD_BEEFu32; PT_ENTRIES]);
+        DatabaseTables::fill_table(0, storage.clone(), &mut table);
+        assert_eq!(table[0], Pte::kernel_rw(0x3000_0000).raw());
+        assert_eq!(
+            table[1023],
+            Pte::kernel_rw((0x3_0000 + 1023) * PAGE_SIZE).raw()
+        );
+        DatabaseTables::fill_table(1, storage, &mut table);
+        assert_eq!(
+            table[0],
+            Pte::kernel_rw((0x3_0000 + 1024) * PAGE_SIZE).raw()
+        );
+        assert_eq!(
+            table[475],
+            Pte::kernel_rw((0x3_0000 + 1499) * PAGE_SIZE).raw()
+        );
+        assert!(table[476..].iter().all(|&entry| entry == 0));
+
+        let mut tables = allocated(&[
+            0xFF_F000, 0xFF_E000, 0xFF_D000, 0xFF_C000, 0xFF_B000, 0xFF_A000,
+        ]);
+        tables.database = DatabaseTables {
+            first: 0xF0_0000,
+            count: 2,
+        };
+        let mut directory = Box::new([0u32; PT_ENTRIES]);
+        tables.fill_directory(&mut directory);
+        let first = layout::FRAME_DATABASE.first_entry();
+        assert_eq!(directory[first], Pte::kernel_rw(0xF0_0000).raw());
+        assert_eq!(directory[first + 1], Pte::kernel_rw(0xF0_1000).raw());
+        assert_eq!(directory[first + 2], 0);
+        let process = assembled(&directory, 0x60_0000, tables.scratch);
+        assert_eq!(process[first..first + 2], directory[first..first + 2]);
     }
 
     /// The built directory holds exactly the boot loader's picture plus the self-map: the low

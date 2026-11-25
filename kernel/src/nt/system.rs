@@ -50,12 +50,15 @@ const TIMER_RESOLUTION: u32 = crate::interrupt::clock::INTERVAL_100NS;
 const PROCESSOR_ARCHITECTURE_INTEL: u16 = 0;
 const PROCESSOR_LEVEL: u16 = 6;
 
-/// The machine's memory numbers, in pages: all physical pages, the free ones, the commit limit
-/// and the total committed against it.
+/// The machine's memory numbers, in pages: all physical pages, the highest page number, the free
+/// ones, the commit limit and the total committed against it.
 #[derive(Clone, Copy, Debug)]
 pub struct MemoryNumbers {
-    /// The physical pages.
+    /// The physical pages: the usable frames the boot's memory picture describes.
     pub pages: u32,
+    /// The highest physical page number: the frame database's last frame (memory past 4 GiB, which
+    /// a 32-bit physical address does not reach, is not counted).
+    pub highest: u32,
     /// The free physical pages (the frame database's).
     pub available: u32,
     /// The commit limit (the commit seam's).
@@ -64,14 +67,15 @@ pub struct MemoryNumbers {
     pub committed: u32,
 }
 
-/// The machine's memory numbers: the frame database's pages (all of them and the free ones) and
-/// the commit seam's (the limit and the total committed), in pages.
+/// The machine's memory numbers: the boot's physical pages, the frame database's highest frame and
+/// free ones, and the commit seam's (the limit and the total committed), in pages.
 #[cfg(target_arch = "x86")]
 fn memory_numbers() -> MemoryNumbers {
-    let (pages, available) =
+    let (frames, available) =
         crate::mem::bootmem::with_frame_db(|db| (db.frame_count(), db.available()));
     MemoryNumbers {
-        pages,
+        pages: crate::mem::bootmem::physical_pages(),
+        highest: frames - 1,
         available,
         limit: (crate::mem::system_commit_limit() / u64::from(PAGE)) as u32,
         committed: (crate::mem::total_committed() / u64::from(PAGE)) as u32,
@@ -83,21 +87,23 @@ fn memory_numbers() -> MemoryNumbers {
 fn memory_numbers() -> MemoryNumbers {
     MemoryNumbers {
         pages: 0,
+        highest: 0,
         available: 0,
         limit: 0,
         committed: 0,
     }
 }
 
-/// SYSTEM_BASIC_INFORMATION for `pages` pages of memory: one processor, 4 KiB pages on the 64 KiB
-/// granularity, the application range 0x10000..=0x7FFEFFFF, the physical pages numbered from 1.
-pub fn basic_information(pages: u32) -> SystemBasicInformation {
+/// SYSTEM_BASIC_INFORMATION for `pages` pages of memory numbered up to `highest`: one processor,
+/// 4 KiB pages on the 64 KiB granularity, the application range 0x10000..=0x7FFEFFFF, the physical
+/// pages numbered from 1 (frame 0 is never used).
+pub fn basic_information(pages: u32, highest: u32) -> SystemBasicInformation {
     SystemBasicInformation {
         timer_resolution: TIMER_RESOLUTION,
         page_size: PAGE,
         number_of_physical_pages: pages,
         lowest_physical_page_number: 1,
-        highest_physical_page_number: pages.saturating_sub(1),
+        highest_physical_page_number: highest,
         allocation_granularity: GRANULARITY,
         minimum_user_mode_address: USER_LOW,
         maximum_user_mode_address: USER_HIGH - 1,
@@ -190,7 +196,7 @@ pub fn system_information(
     Ok(match SystemClass::try_from(class)? {
         SystemClass::Basic => {
             exactly(size_of::<SystemBasicInformation>())?;
-            Answer::Basic(basic_information(memory.pages))
+            Answer::Basic(basic_information(memory.pages, memory.highest))
         }
         SystemClass::Processor => {
             exactly(size_of::<SystemProcessorInformation>())?;
@@ -295,6 +301,7 @@ mod tests {
     fn numbers(pages: u32, available: u32, limit: u32, committed: u32) -> MemoryNumbers {
         MemoryNumbers {
             pages,
+            highest: pages - 1,
             available,
             limit,
             committed,

@@ -15,7 +15,8 @@
 use core::mem::offset_of;
 use core::ops::Range;
 
-use super::frame::FrameId;
+use super::frame::{FrameId, FRAME_ENTRY_BYTES, PHYSICAL_FRAME_LIMIT};
+use super::layout::{FRAME_DATABASE, KERNEL_IMAGE};
 
 /// Multiboot information structure flags.
 pub mod flags {
@@ -47,6 +48,10 @@ pub const MODULE_COMMAND_LINE_LIMIT: usize = 256;
 /// The name the disk image's module carries as a word of its command line: QEMU's `-initrd "<path>
 /// f2k-disk"`, GRUB's `module <path> f2k-disk`, Limine's `module_cmdline: f2k-disk`.
 pub const DISK_MODULE: &[u8] = b"f2k-disk";
+
+/// How many frame spans a plan withholds besides the kernel's: the disk image's module, the frame
+/// database's storage and its page tables.
+pub const WITHHELD_SPANS: usize = 3;
 
 /// Smallest well-formed memory-map record payload: `size` (4 bytes, excluded from itself), base
 /// (8), length (8), type (4).
@@ -232,6 +237,7 @@ pub fn memory_source(info: InfoBytes, window_end: u64) -> Option<MemorySource> {
 /// What the boot does with physical memory: which frames it releases to the frame database and
 /// whether the real-mode trampoline's run can be reserved, decided from the loader's structures
 /// alone ([`memory_source`], then [`BootMemoryPlan::new`] over the map's bytes).
+#[derive(Clone)]
 pub struct BootMemoryPlan<'a> {
     /// The memory map's bytes; none when the `mem_upper` fallback applies.
     map: Option<&'a [u8]>,
@@ -240,9 +246,10 @@ pub struct BootMemoryPlan<'a> {
     upper: Option<UsableRange>,
     /// The frames the kernel image occupies.
     kernel: Range<FrameId>,
-    /// The frames a boot module occupies (the disk image's), none by default.
-    module: Range<FrameId>,
-    /// The frame table's capacity.
+    /// The frame spans withheld besides the kernel's ([`Self::withholding`]): a boot module's (the
+    /// disk image's) and the frame database's own; empty spans by default.
+    withheld: [Range<FrameId>; WITHHELD_SPANS],
+    /// The frames past the last one a frame number reaches (the physical address space's).
     max_frames: usize,
 }
 
@@ -268,15 +275,59 @@ impl<'a> BootMemoryPlan<'a> {
             map,
             upper,
             kernel,
-            module: 0..0,
+            withheld: [const { 0..0 }; WITHHELD_SPANS],
             max_frames,
         }
     }
 
-    /// The plan, its frames `module` (a boot module's, which the kernel keeps reading) withheld as
-    /// the kernel image's are: never released.
-    pub fn withholding(self, module: Range<FrameId>) -> Self {
-        BootMemoryPlan { module, ..self }
+    /// The plan, the frames `span` withheld as the kernel image's are: never released. A boot
+    /// module's, which the kernel keeps reading, and the frame database's own storage and tables.
+    ///
+    /// # Panics
+    ///
+    /// The plan withholds [`WITHHELD_SPANS`] non-empty spans already.
+    pub fn withholding(mut self, span: Range<FrameId>) -> Self {
+        if span.start >= span.end {
+            return self;
+        }
+        let slot = self
+            .withheld
+            .iter_mut()
+            .find(|slot| slot.start >= slot.end)
+            .expect("the plan withholds too many spans");
+        *slot = span;
+        self
+    }
+
+    /// The frames past the highest usable one: the frame database describes `[0, end)`. Zero when
+    /// no range holds a frame.
+    pub fn frames_end(&self) -> FrameId {
+        self.ranges()
+            .map(|range| range.first + range.count)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The usable frames the memory picture describes, reservations aside: the pages of physical
+    /// memory (SystemBasicInformation's NumberOfPhysicalPages), whatever the kernel holds of them.
+    pub fn physical_pages(&self) -> u32 {
+        let whole = BootMemoryPlan {
+            kernel: 0..0,
+            withheld: [const { 0..0 }; WITHHELD_SPANS],
+            ..self.clone()
+        };
+        whole.released_runs().map(|run| run.end - run.start).sum()
+    }
+
+    /// The highest `count` consecutive frames the plan releases below frame `limit`: none when no
+    /// released run holds that many there.
+    pub fn highest_released(&self, count: u32, limit: FrameId) -> Option<Range<FrameId>> {
+        self.released_runs()
+            .filter_map(|run| {
+                let end = run.end.min(limit);
+                (end >= run.start && end - run.start >= count).then(|| end - count..end)
+            })
+            .max_by_key(|run| run.end)
     }
 
     /// Whether the plan follows the memory map (rather than the `mem_upper` fallback).
@@ -294,7 +345,7 @@ impl<'a> BootMemoryPlan<'a> {
     /// module's, and not covered by a reservation record.
     pub fn releases(&self, frame: FrameId) -> bool {
         !self.kernel.contains(&frame)
-            && !self.module.contains(&frame)
+            && !self.withheld.iter().any(|span| span.contains(&frame))
             && !self.map.is_some_and(|map| frame_is_reserved(map, frame))
     }
 
@@ -338,8 +389,9 @@ impl<'a> BootMemoryPlan<'a> {
             .ranges()
             .take(index)
             .map(move |range| widen(&range.frames()));
-        [widen(&self.kernel), widen(&self.module)]
-            .into_iter()
+        core::iter::once(&self.kernel)
+            .chain(&self.withheld)
+            .map(widen)
             .chain(reserved)
             .chain(earlier)
     }
@@ -351,6 +403,66 @@ impl<'a> BootMemoryPlan<'a> {
             && run.all(|frame| self.releases(frame) && self.ranges().any(|r| r.holds(frame)))
     }
 }
+
+/// The frames the kernel image window maps: physical `[0, 16 MiB)`, written through the window
+/// before any other mapping exists.
+const IMAGE_WINDOW_FRAMES: FrameId = KERNEL_IMAGE.size() / PAGE_SIZE;
+
+/// The bytes of a page, as the database's sizing counts them.
+const PAGE_SIZE: u32 = 4096;
+
+/// The entries of a page table.
+const PT_ENTRIES: usize = 1024;
+
+/// Where the frame database goes, decided from the boot's memory plan alone, before the database
+/// exists: how many frames it describes, the frames holding its entries, and the frames of the page
+/// tables that map them at [`FRAME_DATABASE`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DatabasePlacement {
+    /// The frames the database describes, `[0, frames)`: up to the highest usable frame.
+    pub frames: FrameId,
+    /// The frames holding the entries, consecutive: the highest run the plan releases that holds
+    /// them, so the kernel image window's frames stay for the boot's tables.
+    pub storage: Range<FrameId>,
+    /// The page tables' frames, consecutive, inside the kernel image window (the boot writes them
+    /// through it before the region is mapped): the highest such run the plan releases.
+    pub tables: Range<FrameId>,
+}
+
+impl DatabasePlacement {
+    /// The placement for `plan`: none when the plan has no usable frame, or no released run holds
+    /// the entries or (inside the window) the tables.
+    pub fn new(plan: &BootMemoryPlan) -> Option<DatabasePlacement> {
+        let frames = plan.frames_end();
+        if frames == 0 {
+            return None;
+        }
+        let pages = Self::pages(frames);
+        let tables =
+            plan.highest_released(pages.div_ceil(PT_ENTRIES as u32), IMAGE_WINDOW_FRAMES)?;
+        let storage = plan
+            .clone()
+            .withholding(tables.clone())
+            .highest_released(pages, FrameId::MAX)?;
+        Some(DatabasePlacement {
+            frames,
+            storage,
+            tables,
+        })
+    }
+
+    /// The pages `frames` entries take.
+    pub fn pages(frames: FrameId) -> u32 {
+        (frames as usize * FRAME_ENTRY_BYTES).div_ceil(PAGE_SIZE as usize) as u32
+    }
+}
+
+// The largest database fits its region, its tables one per directory entry.
+const _: () = assert!(
+    PHYSICAL_FRAME_LIMIT * FRAME_ENTRY_BYTES <= FRAME_DATABASE.size() as usize
+        && (PHYSICAL_FRAME_LIMIT * FRAME_ENTRY_BYTES).div_ceil(PAGE_SIZE as usize)
+            <= FRAME_DATABASE.entries * PT_ENTRIES
+);
 
 fn read_u32(buf: &[u8], off: usize) -> Option<u32> {
     let b = buf.get(off..off + 4)?;
@@ -473,7 +585,7 @@ impl MultibootInfo {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mem::frame::MAX_FRAMES;
+    use crate::mem::frame::PHYSICAL_FRAME_LIMIT as MAX_FRAMES;
 
     /// The host tests' boot identity window: physical memory `[0, WINDOW)`, as one buffer.
     const WINDOW: usize = 0x4000;
@@ -789,6 +901,139 @@ mod tests {
             let frames: Vec<FrameId> = runs.into_iter().flatten().collect();
             assert_eq!(frames, released_one_at_a_time(plan));
         }
+    }
+
+    /// QEMU's map for `-m 4G` on the i440FX machine: conventional memory, the BIOS area, RAM from
+    /// 1 MiB up to the PCI hole at 3 GiB (its last 128 KiB the firmware's), the hole's
+    /// reservations, and the gigabyte past 4 GiB.
+    fn four_gib_map() -> Vec<u8> {
+        [
+            record(0, 0x9_FC00, MEMORY_AVAILABLE),
+            record(0x9_FC00, 0x400, 2),
+            record(0xF_0000, 0x1_0000, 2),
+            record(0x10_0000, 0xBFEE_0000, MEMORY_AVAILABLE),
+            record(0xBFFE_0000, 0x2_0000, 2),
+            record(0xFEFF_C000, 0x4000, 2),
+            record(0xFFFC_0000, 0x4_0000, 2),
+            record(0x1_0000_0000, 0x4000_0000, MEMORY_AVAILABLE),
+        ]
+        .concat()
+    }
+
+    /// The plan describes frames up to the highest usable one below 4 GiB, and counts the usable
+    /// ones, reservations aside, whatever the kernel withholds: memory past 4 GiB is out of a
+    /// 32-bit physical address's reach.
+    #[test]
+    fn the_plan_sizes_memory_up_to_4_gib() {
+        let loader = memory_of(&four_gib_map());
+        let plan = plan_in(&loader, 0x100).unwrap();
+        assert_eq!(plan.frames_end(), 0xBFFE0);
+        // Frames 1..0x9F, then 0x100..0xBFFE0: the kernel's are counted too, frame 0 never.
+        assert_eq!(plan.physical_pages(), 0x9E + (0xBFFE0 - 0x100));
+        assert_eq!(
+            plan.clone().withholding(0x1000..0x2000).physical_pages(),
+            plan.physical_pages()
+        );
+        let fallback = MultibootInfo {
+            flags: flags::MEM_INFO,
+            mem_upper: 31 * 1024,
+            ..MultibootInfo::default()
+        };
+        let fallback = memory(&[(0x100, &fallback.to_bytes())]);
+        let fallback = plan_in(&fallback, 0x100).unwrap();
+        assert_eq!(
+            (fallback.frames_end(), fallback.physical_pages()),
+            (0x2000, 0x1F00)
+        );
+    }
+
+    /// The highest run of frames the plan releases below a limit: cut at the limit, past withheld
+    /// spans and reservations, none when no run is long enough.
+    #[test]
+    fn the_highest_released_run_is_cut_at_the_limit() {
+        let memory = memory_of(&four_gib_map());
+        let plan = plan_in(&memory, 0x100).unwrap();
+        assert_eq!(
+            plan.highest_released(16, FrameId::MAX),
+            Some(0xBFFD0..0xBFFE0)
+        );
+        assert_eq!(plan.highest_released(4, 0x1000), Some(0xFFC..0x1000));
+        assert_eq!(
+            plan.highest_released(0x100, 0x200),
+            None,
+            "the kernel's frames"
+        );
+        assert_eq!(plan.highest_released(0x9E, 0x100), Some(1..0x9F));
+        assert_eq!(plan.highest_released(0x9F, 0x100), None);
+        let plan = plan.withholding(0xBFF00..0xBFFE0);
+        assert_eq!(
+            plan.highest_released(16, FrameId::MAX),
+            Some(0xBFEF0..0xBFF00)
+        );
+    }
+
+    /// The frame database is placed from the plan alone: one entry per frame up to the highest
+    /// usable one, its entries at the top of memory, its tables at the top of the kernel image
+    /// window, each a run the plan releases and neither overlapping the other.
+    #[test]
+    fn the_frame_database_is_placed_from_the_plan() {
+        let memory = memory_of(&four_gib_map());
+        let plan = plan_in(&memory, 0x100).unwrap();
+        let placement = DatabasePlacement::new(&plan).unwrap();
+        // 0xBFFE0 entries of 28 bytes: 5376 pages, six tables.
+        assert_eq!(DatabasePlacement::pages(0xBFFE0), 5376);
+        assert_eq!(
+            placement,
+            DatabasePlacement {
+                frames: 0xBFFE0,
+                storage: 0xBFFE0 - 5376..0xBFFE0,
+                tables: 0xFFA..0x1000,
+            }
+        );
+        let placed = plan
+            .withholding(placement.tables.clone())
+            .withholding(placement.storage.clone());
+        assert!(placement
+            .storage
+            .clone()
+            .all(|frame| !placed.releases(frame)));
+        assert!(placement
+            .tables
+            .clone()
+            .all(|frame| !placed.releases(frame)));
+
+        // 256 MiB as the test boots give it: 447 pages, one table.
+        let map = [
+            record(0, 0x9_FC00, MEMORY_AVAILABLE),
+            record(0x10_0000, 0xFDE_0000, MEMORY_AVAILABLE),
+            record(0xFEE_0000, 0x2_0000, 2),
+        ]
+        .concat();
+        let memory = memory_of(&map);
+        let placement = DatabasePlacement::new(&plan_in(&memory, 0x100).unwrap()).unwrap();
+        assert_eq!(placement.frames, 0xFEE0);
+        assert_eq!(placement.storage, 0xFEE0 - 447..0xFEE0);
+        assert_eq!(placement.tables, 0xFFF..0x1000);
+
+        // The largest database fits its region: every frame below 4 GiB.
+        assert!(
+            DatabasePlacement::pages(PHYSICAL_FRAME_LIMIT as FrameId) as usize
+                <= FRAME_DATABASE.entries * PT_ENTRIES
+        );
+        // Nothing usable: no database.
+        let memory = memory_of(&record(0, 0x1000, MEMORY_AVAILABLE));
+        assert_eq!(
+            DatabasePlacement::new(&plan_in(&memory, 0x100).unwrap()),
+            None
+        );
+    }
+
+    /// Loader memory holding the structure at 0x100 and `map` at 0x200.
+    fn memory_of(map: &[u8]) -> Vec<u8> {
+        memory(&[
+            (0x100, &info_with_map(0x200, map.len() as u32, 0)),
+            (0x200, map),
+        ])
     }
 
     /// A withheld module's frames are kept as the kernel's are, every frame holding any of its

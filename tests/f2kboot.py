@@ -394,7 +394,7 @@ DEFAULT_STORAGE = "ram"
 # (kernel/src/mem/multiboot.rs, DISK_MODULE).
 DISK_MODULE = "f2k-disk"
 # Guest memory for a boot from memory: the 64 MiB image beside the memory the boot itself uses
-# (the frame database covers 256 MiB, kernel/src/mem/frame.rs MAX_FRAMES).
+# (the frame database is sized from the memory map at boot, up to 4 GiB: kernel/src/mem/bootmem.rs).
 RAM_MEMORY = "256M"
 
 

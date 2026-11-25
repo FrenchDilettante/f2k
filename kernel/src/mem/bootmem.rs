@@ -1,8 +1,9 @@
 //! Boot-time initialization of the physical frame database.
 //!
-//! Reads the Multiboot information structure the loader pointed EBX at, turns every available
-//! region into usable frame ranges, and releases all of them to the [`FrameDb`], a run of
-//! consecutive frames at a time, except:
+//! Reads the Multiboot information structure the loader pointed EBX at, sizes the frame database
+//! from it (one entry per frame up to the highest usable one: [`DatabasePlacement`]), places and
+//! maps the database in frames of its own, turns every available region into usable frame ranges,
+//! and releases all of them to the [`FrameDb`], a run of consecutive frames at a time, except:
 //! - frame 0 (never allocatable),
 //! - the frames the kernel's image occupies: from its base to the end of its last section, as its
 //!   own headers give its size, and
@@ -11,7 +12,8 @@
 //!   those frames back then ([`release_loader_memory`]), as Windows 2000 frees its loader's memory
 //!   once the kernel no longer needs it, and
 //! - the disk image a boot loader loaded as a module ([`multiboot::DISK_MODULE`]): the RAM disk
-//!   reads and writes its frames for the kernel's lifetime ([`disk_module`]).
+//!   reads and writes its frames for the kernel's lifetime ([`disk_module`]), and
+//! - the frame database's own storage and page tables, kept for the kernel's lifetime.
 //!
 //! The database then lives in the memory manager's database ([`super::Database`]), and serves the
 //! rest of the kernel through [`with_frame_db`].
@@ -22,9 +24,25 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use rtl::image::{nt_headers_offset, ImageNtHeaders32, NT_SIGNATURE, PE32_MAGIC};
 use rtl::pod::Pod;
 
-use super::frame::{self, ColorTables, FrameDb, FrameEntry, FrameState, NoHooks, MAX_FRAMES};
-use super::layout::{KERNEL_IMAGE, NTOSKRNL_BASE};
-use super::multiboot::{self, BootMemoryPlan, InfoBytes, MemorySource, Module, MultibootInfo};
+use super::frame::{
+    self,
+    ColorTables,
+    FrameDb,
+    FrameEntry,
+    FrameState,
+    NoHooks,
+    PHYSICAL_FRAME_LIMIT,
+};
+use super::layout::{FRAME_DATABASE, KERNEL_IMAGE, NTOSKRNL_BASE};
+use super::multiboot::{
+    self,
+    BootMemoryPlan,
+    DatabasePlacement,
+    InfoBytes,
+    MemorySource,
+    Module,
+    MultibootInfo,
+};
 use super::paging::{KERNEL_BASE, LOADER_PHYS_BASE, PAGE_SIZE};
 use crate::sync::{InitOnce, StaticBuf};
 
@@ -41,11 +59,6 @@ pub const TRAMPOLINE_FRAMES: u32 = 11;
 /// run was not free (a firmware reservation, or a boot without a memory map, whose low frames
 /// never enter the database), which leaves the VBE mode set unservable.
 pub static TRAMPOLINE_RESERVED: AtomicBool = AtomicBool::new(false);
-
-/// The per-frame bookkeeping table. Sized for the full development memory; frames past the highest
-/// usable frame stay unreleased.
-static FRAME_TABLE: StaticBuf<[FrameEntry; MAX_FRAMES]> =
-    StaticBuf::new([FrameEntry::new(); MAX_FRAMES]);
 
 /// Color chain heads, kept beside the database the same way.
 static COLOR_TABLES: StaticBuf<ColorTables> = StaticBuf::new(ColorTables::new());
@@ -78,6 +91,10 @@ static LOADER_MEMORY: InitOnce<LoaderMemory> = InitOnce::new();
 /// The disk image's module, physical bytes, recorded by [`boot_init`]: none when the boot loader
 /// loaded none.
 static DISK_MODULE: InitOnce<Option<Range<u32>>> = InitOnce::new();
+
+/// The pages of physical memory the boot's memory picture describes, recorded by [`boot_init`]
+/// ([`BootMemoryPlan::physical_pages`]).
+static PHYSICAL_PAGES: InitOnce<u32> = InitOnce::new();
 
 /// The size of an image in memory (its SizeOfImage), from its headers' bytes: none when they are
 /// not a PE32 image's.
@@ -155,27 +172,16 @@ fn find_disk_module(info: InfoBytes) -> Option<Module> {
 /// decisions are the pure plan's ([`multiboot::memory_source`], [`BootMemoryPlan`]): the memory map
 /// when the structure offers a sound one, the `mem_upper` size hint otherwise. The disk image's
 /// module, when the boot loader loaded one, is found first, and its frames are withheld as the
-/// kernel image's are.
+/// kernel image's are. The database is sized from the plan, one entry per frame up to the highest
+/// usable one below 4 GiB, placed in frames the plan then withholds ([`DatabasePlacement`]), and
+/// mapped at its region before its first entry is written ([`map_database`]).
 ///
 /// # Panics
 ///
 /// The structure carries no usable memory information, or lies outside the window: without a
-/// memory picture the kernel cannot manage frames at all.
+/// memory picture the kernel cannot manage frames at all. Or the memory holds no room for the
+/// database.
 pub fn boot_init(multiboot_info_addr: u32) {
-    // The database holds the frame table and the color tables for the kernel's lifetime.
-    let table: &'static mut [FrameEntry] = FRAME_TABLE.take();
-    // The frame table lives in BSS; loaders are required to zero it, but this table is large enough
-    // that leftover loader data would be indistinguishable from live state, so zero it explicitly.
-    for entry in table.iter_mut() {
-        *entry = FrameEntry::new();
-    }
-    let mut db = FrameDb::new(
-        table,
-        COLOR_TABLES.take(),
-        frame::DEFAULT_COLOR_COUNT,
-        NoHooks,
-    );
-
     let image = image_frames();
 
     let info_len = core::mem::size_of::<MultibootInfo>();
@@ -202,13 +208,33 @@ pub fn boot_init(multiboot_info_addr: u32) {
     with_identity_bytes(map_addr, map_len, |map| {
         // The loader's frames and the image's are kept; which of the loader's to release once its
         // tables are no longer walked is the plan the image's frames alone would make.
-        let plan = BootMemoryPlan::new(source, map, LOADER_FRAMES.start..image.end, MAX_FRAMES)
-            .withholding(withheld.clone());
+        let plan = BootMemoryPlan::new(
+            source,
+            map,
+            LOADER_FRAMES.start..image.end,
+            PHYSICAL_FRAME_LIMIT,
+        )
+        .withholding(withheld.clone());
+        PHYSICAL_PAGES.set(plan.physical_pages());
+        // The database, sized from the plan and placed in frames the plan then withholds.
+        let placement = DatabasePlacement::new(&plan)
+            .expect("no room for the frame database in the boot's memory");
+        let plan = plan
+            .withholding(placement.tables.clone())
+            .withholding(placement.storage.clone());
+        let mut db = FrameDb::new(
+            map_database(&placement),
+            COLOR_TABLES.take(),
+            frame::DEFAULT_COLOR_COUNT,
+            NoHooks,
+        );
         for run in plan.released_runs() {
             db.release_run(run, FrameState::Free);
         }
-        let after =
-            BootMemoryPlan::new(source, map, image.clone(), MAX_FRAMES).withholding(withheld);
+        let after = BootMemoryPlan::new(source, map, image.clone(), PHYSICAL_FRAME_LIMIT)
+            .withholding(withheld)
+            .withholding(placement.tables)
+            .withholding(placement.storage);
         let mut loader = LoaderMemory([0; LOADER_WORDS]);
         for run in after.released_runs() {
             for frame in run.start.max(LOADER_FRAMES.start)..run.end.min(LOADER_FRAMES.end) {
@@ -228,12 +254,39 @@ pub fn boot_init(multiboot_info_addr: u32) {
             }
             TRAMPOLINE_RESERVED.store(true, Ordering::Relaxed);
         }
+        super::with_database(|database| {
+            assert!(database.frames.is_none(), "the frame database built twice");
+            database.frames = Some(db);
+        });
     });
+}
 
-    super::with_database(|database| {
-        assert!(database.frames.is_none(), "the frame database built twice");
-        database.frames = Some(db);
-    });
+/// Map the database's storage at its region ([`super::paging::map_frame_database`]) and hand its
+/// entries over, every one fresh: the frames come from the firmware as they are, so they are
+/// zeroed through the mapping (a fresh entry is all zero bits, [`FrameEntry::new`]).
+fn map_database(placement: &DatabasePlacement) -> &'static mut [FrameEntry] {
+    super::paging::map_frame_database(placement.tables.clone(), placement.storage.clone());
+    let entries = FRAME_DATABASE.start as *mut FrameEntry;
+    let len = placement.frames as usize;
+    // SAFETY: the region maps the storage from its start, `DatabasePlacement::pages(frames)`
+    // pages, enough for `len` entries; the storage's frames are withheld from the frame database
+    // for the kernel's lifetime, so nothing else ever writes them. The region is aligned for
+    // entries (a page boundary). Zeroed first, every entry is a valid fresh one, and the slice,
+    // made once, is the only reference to them.
+    unsafe {
+        entries.write_bytes(0, len);
+        core::slice::from_raw_parts_mut(entries, len)
+    }
+}
+
+/// The pages of physical memory: the usable frames the boot's memory picture describes, whatever
+/// holds them (SystemBasicInformation's NumberOfPhysicalPages).
+///
+/// # Panics
+///
+/// Called before [`boot_init`].
+pub fn physical_pages() -> u32 {
+    *PHYSICAL_PAGES.get()
 }
 
 /// Give the boot loader's memory back to the frame database: the frames of it the memory picture

@@ -44,10 +44,11 @@ pub const MAX_COLOR_COUNT: usize = 1024;
 /// Default color count used by the kernel and tests.
 pub const DEFAULT_COLOR_COUNT: usize = 4;
 
-/// Frame table capacity: 256 MiB of 4 KiB frames, matching the development machine memory (the
-/// Makefile's QEMU flags). The boot frame table is sized by this; usable memory beyond it is
-/// ignored.
-pub const MAX_FRAMES: usize = 65_536;
+/// The frames a physical address reaches: 4 GiB of 4 KiB frames, the 32-bit physical address space
+/// of paging without PAE. The boot sizes the frame database from the memory map, up to this many
+/// entries; usable memory past it (QEMU's RAM above 4 GiB) is ignored. PAE raises it (36-bit
+/// physical addresses, 2^24 frames): frame numbers are 32-bit already.
+pub const PHYSICAL_FRAME_LIMIT: usize = 1 << 20;
 
 /// Lifecycle state of a frame. Frames are on one of the six list states or off-list
 /// ([`FrameState::Active`] or [`FrameState::Transition`]).
@@ -58,7 +59,7 @@ pub const MAX_FRAMES: usize = 65_536;
 /// - "transition" states count towards the transition tallies (standby/modified/modified-no-write).
 ///
 /// `Active` is discriminant 0 on purpose: a fresh [`FrameEntry`] is then all-zero, so zeroed memory
-/// is a valid fresh entry and large frame tables live in BSS instead of bloating the image's data.
+/// is a valid fresh entry and the boot makes the database by zeroing its frames.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FrameState {
     /// In use; not on any list. Discriminant 0 (see above).
@@ -149,31 +150,83 @@ impl FrameFlags {
     }
 }
 
+/// A list link: the next or previous frame on a list or a color chain, or none. Frame 0 is
+/// reserved and never on a list, so it stands for "none" and a link takes one word.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+struct Link(FrameId);
+
+impl Link {
+    /// No frame.
+    const NONE: Link = Link(0);
+
+    /// The frame linked to, if any.
+    const fn get(self) -> Option<FrameId> {
+        if self.0 == 0 {
+            None
+        } else {
+            Some(self.0)
+        }
+    }
+}
+
+impl From<Option<FrameId>> for Link {
+    fn from(frame: Option<FrameId>) -> Link {
+        match frame {
+            Some(frame) => {
+                debug_assert!(frame != 0, "frame 0 is never linked");
+                Link(frame)
+            }
+            None => Link::NONE,
+        }
+    }
+}
+
+impl PartialEq<Option<FrameId>> for Link {
+    fn eq(&self, other: &Option<FrameId>) -> bool {
+        self.get() == *other
+    }
+}
+
+impl core::fmt::Debug for Link {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.get().fmt(f)
+    }
+}
+
 /// Per-frame bookkeeping entry. Owned by the [`FrameDb`]; the link fields are only meaningful while
 /// the frame is on a list.
+///
+/// Kept compact ([`FRAME_ENTRY_BYTES`]): the database holds one per physical frame, a million of
+/// them for 4 GiB, so every field takes the width it needs and no more (Windows 2000's MMPFN takes
+/// 24 bytes). An all-zero entry is a fresh one ([`FrameEntry::new`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrameEntry {
-    next: Option<FrameId>,
-    prev: Option<FrameId>,
-    next_color: Option<FrameId>,
-    /// Current lifecycle state of the frame.
-    pub state: FrameState,
-    /// Primary cache color (always [`PRIMARY_COLOR`] on this platform).
-    pub color: u32,
-    /// State flags; see [`FrameFlags`].
-    pub flags: FrameFlags,
-    /// Outstanding references (I/O or mapping).
-    pub refcount: u16,
+    next: Link,
+    prev: Link,
+    next_color: Link,
     /// The in-use frame's holders beyond its first ([`FrameDb::share`]): the views of a section
     /// mapping its frame, besides the section, or the transition entry naming a standby frame.
     /// Zero for a frame with one holder, and for every frame on a list no entry names.
     pub share_count: u32,
-    /// The image segment's frame-table slot naming the frame (NT's PteAddress back to the
-    /// prototype PTE), while [`FrameFlags::PROTOTYPE_PTE`] is set: kept while the frame is in use
-    /// and while it waits on Standby for its segment's revival; gone once the frame leaves for any
-    /// other list or is handed out again (the slot then names a frame that is no longer its own).
-    pub prototype: Option<Prototype>,
+    /// The image segment's frame-table slot naming the frame ([`Self::prototype`]): the table's
+    /// frame (0: none) and the slot's index there, kept apart so the entry packs.
+    prototype_table: FrameId,
+    prototype_slot: u16,
+    /// State flags; see [`FrameFlags`].
+    pub flags: FrameFlags,
+    /// Outstanding references (I/O or mapping).
+    pub refcount: u16,
+    /// Current lifecycle state of the frame.
+    pub state: FrameState,
+    /// Primary cache color (always [`PRIMARY_COLOR`] on this platform).
+    pub color: u8,
 }
+
+/// The bytes one [`FrameEntry`] takes in the database: the database's size is this times the
+/// frames it describes.
+pub const FRAME_ENTRY_BYTES: usize = 28;
+
+const _: () = assert!(core::mem::size_of::<FrameEntry>() == FRAME_ENTRY_BYTES);
 
 /// A frame's back-link to the slot of an image segment's frame table naming it: the table's frame
 /// and the slot's index there.
@@ -194,19 +247,38 @@ impl Prototype {
 }
 
 impl FrameEntry {
-    /// A fresh frame: off-list, no flags, no references.
+    /// A fresh frame: off-list, no flags, no references. All zero bits.
     pub const fn new() -> Self {
         FrameEntry {
-            next: None,
-            prev: None,
-            next_color: None,
-            state: FrameState::Active,
-            color: PRIMARY_COLOR,
+            next: Link::NONE,
+            prev: Link::NONE,
+            next_color: Link::NONE,
+            share_count: 0,
+            prototype_table: 0,
+            prototype_slot: 0,
             flags: FrameFlags::empty(),
             refcount: 0,
-            share_count: 0,
-            prototype: None,
+            state: FrameState::Active,
+            color: PRIMARY_COLOR as u8,
         }
+    }
+
+    /// The image segment's frame-table slot naming the frame (NT's PteAddress back to the
+    /// prototype PTE), while [`FrameFlags::PROTOTYPE_PTE`] is set: kept while the frame is in use
+    /// and while it waits on Standby for its segment's revival; gone once the frame leaves for any
+    /// other list or is handed out again (the slot then names a frame that is no longer its own).
+    pub fn prototype(&self) -> Option<Prototype> {
+        let table = core::num::NonZeroU32::new(self.prototype_table)?;
+        Some(Prototype {
+            table,
+            slot: self.prototype_slot,
+        })
+    }
+
+    /// Set or clear the back-link ([`Self::prototype`]).
+    fn set_prototype(&mut self, prototype: Option<Prototype>) {
+        (self.prototype_table, self.prototype_slot) =
+            prototype.map_or((0, 0), |prototype| (prototype.table.get(), prototype.slot));
     }
 }
 
@@ -487,7 +559,7 @@ impl<H: FrameHooks> FrameDb<H> {
             "linking a frame not in use"
         );
         entry.flags.insert(FrameFlags::PROTOTYPE_PTE);
-        entry.prototype = Some(prototype);
+        entry.set_prototype(Some(prototype));
     }
 
     /// Whether the frame is still the one slot `prototype` names: linked to it, and in use or on
@@ -496,7 +568,7 @@ impl<H: FrameHooks> FrameDb<H> {
         let entry = self.entry(frame);
         matches!(entry.state, FrameState::Active | FrameState::Standby)
             && entry.flags.contains(FrameFlags::PROTOTYPE_PTE)
-            && entry.prototype == Some(prototype)
+            && entry.prototype() == Some(prototype)
     }
 
     /// An image segment's last reference went: it drops its hold on its frame for the cache. With
@@ -533,7 +605,7 @@ impl<H: FrameHooks> FrameDb<H> {
     fn unlink_prototype(&mut self, frame: FrameId) {
         let entry = self.entry_mut(frame);
         entry.flags.remove(FrameFlags::PROTOTYPE_PTE);
-        entry.prototype = None;
+        entry.set_prototype(None);
     }
 
     // -----------------------------------------------------------------
@@ -628,11 +700,11 @@ impl<H: FrameHooks> FrameDb<H> {
             old
         };
         if let Some(tail) = old_tail {
-            self.entry_mut(tail).next = Some(frame);
+            self.entry_mut(tail).next = Link::from(Some(frame));
         }
         let entry = self.entry_mut(frame);
-        entry.prev = old_tail;
-        entry.next = None;
+        entry.prev = Link::from(old_tail);
+        entry.next = Link::NONE;
     }
 
     /// Common tail-append of `frame` onto its color chain.
@@ -648,30 +720,30 @@ impl<H: FrameHooks> FrameDb<H> {
             old
         };
         if let Some(tail) = old_tail {
-            self.entry_mut(tail).next_color = Some(frame);
+            self.entry_mut(tail).next_color = Link::from(Some(frame));
         }
-        self.entry_mut(frame).next_color = None;
+        self.entry_mut(frame).next_color = Link::NONE;
     }
 
     /// Stitch the main chain around `frame` (already known to be on `state`'s list), decrement the
     /// total, and clear its links.
     fn stitch_around(&mut self, frame: FrameId, state: FrameState) {
-        let next = self.entry(frame).next;
-        let prev = self.entry(frame).prev;
+        let next = self.entry(frame).next.get();
+        let prev = self.entry(frame).prev.get();
         if let Some(n) = next {
-            self.entry_mut(n).prev = prev;
+            self.entry_mut(n).prev = Link::from(prev);
         } else {
             self.list_mut(state).tail = prev;
         }
         if let Some(p) = prev {
-            self.entry_mut(p).next = next;
+            self.entry_mut(p).next = Link::from(next);
         } else {
             self.list_mut(state).head = next;
         }
         self.list_mut(state).total -= 1;
         let entry = self.entry_mut(frame);
-        entry.next = None;
-        entry.prev = None;
+        entry.next = Link::NONE;
+        entry.prev = Link::NONE;
     }
 
     /// Removal-side accounting shared by every removal path: available count, transition tallies
@@ -753,7 +825,8 @@ impl<H: FrameHooks> FrameDb<H> {
                         "an in-page-error frame cannot join a colored list"
                     );
                     assert_eq!(
-                        entry.color, PRIMARY_COLOR,
+                        u32::from(entry.color),
+                        PRIMARY_COLOR,
                         "frames have a single primary color"
                     );
                 }
@@ -810,16 +883,16 @@ impl<H: FrameHooks> FrameDb<H> {
         // The list: the run follows the old tail in frame order.
         for (frame, entry) in run.clone().zip(entries.iter_mut()) {
             entry.state = state;
-            entry.prev = if frame == first {
+            entry.prev = Link::from(if frame == first {
                 old_tail
             } else {
                 Some(frame - 1)
-            };
-            entry.next = (frame != last).then_some(frame + 1);
-            entry.next_color = Some(frame + colors).filter(|&next| next <= last);
+            });
+            entry.next = Link::from((frame != last).then_some(frame + 1));
+            entry.next_color = Link::from(Some(frame + colors).filter(|&next| next <= last));
         }
         if let Some(tail) = old_tail {
-            self.entry_mut(tail).next = Some(first);
+            self.entry_mut(tail).next = Link::from(Some(first));
         }
         let list = self.list_mut(state);
         list.head.get_or_insert(first);
@@ -836,7 +909,7 @@ impl<H: FrameHooks> FrameDb<H> {
             let old = bucket.tail.replace(tail);
             bucket.head.get_or_insert(head);
             if let Some(old) = old {
-                self.entry_mut(old).next_color = Some(head);
+                self.entry_mut(old).next_color = Link::from(Some(head));
             }
         }
 
@@ -887,7 +960,7 @@ impl<H: FrameHooks> FrameDb<H> {
         // Advance the color chain: the list head is its chain's head.
         if state.has_color_chain() {
             let color = self.color_of(frame);
-            let next_color = self.entry(frame).next_color;
+            let next_color = self.entry(frame).next_color.get();
             let bucket = &mut self.buckets.inner[Self::color_table(state)][color];
             assert_eq!(
                 bucket.head,
@@ -900,7 +973,7 @@ impl<H: FrameHooks> FrameDb<H> {
             }
         }
 
-        let next = self.entry(frame).next;
+        let next = self.entry(frame).next.get();
         {
             let list = self.list_mut(state);
             list.total -= 1;
@@ -910,7 +983,7 @@ impl<H: FrameHooks> FrameDb<H> {
             }
         }
         if let Some(n) = next {
-            self.entry_mut(n).prev = None;
+            self.entry_mut(n).prev = Link::NONE;
         }
 
         // Accounting first (it reads the flags), then clear the frame.
@@ -918,8 +991,8 @@ impl<H: FrameHooks> FrameDb<H> {
         let entry = self.entry_mut(frame);
         entry.state = FrameState::Active;
         entry.flags = FrameFlags::empty();
-        entry.prototype = None;
-        entry.next_color = None;
+        entry.set_prototype(None);
+        entry.next_color = Link::NONE;
         frame
     }
 
@@ -982,7 +1055,7 @@ impl<H: FrameHooks> FrameDb<H> {
         // Color chain removal. The head case is O(1); otherwise walk the chain to find the parent
         // (bounded by the table length).
         let color = self.color_of(frame);
-        let next_color = self.entry(frame).next_color;
+        let next_color = self.entry(frame).next_color.get();
         let bucket_head = self.buckets.inner[Self::color_table(state)][color].head;
         if bucket_head == Some(frame) {
             let bucket = &mut self.buckets.inner[Self::color_table(state)][color];
@@ -997,9 +1070,9 @@ impl<H: FrameHooks> FrameDb<H> {
             };
             let mut steps = 0usize;
             loop {
-                let child = self.entry(parent).next_color;
+                let child = self.entry(parent).next_color.get();
                 if child == Some(frame) {
-                    self.entry_mut(parent).next_color = next_color;
+                    self.entry_mut(parent).next_color = Link::from(next_color);
                     if next_color.is_none() {
                         self.buckets.inner[Self::color_table(state)][color].tail = Some(parent);
                     }
@@ -1016,7 +1089,7 @@ impl<H: FrameHooks> FrameDb<H> {
             }
         }
 
-        self.entry_mut(frame).next_color = None;
+        self.entry_mut(frame).next_color = Link::NONE;
         self.entry_mut(frame).state = FrameState::Active;
         self.removal_accounting(state, frame, false);
     }
@@ -1034,7 +1107,7 @@ impl<H: FrameHooks> FrameDb<H> {
         );
 
         let color = self.color_of(frame);
-        let next_color = self.entry(frame).next_color;
+        let next_color = self.entry(frame).next_color.get();
         {
             let bucket = &mut self.buckets.inner[Self::color_table(state)][color];
             assert_eq!(
@@ -1053,8 +1126,8 @@ impl<H: FrameHooks> FrameDb<H> {
         let entry = self.entry_mut(frame);
         entry.state = FrameState::Active;
         entry.flags = FrameFlags::empty();
-        entry.prototype = None;
-        entry.next_color = None;
+        entry.set_prototype(None);
+        entry.next_color = Link::NONE;
     }
 
     // -----------------------------------------------------------------
@@ -1075,7 +1148,7 @@ impl<H: FrameHooks> FrameDb<H> {
             }
             budget -= 1;
             if self.entry(frame).share_count != 0 {
-                cur = self.entry(frame).next;
+                cur = self.entry(frame).next.get();
                 continue;
             }
             assert!(
@@ -1090,8 +1163,8 @@ impl<H: FrameHooks> FrameDb<H> {
             let entry = self.entry_mut(frame);
             entry.state = FrameState::Active;
             entry.flags = FrameFlags::empty();
-            entry.prototype = None;
-            entry.next_color = None;
+            entry.set_prototype(None);
+            entry.next_color = Link::NONE;
             return Some(frame);
         }
         None
@@ -1253,14 +1326,14 @@ impl<H: FrameHooks> FrameDb<H> {
                 if count > self.frames.len() as u32 {
                     return Err(AuditError::ChainDoesNotTerminate { state });
                 }
-                if let Some(n) = self.entry(f).next {
-                    if self.entry(n).prev != Some(f) {
+                if let Some(n) = self.entry(f).next.get() {
+                    if self.entry(n).prev.get() != Some(f) {
                         return Err(AuditError::PrevLinkMismatch { state });
                     }
                 }
                 first.get_or_insert(f);
                 last = Some(f);
-                cur = self.entry(f).next;
+                cur = self.entry(f).next.get();
             }
             if count != list.total {
                 return Err(AuditError::TotalMismatch { state });
@@ -1269,7 +1342,7 @@ impl<H: FrameHooks> FrameDb<H> {
                 return Err(AuditError::HeadTailMismatch { state });
             }
             if let (Some(first), Some(last)) = (first, last) {
-                if self.entry(first).prev.is_some() || self.entry(last).next.is_some() {
+                if self.entry(first).prev.get().is_some() || self.entry(last).next.get().is_some() {
                     return Err(AuditError::HeadTailMismatch { state });
                 }
             }
@@ -1282,7 +1355,7 @@ impl<H: FrameHooks> FrameDb<H> {
                 if backward > self.frames.len() as u32 {
                     return Err(AuditError::ChainDoesNotTerminate { state });
                 }
-                cur = self.entry(f).prev;
+                cur = self.entry(f).prev.get();
             }
             if backward != count {
                 return Err(AuditError::PrevLinkMismatch { state });
@@ -1324,7 +1397,7 @@ impl<H: FrameHooks> FrameDb<H> {
                         if steps > chain_budget {
                             return Err(AuditError::ChainDoesNotTerminate { state });
                         }
-                        list_cur = self.entry(f).next;
+                        list_cur = self.entry(f).next.get();
                     }
                     match (list_cur, bucket_cur) {
                         (None, None) => break,
@@ -1337,8 +1410,8 @@ impl<H: FrameHooks> FrameDb<H> {
                             if steps > chain_budget {
                                 return Err(AuditError::ChainDoesNotTerminate { state });
                             }
-                            list_cur = self.entry(list_frame).next;
-                            bucket_cur = self.entry(bucket_frame).next_color;
+                            list_cur = self.entry(list_frame).next.get();
+                            bucket_cur = self.entry(bucket_frame).next_color.get();
                         }
                         (Some(_), None) | (None, Some(_)) => {
                             return Err(AuditError::ColorChainMismatch { state });
@@ -1508,7 +1581,7 @@ mod tests {
         db.link_prototype(other, slot);
         db.release(other, Free);
         assert!(!db.is_prototype(other, slot));
-        assert_eq!(db.entry(other).prototype, None);
+        assert_eq!(db.entry(other).prototype(), None);
         assert!(db.audit().is_ok());
     }
 
@@ -1777,7 +1850,7 @@ mod tests {
         assert_eq!(db.pop(Free), 3);
         assert_eq!(db.entry(3).state, Active);
         assert!(db.entry(3).flags.is_empty());
-        assert_eq!(db.entry(3).color, PRIMARY_COLOR);
+        assert_eq!(u32::from(db.entry(3).color), PRIMARY_COLOR);
         assert_eq!(db.list_total(Free), 2);
         assert_eq!(db.free.head, Some(9));
         assert_eq!(db.entry(9).prev, None);

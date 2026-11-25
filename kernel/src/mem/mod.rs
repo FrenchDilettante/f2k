@@ -144,14 +144,14 @@ static TOTAL_COMMITTED_PAGES: AtomicU32 = AtomicU32::new(0);
 use core::sync::atomic::{AtomicU32, Ordering};
 
 /// The system's commit limit in bytes: the value the boot set, or physical
-/// memory (the frame database's whole size) while it is unset.
+/// memory (the boot's physical pages) while it is unset.
 #[cfg(target_arch = "x86")]
 pub fn system_commit_limit() -> u64 {
     let set = SYSTEM_COMMIT_LIMIT_PAGES.load(Ordering::Relaxed);
     if set != 0 {
         return set as u64 * 4096;
     }
-    with_database(|db| db.frames().frame_count() as u64 * 4096)
+    bootmem::physical_pages() as u64 * 4096
 }
 
 /// The system's commit limit in bytes, host builds (unit tests) only.

@@ -72,14 +72,21 @@ pub fn memory(magic: u32, multiboot_info: u32) {
         );
     }
 
-    // Hand every usable frame (minus the kernel image's and, for now, the boot loader's) to the
-    // frame allocator.
+    // Size the frame database from the memory map and hand every usable frame (minus the kernel
+    // image's, the database's own and, for now, the boot loader's) to the frame allocator.
     crate::mem::bootmem::boot_init(multiboot_info);
     crate::mem::bootmem::with_frame_db(|db| {
         crate::serial_println!(
             "F2K: physical memory: {} free frames ({} MiB)",
             db.available(),
             db.available() / 256
+        );
+        let pages = crate::mem::bootmem::physical_pages();
+        crate::serial_println!(
+            "F2K: frame database: {} frames for {} physical pages ({} MiB)",
+            db.frame_count(),
+            pages,
+            pages / 256
         );
         crate::serial_println!(
             "F2K: frame database audit: {}",

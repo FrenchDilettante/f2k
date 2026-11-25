@@ -125,7 +125,7 @@ impl<T> Drop for InitOnce<T> {
 }
 
 /// A static buffer handed out once, as a `&'static mut`: a table or a buffer the boot fills and one
-/// owner keeps (the frame table, the page colour tables).
+/// owner keeps (the page colour tables).
 ///
 /// A second [`StaticBuf::take`] panics.
 pub struct StaticBuf<T> {

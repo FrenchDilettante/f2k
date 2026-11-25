@@ -14,6 +14,7 @@
 //! | [`FRAMEBUFFER`]    | `0xC0800000` | 770-777   | the display's linear framebuffer          |
 //! | [`MMIO`]           | `0xC2800000` | 778-793   | device MMIO mappings (MmMapIoSpace)       |
 //! | [`MODULES`]        | `0xC6800000` | 794-825   | loaded driver images (the .sys loader)    |
+//! | [`FRAME_DATABASE`] | `0xFCC00000` | 1011-1018 | nonpaged pool (the PFN database's home)   |
 //! | [`NONPAGED_POOL`]  | `0xFEC00000` | 1019-1022 | nonpaged pool expansion                   |
 //! | [`SHARED_DATA`]    | `0xFFC00000` | 1023      | HAL usage (the shared data page's view)   |
 //!
@@ -22,9 +23,9 @@
 //! (`[0x80000000, 0x80400000)`), is the boot's: the first megabyte's firmware areas and the VGA
 //! text page, and from 1 MiB the boot loader (`kernel/loader`). The kernel's image, ntoskrnl.exe,
 //! sits behind it, at [`NTOSKRNL_BASE`], `0x80400000`, Windows 2000's kernel base (physical 4 MiB):
-//! its headers' page, its code and every fixed-size table, the frame table and the process pool
-//! among them, then its export directory and base relocations. It must end inside the window (the
-//! linker scripts and the boot loader check). The other regions get their tables at runtime.
+//! its headers' page, its code and every fixed-size table, the process pool among them, then its
+//! export directory and base relocations. It must end inside the window (the linker scripts and
+//! the boot loader check). The other regions get their tables at runtime.
 //!
 //! Kernel stacks sit in a region of their own, as Windows 2000's do: it takes them from its system
 //! PTEs, the pool of kernel address space for mappings that come and go, and its published x86 map
@@ -39,6 +40,15 @@
 //! block is taken and given back with it ([`crate::mem::pool`]). Windows 2000 grows its nonpaged
 //! pool's expansion down from `0xFFBE0000`, just under the HAL's area; F2K's region is the four
 //! entries below the shared data page's, 16 MiB.
+//!
+//! The frame database ([`crate::mem::frame`]), one entry per physical frame, is sized at boot from
+//! the memory map and mapped into its own region, [`FRAME_DATABASE`], right below the nonpaged
+//! pool's: Windows 2000 builds its PFN database (MmPfnDatabase) at boot the same way, in nonpaged
+//! system space, from the loader's memory descriptors. The region is sized for every frame a
+//! 32-bit physical address reaches ([`crate::mem::frame::PHYSICAL_FRAME_LIMIT`], 4 GiB: 28 MiB of
+//! entries in the region's 32 MiB), and the boot maps only what the machine's memory needs
+//! (1.75 MiB for 256 MiB), its page tables made before the boot directory, which carries them
+//! ([`crate::mem::bootmem`]).
 //!
 //! Device MMIO ranges map into their own reserved region, [`MMIO`], right behind the framebuffer's:
 //! Windows 2000 takes MmMapIoSpace mappings from its system PTEs wherever they fit; F2K keeps a
@@ -157,6 +167,14 @@ pub const MODULES: Region = Region {
     entries: 32,
 };
 
+/// The frame database: one [`crate::mem::frame::FrameEntry`] per physical frame, sized at boot from
+/// the memory map and mapped from the region's start, page tables made at boot and shared by every
+/// address space. Eight entries: 32 MiB, room for a database over 4 GiB.
+pub const FRAME_DATABASE: Region = Region {
+    start: 0xFCC0_0000,
+    entries: 8,
+};
+
 /// The nonpaged pool: blocks of kernel memory taken and released at runtime, mapped in every
 /// address space ([`crate::mem::pool`]).
 pub const NONPAGED_POOL: Region = Region {
@@ -179,13 +197,17 @@ const _: () = {
     assert!(KERNEL_IMAGE.holds(NTOSKRNL_BASE) && NTOSKRNL_BASE.is_multiple_of(ENTRY_SPAN));
     assert!(NTOSKRNL_BASE / ENTRY_SPAN == KERNEL_IMAGE.first_entry() as u32 + 1);
     assert!(KERNEL_STACKS.start as u64 >= KERNEL_IMAGE.end());
+    assert!(
+        crate::mem::frame::PHYSICAL_FRAME_LIMIT * crate::mem::frame::FRAME_ENTRY_BYTES
+            <= FRAME_DATABASE.size() as usize
+    );
 };
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const REGIONS: [(&str, Region); 9] = [
+    const REGIONS: [(&str, Region); 10] = [
         ("kernel image", KERNEL_IMAGE),
         ("kernel stacks", KERNEL_STACKS),
         ("page tables", PAGE_TABLES),
@@ -193,6 +215,7 @@ mod tests {
         ("framebuffer", FRAMEBUFFER),
         ("mmio", MMIO),
         ("modules", MODULES),
+        ("frame database", FRAME_DATABASE),
         ("nonpaged pool", NONPAGED_POOL),
         ("shared data", SHARED_DATA),
     ];
@@ -224,6 +247,11 @@ mod tests {
         assert_eq!((MODULES.first_entry(), MODULES.end_entry()), (794, 826));
         assert_eq!(MODULES.start, MMIO.end() as u32);
         assert_eq!(MODULES.end(), 0xCE80_0000);
+        assert_eq!(
+            (FRAME_DATABASE.first_entry(), FRAME_DATABASE.end_entry()),
+            (1011, 1019)
+        );
+        assert_eq!(FRAME_DATABASE.end(), NONPAGED_POOL.start as u64);
         assert_eq!(
             (NONPAGED_POOL.first_entry(), NONPAGED_POOL.end_entry()),
             (1019, 1023)

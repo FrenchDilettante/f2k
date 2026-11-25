@@ -587,7 +587,7 @@ mod target {
         let Some(Ok(free_bytes)) = free_bytes else {
             return;
         };
-        // Physical memory while the limit is unset: the frame database's whole size.
+        // Physical memory while the limit is unset: the boot's physical pages.
         let ram_bytes = crate::mem::system_commit_limit();
         let (size, limit) = boot_sizing(free_bytes, ram_bytes);
 
