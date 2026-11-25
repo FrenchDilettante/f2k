@@ -2695,4 +2695,210 @@ mod tests {
         assert_eq!(next_group_item_any(dialog, controls[299]), controls[0]);
         window::destroy_window(dialog);
     }
+
+    // --- DefDlgProc ------------------------------------------------------------------------------
+
+    /// The dialog capture's main dialog's push buttons: OK (id 1, BS_DEFPUSHBUTTON) and Cancel
+    /// (id 2), then a third push button (id 3), each a tab stop; a dialog procedure answering
+    /// FALSE.
+    fn push_button_dialog() -> usize {
+        crate::class::SYSTEM_CLASSES_WANTED.with(|wanted| wanted.set(true));
+        let control = WS_CHILD | WS_VISIBLE | WS_TABSTOP;
+        let template = button_template(
+            WS_POPUP | WS_VISIBLE,
+            &[
+                (control | WS_GROUP | BS_DEFPUSHBUTTON, 1, 0x80),
+                (control, 2, 0x80),
+                (control, 3, 0x80),
+            ],
+        );
+        fn nothing(_window: u32, _message: u32, _wparam: u32, _lparam: i32) -> i32 {
+            0
+        }
+        let proc = crate::imports::host::procedure(nothing) as usize;
+        // SAFETY: the template above, whole.
+        let dialog = unsafe {
+            create_dialog_indirect_param_w(0x40_0000, template.as_ptr().cast(), 0, proc, 0)
+        };
+        assert_ne!(dialog, 0);
+        dialog
+    }
+
+    /// A dialog procedure answering TRUE has DefDlgProc answer the DWL_MSGRESULT it set; one
+    /// answering FALSE has it answer the default window procedure's (0 for a WM_USER message),
+    /// DWL_MSGRESULT keeping what the procedure set (the wndlong capture's `dialog` block: 55 and
+    /// TRUE answer 55, 66 and FALSE answer 0 and leave 0x42).
+    ///
+    /// Pins: user32.DefDlgProcW, user32.DefDlgProcA
+    #[test]
+    fn a_true_answer_is_dwl_msgresult_and_a_false_one_the_default() {
+        const WM_RESULT_TRUE: u32 = WM_USER + 2;
+        const WM_RESULT_FALSE: u32 = WM_USER + 3;
+        fn results(window: u32, message: u32, _wparam: u32, _lparam: i32) -> i32 {
+            match message {
+                WM_RESULT_TRUE => {
+                    write_long(window as usize, DWL_MSGRESULT, 55);
+                    1
+                }
+                WM_RESULT_FALSE => {
+                    write_long(window as usize, DWL_MSGRESULT, 66);
+                    0
+                }
+                _ => 0,
+            }
+        }
+        crate::class::SYSTEM_CLASSES_WANTED.with(|wanted| wanted.set(true));
+        let proc = crate::imports::host::procedure(results) as usize;
+        let template = button_template(WS_POPUP, &[]);
+        // SAFETY: the template above, whole.
+        let dialog = unsafe {
+            create_dialog_indirect_param_w(0x40_0000, template.as_ptr().cast(), 0, proc, 0)
+        };
+        assert_ne!(dialog, 0);
+        assert_eq!(read_long(dialog, DWL_MSGRESULT), 0);
+        assert_eq!(def_dlg_proc_w(dialog, WM_RESULT_TRUE, 0, 0), 55);
+        assert_eq!(read_long(dialog, DWL_MSGRESULT), 55);
+        assert_eq!(def_dlg_proc_w(dialog, WM_RESULT_FALSE, 0, 0), 0);
+        assert_eq!(read_long(dialog, DWL_MSGRESULT), 0x42);
+        // The narrow form the same.
+        assert_eq!(def_dlg_proc_a(dialog, WM_RESULT_TRUE, 0, 0), 55);
+        assert_eq!(def_dlg_proc_a(dialog, WM_RESULT_FALSE, 0, 0), 0);
+        window::destroy_window(dialog);
+    }
+
+    /// DM_GETDEFID answers DC_HASDEFID and the template's BS_DEFPUSHBUTTON's id (the dialog
+    /// capture's `keys` block: "has one yes id=1"); DM_SETDEFID makes another control's id the
+    /// default.
+    ///
+    /// Pins: user32.DefDlgProcW, user32.DefDlgProcA
+    #[test]
+    fn dm_getdefid_answers_the_default_push_buttons_id() {
+        let dialog = push_button_dialog();
+        let has = |id: u32| (DC_HASDEFID << 16 | id) as i32;
+        assert_eq!(def_dlg_proc_w(dialog, DM_GETDEFID, 0, 0), has(1));
+        assert_eq!(def_dlg_proc_w(dialog, DM_SETDEFID, 3, 0), 1);
+        assert_eq!(def_dlg_proc_w(dialog, DM_GETDEFID, 0, 0), has(3));
+        assert_eq!(def_dlg_proc_a(dialog, DM_GETDEFID, 0, 0), has(3));
+        window::destroy_window(dialog);
+    }
+
+    /// WM_CLOSE posts the dialog the IDCANCEL command (BN_CLICKED, the Cancel button's handle),
+    /// and answers 0.
+    ///
+    /// Pins: user32.DefDlgProcW
+    #[test]
+    fn wm_close_posts_idcancel() {
+        use crate::imports::host::wm;
+        let dialog = push_button_dialog();
+        let cancel = child_by_id(dialog, IDCANCEL);
+        assert_ne!(cancel, 0);
+        wm(|wm| wm.posted.clear());
+        assert_eq!(def_dlg_proc_w(dialog, WM_CLOSE, 0, 0), 0);
+        let posted: std::vec::Vec<(u32, u32, u32, i32)> = wm(|wm| {
+            wm.posted
+                .iter()
+                .map(|m| (m.hwnd, m.message, m.wparam, m.lparam))
+                .collect()
+        });
+        assert_eq!(
+            posted,
+            [(
+                dialog as u32,
+                WM_COMMAND,
+                BN_CLICKED << 16 | IDCANCEL,
+                cancel as i32
+            )]
+        );
+        wm(|wm| wm.posted.clear());
+        window::destroy_window(dialog);
+    }
+
+    /// A dialog of three tab-stop controls (ids 1 to 3) of a class of the test's own, whose
+    /// procedure is the default window procedure's: the dialog and its controls. (The focus moves
+    /// below go to these rather than to buttons: a button's WM_SETFOCUS and WM_KILLFOCUS draw,
+    /// which the host stand-ins do not carry.)
+    fn plain_control_dialog() -> (usize, [usize; 3]) {
+        use crate::class::{register_class_w, WndClass};
+        fn plain(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+            message::default_procedure(window as usize, message, wparam, lparam, false)
+        }
+        crate::class::SYSTEM_CLASSES_WANTED.with(|wanted| wanted.set(true));
+        let class_name: std::vec::Vec<u16> = "F2KDlgPlain\0".encode_utf16().collect();
+        let class = WndClass {
+            wnd_proc: crate::imports::host::procedure(plain) as usize,
+            instance: 0x40_0000,
+            class_name: class_name.as_ptr() as usize,
+            ..WndClass::default()
+        };
+        // SAFETY: a WNDCLASSW of the test's own.
+        assert_ne!(unsafe { register_class_w(&class) }, 0);
+        let mut words: std::vec::Vec<u16> = std::vec::Vec::new();
+        let dword = |words: &mut std::vec::Vec<u16>, value: u32| {
+            words.push(value as u16);
+            words.push((value >> 16) as u16);
+        };
+        dword(&mut words, WS_POPUP | WS_VISIBLE);
+        dword(&mut words, 0);
+        words.extend([3, 0, 0, 100, 60, 0, 0xFFFF, 0x8002, 0]);
+        for id in 1..=3u16 {
+            if words.len() % 2 != 0 {
+                words.push(0);
+            }
+            dword(&mut words, WS_CHILD | WS_VISIBLE | WS_TABSTOP);
+            dword(&mut words, 0);
+            words.extend([4, 4 + 16 * id, 40, 14, id]);
+            words.extend_from_slice(&class_name);
+            words.extend([0, 0]);
+        }
+        let template: std::vec::Vec<u32> = words
+            .chunks(2)
+            .map(|pair| u32::from(pair[0]) | u32::from(*pair.get(1).unwrap_or(&0)) << 16)
+            .collect();
+        // SAFETY: the template above, whole.
+        let dialog =
+            unsafe { create_dialog_indirect_param_w(0x40_0000, template.as_ptr().cast(), 0, 0, 0) };
+        assert_ne!(dialog, 0);
+        let controls = [1, 2, 3].map(|id| child_by_id(dialog, id));
+        assert!(controls.iter().all(|&control| control != 0));
+        (dialog, controls)
+    }
+
+    /// WM_NEXTDLGCTL moves the focus to the next tab stop (wParam 0), the previous one (wParam
+    /// nonzero), or the control wParam names (lParam's low word nonzero); it answers 0.
+    ///
+    /// Pins: user32.DefDlgProcW
+    #[test]
+    fn wm_nextdlgctl_moves_the_focus() {
+        let (dialog, [first, second, third]) = plain_control_dialog();
+        set_dialog_focus(dialog, first);
+        assert_eq!(focus::get_focus(), first);
+        assert_eq!(def_dlg_proc_w(dialog, WM_NEXTDLGCTL, 0, 0), 0);
+        assert_eq!(focus::get_focus(), second);
+        assert_eq!(def_dlg_proc_w(dialog, WM_NEXTDLGCTL, 1, 0), 0);
+        assert_eq!(focus::get_focus(), first);
+        assert_eq!(def_dlg_proc_w(dialog, WM_NEXTDLGCTL, third as u32, 1), 0);
+        assert_eq!(focus::get_focus(), third);
+        window::destroy_window(dialog);
+    }
+
+    /// WM_ACTIVATE going inactive keeps the dialog's focus control (one SetFocus moved the focus
+    /// to, not the dialog manager), and going active again brings the focus back to it (answering
+    /// 0); WM_SETFOCUS to the dialog does the same.
+    ///
+    /// Pins: user32.DefDlgProcW
+    #[test]
+    fn activation_saves_and_restores_the_focus() {
+        let (dialog, [_, second, third]) = plain_control_dialog();
+        set_dialog_focus(dialog, second);
+        focus::set_focus(third);
+        def_dlg_proc_w(dialog, WM_ACTIVATE, WA_INACTIVE, 0);
+        focus::set_focus(0);
+        assert_eq!(focus::get_focus(), 0);
+        assert_eq!(def_dlg_proc_w(dialog, WM_ACTIVATE, 1, 0), 0);
+        assert_eq!(focus::get_focus(), third);
+        focus::set_focus(0);
+        assert_eq!(def_dlg_proc_w(dialog, WM_SETFOCUS, 0, 0), 0);
+        assert_eq!(focus::get_focus(), third);
+        window::destroy_window(dialog);
+    }
 }

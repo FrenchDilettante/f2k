@@ -443,6 +443,31 @@ mod tests {
         );
     }
 
+    /// GetTextExtentPointW (the form Windows 2000's user32 measures DrawText's text with) answers
+    /// GetTextExtentPoint32W's SIZE, and refuses a negative length the same way.
+    ///
+    /// Pins: gdi32.GetTextExtentPointW
+    #[test]
+    fn the_old_extent_form_answers_as_the_32_bit_one() {
+        calls();
+        let hello = wide("Hello");
+        let mut size = Size::default();
+        assert_eq!(get_text_extent_point_w(DC, hello.as_ptr(), 5, &mut size), 1);
+        assert_eq!(size, Size { cx: 40, cy: 16 });
+        assert_eq!(
+            get_text_extent_point_w(DC, hello.as_ptr(), -1, &mut size),
+            0
+        );
+        assert_eq!(last_error(), ERROR_INVALID_PARAMETER);
+        assert_eq!(
+            calls()
+                .iter()
+                .map(|call| call.units.clone())
+                .collect::<std::vec::Vec<_>>(),
+            [hello]
+        );
+    }
+
     /// The extents and the metrics, wide and narrow: "Hello" 5 cells of 8 by 16; the metrics'
     /// height and width, the narrow characters converted (the euro sign is 0x80).
     #[test]
