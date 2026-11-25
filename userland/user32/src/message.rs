@@ -43,6 +43,7 @@ use rtl::user::*;
 use rtl::window::WINDOW_OTHER_PROCESS;
 
 use crate::procedure::{self, Procedure};
+use crate::records::Table;
 use crate::{
     answered,
     failed_with,
@@ -1058,49 +1059,44 @@ const UIS_CLEAR: u32 = 2;
 const UIS_INITIALIZE: u32 = 3;
 const UISF_ALL: u32 = 0x7;
 
-/// The windows of this process whose UI state is not the default 0: (window, state), 0 for a free
-/// entry. DefWindowProc runs in the window's own process, which answers WM_QUERYUISTATE for it.
-static UI_STATES: [(AtomicU32, AtomicU32); 64] =
-    [const { (AtomicU32::new(0), AtomicU32::new(0)) }; 64];
+/// The windows of this process whose UI state is not the default 0: (window, state), in a table
+/// that grows with them ([`crate::records`]; Windows 2000 keeps the state in the window's own
+/// structure). DefWindowProc runs in the window's own process, which answers WM_QUERYUISTATE for
+/// it; its WM_NCDESTROY drops the record.
+static UI_STATES: Table<2> = Table::new();
+
+/// `record` kept in `table` for the window it names; a table out of room first drops the records
+/// of windows that are gone (a procedure that never handed its WM_NCDESTROY to DefWindowProc left
+/// them). False when the heap has no room for it.
+fn keep_record<const W: usize>(table: &Table<W>, record: [usize; W]) -> bool {
+    table.with(|records| {
+        if records.get(record[0]).is_none() && records.len() == records.capacity() {
+            records.retain(|kept| window::is_window_alive(kept[0]));
+        }
+        records.set(record)
+    })
+}
 
 /// The window's UI state (WM_QUERYUISTATE's answer): 0 unless WM_UPDATEUISTATE set a flag.
 fn ui_state(window: usize) -> u32 {
     UI_STATES
-        .iter()
-        .find(|(w, _)| w.load(Ordering::Acquire) == window as u32)
-        .map_or(0, |(_, state)| state.load(Ordering::Acquire))
+        .with(|states| states.get(window))
+        .map_or(0, |[_, state]| state as u32)
 }
 
-/// The window's UI state set to `state`.
+/// The window's UI state set to `state` (0, the default, kept as no record). Without room for its
+/// record the state stays the default.
 fn set_ui_state(window: usize, state: u32) {
-    if let Some((_, slot)) = UI_STATES
-        .iter()
-        .find(|(w, _)| w.load(Ordering::Acquire) == window as u32)
-    {
-        slot.store(state, Ordering::Release);
-        return;
-    }
     if state == 0 {
-        return;
-    }
-    for (w, slot) in UI_STATES.iter() {
-        if w.compare_exchange(0, window as u32, Ordering::AcqRel, Ordering::Acquire)
-            .is_ok()
-        {
-            slot.store(state, Ordering::Release);
-            return;
-        }
+        forget_ui_state(window);
+    } else {
+        let _ = keep_record(&UI_STATES, [window, state as usize]);
     }
 }
 
 /// The window's UI state forgotten as it goes (its handle may name another window later).
 fn forget_ui_state(window: usize) {
-    for (w, slot) in UI_STATES.iter() {
-        if w.load(Ordering::Acquire) == window as u32 {
-            slot.store(0, Ordering::Release);
-            w.store(0, Ordering::Release);
-        }
-    }
+    let _ = UI_STATES.with(|states| states.take(window));
 }
 
 /// `state` after WM_UPDATEUISTATE's `wparam`: UIS_SET sets the flags, UIS_CLEAR clears them, and so
@@ -1230,18 +1226,11 @@ fn context_menu(window: usize, wparam: u32, lparam: i32) {
     }
 }
 
-/// The icons WM_SETICON gave a window: (window, big, small), 0 for none, the window 0 for a free
-/// entry. DefWindowProc runs in the window's own process, which answers its WM_GETICON, so the
-/// process keeps them (Windows 2000 keeps them as the window's internal properties); a process
-/// with more windows holding icons than entries keeps no icon for the others.
-static ICONS: [[AtomicU32; 3]; 64] = [const { [const { AtomicU32::new(0) }; 3] }; 64];
-
-/// The window's entry in [`ICONS`]; none when it has none.
-fn icons_entry(window: usize) -> Option<&'static [AtomicU32; 3]> {
-    ICONS
-        .iter()
-        .find(|entry| window != 0 && entry[0].load(Ordering::Acquire) == window as u32)
-}
+/// The icons WM_SETICON gave a window: (window, big, small), 0 for none, in a table that grows
+/// with the windows holding any ([`crate::records`]). DefWindowProc runs in the window's own
+/// process, which answers its WM_GETICON, so the process keeps them (Windows 2000 keeps them as the
+/// window's internal properties); its WM_NCDESTROY drops the record.
+static ICONS: Table<3> = Table::new();
 
 /// DefWindowProc's WM_GETICON: the window's big or small icon (`which`), 0 for none or for another
 /// `which`.
@@ -1251,7 +1240,9 @@ fn icon_of(window: usize, which: u32) -> u32 {
         ICON_SMALL => 2,
         _ => return 0,
     };
-    icons_entry(window).map_or(0, |entry| entry[slot].load(Ordering::Acquire))
+    ICONS
+        .with(|icons| icons.get(window))
+        .map_or(0, |record| record[slot] as u32)
 }
 
 /// DefWindowProc's WM_SETICON: the window's big or small icon (`which`) set to `icon` (0: none),
@@ -1269,30 +1260,25 @@ fn set_icon(window: usize, which: u32, icon: u32) -> u32 {
     if which == ICON_BIG && icon != 0 && icon_of(window, ICON_SMALL) == 0 {
         imports::set_last_error(ERROR_INVALID_HANDLE);
     }
-    let entry = match icons_entry(window) {
-        Some(entry) => entry,
-        None if icon == 0 || window == 0 => return 0,
-        None => {
-            let Some(entry) = ICONS.iter().find(|entry| {
-                entry[0]
-                    .compare_exchange(0, window as u32, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-            }) else {
-                return 0;
-            };
-            entry
-        }
-    };
-    entry[slot].swap(icon, Ordering::AcqRel)
+    let record = ICONS.with(|icons| icons.get(window));
+    if record.is_none() && (icon == 0 || window == 0) {
+        return 0;
+    }
+    let mut record = record.unwrap_or([window, 0, 0]);
+    let previous = record[slot] as u32;
+    record[slot] = icon as usize;
+    if record[1] == 0 && record[2] == 0 {
+        forget_icons(window);
+    } else if !keep_record(&ICONS, record) {
+        // No room for a new record: the window keeps no icon, as before the call.
+        return 0;
+    }
+    previous
 }
 
 /// The window's icons forgotten as it goes (its handle may name another window later).
 fn forget_icons(window: usize) {
-    if let Some(entry) = icons_entry(window) {
-        entry[1].store(0, Ordering::Release);
-        entry[2].store(0, Ordering::Release);
-        entry[0].store(0, Ordering::Release);
-    }
+    let _ = ICONS.with(|icons| icons.take(window));
 }
 
 /// The default procedure's cases logged in this process: a message, a system command, a key.
@@ -1725,6 +1711,122 @@ mod tests {
         assert_ne!(window, 0);
         seen();
         window
+    }
+
+    /// How many windows the process keeps a UI state and icons for.
+    fn records_held() -> (usize, usize) {
+        (
+            UI_STATES.with(|states| states.len()),
+            ICONS.with(|icons| icons.len()),
+        )
+    }
+
+    /// More windows with a UI state and icons than the process's old fixed tables held (64 each):
+    /// each answers its own, and DefWindowProc's WM_NCDESTROY leaves no record behind.
+    #[test]
+    fn ui_states_and_icons_past_a_fixed_table() {
+        let held = records_held();
+        let windows: std::vec::Vec<usize> = (0..100).map(|_| window()).collect();
+        for (index, &window) in windows.iter().enumerate() {
+            let state = 1 + index as u32 % 3;
+            default_procedure(window, WM_UPDATEUISTATE, UIS_SET | state << 16, 0, false);
+            default_procedure(window, WM_SETICON, ICON_SMALL, 0x1000 + index as i32, false);
+            default_procedure(window, WM_SETICON, ICON_BIG, 0x2000 + index as i32, false);
+        }
+        assert_eq!(records_held(), (held.0 + 100, held.1 + 100));
+        for (index, &window) in windows.iter().enumerate() {
+            let state = 1 + index as i32 % 3;
+            assert_eq!(
+                default_procedure(window, WM_QUERYUISTATE, 0, 0, false),
+                state
+            );
+            assert_eq!(
+                default_procedure(window, WM_GETICON, ICON_SMALL, 0, false),
+                0x1000 + index as i32
+            );
+            assert_eq!(
+                default_procedure(window, WM_GETICON, ICON_BIG, 0, false),
+                0x2000 + index as i32
+            );
+        }
+        // Icons and a state set back to none leave no record either.
+        let first = windows[0];
+        default_procedure(first, WM_SETICON, ICON_SMALL, 0, false);
+        default_procedure(first, WM_SETICON, ICON_BIG, 0, false);
+        default_procedure(
+            first,
+            WM_UPDATEUISTATE,
+            UIS_CLEAR | UISF_ALL << 16,
+            0,
+            false,
+        );
+        assert_eq!(records_held(), (held.0 + 99, held.1 + 99));
+        for &window in &windows {
+            assert_eq!(crate::window::destroy_window(window), 1);
+        }
+        assert_eq!(records_held(), held);
+    }
+
+    fn swallows_ncdestroy(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+        if message == WM_NCDESTROY {
+            return 0;
+        }
+        def_window_proc_a(window as usize, message, wparam, lparam)
+    }
+
+    /// A window whose procedure keeps WM_NCDESTROY from DefWindowProc leaves its record; a table
+    /// out of room drops such records of windows that are gone before it grows.
+    #[test]
+    fn records_of_gone_windows_go_before_the_table_grows() {
+        let class = WndClass {
+            wnd_proc: procedure(swallows_ncdestroy) as usize,
+            class_name: c"F2KSwallow".as_ptr() as usize,
+            ..WndClass::default()
+        };
+        let make = || {
+            // SAFETY: a WNDCLASSA of the test's own, and its name.
+            let window = unsafe {
+                create_window_ex_a(
+                    0,
+                    c"F2KSwallow".as_ptr().cast(),
+                    core::ptr::null(),
+                    0x8000_0000,
+                    0,
+                    0,
+                    10,
+                    10,
+                    0,
+                    0,
+                    0,
+                    0,
+                )
+            };
+            assert_ne!(window, 0);
+            default_procedure(window, WM_UPDATEUISTATE, UIS_SET | 2 << 16, 0, false);
+            window
+        };
+        // SAFETY: as above.
+        unsafe { register_class_a(&class) };
+        let held = UI_STATES.with(|states| states.len());
+        assert_eq!(held, 0, "this thread's table starts empty");
+        let gone: std::vec::Vec<usize> = (0..20).map(|_| make()).collect();
+        for &window in &gone {
+            crate::window::destroy_window(window);
+        }
+        let capacity = UI_STATES.with(|states| states.capacity());
+        assert_eq!(UI_STATES.with(|states| states.len()), 20);
+        let live: std::vec::Vec<usize> = (20..capacity).map(|_| make()).collect();
+        assert_eq!(UI_STATES.with(|states| states.len()), capacity);
+        let one_more = make();
+        assert_eq!(UI_STATES.with(|states| states.len()), live.len() + 1);
+        assert_eq!(UI_STATES.with(|states| states.capacity()), capacity);
+        assert!(gone.iter().all(|&window| ui_state(window) == 0));
+        assert_eq!(ui_state(one_more), 2);
+        for &window in live.iter().chain([&one_more]) {
+            forget_ui_state(window);
+            crate::window::destroy_window(window);
+        }
+        assert_eq!(UI_STATES.with(|states| states.len()), 0);
     }
 
     fn peek(flags: u32) -> (u32, Msg) {
