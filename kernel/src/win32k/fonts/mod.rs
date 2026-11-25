@@ -24,11 +24,11 @@
 //! Windows 2000's own System or MS Sans Serif sees, and what the file is in use, sizes fixed and
 //! nothing to scale, though its container is a TrueType file.
 //!
-//! A font object is the LOGFONT its creation gave (as GetObject answers it). Its handle carries
-//! the font kind above the handle table's handle, as a brush's carries its own
-//! ([`rtl::gdi::object_handle`]), so gdi32 and the DC services tell a font from another object by
-//! its handle alone ([`font_table_handle`]). A DC selects one by its handle, the font's object id
-//! beside it; the DC's text calls realise it each time, through
+//! A font object is the LOGFONT its creation gave (as GetObject answers it), held by its creator's
+//! process through an entry of the GDI handle table ([`super::gdi`]). Its handle carries the font
+//! kind in its high word, as a brush's carries its own ([`rtl::gdi::object_handle`]), so gdi32
+//! and the DC services tell a font from another object by its handle alone. A DC selects one by its
+//! handle, the font's object id beside it; the DC's text calls realise it each time, through
 //! the mapper, against the faces the calling process sees: a font whose face is gone, or a font
 //! object deleted while selected, realises as the built-in font. (Windows 2000 keeps a deleted
 //! font selected in a DC alive until it is deselected; here the DC's id of it goes stale.) A stock
@@ -87,9 +87,6 @@ use super::raster::{Surface, TextOut};
 use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use crate::status::*;
 
-/// The access a font's handle carries: STANDARD_RIGHTS_REQUIRED.
-pub const FONT_ACCESS: u32 = 0x000F_0000;
-
 /// The faces the boot loads, by their paths under the volume's root: the list standing in for
 /// `...\CurrentVersion\Fonts` (see the module notes). Wine's five faces (fonts/README.md):
 /// Tahoma and Tahoma Bold, MS Sans Serif (standing in for Microsoft Sans Serif too), System and
@@ -127,15 +124,6 @@ const ENUM_RASTER_OUT_PRECISION: u8 = 1;
 /// The units, widths or bytes a service copies to or from the caller at a time.
 const CHUNK: usize = 64;
 const BYTES_CHUNK: usize = 512;
-
-/// The handle-table handle under a font object's handle (its kind's bits taken off); none for a
-/// handle that is no font's ([`rtl::gdi::object_of`]).
-pub fn font_table_handle(handle: Handle) -> Option<u32> {
-    match object_of(handle.raw()) {
-        Some((OBJ_FONT, table)) => Some(table),
-        _ => None,
-    }
-}
 
 /// A font object's body: the LOGFONTW its creation gave.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1038,36 +1026,27 @@ mod target {
 
     /// The LOGFONT of the font object `handle` names in the calling process.
     pub fn font_of(handle: Handle) -> Option<LogFontW> {
-        let table = font_table_handle(handle)?;
-        let reference = crate::ob::reference_by_handle(table, Some(crate::ob::ObjectType::Font))?;
+        let reference = super::super::gdi::reference(handle.raw(), OBJ_FONT)?;
         crate::ob::locked(|directory| directory.font(reference.id()).map(|font| font.log_font))
     }
 
     /// The object id of the font object `handle` names in the calling process.
     pub fn font_id(handle: Handle) -> Option<crate::ob::ObjectId> {
-        crate::process::current()
-            .lookup_handle(font_table_handle(handle)?)
-            .and_then(|entry| entry.object_id())
-            .filter(|id| id.kind == crate::ob::ObjectType::Font)
+        super::super::gdi::object(handle.raw(), OBJ_FONT)
     }
 
-    /// A font object holding `font`, its handle in the calling process (not inheritable) under
-    /// the font kind's bits ([`rtl::gdi::object_handle`]); STATUS_INSUFFICIENT_RESOURCES when the
-    /// pool or the handle table is full.
-    pub fn publish_font(call: &mut NtCall, font: FontObject) -> Result<u32, NtStatus> {
+    /// A font object holding `font`, its GDI handle the calling process's, the font kind in its
+    /// bits ([`rtl::gdi::object_handle`]); STATUS_INSUFFICIENT_RESOURCES when the pool or the GDI
+    /// table is full.
+    pub fn publish_font(_call: &mut NtCall, font: FontObject) -> Result<u32, NtStatus> {
         let id = crate::ob::locked(|directory| directory.create_font(font))
             .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-        crate::ob::publish(call.process(), id, FONT_ACCESS, false)
-            .map(|table| object_handle(OBJ_FONT, table.get()))
-            .ok_or(STATUS_INSUFFICIENT_RESOURCES)
+        super::super::gdi::insert(id).ok_or(STATUS_INSUFFICIENT_RESOURCES)
     }
 
-    /// Close the calling process's handle `handle` when it names a font; STATUS_INVALID_HANDLE
-    /// otherwise.
-    pub fn close_font(call: &mut NtCall, handle: Handle) -> Result<(), NtStatus> {
-        let process = call.process();
-        let table = font_table_handle(handle).filter(|_| font_id(handle).is_some());
-        if table.is_some_and(|table| process.close_handle(table)) {
+    /// Delete the calling process's font `handle`; STATUS_INVALID_HANDLE when it names none.
+    pub fn close_font(_call: &mut NtCall, handle: Handle) -> Result<(), NtStatus> {
+        if super::super::gdi::delete(handle.raw(), OBJ_FONT) {
             Ok(())
         } else {
             Err(STATUS_INVALID_HANDLE)

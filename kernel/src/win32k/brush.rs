@@ -1,12 +1,11 @@
 //! Brushes: win32k's brush objects, the fills a DC paints with them, and PatBlt.
 //!
 //! A brush is an object of the object manager ([`crate::ob`]'s Brush type), its body a [`Brush`]:
-//! what it paints ([`Fill`]). Its creator's process holds it through a handle in its handle table,
-//! as a DC is held ([`super::dc`]), so a brush closes with its process's other handles at its end.
-//! (Windows 2000 keeps its brushes in GDI's own handle table; F2K keeps them as it keeps its DCs.)
-//! The handle a program sees carries the brush kind in its high word above the table's handle
-//! ([`rtl::gdi::object_handle`]), as Windows 2000's GDI handles carry their type: it never reads
-//! as FillRect's COLOR_* + 1, and gdi32 knows the kind from the handle.
+//! what it paints ([`Fill`]). Its creator's process holds it through an entry of the GDI handle
+//! table ([`super::gdi`]), as a DC is held ([`super::dc`]) and as Windows 2000 keeps its brushes,
+//! so a brush goes with its process's other GDI objects at its end. Its handle carries the brush
+//! kind in its high word ([`rtl::gdi::object_handle`]), as Windows 2000's GDI handles carry their
+//! type: it never reads as FillRect's COLOR_* + 1, and gdi32 knows the kind from the handle.
 //!
 //! Beside the brush objects there are the global brushes, which every process names by the same
 //! constant handle and which are never deleted ([`rtl::gdi::GlobalBrush`]): the stock brushes, the
@@ -37,9 +36,6 @@ use rtl::gdi::*;
 use super::raster::{screen_rgb, Pattern, PatternBits};
 use crate::nt::call::{Handle, NtCall, NtResult, UserPtr};
 use crate::status::*;
-
-/// The access a brush's handle carries: STANDARD_RIGHTS_REQUIRED (a brush has no specific rights).
-pub const BRUSH_ACCESS: u32 = 0x000F_0000;
 
 /// What a brush paints. A pattern brush's pixels are held by value (a DC keeps a copy of its
 /// brush's fill: see the module notes), so the enum is as large as they are.
@@ -161,7 +157,7 @@ pub fn pat_blt_rect(x: i32, y: i32, width: i32, height: i32, origin: (i32, i32))
 
 /// NtGdiCreateSolidBrush(Color, Brush): a solid brush of `color`, its handle (the brush kind's,
 /// see the module notes) into `out`; STATUS_INSUFFICIENT_RESOURCES when the brushes' pool or the
-/// handle table is full.
+/// GDI table is full.
 pub fn create_solid_brush(call: &mut NtCall, color: u32, out: UserPtr<u32>) -> NtResult {
     create_brush(
         call,
@@ -176,7 +172,7 @@ pub fn create_solid_brush(call: &mut NtCall, color: u32, out: UserPtr<u32>) -> N
 /// A brush of state `brush` made, its handle (the brush kind's) into `out`.
 pub fn create_brush(call: &mut NtCall, brush: Brush, out: UserPtr<u32>) -> NtResult {
     let handle = publish_brush(call, brush)?;
-    if out.write(object_handle(OBJ_BRUSH, handle)).is_err() {
+    if out.write(handle).is_err() {
         close_brush(call, handle);
         return Err(STATUS_ACCESS_VIOLATION);
     }
@@ -217,7 +213,7 @@ pub fn pat_blt(
 /// STATUS_INVALID_HANDLE for one that names none.
 pub fn brush_of(call: &mut NtCall, handle: Handle) -> Result<Brush, NtStatus> {
     match object_of(handle.raw()) {
-        Some((OBJ_BRUSH, table)) => brush_object(call, Handle(table)),
+        Some((OBJ_BRUSH, _)) => brush_object(call, handle),
         _ => Err(STATUS_INVALID_HANDLE),
     }
 }
@@ -230,42 +226,35 @@ pub fn fill_of(call: &mut NtCall, handle: Handle) -> Result<Fill, NtStatus> {
         return Ok(Fill::of_global(brush));
     }
     match object_of(handle.raw()) {
-        Some((OBJ_BRUSH, table)) => brush_object(call, Handle(table)).map(|brush| brush.fill),
+        Some((OBJ_BRUSH, _)) => brush_object(call, handle).map(|brush| brush.fill),
         Some(_) => Err(STATUS_OBJECT_TYPE_MISMATCH),
         None if global_object_kind(handle.raw()).is_some() => Err(STATUS_OBJECT_TYPE_MISMATCH),
-        // A bare handle-table handle: a DC's, or nothing a brush may be.
+        // A handle with no kind bits: a DC's, or nothing a brush may be.
         None => Err(STATUS_INVALID_HANDLE),
     }
 }
 
 // --- The target's side: the objects --------------------------------------------------------------
 
-/// A brush of state `brush` made, its handle in the calling process (not inheritable);
-/// STATUS_INSUFFICIENT_RESOURCES when the brushes' pool or the handle table is full.
+/// A brush of state `brush` made, its GDI handle the calling process's ([`super::gdi`]);
+/// STATUS_INSUFFICIENT_RESOURCES when the brushes' pool or the GDI table is full.
 #[cfg(target_arch = "x86")]
-fn publish_brush(call: &mut NtCall, brush: Brush) -> Result<u32, NtStatus> {
+fn publish_brush(_call: &mut NtCall, brush: Brush) -> Result<u32, NtStatus> {
     let id = crate::ob::locked(|directory| directory.create_brush(brush))
         .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-    crate::ob::publish(call.process(), id, BRUSH_ACCESS, false)
-        .map(core::num::NonZeroU32::get)
-        .ok_or(STATUS_INSUFFICIENT_RESOURCES)
+    super::gdi::insert(id).ok_or(STATUS_INSUFFICIENT_RESOURCES)
 }
 
-/// Close the calling process's handle `handle` (one this service just made).
+/// Delete the calling process's brush `handle` (one this service just made).
 #[cfg(target_arch = "x86")]
-fn close_brush(call: &mut NtCall, handle: u32) {
-    call.process().close_handle(handle);
+fn close_brush(_call: &mut NtCall, handle: u32) {
+    super::gdi::delete(handle, OBJ_BRUSH);
 }
 
-/// The brush object the calling process's handle-table handle `handle` names (see
-/// [`fill_of`]).
+/// The brush object the calling process's brush handle `handle` names (see [`fill_of`]).
 #[cfg(target_arch = "x86")]
 fn brush_object(_call: &mut NtCall, handle: Handle) -> Result<Brush, NtStatus> {
-    let reference =
-        crate::ob::reference_by_handle(handle.raw(), None).ok_or(STATUS_INVALID_HANDLE)?;
-    if reference.id().kind != crate::ob::ObjectType::Brush {
-        return Err(STATUS_OBJECT_TYPE_MISMATCH);
-    }
+    let reference = super::gdi::reference(handle.raw(), OBJ_BRUSH).ok_or(STATUS_INVALID_HANDLE)?;
     crate::ob::locked(|directory| directory.brush(reference.id()).copied())
         .ok_or(STATUS_INVALID_HANDLE)
 }

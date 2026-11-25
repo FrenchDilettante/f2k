@@ -8,9 +8,10 @@
 //! hands the description to NtGdiCreateBitmap; gdi32's GetDIBits and SetDIBits read and write the
 //! pixels themselves, and the kernel reaches them through its fault-tolerant copies
 //! ([`UserBits`]) when a DC draws, always from a service of the owner process (a memory DC and its
-//! bitmaps are the process's own handles), and never holding the directory. Its creator's process
-//! holds it through a handle, as a brush is held ([`super::brush`]), the handle carrying the bitmap
-//! kind in its high word ([`rtl::gdi::object_handle`]). Beside the bitmap objects there is the
+//! bitmaps are the process's own objects), and never holding the directory. Its creator's process
+//! holds it through an entry of the GDI handle table ([`super::gdi`]), as a brush is held
+//! ([`super::brush`]), the handle carrying the bitmap kind in its high word
+//! ([`rtl::gdi::object_handle`]). Beside the bitmap objects there is the
 //! default bitmap ([`rtl::gdi::DEFAULT_BITMAP`]): the 1 by 1 monochrome bitmap every new memory DC
 //! holds, a global object with no memory (its pixel reads as 0 and takes no writes).
 //!
@@ -49,10 +50,6 @@ use super::dc::Dc;
 use super::raster::{screen_rgb, FormatKey, PatternBits, Surface};
 use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use crate::status::*;
-
-/// The access a bitmap's handle carries: STANDARD_RIGHTS_REQUIRED (a bitmap has no specific
-/// rights).
-pub const BITMAP_ACCESS: u32 = 0x000F_0000;
 
 /// A bitmap object's body: its description.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -290,7 +287,7 @@ pub fn create_bitmap(call: &mut NtCall, desc: UserAddr, out: UserPtr<u32>) -> Nt
         return Err(STATUS_INVALID_PARAMETER);
     }
     let handle = publish_bitmap(call, Bitmap { desc })?;
-    if out.write(object_handle(OBJ_BITMAP, handle)).is_err() {
+    if out.write(handle).is_err() {
         close_handle(call, handle);
         return Err(STATUS_ACCESS_VIOLATION);
     }
@@ -473,11 +470,7 @@ pub fn bitmap_of(
     if handle.raw() == DEFAULT_BITMAP {
         return Ok((None, BitmapDesc::DEFAULT));
     }
-    let Some((OBJ_BITMAP, table)) = object_of(handle.raw()) else {
-        return Err(STATUS_INVALID_HANDLE);
-    };
-    let reference = crate::ob::reference_by_handle(table, Some(crate::ob::ObjectType::Bitmap))
-        .ok_or(STATUS_INVALID_HANDLE)?;
+    let reference = super::gdi::reference(handle.raw(), OBJ_BITMAP).ok_or(STATUS_INVALID_HANDLE)?;
     let id = reference.id();
     let desc = crate::ob::locked(|directory| directory.bitmap(id).map(|bitmap| bitmap.desc))
         .ok_or(STATUS_INVALID_HANDLE)?;
@@ -502,36 +495,33 @@ fn selected_elsewhere(object: crate::ob::ObjectId, reference: &crate::ob::ObRef)
     crate::ob::locked(|directory| directory.bitmap_selected(object, Some(dc)))
 }
 
-/// A bitmap of state `bitmap` made, its handle in the calling process (not inheritable);
-/// STATUS_INSUFFICIENT_RESOURCES when the bitmaps' pool or the handle table is full.
+/// A bitmap of state `bitmap` made, its GDI handle the calling process's ([`super::gdi`]);
+/// STATUS_INSUFFICIENT_RESOURCES when the bitmaps' pool or the GDI table is full.
 #[cfg(target_arch = "x86")]
-fn publish_bitmap(call: &mut NtCall, bitmap: Bitmap) -> Result<u32, NtStatus> {
+fn publish_bitmap(_call: &mut NtCall, bitmap: Bitmap) -> Result<u32, NtStatus> {
     let id = crate::ob::locked(|directory| directory.create_bitmap(bitmap))
         .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-    crate::ob::publish(call.process(), id, BITMAP_ACCESS, false)
-        .map(core::num::NonZeroU32::get)
-        .ok_or(STATUS_INSUFFICIENT_RESOURCES)
+    super::gdi::insert(id).ok_or(STATUS_INSUFFICIENT_RESOURCES)
 }
 
-/// Close the calling process's handle `handle` (one this service just made).
+/// Delete the calling process's bitmap `handle` (one this service just made).
 #[cfg(target_arch = "x86")]
-fn close_handle(call: &mut NtCall, handle: u32) {
-    call.process().close_handle(handle);
+fn close_handle(_call: &mut NtCall, handle: u32) {
+    super::gdi::delete(handle, OBJ_BITMAP);
 }
 
-/// DeleteObject of a bitmap: the handle-table handle `table` closed; STATUS_INVALID_HANDLE for one
-/// that names no bitmap, STATUS_CANNOT_DELETE for a bitmap a DC holds (Windows 2000's DeleteObject
-/// fails then).
+/// DeleteObject of a bitmap: the calling process's bitmap `handle` deleted; STATUS_INVALID_HANDLE
+/// for one that names no bitmap, STATUS_CANNOT_DELETE for a bitmap a DC holds (Windows 2000's
+/// DeleteObject fails then).
 #[cfg(target_arch = "x86")]
-pub fn delete_bitmap(call: &mut NtCall, table: u32) -> Result<(), NtStatus> {
-    let reference = crate::ob::reference_by_handle(table, Some(crate::ob::ObjectType::Bitmap))
-        .ok_or(STATUS_INVALID_HANDLE)?;
+pub fn delete_bitmap(_call: &mut NtCall, handle: u32) -> Result<(), NtStatus> {
+    let reference = super::gdi::reference(handle, OBJ_BITMAP).ok_or(STATUS_INVALID_HANDLE)?;
     let id = reference.id();
     if crate::ob::locked(|directory| directory.bitmap_selected(id, None)) {
         return Err(STATUS_CANNOT_DELETE);
     }
     drop(reference);
-    if call.process().close_handle(table) {
+    if super::gdi::delete(handle, OBJ_BITMAP) {
         Ok(())
     } else {
         Err(STATUS_INVALID_HANDLE)

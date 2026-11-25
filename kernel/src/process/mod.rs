@@ -1264,8 +1264,9 @@ pub fn reap() {
 }
 
 /// Tear the ended `process` down, step 4 of its end (see the module notes): the parked gate stack
-/// goes, then its windows and window classes (see `crate::win32k::window`) and the fonts it loaded
-/// for itself alone (`crate::win32k::fonts`), then the object audit — its threads' records start
+/// goes, then its GDI objects (`crate::win32k::gdi`), its windows and window classes (see
+/// `crate::win32k::window`) and the fonts it loaded for itself alone (`crate::win32k::fonts`),
+/// then the object audit — its threads' records start
 /// over, and at a `quiescent` reap the leak sweep runs — then, step 5,
 /// the process is deleted if nothing beside its own reference holds its object (see
 /// [`delete_if_unreferenced`]); otherwise the last handle or reference to go deletes it. Nothing
@@ -1292,10 +1293,12 @@ fn teardown(process: &'static Process, quiescent: bool) {
     );
     // Per thread first: the parked gate stack (the last exit's, or a later exit's in another
     // process: whichever is parked, its owner off it for good, since this runs on the idle
-    // thread's boot stack). Then per process: its windows, window classes and private fonts, if
-    // it ever entered win32k; the audit, with the record still the process's; then the deletion,
-    // which may free it.
+    // thread's boot stack). Then per process: its GDI objects (they live in GDI's own table, not
+    // its handle table, so its handles' release left them); its windows, window classes and
+    // private fonts, if it ever entered win32k; the audit, with the record still the process's;
+    // then the deletion, which may free it.
     crate::mem::kstacks::release_parked();
+    crate::win32k::gdi::end_process(process.object().index);
     if process.win32k().is_some() {
         let owner = process.object().index;
         crate::win32k::queue::locked(|manager| manager.end_process(owner));
@@ -1395,6 +1398,8 @@ fn audit_objects(process: &Process, quiescent: bool) {
     // A window or window class of a process is one its end left behind (they are counted, not
     // swept: the window manager's records hold no frames).
     leaked += crate::win32k::window::locked(|manager| manager.process_records());
+    // So is a GDI table entry: every process's were freed at its end.
+    leaked += crate::win32k::gdi::live() as usize;
     if leaked != 0 {
         crate::serial_println!(
             "F2K: object audit FAILED: {} objects or file records outlived their process",

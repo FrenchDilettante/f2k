@@ -7,11 +7,11 @@
 //! lands on the screen; its clipping
 //! region, in screen coordinates, within the screen's extent when it was made (the framebuffer the
 //! graphics mode set, empty before it is); its text and background colors and background mode; the
-//! objects it has selected. Its creator's process holds it through a handle in its handle
-//! table, as every object is held, so a DC closes with its process's other handles at its end, and
-//! the teardown's leak sweep counts one left behind. (Windows 2000 keeps a DC in GDI's own handle
-//! table, its attributes in user-mode memory gdi32 reads; here its state is the kernel's, and every
-//! attribute gdi32 reads or writes is a service.)
+//! objects it has selected. Its creator's process holds it through an entry of the GDI handle
+//! table ([`super::gdi`]), as Windows 2000 keeps a DC in GDI's own handle table, so its handle
+//! names it in that process alone, and a DC goes with its process's other GDI objects at its end.
+//! (Windows 2000 keeps a DC's attributes in user-mode memory gdi32 reads; here its state is the
+//! kernel's, and every attribute gdi32 reads or writes is a service.)
 //!
 //! What the minimal subset serves:
 //!
@@ -89,9 +89,6 @@ use super::raster::{advanced, get_pixel_on, set_pixel_on, Surface, TextOut};
 use crate::hw::vbe::Framebuffer;
 use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use crate::status::*;
-
-/// The access a DC's handle carries: STANDARD_RIGHTS_REQUIRED (a DC has no specific rights).
-pub const DC_ACCESS: u32 = 0x000F_0000;
 
 /// The characters a text service copies from the caller at a time, through buffers on the stack.
 const CHUNK: usize = 64;
@@ -706,16 +703,15 @@ fn window_dc(call: &mut NtCall, window: Handle, whole: bool, out: UserPtr<u32>) 
 fn hand_out(call: &mut NtCall, dc: Dc, out: UserPtr<u32>) -> NtResult {
     let handle = publish_dc(call, dc)?;
     if out.write(handle).is_err() {
-        call.process().close_handle(handle);
+        super::gdi::delete(handle, super::gdi::DC_KIND);
         return Err(STATUS_ACCESS_VIOLATION);
     }
     Ok(STATUS_SUCCESS)
 }
 
 /// BeginPaint's DC: a DC of the window's client area `client` clipped to `clip` (both screen
-/// coordinates: `clip` the part of the client area its update region covers), its handle in the
-/// calling process (not inheritable); STATUS_INSUFFICIENT_RESOURCES when the DCs' pool or the
-/// handle table is full.
+/// coordinates: `clip` the part of the client area its update region covers), its handle the
+/// calling process's; STATUS_INSUFFICIENT_RESOURCES when the DCs' pool or the GDI table is full.
 #[cfg(target_arch = "x86")]
 pub(super) fn paint_dc(call: &mut NtCall, client: Rect, clip: Rect) -> Result<u32, NtStatus> {
     let (width, height) = screen_extent();
@@ -731,70 +727,43 @@ pub(super) fn release_paint_dc(call: &mut NtCall, handle: u32) -> Result<(), NtS
     close_dc(call, Handle(handle))
 }
 
-/// A DC of state `dc` made, its handle in the calling process (not inheritable);
-/// STATUS_INSUFFICIENT_RESOURCES when the DCs' pool or the handle table is full.
+/// A DC of state `dc` made, its GDI handle the calling process's ([`super::gdi`]);
+/// STATUS_INSUFFICIENT_RESOURCES when the DCs' pool or the GDI table is full.
 #[cfg(target_arch = "x86")]
-fn publish_dc(call: &mut NtCall, dc: Dc) -> Result<u32, NtStatus> {
+fn publish_dc(_call: &mut NtCall, dc: Dc) -> Result<u32, NtStatus> {
     let id = crate::ob::locked(|directory| directory.create_dc(dc))
         .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-    crate::ob::publish(call.process(), id, DC_ACCESS, false)
-        .map(core::num::NonZeroU32::get)
-        .ok_or(STATUS_INSUFFICIENT_RESOURCES)
+    super::gdi::insert(id).ok_or(STATUS_INSUFFICIENT_RESOURCES)
 }
 
-/// Close the calling process's handle `handle` when it names `kind`'s object;
-/// STATUS_INVALID_HANDLE otherwise. (The look-up and the close are one step: a service runs masked
-/// until its first wait, and neither waits.)
+/// Delete the calling process's DC `handle`; STATUS_INVALID_HANDLE when it names none.
 #[cfg(target_arch = "x86")]
-fn close_kind(
-    call: &mut NtCall,
-    handle: Handle,
-    kind: crate::ob::ObjectType,
-) -> Result<(), NtStatus> {
-    let process = call.process();
-    let is_kind = process
-        .lookup_handle(handle.raw())
-        .and_then(|entry| entry.object_id())
-        .is_some_and(|id| id.kind == kind);
-    if is_kind && process.close_handle(handle.raw()) {
+fn close_dc(_call: &mut NtCall, handle: Handle) -> Result<(), NtStatus> {
+    if super::gdi::delete(handle.raw(), super::gdi::DC_KIND) {
         Ok(())
     } else {
         Err(STATUS_INVALID_HANDLE)
     }
 }
 
-/// Close the calling process's handle `handle` when it names a DC; STATUS_INVALID_HANDLE
-/// otherwise.
-#[cfg(target_arch = "x86")]
-fn close_dc(call: &mut NtCall, handle: Handle) -> Result<(), NtStatus> {
-    close_kind(call, handle, crate::ob::ObjectType::Dc)
-}
-
-/// Close the calling process's handle when `handle` names a DC (its bare handle), a brush or a
-/// font (its handle-table handle under the kind's bits: [`rtl::gdi::object_of`]), DeleteObject's;
+/// Delete the calling process's object `handle` names, a DC (its handle has no kind bits), a
+/// brush, a font or a bitmap (its kind in its bits: [`rtl::gdi::object_of`]), DeleteObject's;
 /// STATUS_INVALID_HANDLE otherwise.
 #[cfg(target_arch = "x86")]
 fn close_object(call: &mut NtCall, handle: Handle) -> Result<(), NtStatus> {
     match object_of(handle.raw()) {
-        Some((OBJ_BRUSH, table)) => close_kind(call, Handle(table), crate::ob::ObjectType::Brush),
+        Some((OBJ_BRUSH, _)) if super::gdi::delete(handle.raw(), OBJ_BRUSH) => Ok(()),
         Some((OBJ_FONT, _)) => super::fonts::delete_font(call, handle),
-        Some((rtl::dib::OBJ_BITMAP, table)) => super::bitmap::delete_bitmap(call, table),
+        Some((rtl::dib::OBJ_BITMAP, _)) => super::bitmap::delete_bitmap(call, handle.raw()),
         Some(_) => Err(STATUS_INVALID_HANDLE),
         None => close_dc(call, handle),
     }
 }
 
-/// Whether `handle` is a global object's or an object's of the calling process (one with its
-/// kind's bits, or a DC's bare handle).
+/// Whether `handle` is a global object's or an object's of the calling process (any kind).
 #[cfg(target_arch = "x86")]
-fn names_object(call: &mut NtCall, handle: Handle) -> bool {
-    let table = object_of(handle.raw()).map_or(handle.raw(), |(_, table)| table);
-    global_object_kind(handle.raw()).is_some()
-        || call
-            .process()
-            .lookup_handle(table)
-            .and_then(|entry| entry.object_id())
-            .is_some()
+fn names_object(_call: &mut NtCall, handle: Handle) -> bool {
+    global_object_kind(handle.raw()).is_some() || super::gdi::names(handle.raw())
 }
 
 /// The DC `handle` names in the calling process, referenced for as long as the caller keeps the
@@ -804,8 +773,8 @@ pub(super) fn dc_of(
     _call: &mut NtCall,
     handle: Handle,
 ) -> Result<(crate::ob::ObRef, Dc), NtStatus> {
-    let reference = crate::ob::reference_by_handle(handle.raw(), Some(crate::ob::ObjectType::Dc))
-        .ok_or(STATUS_INVALID_HANDLE)?;
+    let reference =
+        super::gdi::reference(handle.raw(), super::gdi::DC_KIND).ok_or(STATUS_INVALID_HANDLE)?;
     let dc = crate::ob::locked(|directory| directory.dc(reference.id()).copied())
         .ok_or(STATUS_INVALID_HANDLE)?;
     Ok((reference, dc))
@@ -1050,7 +1019,11 @@ mod tests {
             "a pen is no brush"
         );
         assert_eq!(dc.select(OBJ_PAL, stock(DEFAULT_PALETTE)), None);
-        assert_eq!(dc.select(OBJ_BRUSH, 0x7C), None, "a handle table's handle");
+        assert_eq!(
+            dc.select(OBJ_BRUSH, 0x0102_007C),
+            None,
+            "a process object's handle"
+        );
         assert_eq!(dc, before);
     }
 }

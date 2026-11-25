@@ -663,11 +663,8 @@ fn work_area(call: &mut NtCall) -> Rect {
 
 /// Whether the calling process's `handle` names a DC.
 #[cfg(target_arch = "x86")]
-fn names_dc(call: &mut NtCall, handle: Handle) -> bool {
-    call.process()
-        .lookup_handle(handle.raw())
-        .and_then(|entry| entry.object_id())
-        .is_some_and(|id| id.kind == crate::ob::ObjectType::Dc)
+fn names_dc(_call: &mut NtCall, handle: Handle) -> bool {
+    super::gdi::object(handle.raw(), super::gdi::DC_KIND).is_some()
 }
 
 // The host builds have no window manager behind a lock and no processes: the work area is the
