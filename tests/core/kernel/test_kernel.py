@@ -307,6 +307,19 @@ EXITED_CLEAN = (
 )
 
 
+# The large-memory boots' programs: the memory fixture's sysinfo block (GlobalMemoryStatus) and
+# vmdemand's (the performance class against GlobalMemoryStatus), one after the other.
+MEMORY_PROGRAMS = ("CORPUS\\memory.exe sysinfo", "CORPUS\\vmdemand.exe sysinfo")
+MEMORY_SYSINFO = (
+    "GlobalMemoryStatus: length 32, total virtual 0x7FFE0000, physical at least 16 MiB yes",
+    "F2K: process 1 teardown audit: frame database ok",
+    "commit: limit pages == dwTotalPageFile/pages: yes, avail == (limit-committed): yes",
+    " <= 100: yes",
+    "F2K: process 2 teardown audit: frame database ok",
+    "F2K: process suite complete: 2 run, 0 faulted, 0 leaks",
+)
+
+
 @dataclass(frozen=True)
 class Case:
     name: str
@@ -330,12 +343,16 @@ class Case:
     # module the kernel's RAM disk reads; None, by default, the run's (F2K_STORAGE, "ram" unless
     # set). A Limine boot always reads the IDE disk.
     storage: str | None = None
+    # The guest memory, QEMU's -m ("512M"; None: the boot's default). A RAM-disk boot always has
+    # f2kboot.RAM_MEMORY, so a case declaring memory boots the IDE disk.
+    memory: str | None = None
 
     def __post_init__(self) -> None:
         assert self.image in ("kernel", "disk"), f"{self.name}: image is kernel or disk"
         assert self.expects and all(self.expects), f"{self.name}: expects is non-empty"
         assert self.storage in (None, *f2kboot.STORAGES), f"{self.name}: storage is one of {f2kboot.STORAGES}"
         assert self.image == "kernel" or self.storage != "ram", f"{self.name}: a Limine boot reads the IDE disk"
+        assert self.memory is None or self.storage == "ide", f"{self.name}: memory needs the IDE disk"
 
 
 def both_paths(name: str, description: str, **fields) -> tuple[Case, Case]:
@@ -715,6 +732,48 @@ CASES = (
             "F2K: user process exited normally (exit code=0)",
         ),
     ),
+    # Memory past the old 256 MiB ceiling: the frame database is sized from the memory map, one
+    # entry per frame up to the highest usable one, and the system information reports the
+    # machine's pages. The GlobalMemoryStatus and performance-class blocks of the memory and
+    # vmdemand fixtures run on it: the commit limit (RAM plus the 8 MiB paging file) and what remains
+    # of it come back whole in MEMORYSTATUS's DWORDs, the load in range. The frame counts are
+    # QEMU's i440FX map: RAM up to the firmware's last 128 KiB, conventional memory below 640 KiB.
+    Case(
+        name="memory-512m",
+        description="a 512 MiB boot sizes the frame database for all of it and GlobalMemoryStatus and the performance class answer for it",
+        image="kernel",
+        storage="ide",
+        memory="512M",
+        cmdline=" ;; ".join(MEMORY_PROGRAMS),
+        ordered=True,
+        expects=(
+            *BOOTED[:1],
+            "F2K: frame database: 131040 frames for 130942 physical pages (511 MiB)",
+            *BOOTED[1:],
+            "F2K: paging file: 2048 pages (8 MiB), commit limit 132990 pages",
+            *MEMORY_SYSINFO,
+        ),
+    ),
+    # Near 4 GiB: -m 4G puts 3 GiB below the PCI hole and the last gigabyte past 4 GiB, which a
+    # 32-bit physical address cannot reach and the boot leaves out. The pages and the commit limit
+    # pass the signed 2 GiB mark. One boot, so the suite holds at most one 4 GiB guest at a time.
+    Case(
+        name="memory-4g",
+        description="a 4 GiB boot sizes the frame database for the 3 GiB below the PCI hole, leaves the memory past 4 GiB out, and GlobalMemoryStatus and the performance class answer for it",
+        image="kernel",
+        storage="ide",
+        memory="4G",
+        cmdline=" ;; ".join(MEMORY_PROGRAMS),
+        ordered=True,
+        timeout=20.0,
+        expects=(
+            *BOOTED[:1],
+            "F2K: frame database: 786400 frames for 786302 physical pages (3071 MiB)",
+            *BOOTED[1:],
+            "F2K: paging file: 2048 pages (8 MiB), commit limit 788350 pages",
+            *MEMORY_SYSINFO,
+        ),
+    ),
     # Interrupt nesting: a disk interrupt held behind the keyboard's in service, let in by the
     # keyboard's end. The diagnostic holds the keyboard's line at the controller and asks for a
     # key, which the case presses; with interrupts masked the disk then completes a command
@@ -780,6 +839,7 @@ def test_kernel(case, builder, log_path, boot_timeout, write_profile):
         done=lambda log: expectation.check(log)[0] != "pending",
         during=KeyPress(case.press_on) if case.press_on else None,
         storage=case.storage,
+        **({"memory": case.memory} if case.memory is not None else {}),
     )
     write_profile(log, build)
     status, detail = expectation.check(log)

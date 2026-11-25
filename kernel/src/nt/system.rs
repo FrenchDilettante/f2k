@@ -373,6 +373,31 @@ mod tests {
         assert_eq!((processor[0], processor[2]), (0, 6), "an x86 of level 6");
     }
 
+    /// A machine of 3 GiB and more (QEMU's -m 4G: 3 GiB below the PCI hole, the rest past 4 GiB)
+    /// reports its pages and its highest page number as they are, past the signed 2 GiB mark: the
+    /// counts are pages, so nothing overflows below 4 GiB, nor in the performance class.
+    #[test]
+    fn large_memory_reports_its_pages_unclamped() {
+        let _serial = SERIAL.lock().unwrap();
+        let memory = MemoryNumbers {
+            pages: 0xBFEDF,
+            highest: 0xBFFDF,
+            available: 0xBC000,
+            limit: 0xC0EDF,
+            committed: 0x2000,
+        };
+        let basic = query(0, 44, memory).unwrap();
+        assert_eq!(
+            (word(&basic, 0x0C), word(&basic, 0x10), word(&basic, 0x14)),
+            (0xBFEDF, 1, 0xBFFDF)
+        );
+        let performance = query_performance(memory).unwrap();
+        assert_eq!(
+            (word(&performance, 0x2C), word(&performance, 0x34)),
+            (0xBC000, 0xC0EDF)
+        );
+    }
+
     /// The performance class carries the memory numbers: the available pages at 0x2C, the
     /// committed at 0x30, the commit limit at 0x34 and the peak commitment at 0x38, and it takes
     /// at least its structure's length.
