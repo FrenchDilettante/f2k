@@ -13,14 +13,17 @@ use crate::SystemTime;
 const INVALID_FILE_ATTRIBUTES: u32 = u32::MAX;
 /// CreateFileW's and FindFirstFileW's failure.
 const INVALID_HANDLE_VALUE: usize = usize::MAX;
-/// CreateFileW's access, sharing, dispositions and attributes for a file written.
-const GENERIC_WRITE: u32 = 0x4000_0000;
-const FILE_SHARE_READ: u32 = 1;
-const CREATE_ALWAYS: u32 = 2;
-const OPEN_ALWAYS: u32 = 4;
-const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
-/// SetFilePointer's origin: the file's end; and its failure.
-const FILE_END: u32 = 2;
+// CreateFileW's access, sharing, dispositions and attributes for a file written, and
+// SetFilePointer's origin: the file's end.
+use crate::fileapi::{
+    CREATE_ALWAYS,
+    FILE_ATTRIBUTE_NORMAL,
+    FILE_END,
+    FILE_SHARE_READ,
+    GENERIC_WRITE,
+    OPEN_ALWAYS,
+};
+/// SetFilePointer's failure.
 const INVALID_SET_FILE_POINTER: u32 = u32::MAX;
 /// MoveFileExW's flag: an existing file of the new name is replaced.
 const MOVEFILE_REPLACE_EXISTING: u32 = 1;

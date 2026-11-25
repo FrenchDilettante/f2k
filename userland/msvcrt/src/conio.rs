@@ -59,9 +59,9 @@ const ENHANCED_KEY: u32 = 0x0100;
 
 // CreateFileA's arguments for `CONIN$`: read and write access, shared both ways, the device as it
 // is.
+use rtl::file::OPEN_EXISTING;
+use rtl::file::{FILE_SHARE_READ, FILE_SHARE_WRITE};
 use rtl::nt::access::{GENERIC_READ, GENERIC_WRITE};
-const FILE_SHARE_READ_WRITE: u32 = 3;
-const OPEN_EXISTING: u32 = 3;
 
 /// The extended keys, by virtual-key code: the codes the PC BIOS gives each alone, with Shift,
 /// with Ctrl and with Alt.
@@ -131,7 +131,7 @@ impl Console {
             let opened = kernel32::create_file(
                 c"CONIN$",
                 GENERIC_READ | GENERIC_WRITE,
-                FILE_SHARE_READ_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
                 None,
                 OPEN_EXISTING,
                 0,

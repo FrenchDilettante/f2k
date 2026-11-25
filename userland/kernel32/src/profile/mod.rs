@@ -85,8 +85,8 @@ use crate::ntcall::{self, Destination, Source, Transfer};
 /// The UTF-16 byte-order mark a Unicode profile starts with.
 const BYTE_ORDER_MARK: [u8; 2] = [0xFF, 0xFE];
 
-/// A new file's attributes: FILE_ATTRIBUTE_NORMAL.
-const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
+// A new file's attributes: FILE_ATTRIBUTE_NORMAL.
+use rtl::file::FILE_ATTRIBUTE_NORMAL;
 
 /// win.ini, in the Windows directory.
 const WIN_INI: &[u16] = &[0x77, 0x69, 0x6E, 0x2E, 0x69, 0x6E, 0x69];

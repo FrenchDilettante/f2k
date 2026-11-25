@@ -615,10 +615,8 @@ pub type ObjectAttributes = rtl::nt::ObjectAttributes<u32, *const UnicodeString,
 // NtOpenFile's rights, sharing, options and attributes for reading a font file: FILE_READ_DATA
 // and SYNCHRONIZE, FILE_SHARE_READ, FILE_SYNCHRONOUS_IO_NONALERT and FILE_NON_DIRECTORY_FILE,
 // OBJ_CASE_INSENSITIVE.
+use rtl::file::{FILE_NON_DIRECTORY_FILE, FILE_SHARE_READ, FILE_SYNCHRONOUS_IO_NONALERT};
 use rtl::nt::access::{FILE_READ_DATA, SYNCHRONIZE};
-const FILE_SHARE_READ: u32 = 1;
-const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
-const FILE_NON_DIRECTORY_FILE: u32 = 0x40;
 const OBJ_CASE_INSENSITIVE: u32 = 0x40;
 
 /// SearchPathW: the full path of the file `name` (NUL-terminated) in the directory `directory`

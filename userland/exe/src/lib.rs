@@ -48,6 +48,8 @@ mod command;
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
 mod console;
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
+mod fileapi;
+#[cfg(all(target_arch = "x86", target_os = "windows"))]
 mod files;
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
 mod heap;

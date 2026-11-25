@@ -38,6 +38,7 @@ pub const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
 
 // The statuses the file calls tell apart.
 // The file access rights and the generic ones the calls ask for.
+pub use rtl::file::{FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE};
 pub use rtl::nt::access::{
     DELETE,
     FILE_LIST_DIRECTORY,
@@ -72,33 +73,32 @@ use rtl::winerror::{
     ERROR_NOT_ENOUGH_MEMORY,
     ERROR_PATH_NOT_FOUND,
 };
-
 /// The share modes.
-pub const FILE_SHARE_READ: u32 = 0x1;
-pub const FILE_SHARE_WRITE: u32 = 0x2;
-pub const FILE_SHARE_DELETE: u32 = 0x4;
 pub const FILE_SHARE_ALL: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
 
-/// The create options.
-pub const FILE_DIRECTORY_FILE: u32 = 0x1;
-pub const FILE_WRITE_THROUGH: u32 = 0x2;
-pub const FILE_SEQUENTIAL_ONLY: u32 = 0x4;
-pub const FILE_NO_INTERMEDIATE_BUFFERING: u32 = 0x8;
-pub const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
-pub const FILE_NON_DIRECTORY_FILE: u32 = 0x40;
-pub const FILE_RANDOM_ACCESS: u32 = 0x800;
-pub const FILE_DELETE_ON_CLOSE: u32 = 0x1000;
-pub const FILE_OPEN_FOR_BACKUP_INTENT: u32 = 0x4000;
-pub const FILE_OPEN_REPARSE_POINT: u32 = 0x20_0000;
-pub const FILE_OPEN_FOR_FREE_SPACE_QUERY: u32 = 0x80_0000;
-
-/// The dispositions, and what an open did (the I/O status's Information).
-pub const FILE_OPEN: u32 = 1;
-pub const FILE_CREATE: u32 = 2;
-pub const FILE_OPEN_IF: u32 = 3;
-pub const FILE_OVERWRITE_IF: u32 = 5;
-pub const FILE_OPENED: u32 = 1;
-pub const FILE_OVERWRITTEN: u32 = 3;
+// The create options.
+// The dispositions, and what an open did (the I/O status's Information).
+pub use rtl::file::{
+    FILE_CREATE,
+    FILE_OPEN,
+    FILE_OPENED,
+    FILE_OPEN_IF,
+    FILE_OVERWRITE_IF,
+    FILE_OVERWRITTEN,
+};
+pub use rtl::file::{
+    FILE_DELETE_ON_CLOSE,
+    FILE_DIRECTORY_FILE,
+    FILE_NON_DIRECTORY_FILE,
+    FILE_NO_INTERMEDIATE_BUFFERING,
+    FILE_OPEN_FOR_BACKUP_INTENT,
+    FILE_OPEN_FOR_FREE_SPACE_QUERY,
+    FILE_OPEN_REPARSE_POINT,
+    FILE_RANDOM_ACCESS,
+    FILE_SEQUENTIAL_ONLY,
+    FILE_SYNCHRONOUS_IO_NONALERT,
+    FILE_WRITE_THROUGH,
+};
 
 /// The information classes the calls ask.
 pub const FILE_BASIC_INFORMATION: u32 = 4;

@@ -91,35 +91,31 @@ pub const S_IWRITE: i32 = 0x0080;
 
 // CreateFileA's values `_open` asks with: the access, the sharing (`_SH_DENYNO`: both ways), the
 // dispositions and the attributes.
+use rtl::file::{
+    CREATE_ALWAYS,
+    CREATE_NEW,
+    FILE_ATTRIBUTE_NORMAL,
+    FILE_ATTRIBUTE_READONLY,
+    FILE_ATTRIBUTE_TEMPORARY,
+    FILE_FLAG_DELETE_ON_CLOSE,
+    FILE_FLAG_RANDOM_ACCESS,
+    FILE_FLAG_SEQUENTIAL_SCAN,
+    OPEN_ALWAYS,
+    OPEN_EXISTING,
+    TRUNCATE_EXISTING,
+};
+use rtl::file::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+// GetFileType's answers.
+use rtl::file::{FILE_TYPE_CHAR, FILE_TYPE_PIPE, FILE_TYPE_UNKNOWN};
 use rtl::nt::access::{DELETE, GENERIC_READ, GENERIC_WRITE};
-const FILE_SHARE_READ_WRITE: u32 = 0x3;
-const CREATE_NEW: u32 = 1;
-const CREATE_ALWAYS: u32 = 2;
-const OPEN_EXISTING: u32 = 3;
-const OPEN_ALWAYS: u32 = 4;
-const TRUNCATE_EXISTING: u32 = 5;
-const FILE_ATTRIBUTE_READONLY: u32 = 0x01;
-const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
-const FILE_ATTRIBUTE_TEMPORARY: u32 = 0x100;
-const FILE_FLAG_DELETE_ON_CLOSE: u32 = 0x0400_0000;
-const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
-const FILE_FLAG_RANDOM_ACCESS: u32 = 0x1000_0000;
-
-/// GetFileType's answers.
-const FILE_TYPE_UNKNOWN: u32 = 0;
-const FILE_TYPE_CHAR: u32 = 2;
-const FILE_TYPE_PIPE: u32 = 3;
 
 /// The standard handles' ids, descriptors 0 to 2's.
 const STANDARD: [u32; 3] = [-10i32 as u32, -11i32 as u32, -12i32 as u32];
 
 // Win32 errors the layer tells apart.
+// SetFilePointer's origins.
+use rtl::file::{FILE_BEGIN, FILE_CURRENT, FILE_END};
 use rtl::winerror::{ERROR_ACCESS_DENIED, ERROR_BROKEN_PIPE, ERROR_NEGATIVE_SEEK};
-
-/// SetFilePointer's origins.
-const FILE_BEGIN: u32 = 0;
-const FILE_CURRENT: u32 = 1;
-const FILE_END: u32 = 2;
 
 /// Ctrl-Z: a text file's end.
 const CTRL_Z: u8 = 0x1A;
@@ -707,7 +703,7 @@ pub unsafe extern "C" fn open_file(name: *const u8, oflag: i32, pmode: i32) -> i
     let opened = kernel32::create_file(
         name,
         plan.access,
-        FILE_SHARE_READ_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
         Some(&security),
         plan.disposition,
         plan.attributes,

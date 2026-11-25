@@ -5,6 +5,8 @@
 //! once the target exists takes the target back (its delete). A target that is the source, under
 //! any spelling, is refused by the sharing (ERROR_SHARING_VIOLATION).
 
+// CreateFileA's dispositions and the flag the copy opens its files with.
+use rtl::file::{CREATE_ALWAYS, CREATE_NEW, FILE_FLAG_SEQUENTIAL_SCAN, OPEN_EXISTING};
 use rtl::status::nt_success;
 
 use super::handle::create_file_w;
@@ -14,12 +16,6 @@ use crate::error::bool_answer;
 use crate::heap::HeapArray;
 use crate::nt::IoStatus;
 use crate::ntcall::{Destination, Source, Transfer};
-
-/// CreateFileA's dispositions and the flag the copy opens its files with.
-const CREATE_NEW: u32 = 1;
-const CREATE_ALWAYS: u32 = 2;
-const OPEN_EXISTING: u32 = 3;
-const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
 
 /// The buffer the bytes move through.
 const COPY_CHUNK: usize = 0x1_0000;

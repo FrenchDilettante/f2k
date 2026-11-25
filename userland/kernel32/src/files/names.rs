@@ -5,15 +5,14 @@
 //! — as Windows 2000's kernel32 makes them, each in its W form's work with the A and W exports
 //! over it.
 
+use rtl::file::{FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_VALID_SET_FLAGS};
+
 use super::find::{find_first_w, FindDataW};
 use super::*;
 use crate::edge::{Fit, OutBuf, Text};
 use crate::error::{answer, bool_answer};
-
 /// The attributes SetFileAttributes may set (FILE_ATTRIBUTE_VALID_SET_FLAGS), and the one it adds
 /// so that none still names a change.
-const FILE_ATTRIBUTE_VALID_SET_FLAGS: u32 = 0x31A7;
-const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
 const INVALID_FILE_ATTRIBUTES: u32 = 0xFFFF_FFFF;
 
 /// A name's NT path; ERROR_PATH_NOT_FOUND when ntdll cannot make it.

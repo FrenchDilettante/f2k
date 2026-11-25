@@ -51,10 +51,9 @@ const CHUNK: usize = 512;
 /// 2000's NPFS completes a waiting request with.
 const WAKE_INCREMENT: i8 = 2;
 
-/// The share access bits a server's create reads its pipe's configuration from: a client may write
-/// (the inbound direction) when FILE_SHARE_WRITE is given, read (outbound) when FILE_SHARE_READ is.
-const FILE_SHARE_READ: u32 = 1;
-const FILE_SHARE_WRITE: u32 = 2;
+// The share access bits a server's create reads its pipe's configuration from: a client may write
+// (the inbound direction) when FILE_SHARE_WRITE is given, read (outbound) when FILE_SHARE_READ is.
+use rtl::file::{FILE_SHARE_READ, FILE_SHARE_WRITE};
 
 /// One end of a pipe instance, as the file object open on it names it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

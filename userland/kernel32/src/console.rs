@@ -493,10 +493,9 @@ fn screen_buffer_info(console: u32, mut info: OutBuf<'_, u8>) -> u32 {
     1
 }
 
+use rtl::file::{FILE_SHARE_READ, FILE_SHARE_WRITE};
 /// The access and share bits a console handle takes, and CreateConsoleScreenBuffer's one kind of
 /// buffer F2K makes.
-const FILE_SHARE_READ: u32 = 0x1;
-const FILE_SHARE_WRITE: u32 = 0x2;
 const CONSOLE_TEXTMODE_BUFFER: u32 = rtl::console::CONSOLE_TEXTMODE_BUFFER;
 
 /// CreateConsoleScreenBuffer: a new screen buffer of the console, inactive (the console window's

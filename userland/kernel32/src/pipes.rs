@@ -16,23 +16,20 @@ use crate::ntcall::{self, NamedPipe};
 /// (0x120116).
 const READ_END_ACCESS: u32 = GENERIC_READ | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE;
 const WRITE_END_ACCESS: u32 = GENERIC_WRITE | SYNCHRONIZE;
+// The dispositions and options: the read end made (FILE_CREATE), the write end opened, both
+// for synchronous I/O, the write end no directory.
+use rtl::file::{FILE_CREATE, FILE_NON_DIRECTORY_FILE, FILE_SYNCHRONOUS_IO_NONALERT};
+// A byte-stream pipe, read as bytes, its calls queued (waiting): FILE_PIPE_BYTE_STREAM_TYPE,
+// FILE_PIPE_BYTE_STREAM_MODE, FILE_PIPE_QUEUE_OPERATION; one instance.
+use rtl::file::{
+    FILE_PIPE_BYTE_STREAM_MODE,
+    FILE_PIPE_BYTE_STREAM_TYPE,
+    FILE_PIPE_QUEUE_OPERATION,
+};
+// The share access: the pipe goes both ways (FILE_SHARE_READ and FILE_SHARE_WRITE make its
+// configuration); the write end shares reading.
+use rtl::file::{FILE_SHARE_READ, FILE_SHARE_WRITE};
 use rtl::nt::access::{FILE_WRITE_ATTRIBUTES, GENERIC_READ, GENERIC_WRITE, SYNCHRONIZE};
-
-/// The share access: the pipe goes both ways (FILE_SHARE_READ and FILE_SHARE_WRITE make its
-/// configuration); the write end shares reading.
-const FILE_SHARE_READ: u32 = 1;
-const FILE_SHARE_WRITE: u32 = 2;
-
-/// The dispositions and options: the read end made (FILE_CREATE), the write end opened, both for
-/// synchronous I/O, the write end no directory.
-const FILE_CREATE: u32 = 2;
-const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
-const FILE_NON_DIRECTORY_FILE: u32 = 0x40;
-
-/// A byte-stream pipe, read as bytes, its calls queued (waiting): FILE_PIPE_BYTE_STREAM_TYPE,
-/// FILE_PIPE_BYTE_STREAM_MODE, FILE_PIPE_QUEUE_OPERATION; one instance.
-const FILE_PIPE_BYTE_STREAM: u32 = 0;
-const FILE_PIPE_QUEUE_OPERATION: u32 = 0;
 
 /// The default timeout a client's wait for the pipe would take: 120 seconds, relative.
 const DEFAULT_TIMEOUT: i64 = -120 * 10_000_000;
@@ -119,8 +116,8 @@ fn make_pipe(
         security_quality_of_service: core::ptr::null(),
     };
     let pipe = NamedPipe {
-        pipe_type: FILE_PIPE_BYTE_STREAM,
-        read_mode: FILE_PIPE_BYTE_STREAM,
+        pipe_type: FILE_PIPE_BYTE_STREAM_TYPE,
+        read_mode: FILE_PIPE_BYTE_STREAM_MODE,
         completion_mode: FILE_PIPE_QUEUE_OPERATION,
         maximum_instances: 1,
         inbound_quota: size,

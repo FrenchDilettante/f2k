@@ -5,6 +5,8 @@
 //! the file).
 
 use rtl::array_vec::ArrayVec;
+// CreateFile's CREATE_NEW, and the attributes the file is made with.
+use rtl::file::{CREATE_NEW, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL};
 // ERROR_BUFFER_OVERFLOW: a temporary file's name past MAX_PATH.
 // ERROR_DIRECTORY: GetTempFileName's path is not an existing directory.
 use rtl::winerror::{ERROR_BUFFER_OVERFLOW, ERROR_DIRECTORY};
@@ -15,10 +17,6 @@ use super::*;
 use crate::base::unicode_string;
 use crate::edge::{OutBuf, Text};
 use crate::error::answer;
-/// CreateFile's CREATE_NEW, and the attributes the file is made with.
-const CREATE_NEW: u32 = 1;
-const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
-const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
 
 const BACKSLASH: u16 = b'\\' as u16;
 

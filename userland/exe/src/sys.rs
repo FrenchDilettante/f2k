@@ -36,22 +36,24 @@ use crate::winerror::{
 /// The control events a console handler is called with for Ctrl+C and Ctrl+Break.
 const CTRL_C_EVENT: u32 = 0;
 const CTRL_BREAK_EVENT: u32 = 1;
-/// GetFileAttributesW's failure, and a directory's attribute.
+// A directory's attribute; CreateFileW's access, sharing, disposition and attributes for a file
+// read as it is; its access and dispositions for a redirection's file: written, made anew (or
+// emptied), made when missing (or kept); SetFilePointer's origin at the file's end.
+use crate::fileapi::{
+    CREATE_ALWAYS,
+    FILE_ATTRIBUTE_DIRECTORY,
+    FILE_ATTRIBUTE_NORMAL,
+    FILE_END,
+    FILE_SHARE_READ,
+    FILE_SHARE_WRITE,
+    GENERIC_READ,
+    GENERIC_WRITE,
+    OPEN_ALWAYS,
+    OPEN_EXISTING,
+};
+/// GetFileAttributesW's failure.
 const INVALID_FILE_ATTRIBUTES: u32 = u32::MAX;
-const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
-/// CreateFileW's access, sharing, disposition and attributes for a file read as it is.
-const GENERIC_READ: u32 = 0x8000_0000;
-const FILE_SHARE_READ: u32 = 1;
-const FILE_SHARE_WRITE: u32 = 2;
-const OPEN_EXISTING: u32 = 3;
-const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
-/// CreateFileW's access and dispositions for a redirection's file: written, made anew (or emptied),
-/// made when missing (or kept).
-const GENERIC_WRITE: u32 = 0x4000_0000;
-const CREATE_ALWAYS: u32 = 2;
-const OPEN_ALWAYS: u32 = 4;
-/// SetFilePointer's origin at the file's end, and its failure.
-const FILE_END: u32 = 2;
+/// SetFilePointer's failure.
 const INVALID_SET_FILE_POINTER: u32 = u32::MAX;
 /// DuplicateHandle's option: the new handle has the source's access.
 const DUPLICATE_SAME_ACCESS: u32 = 2;

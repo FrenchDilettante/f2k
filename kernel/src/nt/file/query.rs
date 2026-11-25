@@ -10,6 +10,8 @@
 //! acts on the file as its record holds it, every change written to its entry inside the volume's
 //! locked section.
 
+// FileModeInformation's synchronous-I/O mode.
+use rtl::file::FILE_SYNCHRONOUS_IO_NONALERT;
 use rtl::nt::info::{
     FileAllInformation,
     FileAllocationInformation,
@@ -50,9 +52,6 @@ use crate::fs::io::{self, times_at};
 use crate::fs::pipes::{self, PipeEnd};
 use crate::ob::Referenced;
 use crate::status::*;
-
-/// FileModeInformation's synchronous-I/O mode.
-const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
 
 /// NtQueryInformationFile: one of the classes [`info::query`] answers, of the open file.
 fn query_information_file_held(

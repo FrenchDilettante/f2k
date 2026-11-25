@@ -196,8 +196,8 @@ pub fn answered(answer: Result<usize, usize>) -> (NtStatus, usize) {
     }
 }
 
-/// FILE_DEVICE_DISK: the volume's device type.
-pub const FILE_DEVICE_DISK: u32 = 7;
+// FILE_DEVICE_DISK: the volume's device type.
+pub use crate::dev::ntddk::FILE_DEVICE_DISK;
 /// FILE_DEVICE_NAMED_PIPE: the named-pipe file system's device type (kernel32's GetFileType makes
 /// it FILE_TYPE_PIPE).
 pub const FILE_DEVICE_NAMED_PIPE: u32 = 0x11;

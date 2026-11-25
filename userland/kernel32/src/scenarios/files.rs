@@ -1093,8 +1093,7 @@ fn stand_in_attributes(attributes: u32) {
     FILE.with(|file| file.borrow_mut().attributes = attributes);
 }
 
-const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
-const FILE_ATTRIBUTE_ARCHIVE: u32 = 0x20;
+use rtl::file::{FILE_ATTRIBUTE_ARCHIVE, FILE_ATTRIBUTE_DIRECTORY};
 
 /// GetTempFileName with a number of the caller's, as the utility fixture's capture shows it:
 /// `<path>\<three prefix characters><its low 16 bits in uppercase hexadecimal>.tmp`, no backslash
@@ -1218,13 +1217,13 @@ fn created() -> Vec<(String, u32)> {
 /// Pins: kernel32.GetTempFileNameA, kernel32.GetTempFileNameW
 #[test]
 fn a_self_numbered_temporary_file_name_makes_the_file() {
+    use rtl::file::FILE_CREATE;
+    use rtl::status::{STATUS_ACCESS_DENIED, STATUS_OBJECT_NAME_COLLISION};
+
     use crate::files::temp::{get_temp_file_name_a, get_temp_file_name_w};
     use crate::nt::files::FAIL_AFTER;
     use crate::nt::host::CLOSED;
     use crate::shared::{self, host};
-
-    const FILE_CREATE: u32 = 2;
-    use rtl::status::{STATUS_ACCESS_DENIED, STATUS_OBJECT_NAME_COLLISION};
     host::set(shared::TICK_COUNT_MULTIPLIER, 0x0100_0000);
     host::set(shared::TICK_COUNT_LOW, 0x3_0ABC);
     stand_in_attributes(FILE_ATTRIBUTE_DIRECTORY);

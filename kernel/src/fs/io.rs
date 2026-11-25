@@ -17,8 +17,8 @@ use super::fat32::lookup::File;
 pub const ATTRIBUTE_ARCHIVE: u8 = 0x20;
 pub const SETTABLE_ATTRIBUTES: u8 = 0x27;
 
-/// FILE_ATTRIBUTE_NORMAL: a file with no other attribute.
-pub const FILE_ATTRIBUTE_NORMAL: u32 = 0x80;
+// FILE_ATTRIBUTE_NORMAL: a file with no other attribute.
+pub use rtl::file::FILE_ATTRIBUTE_NORMAL;
 /// The stored attribute bits reported as they are (read-only, hidden, system, directory, archive).
 const REPORTED_ATTRIBUTES: u8 = 0x37;
 

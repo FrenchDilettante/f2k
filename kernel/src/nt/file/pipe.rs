@@ -7,6 +7,8 @@
 //! non-blocking one, a second instance of a name, and the file system controls other than the peek
 //! are the stub path (STATUS_NOT_IMPLEMENTED).
 
+use rtl::file::FILE_SHARE_DELETE;
+
 use super::super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use super::common::{complete, completion_event, deliver, file_object, named, signal, Named};
 use super::{
@@ -16,7 +18,6 @@ use super::{
     control_rights,
     FILE_CREATE,
     FILE_OPEN,
-    FILE_SHARE_DELETE,
     FILE_SYNCHRONOUS_IO_ALERT,
     FILE_SYNCHRONOUS_IO_NONALERT,
 };

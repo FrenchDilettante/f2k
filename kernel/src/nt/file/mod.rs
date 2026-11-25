@@ -100,26 +100,21 @@ fn sets_own_event(event_named: bool, synchronous: bool) -> bool {
     !event_named || synchronous
 }
 
-/// The dispositions.
-#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
-const FILE_SUPERSEDE: u32 = 0;
-const FILE_OPEN: u32 = 1;
-const FILE_CREATE: u32 = 2;
-const FILE_OPEN_IF: u32 = 3;
-#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
-const FILE_OVERWRITE: u32 = 4;
-const FILE_OVERWRITE_IF: u32 = 5;
-
-/// The create options F2K reads, and every one the platform defines.
-const FILE_DIRECTORY_FILE: u32 = 0x1;
-const FILE_SYNCHRONOUS_IO_ALERT: u32 = 0x10;
-const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
-const FILE_NON_DIRECTORY_FILE: u32 = 0x40;
-const FILE_DELETE_ON_CLOSE: u32 = 0x1000;
-const FILE_VALID_OPTION_FLAGS: u32 = 0x00FF_FFFF;
-/// The attributes a create may carry (FILE_ATTRIBUTE_VALID_FLAGS), and the share modes' bits.
-const FILE_ATTRIBUTE_VALID_FLAGS: u32 = 0x7FB7;
-const FILE_SHARE_VALID_FLAGS: u32 = 0x7;
+// The dispositions.
+// The attributes a create may carry (FILE_ATTRIBUTE_VALID_FLAGS), and the share modes' bits.
+use rtl::file::{FILE_ATTRIBUTE_VALID_FLAGS, FILE_SHARE_VALID_FLAGS};
+use rtl::file::{FILE_CREATE, FILE_OPEN, FILE_OPEN_IF, FILE_OVERWRITE_IF};
+// The create options F2K reads, and every one the platform defines.
+use rtl::file::{
+    FILE_DELETE_ON_CLOSE,
+    FILE_DIRECTORY_FILE,
+    FILE_NON_DIRECTORY_FILE,
+    FILE_SYNCHRONOUS_IO_ALERT,
+    FILE_SYNCHRONOUS_IO_NONALERT,
+    FILE_VALID_OPTION_FLAGS,
+};
+#[cfg_attr(not(target_arch = "x86"), allow(unused_imports))]
+use rtl::file::{FILE_OVERWRITE, FILE_SUPERSEDE};
 
 /// The I/O manager's checks of a create (IoCreateFile), before any name is read: a disposition or
 /// an option, attribute or share bit the platform does not define, both synchronous modes, a
@@ -151,11 +146,8 @@ fn check_arguments(
     Ok(())
 }
 
-/// The IO_STATUS_BLOCK's Information an open answers with.
-const FILE_SUPERSEDED: u32 = 0;
-const FILE_OPENED: u32 = 1;
-const FILE_CREATED: u32 = 2;
-const FILE_OVERWRITTEN: u32 = 3;
+// The IO_STATUS_BLOCK's Information an open answers with.
+use rtl::file::{FILE_CREATED, FILE_OPENED, FILE_OVERWRITTEN, FILE_SUPERSEDED};
 
 /// What the caller asks of a disk file's open.
 #[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
@@ -670,21 +662,21 @@ fn expression_length(length: u16) -> Result<usize, crate::status::NtStatus> {
     Ok(count)
 }
 
-/// The create options a server's create takes (FILE_VALID_PIPE_OPTION_FLAGS, wdm.h): the
-/// synchronous modes and write-through.
-const FILE_VALID_PIPE_OPTION_FLAGS: u32 = 0x32;
-
-/// The share bits: FILE_SHARE_READ and FILE_SHARE_WRITE make a pipe's configuration;
-/// FILE_SHARE_DELETE no pipe takes.
-const FILE_SHARE_READ_WRITE: u32 = 3;
-const FILE_SHARE_DELETE: u32 = 4;
-
-/// The pipe types, read modes and completion modes (ntifs.h's FILE_PIPE_*): byte streams that wait
-/// are served, messages and non-blocking calls are the stub path.
-const FILE_PIPE_BYTE_STREAM: u32 = 0;
-const FILE_PIPE_MESSAGE: u32 = 1;
-const FILE_PIPE_QUEUE_OPERATION: u32 = 0;
-const FILE_PIPE_COMPLETE_OPERATION: u32 = 1;
+// The create options a server's create takes (FILE_VALID_PIPE_OPTION_FLAGS, wdm.h): the
+// synchronous modes and write-through.
+use rtl::file::FILE_VALID_PIPE_OPTION_FLAGS;
+// The pipe types, read modes and completion modes (ntifs.h's FILE_PIPE_*): byte streams that
+// wait are served, messages and non-blocking calls are the stub path.
+use rtl::file::{
+    FILE_PIPE_BYTE_STREAM_TYPE,
+    FILE_PIPE_COMPLETE_OPERATION,
+    FILE_PIPE_MESSAGE_MODE,
+    FILE_PIPE_MESSAGE_TYPE,
+    FILE_PIPE_QUEUE_OPERATION,
+};
+// The share bits: FILE_SHARE_READ and FILE_SHARE_WRITE make a pipe's configuration;
+// FILE_SHARE_DELETE no pipe takes.
+use rtl::file::{FILE_SHARE_READ, FILE_SHARE_WRITE};
 
 /// NtCreateNamedPipeFile's checks, before its name: each STATUS_INVALID_PARAMETER — a pipe type,
 /// read mode or completion mode (`modes`) past the defined ones, FILE_SHARE_DELETE or no share at
@@ -704,21 +696,21 @@ fn check_pipe_arguments(
     use crate::fs::file::rights;
     use crate::status::{STATUS_INVALID_PARAMETER, STATUS_NOT_IMPLEMENTED};
     let both = FILE_SYNCHRONOUS_IO_ALERT | FILE_SYNCHRONOUS_IO_NONALERT;
-    let invalid = pipe_type > FILE_PIPE_MESSAGE
-        || read_mode > FILE_PIPE_MESSAGE
+    let invalid = pipe_type > FILE_PIPE_MESSAGE_TYPE
+        || read_mode > FILE_PIPE_MESSAGE_MODE
         || completion_mode > FILE_PIPE_COMPLETE_OPERATION
-        || share & !FILE_SHARE_READ_WRITE != 0
+        || share & !(FILE_SHARE_READ | FILE_SHARE_WRITE) != 0
         || share == 0
         || !matches!(disposition, FILE_CREATE | FILE_OPEN | FILE_OPEN_IF)
         || options & !FILE_VALID_PIPE_OPTION_FLAGS != 0
         || options & both == both
         || (options & both != 0 && access & rights::SYNCHRONIZE == 0)
         || max_instances == 0
-        || (pipe_type == FILE_PIPE_BYTE_STREAM && read_mode == FILE_PIPE_MESSAGE);
+        || (pipe_type == FILE_PIPE_BYTE_STREAM_TYPE && read_mode == FILE_PIPE_MESSAGE_MODE);
     if invalid {
         return Err(STATUS_INVALID_PARAMETER);
     }
-    if pipe_type != FILE_PIPE_BYTE_STREAM || completion_mode != FILE_PIPE_QUEUE_OPERATION {
+    if pipe_type != FILE_PIPE_BYTE_STREAM_TYPE || completion_mode != FILE_PIPE_QUEUE_OPERATION {
         return Err(STATUS_NOT_IMPLEMENTED);
     }
     Ok(())
@@ -1730,12 +1722,14 @@ mod tests {
     /// pipe's STATUS_NOT_IMPLEMENTED.
     #[test]
     fn a_pipe_server_s_arguments() {
+        use rtl::file::FILE_PIPE_BYTE_STREAM_MODE;
+
         use crate::fs::file::rights::{FILE_READ_DATA, SYNCHRONIZE};
         use crate::status::*;
         let access = FILE_READ_DATA | SYNCHRONIZE;
         let byte = (
-            FILE_PIPE_BYTE_STREAM,
-            FILE_PIPE_BYTE_STREAM,
+            FILE_PIPE_BYTE_STREAM_TYPE,
+            FILE_PIPE_BYTE_STREAM_MODE,
             FILE_PIPE_QUEUE_OPERATION,
         );
         let check = |access, share, disposition, options, modes, instances| {

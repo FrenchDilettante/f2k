@@ -473,7 +473,7 @@ fn waits_on_console_handles_wait_for_input() {
 /// Pins: kernel32.CreateFileA
 #[test]
 fn create_file_opens_the_console_by_name() {
-    const OPEN_EXISTING: u32 = 3;
+    use rtl::file::OPEN_EXISTING;
     const READ_WRITE: u32 = 0xC000_0000;
     crate::base::set_last_error(0xBEEF);
     // SAFETY: NUL-terminated names, no security attributes.

@@ -303,7 +303,7 @@ fn full_path(name: &Wide) -> Option<Wide> {
 #[inline(never)]
 fn directory(name: &[u16]) -> Result<Wide, Failure> {
     const INVALID_FILE_ATTRIBUTES: u32 = 0xFFFF_FFFF;
-    const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
+    use rtl::file::FILE_ATTRIBUTE_DIRECTORY;
     let full = Wide::of(name)
         .and_then(|name| full_path(&name))
         .ok_or(Failure::Error(ERROR_DIRECTORY))?;

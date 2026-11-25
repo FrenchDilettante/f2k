@@ -6,6 +6,24 @@
 
 use core::mem::offset_of;
 
+// CreateFileA's dispositions.
+use rtl::file::{CREATE_ALWAYS, CREATE_NEW, OPEN_ALWAYS, OPEN_EXISTING, TRUNCATE_EXISTING};
+// The attribute bits a create carries (FILE_ATTRIBUTE_VALID_FLAGS), the directory bit aside.
+use rtl::file::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_VALID_FLAGS};
+use rtl::file::{FILE_BEGIN, FILE_CURRENT, FILE_END};
+// CreateFileA's flags.
+use rtl::file::{
+    FILE_FLAG_BACKUP_SEMANTICS,
+    FILE_FLAG_DELETE_ON_CLOSE,
+    FILE_FLAG_NO_BUFFERING,
+    FILE_FLAG_OVERLAPPED,
+    FILE_FLAG_POSIX_SEMANTICS,
+    FILE_FLAG_RANDOM_ACCESS,
+    FILE_FLAG_SEQUENTIAL_SCAN,
+    FILE_FLAG_WRITE_THROUGH,
+};
+// GetFileType's answers.
+use rtl::file::{FILE_TYPE_CHAR, FILE_TYPE_DISK, FILE_TYPE_PIPE, FILE_TYPE_UNKNOWN};
 use rtl::status::nt_success;
 
 use super::*;
@@ -15,37 +33,7 @@ use crate::edge::{InBuf, OutBuf};
 use crate::error::{answer, bool_answer};
 use crate::nt::IoStatus;
 use crate::ntcall::{Destination, Source, Transfer};
-
-/// CreateFileA's dispositions.
-const CREATE_NEW: u32 = 1;
-const CREATE_ALWAYS: u32 = 2;
-const OPEN_EXISTING: u32 = 3;
-const OPEN_ALWAYS: u32 = 4;
-const TRUNCATE_EXISTING: u32 = 5;
-
-/// CreateFileA's flags.
-const FILE_FLAG_WRITE_THROUGH: u32 = 0x8000_0000;
-const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
-const FILE_FLAG_NO_BUFFERING: u32 = 0x2000_0000;
-const FILE_FLAG_RANDOM_ACCESS: u32 = 0x1000_0000;
-const FILE_FLAG_SEQUENTIAL_SCAN: u32 = 0x0800_0000;
-const FILE_FLAG_DELETE_ON_CLOSE: u32 = 0x0400_0000;
-const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
-const FILE_FLAG_POSIX_SEMANTICS: u32 = 0x0100_0000;
-/// The attribute bits a create carries (FILE_ATTRIBUTE_VALID_FLAGS), the directory bit aside.
-const FILE_ATTRIBUTE_VALID_FLAGS: u32 = 0x7FB7;
-const FILE_ATTRIBUTE_DIRECTORY: u32 = 0x10;
-
-/// GetFileType's answers.
-const FILE_TYPE_UNKNOWN: u32 = 0;
-const FILE_TYPE_DISK: u32 = 1;
-const FILE_TYPE_CHAR: u32 = 2;
-const FILE_TYPE_PIPE: u32 = 3;
-
 /// SetFilePointer's move methods and failure.
-const FILE_BEGIN: u32 = 0;
-const FILE_CURRENT: u32 = 1;
-const FILE_END: u32 = 2;
 const INVALID_SET_FILE_POINTER: u32 = 0xFFFF_FFFF;
 
 /// CreateFileW's work, the W form every create shares (CreateFileA, CopyFileA): a console name
