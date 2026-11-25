@@ -196,10 +196,12 @@ PROCESS_CONCURRENT_TOO_MANY = (
 # event into its child's group once the child's handlers are in place, so the session ends at a
 # known point: ctrl.exe the caller (asked last), its child ctrlkid, and beside them spawnkid
 # sleeping a minute with no handler (a leg of its own, connected to the console before the child).
-# `session-wait=2000` shortens the wait from Windows 2000's 20 s. A process the session's end ends
-# exits with 0xC000013A (STATUS_CONTROL_C_EXIT, 3221225786), as its default handler would.
+# `session-wait=200` seeds the registry's WaitToKillAppTimeout (HKCU\Control Panel\Desktop) with
+# 200 ms instead of Windows 2000's 20 s: the wait each process has to end once asked. A process
+# the session's end ends exits with 0xC000013A (STATUS_CONTROL_C_EXIT, 3221225786), as its default
+# handler would.
 SESSION_KID = "re:^F2K: child process \\d+ \\(CTRLKID\\) exited normally \\(exit code={}\\)$"
-SESSION_ENDED_AFTER_WAIT = "re:^F2K: session: process \\d+ \\({}\\) still running after 2000 ms: ended$"
+SESSION_ENDED_AFTER_WAIT = "re:^F2K: session: process \\d+ \\({}\\) still running after 200 ms: ended$"
 SESSION_LEGS = ("CORPUS\\ctrl.exe {}", "CORPUS\\spawnkid.exe sleep 60000")
 # The machine's end once the session has ended: NtShutdownSystem's steps with its action (the ctrl
 # fixture writes no file, so the volume is the one the boot mounted; the disk's write cache flushed
@@ -613,7 +615,7 @@ CASES = (
         description="a shutdown asked for by the ctrl fixture (the end-session option): CTRL_SHUTDOWN_EVENT to each console process in turn, the caller last; a handler sees it and its process ends, the default handler ends a process without one, a handler answering TRUE without ending is ended after the wait; then the summary once every process is torn down, and the machine's end right after it",
         image="kernel",
         cmdline=" ;; ".join(SESSION_LEGS).format("order"),
-        kernel_options="concurrent end-session=0x1 session-wait=2000",
+        kernel_options="concurrent end-session=0x1 session-wait=200",
         ordered=True,
         expects=SESSION_SHUTDOWN,
         contiguous=session_end("ShutdownNoReboot", "It is now safe to turn off your computer."),
@@ -624,7 +626,7 @@ CASES = (
         description="a logoff asked for by the ctrl fixture (the end-session option): CTRL_LOGOFF_EVENT to each console process; a child whose handler answers TRUE and waits on is ended after the wait, its parent sees its end; no machine's end, the runner's summary once every program has ended",
         image="kernel",
         cmdline=" ;; ".join(SESSION_LEGS).format("ctrlc"),
-        kernel_options="concurrent end-session=0x0 session-wait=2000",
+        kernel_options="concurrent end-session=0x0 session-wait=200",
         ordered=True,
         expects=SESSION_LOGOFF,
         forbids=("F2K: shutdown",),
@@ -635,7 +637,7 @@ CASES = (
         description="a forced restart asked for by the ctrl fixture (the end-session option, EWX_REBOOT | EWX_FORCE): each console process ended without an event or a wait, the caller last; then the summary once every process is torn down, and the machine's end with ShutdownReboot right after it",
         image="kernel",
         cmdline=" ;; ".join(SESSION_LEGS).format("order"),
-        kernel_options="concurrent end-session=0x6 session-wait=2000",
+        kernel_options="concurrent end-session=0x6 session-wait=200",
         ordered=True,
         expects=SESSION_FORCED,
         contiguous=session_end("ShutdownReboot", f2kboot.RESTARTING),

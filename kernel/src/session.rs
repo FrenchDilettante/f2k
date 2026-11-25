@@ -29,11 +29,13 @@
 //!   CTRL_LOGOFF_EVENT for EWX_LOGOFF, CTRL_SHUTDOWN_EVENT for every other action — delivered as
 //!   Ctrl+C is, a thread of the process at its CtrlRoutine, which runs its handlers, the last
 //!   registered first; the default handler ends the process. It then has the wait (HKCU\Control
-//!   Panel\Desktop\WaitToKillAppTimeout, documented at 20,000 ms on Windows 2000; again the
-//!   constant) to end. One still running after it — a handler that returned TRUE without ending the
-//!   process, say — is ended, where Windows would show its "End Program" dialog: F2K has no dialog,
-//!   and ends it as Windows does with EWX_FORCE or SHUTDOWN_NORETRY. A COM1 line says so.
-//!   EWX_FORCEIFHUNG asks for that same end after the wait.
+//!   Panel\Desktop\WaitToKillAppTimeout, a REG_SZ of digits, documented at 20,000 ms on Windows
+//!   2000, which F2K's registry is seeded with; read at each session's end, as Windows 2000's
+//!   console server reads it, the 20,000 ms default when it is missing or no number) to end. One
+//!   still running after it — a handler that returned TRUE without ending the process, say — is
+//!   ended, where Windows would show its "End Program" dialog: F2K has no dialog, and ends it as
+//!   Windows does with EWX_FORCE or SHUTDOWN_NORETRY. A COM1 line says so. EWX_FORCEIFHUNG asks for
+//!   that same end after the wait.
 //! - A process with neither is ended without being asked: there is nothing to ask it through, and
 //!   the documentation's logoff ends every process of the session.
 //! - With EWX_FORCE, each process is ended without being asked, and without the wait.
@@ -53,7 +55,11 @@
 //!   is taken instead for ExitWindowsEx(<flags>) from that program, raised at the same point. The
 //!   ctrl fixture generates its first event only once its child's handlers are in place, so a boot
 //!   of it ends its session at a known point.
-//! - `session-wait=<ms>`: the wait, shorter than 20 s for a boot to show a process ended after it.
+//! - `session-wait=<ms>`: the WaitToKillAppTimeout the registry is seeded with (`crate::cm`),
+//!   shorter than 20 s for a boot to show a process ended after it. F2K's registry has no hive on
+//!   disk yet, so its boot-time seed is where a boot can set the value, as a test machine's hive
+//!   would hold it. It changes nothing else: the bound on the teardowns before the machine's end
+//!   stays at the default (see `await_teardowns`).
 
 use crate::win32k::window::{Hwnd, LParam, LResult, WParam};
 
@@ -69,7 +75,8 @@ pub const HUNG_APP_TIMEOUT_MS: u32 = 5_000;
 /// event into a request for the session's end.
 const END_SESSION: &[u8] = b"end-session";
 
-/// The kernel option whose value, in milliseconds, replaces the wait.
+/// The kernel option whose value, in milliseconds, is the WaitToKillAppTimeout the registry is
+/// seeded with.
 const SESSION_WAIT: &[u8] = b"session-wait";
 
 /// The exit code of a process the session's end ends: STATUS_CONTROL_C_EXIT, its default
@@ -95,12 +102,17 @@ fn end_session_flags(kernel: &[u8]) -> Option<u32> {
     rtl::console::user::check_flags(flags).ok().map(|()| flags)
 }
 
-/// The wait the `session-wait` option in `kernel`'s command line sets, or the default one, in
-/// milliseconds.
-fn wait_ms(kernel: &[u8]) -> u32 {
-    crate::boot::cmdline::kernel_option_value(kernel, SESSION_WAIT)
-        .and_then(number)
-        .unwrap_or(WAIT_TO_KILL_APP_TIMEOUT_MS)
+/// The wait the `session-wait` option in `kernel`'s command line sets, in milliseconds; none
+/// without the option, or with a value that is no number.
+fn wait_option(kernel: &[u8]) -> Option<u32> {
+    crate::boot::cmdline::kernel_option_value(kernel, SESSION_WAIT).and_then(number)
+}
+
+/// The WaitToKillAppTimeout the kernel option `session-wait` asks the registry to be seeded with;
+/// none without the option.
+#[cfg(target_arch = "x86")]
+pub fn option_wait() -> Option<u32> {
+    wait_option(crate::boot::cmdline::kernel_command_line())
 }
 
 /// The flags the kernel option `end-session` asks the boot's first generated control event to be
@@ -248,7 +260,7 @@ pub fn end(request: crate::csr::ctrl::SessionRequest) {
         },
         lparam: end_lparam(request.flags),
         forced: forced(request.flags),
-        wait: wait_ms(crate::boot::cmdline::kernel_command_line()),
+        wait: crate::cm::wait_to_kill_app_timeout().unwrap_or(WAIT_TO_KILL_APP_TIMEOUT_MS),
     };
     let mut cancelled = false;
     while let Some((process, routine)) = crate::csr::next_to_end(request.caller) {
@@ -268,9 +280,9 @@ pub fn end(request: crate::csr::ctrl::SessionRequest) {
 /// down: the processes the session ended, and one that was leaving its console already (passed
 /// over above). Their teardown audit and the runner's summary then come before the shutdown's
 /// first line. The bound is the wait a process has to end (WaitToKillAppTimeout's default, not
-/// the `session-wait` option, which shortens only the ending): a reap needs the idle thread, which
-/// a process still running and never ending could keep off. Past it, a COM1 line says so and the
-/// shutdown goes on.
+/// the registry's value, which a test boot shortens for the ending alone): a reap needs the idle
+/// thread, which a process still running and never ending could keep off. Past it, a COM1 line says
+/// so and the shutdown goes on.
 #[cfg(target_arch = "x86")]
 fn await_teardowns() {
     let interval = i64::from(WAIT_TO_KILL_APP_TIMEOUT_MS) * 10_000;
@@ -463,7 +475,7 @@ mod tests {
     use super::*;
 
     /// `end-session` takes ExitWindowsEx's flags, decimal or hexadecimal, and only flags it
-    /// accepts; `session-wait` replaces the 20 s wait.
+    /// accepts; `session-wait` takes a number of milliseconds.
     #[test]
     fn the_options_take_their_values() {
         assert_eq!(end_session_flags(b"k end-session=0 -- x"), Some(0));
@@ -471,9 +483,9 @@ mod tests {
         assert_eq!(end_session_flags(b"k end-session=0x20 -- x"), None);
         assert_eq!(end_session_flags(b"k end-session=x -- x"), None);
         assert_eq!(end_session_flags(b"k -- x end-session=1"), None);
-        assert_eq!(wait_ms(b"k -- x"), 20_000);
-        assert_eq!(wait_ms(b"k session-wait=2000 -- x"), 2000);
-        assert_eq!(wait_ms(b"k session-wait=soon -- x"), 20_000);
+        assert_eq!(wait_option(b"k -- x"), None);
+        assert_eq!(wait_option(b"k session-wait=200 -- x"), Some(200));
+        assert_eq!(wait_option(b"k session-wait=soon -- x"), None);
     }
 
     /// A process is asked through its windows when it has some, its console aside; through its

@@ -46,8 +46,11 @@
 //! `ComputerName`, REG_SZ "QEMU", and the scheduler's priority separation,
 //! `\Registry\Machine\SYSTEM\CurrentControlSet\Control\PriorityControl`'s
 //! `Win32PrioritySeparation`, REG_DWORD 2 (Windows 2000 Professional's default; see
-//! `crate::process::foreground`). A hive's root (`\Registry`, its two roots, `SYSTEM`, the user's
-//! hive) cannot be deleted.
+//! `crate::process::foreground`), and the user's wait at a session's end,
+//! `\Registry\User\jeb\Control Panel\Desktop`'s `WaitToKillAppTimeout`, REG_SZ "20000" (Windows
+//! 2000's default, a string of digits as Windows keeps it; see `crate::session`, and its kernel
+//! option `session-wait`, which a test boot gives to seed another wait). A hive's root
+//! (`\Registry`, its two roots, `SYSTEM`, the user's hive) cannot be deleted.
 
 use core::alloc::Layout;
 use core::cmp::Ordering;
@@ -105,6 +108,13 @@ pub const PRIORITY_CONTROL: &str = "MACHINE\\SYSTEM\\CurrentControlSet\\Control\
 
 /// The priority separation's value (see `crate::process::foreground`).
 pub const PRIORITY_SEPARATION: &str = "Win32PrioritySeparation";
+
+/// The current user's desktop settings, below the root (HKCU\Control Panel\Desktop).
+pub const DESKTOP: &str = "USER\\jeb\\Control Panel\\Desktop";
+
+/// The wait a process has to end once a session's end asks it (see `crate::session`), in
+/// milliseconds, written in decimal: a REG_SZ, as Windows 2000 keeps it.
+pub const WAIT_TO_KILL_APP_TIMEOUT: &str = "WaitToKillAppTimeout";
 
 /// A key: its record and the record's generation. The generation is 32 bits: a stale key would
 /// name its record's new key only after some four billion deletes of that one record, where 16 bits
@@ -524,6 +534,68 @@ impl Registry {
         let data = crate::process::foreground::DEFAULT_PRIORITY_SEPARATION.to_le_bytes();
         self.set_bytes(priority, &name, REG_DWORD, &data, 0)
             .expect("the registry holds the seed");
+        make(self, DESKTOP, false);
+        self.set_decimal(
+            DESKTOP,
+            WAIT_TO_KILL_APP_TIMEOUT,
+            crate::session::WAIT_TO_KILL_APP_TIMEOUT_MS,
+        )
+        .expect("the registry holds the seed");
+    }
+
+    /// Set the value `name` of the existing key `path` names below the root (both ASCII) to
+    /// `number` written in decimal, a REG_SZ, as Windows 2000 keeps its desktop's numbers.
+    pub fn set_decimal(&mut self, path: &str, name: &str, number: u32) -> Result<(), NtStatus> {
+        let key = self.open(self.root(), &ascii_units::<128>(path)[..path.len()])?;
+        let mut digits = [0u8; 10];
+        let mut at = digits.len();
+        let mut rest = number;
+        loop {
+            at -= 1;
+            digits[at] = b'0' + (rest % 10) as u8;
+            rest /= 10;
+            if rest == 0 {
+                break;
+            }
+        }
+        // The digits, then the NUL, in UTF-16LE.
+        let mut data = [0u8; 22];
+        for (pair, &digit) in data.chunks_exact_mut(2).zip(&digits[at..]) {
+            pair[0] = digit;
+        }
+        let length = (digits.len() - at + 1) * 2;
+        self.set_bytes(
+            key,
+            &ascii_units::<64>(name)[..name.len()],
+            REG_SZ,
+            &data[..length],
+            0,
+        )
+    }
+
+    /// The REG_SZ value `name` of the key `path` names below the root (both ASCII), read as a
+    /// decimal number, if it is one: its digits, up to its NUL or its end, nothing else.
+    pub fn decimal(&self, path: &str, name: &str) -> Option<u32> {
+        let key = self
+            .open(self.root(), &ascii_units::<128>(path)[..path.len()])
+            .ok()?;
+        let value = self
+            .query_value(key, &ascii_units::<64>(name)[..name.len()])
+            .ok()?;
+        if value.kind != REG_SZ {
+            return None;
+        }
+        let units = value
+            .data
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .take_while(|&unit| unit != 0);
+        let mut number: Option<u32> = None;
+        for unit in units {
+            let digit = char::from_u32(u32::from(unit))?.to_digit(10)?;
+            number = Some(number.unwrap_or(0).checked_mul(10)?.checked_add(digit)?);
+        }
+        number
     }
 
     /// The REG_DWORD value `name` of the key `path` names below the root (both ASCII), if it is
@@ -1033,6 +1105,17 @@ pub fn init() {
     let chunk = allocate(CHUNK).expect("the nonpaged pool holds the registry's first chunk");
     with_registry(|registry| registry.start(chunk));
     settle();
+    if let Some(wait) = crate::session::option_wait() {
+        storing(|registry| registry.set_decimal(DESKTOP, WAIT_TO_KILL_APP_TIMEOUT, wait))
+            .expect("the registry holds the seed");
+    }
+}
+
+/// The current user's WaitToKillAppTimeout (`DESKTOP`'s), read at each session's end as Windows
+/// 2000's console server reads it; none when it is missing or no decimal number.
+#[cfg(target_arch = "x86")]
+pub fn wait_to_kill_app_timeout() -> Option<u32> {
+    with_registry(|registry| registry.decimal(DESKTOP, WAIT_TO_KILL_APP_TIMEOUT))
 }
 
 /// Run `step`, a change to the kernel's registry, as a step: when it finds no room in the
@@ -1158,6 +1241,40 @@ mod tests {
         String::from_utf16(&units).unwrap()
     }
 
+    /// A number set in decimal reads back; a value that is no REG_SZ of digits alone reads as none.
+    #[test]
+    fn decimal_values() {
+        let r = registry();
+        for number in [0, 200, 20_000, u32::MAX] {
+            r.set_decimal(DESKTOP, WAIT_TO_KILL_APP_TIMEOUT, number)
+                .unwrap();
+            assert_eq!(r.decimal(DESKTOP, WAIT_TO_KILL_APP_TIMEOUT), Some(number));
+        }
+        let desktop = r
+            .open(r.root(), &wide("USER\\jeb\\Control Panel\\Desktop"))
+            .unwrap();
+        let name = wide("WaitToKillAppTimeout");
+        for bad in [
+            &b"2\0x\0\0\0"[..],
+            b"\0\0",
+            b"4\02\09\04\09\06\07\02\09\06\0\0\0",
+        ] {
+            r.set_bytes(desktop, &name, REG_SZ, bad, 0).unwrap();
+            assert_eq!(
+                r.decimal(DESKTOP, WAIT_TO_KILL_APP_TIMEOUT),
+                None,
+                "{bad:?}"
+            );
+        }
+        r.set_bytes(desktop, &name, REG_DWORD, &200u32.to_le_bytes(), 0)
+            .unwrap();
+        assert_eq!(r.decimal(DESKTOP, WAIT_TO_KILL_APP_TIMEOUT), None);
+        assert_eq!(
+            r.set_decimal("USER\\jeb\\Missing", WAIT_TO_KILL_APP_TIMEOUT, 1),
+            Err(STATUS_OBJECT_NAME_NOT_FOUND)
+        );
+    }
+
     #[test]
     fn the_seed_is_there() {
         let r = registry();
@@ -1186,6 +1303,15 @@ mod tests {
         assert_eq!((value.kind, value.data), (REG_DWORD, &[2, 0, 0, 0][..]));
         assert_eq!(r.dword(PRIORITY_CONTROL, PRIORITY_SEPARATION), Some(2));
         assert_eq!(r.dword(PRIORITY_CONTROL, "Missing"), None);
+        let desktop = r
+            .open(root, &wide("user\\jeb\\control panel\\desktop"))
+            .unwrap();
+        let value = r
+            .query_value(desktop, &wide("waittokillapptimeout"))
+            .unwrap();
+        assert_eq!(value.kind, REG_SZ);
+        assert_eq!(value.data, b"2\00\00\00\00\0\0\0");
+        assert_eq!(r.decimal(DESKTOP, WAIT_TO_KILL_APP_TIMEOUT), Some(20_000));
         assert_eq!(
             r.delete(user, 0),
             Err(STATUS_CANNOT_DELETE),
@@ -1241,7 +1367,9 @@ mod tests {
     #[test]
     fn subkeys_list_in_folded_order() {
         let r = registry();
-        let user = r.open(r.root(), &wide("USER\\jeb")).unwrap();
+        let jeb = r.open(r.root(), &wide("USER\\jeb")).unwrap();
+        // A key of the test's own: the user's hive holds the seed's keys.
+        let (user, _) = r.create(jeb, &wide("List"), &[], false, 0).unwrap();
         for name in ["delta", "Alpha", "charlie", "bravo", "Echo"] {
             r.create(user, &wide(name), &[], false, 0).unwrap();
         }
@@ -1531,7 +1659,9 @@ mod tests {
     #[test]
     fn subkeys_select_by_position() {
         let r = registry();
-        let user = r.open(r.root(), &wide("USER\\jeb")).unwrap();
+        let jeb = r.open(r.root(), &wide("USER\\jeb")).unwrap();
+        // A key of the test's own: the user's hive holds the seed's keys.
+        let (user, _) = r.create(jeb, &wide("List"), &[], false, 0).unwrap();
         for name in ["c", "A", "b"] {
             r.create(user, &wide(name), &[], false, 0).unwrap();
         }
