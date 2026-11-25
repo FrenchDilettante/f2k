@@ -127,10 +127,8 @@ fn deliver(text: &[u16], mut out: Text<'_>) -> Result<i32, Failure> {
 /// A locale string's units, into `buffer`.
 fn locale_units(lctype: u32, buffer: &mut [u16; 32]) -> &[u16] {
     let text = localeinfo::info(ENGLISH, lctype).unwrap_or("");
-    for (slot, byte) in buffer.iter_mut().zip(text.bytes()) {
-        *slot = u16::from(byte);
-    }
-    &buffer[..text.len().min(32)]
+    let length = rtl::cstr::ascii_into(buffer, text.as_bytes());
+    &buffer[..length]
 }
 
 /// A locale string's characters, added to `out`.
@@ -489,7 +487,7 @@ fn time_element(time: &Civil, flags: u32, letter: u8, run: usize, mut push: impl
             } else {
                 text
             };
-            text.bytes().for_each(|byte| push(u16::from(byte)));
+            text.encode_utf16().for_each(&mut push);
         }
     }
 }

@@ -172,10 +172,8 @@ fn open_predefined(index: usize) -> Result<u32, NtStatus> {
     }
     let path = predefined_path(index).ok_or(NtStatus(STATUS_INVALID_HANDLE))?;
     let mut units = [0u16; 80];
-    for (unit, &byte) in units.iter_mut().zip(path) {
-        *unit = byte as u16;
-    }
-    let name = Counted::new(&units[..path.len()]);
+    let length = rtl::cstr::ascii_into(&mut units, path);
+    let name = Counted::new(&units[..length]);
     nt::open_key(&attributes(0, &name, false), MAXIMUM_ALLOWED)
 }
 

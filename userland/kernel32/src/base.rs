@@ -6,6 +6,7 @@
 //! handles' tests, and a caller's UTF-16 string as kernel32 reads it ([`WideUnits`]: borrowed
 //! where aligned, copied where not).
 
+use rtl::cstr::ascii_units;
 use rtl::params::{CountedString, ProcessParameters};
 use rtl::sync::OnceWord;
 
@@ -139,10 +140,7 @@ own_data! {
 /// cannot be opened (the named calls then fail on their name, and the next call tries again).
 pub fn named_object_directory() -> u32 {
     named_objects().get_or_make(|| {
-        let mut name = [0u16; 17];
-        for (unit, byte) in name.iter_mut().zip(b"\\BaseNamedObjects") {
-            *unit = u16::from(*byte);
-        }
+        let mut name: [u16; 17] = ascii_units("\\BaseNamedObjects");
         let string = unicode_string(&mut name, 17);
         let attributes = ObjectAttributes {
             length: 24,

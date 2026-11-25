@@ -69,9 +69,7 @@ fn font(face: &str, height: i32, width: i32, weight: i32, char_set: u8, pitch: u
     log_font.weight = weight;
     log_font.char_set = char_set;
     log_font.pitch_and_family = pitch;
-    for (unit, byte) in log_font.face_name.iter_mut().zip(face.bytes()) {
-        *unit = u16::from(byte);
-    }
+    rtl::cstr::ascii_into(&mut log_font.face_name, face.as_bytes());
     log_font
 }
 

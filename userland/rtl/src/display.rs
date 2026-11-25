@@ -317,9 +317,7 @@ mod tests {
         narrow.pels_height = 480;
         narrow.panning_height = 7;
         let wide = wide_dev_mode(&narrow, |units, bytes| {
-            for (unit, &byte) in units.iter_mut().zip(bytes) {
-                *unit = byte as u16;
-            }
+            crate::cstr::ascii_into(units, bytes);
         });
         assert_eq!(
             &wide.device_name[..12],

@@ -24,10 +24,8 @@ const BACKSLASH: u16 = b'\\' as u16;
 /// none when the variable is unset or longer than MAX_PATH characters.
 fn variable(name: &[u8], value: &mut [u16; MAX_PATH + 1]) -> Option<usize> {
     let mut units = [0u16; 16];
-    for (unit, &byte) in units.iter_mut().zip(name) {
-        *unit = u16::from(byte);
-    }
-    let name = unicode_string(&mut units, name.len());
+    let length = rtl::cstr::ascii_into(&mut units, name);
+    let name = unicode_string(&mut units, length);
     let mut string = unicode_string(&mut value[..MAX_PATH], 0);
     let status = ntcall::query_environment_variable(&name, &mut string);
     (status == 0).then_some(usize::from(string.length) / 2)
@@ -168,9 +166,7 @@ impl TempName {
         let digits = rtl::fmt::hex(u64::from(number & 0xFFFF), 1, rtl::fmt::Case::Upper);
         self.units.truncate(self.stem);
         digits.units().for_each(|digit| self.units.push(digit));
-        b".tmp"
-            .iter()
-            .for_each(|&byte| self.units.push(u16::from(byte)));
+        ".tmp".encode_utf16().for_each(|unit| self.units.push(unit));
         &self.units
     }
 }

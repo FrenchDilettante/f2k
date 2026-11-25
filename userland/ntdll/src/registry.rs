@@ -24,7 +24,7 @@ const KEY_VALUE_PARTIAL_INFORMATION: u32 = 2;
 
 /// The current user's hive: `\Registry\User\<the user>`. Windows names it after the user's SID
 /// (RtlFormatCurrentUserKeyPath); F2K's one user is `jeb`.
-const CURRENT_USER: &[u8] = b"\\Registry\\User\\jeb";
+const CURRENT_USER: [u16; 18] = rtl::cstr::ascii_units("\\Registry\\User\\jeb");
 
 /// A UNICODE_STRING over `units` (the services only read it).
 fn counted(units: &[u16]) -> UnicodeString {
@@ -85,11 +85,7 @@ pub unsafe extern "system" fn rtl_open_current_user(
     desired_access: u32,
     key_handle: *mut u32,
 ) -> u32 {
-    let mut name = [0u16; CURRENT_USER.len()];
-    for (unit, &byte) in name.iter_mut().zip(CURRENT_USER) {
-        *unit = byte as u16;
-    }
-    match open_key(&name, desired_access) {
+    match open_key(&CURRENT_USER, desired_access) {
         Ok(handle) => {
             // SAFETY: the caller's handle slot.
             unsafe { key_handle.write(handle) };

@@ -455,14 +455,14 @@ pub fn export_by_ordinal<M: Memory>(memory: &M, base: u32, ordinal: u32) -> Resu
 }
 
 /// The base of the module a forwarder's module part names (`NTDLL`: a name without an extension, so
-/// `NTDLL.DLL`); STATUS_DLL_NOT_FOUND for one the process has not loaded.
+/// `NTDLL.DLL`); STATUS_DLL_NOT_FOUND for one the process has not loaded. The name is the image's
+/// bytes, read through the ANSI code page as Windows' loader reads it
+/// (RtlAnsiStringToUnicodeString).
 fn forwarded_module<M: Memory>(memory: &M, ldr: u32, module: &[u8]) -> Result<u32, u32> {
     let mut wide = [0u16; FORWARDER_ROOM];
-    for (unit, &byte) in wide.iter_mut().zip(module) {
-        *unit = u16::from(byte);
-    }
+    let length = crate::string::multi_byte_to_unicode(&mut wide, module);
     let mut name = [0u16; FORWARDER_ROOM + DEFAULT_EXTENSION.len()];
-    let length = module_name(&wide[..module.len()], &mut name).ok_or(STATUS_DLL_NOT_FOUND)?;
+    let length = module_name(&wide[..length], &mut name).ok_or(STATUS_DLL_NOT_FOUND)?;
     by_name(memory, ldr, &name[..length])
         .map(|module| module.base(memory))
         .ok_or(STATUS_DLL_NOT_FOUND)
@@ -625,10 +625,8 @@ pub fn search_place(
         1 => [search.current, &[], name],
         _ if index < 2 + SYSTEM_PLACES.len() => {
             let place = SYSTEM_PLACES[index - 2];
-            for (unit, &byte) in system.iter_mut().zip(place) {
-                *unit = u16::from(byte);
-            }
-            [search.system_root, &system[..place.len()], name]
+            let length = crate::cstr::ascii_into(&mut system, place);
+            [search.system_root, &system[..length], name]
         }
         _ => [
             path_directories(search.path).nth(index - 2 - SYSTEM_PLACES.len())?,
@@ -1420,6 +1418,22 @@ mod tests {
                 core::str::from_utf8(bad)
             );
         }
+    }
+
+    /// A forwarder's module part is ANSI text: 0x80 is the euro sign (code page 1252), not U+0080.
+    #[test]
+    fn a_forwarders_module_is_read_through_the_code_page() {
+        let modules = [Listed {
+            base: KERNEL32,
+            path: "C:\\WINNT\\system32\\\u{20AC}.dll",
+            load_count: STATIC_LOAD_COUNT,
+        }];
+        let space = Space(std::vec![(LDR, lists(LDR, &modules))]);
+        assert_eq!(forwarded_module(&space, LDR, b"\x80"), Ok(KERNEL32));
+        assert_eq!(
+            forwarded_module(&space, LDR, b"\x81"),
+            Err(STATUS_DLL_NOT_FOUND)
+        );
     }
 
     /// The load count: a static module's stays; a dynamic one's counts up and down.

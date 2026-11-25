@@ -3,6 +3,8 @@
 //! `HKLM\System\CurrentControlSet\Control\ComputerName\ComputerName`'s `ComputerName` value. The A
 //! form hands the name back narrowed through the ANSI code page ([`Text`]).
 
+use rtl::cstr::ascii_units;
+
 use crate::base::{unicode_string, OBJ_CASE_INSENSITIVE};
 use crate::edge::{Out, OutBuf, Text};
 use crate::error::{bool_answer, Failure};
@@ -15,9 +17,10 @@ pub const MAX_COMPUTERNAME_LENGTH: usize = 15;
 use rtl::winerror::ERROR_BUFFER_OVERFLOW;
 
 /// The key that holds the name, and its value.
-const KEY: &[u8] =
-    b"\\Registry\\Machine\\System\\CurrentControlSet\\Control\\ComputerName\\ComputerName";
-const VALUE: &[u8] = b"ComputerName";
+const KEY_NAME: &str =
+    "\\Registry\\Machine\\System\\CurrentControlSet\\Control\\ComputerName\\ComputerName";
+const KEY: [u16; KEY_NAME.len()] = ascii_units(KEY_NAME);
+const VALUE: [u16; 12] = ascii_units("ComputerName");
 // KEY_QUERY_VALUE: the one right the read needs.
 use rtl::nt::access::KEY_QUERY_VALUE;
 /// KeyValuePartialInformation: the value's type and data, after three dwords (its title index,
@@ -28,19 +31,11 @@ const PARTIAL_HEADER: usize = 12;
 /// reads whole (and is cut to the limit).
 const READ_UNITS: usize = 2 * MAX_COMPUTERNAME_LENGTH + 2;
 
-/// `text`'s bytes as UTF-16 units into `units`: a counted string over them.
-fn widen(text: &[u8], units: &mut [u16]) -> rtl::string::UnicodeString {
-    for (unit, &byte) in units.iter_mut().zip(text) {
-        *unit = u16::from(byte);
-    }
-    unicode_string(units, text.len())
-}
-
 /// The computer's name, read from the registry, into `name`: its length in units (at most
 /// MAX_COMPUTERNAME_LENGTH, its terminator and anything past the limit left out).
 fn read_name(name: &mut [u16; MAX_COMPUTERNAME_LENGTH]) -> Result<usize, NtStatus> {
-    let mut path = [0u16; KEY.len()];
-    let path = widen(KEY, &mut path);
+    let mut path = KEY;
+    let path = unicode_string(&mut path, KEY.len());
     let attributes = ObjectAttributes {
         length: core::mem::size_of::<ObjectAttributes>() as u32,
         root_directory: 0,
@@ -50,8 +45,8 @@ fn read_name(name: &mut [u16; MAX_COMPUTERNAME_LENGTH]) -> Result<usize, NtStatu
         security_quality_of_service: core::ptr::null(),
     };
     let key = ntcall::open_key(KEY_QUERY_VALUE, &attributes)?;
-    let mut value = [0u16; VALUE.len()];
-    let value = widen(VALUE, &mut value);
+    let mut value = VALUE;
+    let value = unicode_string(&mut value, VALUE.len());
     let mut information = [0u8; PARTIAL_HEADER + 2 * READ_UNITS];
     let read =
         ntcall::query_value_key(key, &value, KEY_VALUE_PARTIAL_INFORMATION, &mut information);

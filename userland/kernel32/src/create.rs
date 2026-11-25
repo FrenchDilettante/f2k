@@ -70,6 +70,7 @@
 use core::mem::{offset_of, size_of};
 use core::ops::Deref;
 
+use rtl::cstr::ascii_units;
 use rtl::params::{CountedString, CurrentDirectory, DriveDirectory};
 use rtl::peb::Peb;
 use rtl::pod::Pod;
@@ -193,23 +194,12 @@ const CLASS_BELOW_NORMAL: u8 = 5;
 /// The PEB's ProcessParameters, in the new process's PEB.
 const PEB_PROCESS_PARAMETERS: usize = offset_of!(Peb<u32>, process_parameters);
 
-/// An ASCII text as UTF-16, at compile time.
-const fn ascii<const N: usize>(text: &[u8; N]) -> [u16; N] {
-    let mut units = [0u16; N];
-    let mut at = 0;
-    while at < N {
-        units[at] = text[at] as u16;
-        at += 1;
-    }
-    units
-}
-
 /// The extension the search adds, and the execution option asked.
-const EXE: [u16; 4] = ascii(b".exe");
-const DEBUGGER: [u16; 9] = ascii(b"Debugger\0");
+const EXE: [u16; 4] = ascii_units(".exe");
+const DEBUGGER: [u16; 9] = ascii_units("Debugger");
 /// A batch file's extensions, in lower case, and the start of the command line that runs one.
-const BATCH_EXTENSIONS: [[u16; 4]; 2] = [ascii(b".bat"), ascii(b".cmd")];
-const RUN_BATCH: [u16; 7] = ascii(b"cmd /c ");
+const BATCH_EXTENSIONS: [[u16; 4]; 2] = [ascii_units(".bat"), ascii_units(".cmd")];
+const RUN_BATCH: [u16; 7] = ascii_units("cmd /c ");
 
 const QUOTE: u16 = b'"' as u16;
 const SPACE: u16 = b' ' as u16;

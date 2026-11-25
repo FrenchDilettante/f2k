@@ -25,9 +25,7 @@ pub fn key_name(image: &[u16], out: &mut [u16]) -> Option<usize> {
         .map_or(image, |at| &image[at + 1..]);
     let length = OPTIONS_KEY.len() + file_name.len();
     let out = out.get_mut(..length)?;
-    for (unit, byte) in out.iter_mut().zip(OPTIONS_KEY.bytes()) {
-        *unit = byte as u16;
-    }
+    crate::cstr::ascii_into(out, OPTIONS_KEY.as_bytes());
     out[OPTIONS_KEY.len()..].copy_from_slice(file_name);
     Some(length)
 }

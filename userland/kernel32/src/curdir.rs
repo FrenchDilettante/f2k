@@ -5,6 +5,7 @@
 //! that size), and hand theirs back narrowed ([`Text`]). The Windows and system directories, which
 //! never change, are here too.
 
+use rtl::cstr::ascii_units;
 use rtl::winerror::ERROR_NOT_ENOUGH_MEMORY;
 
 use crate::base::unicode_string;
@@ -106,7 +107,7 @@ fn set_current_directory_wide(path: &InWStr<'_>) -> Result<(), Failure> {
 }
 
 /// The system directory under the system root.
-const SYSTEM32: &[u8] = b"\\system32";
+const SYSTEM32: [u16; 9] = ascii_units("\\system32");
 
 /// The Windows directory — the system root, KUSER_SHARED_DATA's NtSystemRoot, where Windows 2000's
 /// kernel32 takes it from — or, for `system`, the system directory under it, into the caller's
@@ -118,10 +119,8 @@ fn windows_directory(system: bool, mut buffer: Text<'_>) -> u32 {
     let mut directory = [0u16; MAX_PATH + SYSTEM32.len()];
     directory[..length].copy_from_slice(&root[..length]);
     if system {
-        for &byte in SYSTEM32 {
-            directory[length] = u16::from(byte);
-            length += 1;
-        }
+        directory[length..length + SYSTEM32.len()].copy_from_slice(&SYSTEM32);
+        length += SYSTEM32.len();
     }
     buffer.put_fitting(&directory[..length]).length_or_size()
 }

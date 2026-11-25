@@ -841,9 +841,7 @@ fn add_ntdll(memory: &mut Mapped) -> Option<Module> {
     let root = system_root();
     let file = b"\\system32\\ntdll.dll";
     path[..root.len()].copy_from_slice(root);
-    for (unit, &byte) in path[root.len()..].iter_mut().zip(file) {
-        *unit = u16::from(byte);
-    }
+    rtl::cstr::ascii_into(&mut path[root.len()..], file);
     // The linker's symbol, by address only.
     let base = core::ptr::addr_of!(IMAGE_BASE) as u32;
     add_entry(memory, base, None, &path[..root.len() + file.len()])

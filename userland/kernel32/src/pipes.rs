@@ -51,9 +51,7 @@ const PREFIX: &[u8] = b"\\Device\\NamedPipe\\Win32Pipes.";
 /// digits (the capture's name, its digits masked): the public sources' `Win32Pipes.%08x.%08x`.
 fn pipe_name(process_id: u32, serial: u32) -> [u16; PIPE_NAME] {
     let mut name = [0u16; PIPE_NAME];
-    for (unit, &byte) in name.iter_mut().zip(PREFIX) {
-        *unit = u16::from(byte);
-    }
+    rtl::cstr::ascii_into(&mut name, PREFIX);
     let digits = |value: u32, out: &mut [u16]| {
         let digits = rtl::fmt::hex(u64::from(value), 8, rtl::fmt::Case::Lower);
         for (unit, digit) in out.iter_mut().zip(digits.units()) {
