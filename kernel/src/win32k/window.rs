@@ -9301,8 +9301,8 @@ mod tests {
     }
 
     /// The query's indexes and lengths: WINDOWINFO's 60 bytes, the visibility's, the parent's and
-    /// the menu's 4, the data's 36, the text's any even length from 4 (its length, then the room
-    /// for its units), an extra-bytes value's 2 or 4, nothing else.
+    /// the menu's 4, the data's 36, the scroll bars' 36, the text's any even length from 4 (its
+    /// length, then the room for its units), an extra-bytes value's 2 or 4, nothing else.
     #[test]
     fn the_query_lengths() {
         use rtl::window::{
@@ -9310,6 +9310,7 @@ mod tests {
             QUERY_WINDOW_EXTRA,
             QUERY_WINDOW_MENU,
             QUERY_WINDOW_PARENT,
+            QUERY_WINDOW_SCROLL_BARS,
             QUERY_WINDOW_TEXT,
         };
         assert_eq!(query_accepts(QUERY_WINDOW_INFO, 60), Ok(()));
@@ -9337,7 +9338,12 @@ mod tests {
             query_accepts(QUERY_WINDOW_VISIBLE, 60),
             Err(STATUS_INFO_LENGTH_MISMATCH)
         );
-        assert_eq!(query_accepts(9, 4), Err(Failure::InvalidIndex.status()));
+        assert_eq!(query_accepts(QUERY_WINDOW_SCROLL_BARS, 36), Ok(()));
+        assert_eq!(
+            query_accepts(QUERY_WINDOW_SCROLL_BARS, 4),
+            Err(STATUS_INFO_LENGTH_MISMATCH)
+        );
+        assert_eq!(query_accepts(10, 4), Err(Failure::InvalidIndex.status()));
         assert_eq!(Query::Visible(1).bytes(), &[1, 0, 0, 0]);
         assert_eq!(Query::Parent(0x24).bytes(), &[0x24, 0, 0, 0]);
         assert_eq!(Query::Info(WindowInfo::default()).bytes().len(), 60);
