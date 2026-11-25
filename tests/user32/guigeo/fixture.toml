@@ -4,7 +4,7 @@ kind = "sectioned"
 gate = true
 
 [pending]
-edits = "F2K is expected to ignore the procedure's edits, since a client procedure's answers to WM_NCCALCSIZE, WM_GETMINMAXINFO and WM_WINDOWPOSCHANGING never reach win32k (no user-mode callback)"
+edits = "win32k never sends WM_GETMINMAXINFO yet (gui-D slice 4), so the procedure's tracking and maximized sizes are not applied; its WM_NCCALCSIZE and WM_WINDOWPOSCHANGING edits are"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup

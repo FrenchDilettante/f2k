@@ -21,6 +21,7 @@ use rtl::callback::{
     FN_DWORD,
     FN_INLPCREATESTRUCT,
     FN_INLPWINDOWPOS,
+    FN_INOUTLPWINDOWPOS,
     FN_INOUTNCCALCSIZE,
     FN_INOUTSTYLECHANGE,
     FN_NCDESTROY,
@@ -29,15 +30,19 @@ use rtl::gdi::Rect;
 use rtl::pod::Pod;
 use rtl::status::{STATUS_INVALID_PARAMETER, STATUS_SUCCESS};
 use rtl::user::{CreateStructW, Msg, StyleStruct};
-use rtl::window::WindowPos;
+use rtl::window::{NcCalcSizeParams, WindowPos};
 
 /// The size of the structure a message slot's block carries after its [`CallbackMsg`] (none for a
-/// plain message); none for a slot that is not a message's.
-fn carried_size(api: u32) -> Option<usize> {
+/// plain message; WM_NCCALCSIZE's by its form, `wparam`: a RECT, or an NCCALCSIZE_PARAMS and the
+/// WINDOWPOS it points at); none for a slot that is not a message's.
+fn carried_size(api: u32, wparam: u32) -> Option<usize> {
     Some(match api {
         FN_DWORD | FN_NCDESTROY => 0,
         FN_INLPCREATESTRUCT => core::mem::size_of::<CreateStructW>(),
-        FN_INLPWINDOWPOS => core::mem::size_of::<WindowPos>(),
+        FN_INLPWINDOWPOS | FN_INOUTLPWINDOWPOS => core::mem::size_of::<WindowPos>(),
+        FN_INOUTNCCALCSIZE if wparam != 0 => {
+            core::mem::size_of::<NcCalcSizeParams>() + core::mem::size_of::<WindowPos>()
+        }
         FN_INOUTNCCALCSIZE => core::mem::size_of::<Rect>(),
         FN_INOUTSTYLECHANGE => core::mem::size_of::<StyleStruct>(),
         _ => return None,
@@ -50,13 +55,23 @@ fn address_of(at: *const u8) -> u32 {
     u32::try_from(at as usize).unwrap_or(0)
 }
 
+/// A message slot's call: the procedure's answer, and the length of the structure its output
+/// block hands back after it (the block's, from just past its [`CallbackMsg`], as the procedure
+/// left it: rtl::callback's `out_size`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Served {
+    pub answer: i32,
+    pub out: usize,
+}
+
 /// The message the message slot `api`'s input `block` carries, called: the lParam pointed at the
-/// structure in the block, a CREATESTRUCTW's lpszName at the name after it (the block is the
-/// kernel's copy on this thread's stack, the procedure's to read and write). The procedure's
-/// answer; none for a slot that is not a message's, or a block too short for its slot.
-pub fn serve(api: u32, block: &mut [u8]) -> Option<i32> {
+/// structure in the block, a CREATESTRUCTW's lpszName at the name after it, an
+/// NCCALCSIZE_PARAMS's lppos at the WINDOWPOS after it (the block is the kernel's copy on this
+/// thread's stack, the procedure's to read and write). None for a slot that is not a message's,
+/// or a block too short for its slot.
+pub fn serve(api: u32, block: &mut [u8]) -> Option<Served> {
     let head = CallbackMsg::from_bytes(block.get(..core::mem::size_of::<CallbackMsg>())?)?;
-    let carried = carried_size(api)?;
+    let carried = carried_size(api, head.wparam)?;
     let rest = &mut block[core::mem::size_of::<CallbackMsg>()..];
     let mut msg = Msg {
         hwnd: head.hwnd,
@@ -69,20 +84,29 @@ pub fn serve(api: u32, block: &mut [u8]) -> Option<i32> {
         if rest.len() < carried {
             return None;
         }
-        let (structure, name) = rest.split_at_mut(carried);
+        let (structure, after) = rest.split_at_mut(carried);
         if api == FN_INLPCREATESTRUCT {
             let mut create = CreateStructW::from_bytes(structure)?;
             // The name, NUL-terminated (a block too short for the terminator names none).
-            create.name = if name.len() >= 2 {
-                address_of(name.as_ptr())
+            create.name = if after.len() >= 2 {
+                address_of(after.as_ptr())
             } else {
                 0
             };
             structure.copy_from_slice(create.as_bytes());
+        } else if api == FN_INOUTNCCALCSIZE && head.wparam != 0 {
+            let (params, pos) = structure.split_at_mut(core::mem::size_of::<NcCalcSizeParams>());
+            let mut calc = NcCalcSizeParams::from_bytes(params)?;
+            calc.pos = address_of(pos.as_ptr());
+            params.copy_from_slice(calc.as_bytes());
         }
         msg.lparam = address_of(structure.as_ptr()) as i32;
     }
-    Some(crate::message::invoke(head.proc, msg, false))
+    let answer = crate::message::invoke(head.proc, msg, false);
+    Some(Served {
+        answer,
+        out: rtl::callback::out_size(api, head.wparam),
+    })
 }
 
 /// What the smoke routine reaches: the kernel's smoke entry, and the thread's memory.
@@ -158,9 +182,11 @@ mod target {
         FN_DWORD,
         FN_INLPCREATESTRUCT,
         FN_INLPWINDOWPOS,
+        FN_INOUTLPWINDOWPOS,
         FN_INOUTNCCALCSIZE,
         FN_INOUTSTYLECHANGE,
         FN_NCDESTROY,
+        OUT_MAX,
         SMOKE_API,
     };
     use rtl::pod::Pod;
@@ -181,6 +207,7 @@ mod target {
         table[FN_INLPCREATESTRUCT as usize] = fn_inlpcreatestruct;
         table[FN_INLPWINDOWPOS as usize] = fn_inlpwindowpos;
         table[FN_INOUTNCCALCSIZE as usize] = fn_inoutnccalcsize;
+        table[FN_INOUTLPWINDOWPOS as usize] = fn_inoutlpwindowpos;
         table[FN_INOUTSTYLECHANGE as usize] = fn_inoutstylechange;
         table[SMOKE_API as usize] = smoke;
         table
@@ -197,7 +224,8 @@ mod target {
     }
 
     /// A message slot's routine: the message the block at `input` carries served ([`serve`]), its
-    /// answer handed back through NtCallbackReturn.
+    /// answer handed back through NtCallbackReturn, then (an `__fnINOUT*` slot's) the structure
+    /// as the procedure left it.
     ///
     /// # Safety
     ///
@@ -206,10 +234,16 @@ mod target {
     unsafe fn message(api: u32, input: usize, length: u32) -> u32 {
         // SAFETY: the caller's contract.
         let block = unsafe { core::slice::from_raw_parts_mut(input as *mut u8, length as usize) };
-        match serve(api, block) {
-            Some(result) => imports::callback_return(&result.to_ne_bytes(), STATUS_SUCCESS),
-            None => STATUS_INVALID_PARAMETER,
-        }
+        let Some(served) = serve(api, block) else {
+            return STATUS_INVALID_PARAMETER;
+        };
+        let mut output = [0u8; 4 + OUT_MAX];
+        output[..4].copy_from_slice(&served.answer.to_ne_bytes());
+        let at = core::mem::size_of::<rtl::callback::CallbackMsg>();
+        // `serve` checked the block holds the structure; `out` is never longer than it.
+        let out = served.out.min(OUT_MAX).min(block.len() - at);
+        output[4..4 + out].copy_from_slice(&block[at..at + out]);
+        imports::callback_return(&output[..4 + out], STATUS_SUCCESS)
     }
 
     /// `__fnDWORD`.
@@ -240,6 +274,12 @@ mod target {
     unsafe extern "system" fn fn_inoutnccalcsize(input: usize, length: u32) -> u32 {
         // SAFETY: the dispatcher's block.
         unsafe { message(FN_INOUTNCCALCSIZE, input, length) }
+    }
+
+    /// `__fnINOUTLPWINDOWPOS`.
+    unsafe extern "system" fn fn_inoutlpwindowpos(input: usize, length: u32) -> u32 {
+        // SAFETY: the dispatcher's block.
+        unsafe { message(FN_INOUTLPWINDOWPOS, input, length) }
     }
 
     /// `__fnINOUTSTYLECHANGE`.
@@ -452,7 +492,10 @@ mod tests {
             lparam,
         };
         let mut plain = block(head(WM_DESTROY, 77), &[]);
-        assert_eq!(serve(FN_DWORD, &mut plain), Some(-7));
+        assert_eq!(
+            serve(FN_DWORD, &mut plain),
+            Some(Served { answer: -7, out: 0 })
+        );
         let heard = HEARD.with(|heard| heard.take());
         assert_eq!(heard, [(0x40, WM_DESTROY, 9, 77)]);
 
@@ -464,7 +507,10 @@ mod tests {
         let mut carried = create.as_bytes().to_vec();
         carried.extend_from_slice(&[b'a', 0, 0, 0]);
         let mut created = block(head(WM_CREATE, 0), &carried);
-        assert_eq!(serve(FN_INLPCREATESTRUCT, &mut created), Some(-7));
+        assert_eq!(
+            serve(FN_INLPCREATESTRUCT, &mut created),
+            Some(Served { answer: -7, out: 0 })
+        );
         let at = created.as_ptr() as usize + core::mem::size_of::<CallbackMsg>();
         let written =
             CreateStructW::read_from(&created, core::mem::size_of::<CallbackMsg>()).unwrap();
@@ -473,6 +519,81 @@ mod tests {
         let heard = HEARD.with(|heard| heard.take());
         assert_eq!(heard.len(), 1);
         assert_eq!(heard[0].3, address_of(at as *const u8));
+    }
+
+    /// The in-out slots hand their structure back after the answer (its length the slot's, by
+    /// WM_NCCALCSIZE's form); the input-only WM_WINDOWPOSCHANGED's hands back none. WM_NCCALCSIZE's
+    /// NCCALCSIZE_PARAMS (wParam TRUE) has its lppos pointed at the WINDOWPOS after it.
+    #[test]
+    fn the_in_out_slots_hand_their_structure_back() {
+        let proc = procedure(listener);
+        let head = |message, wparam| CallbackMsg {
+            proc,
+            hwnd: 0x40,
+            message,
+            wparam,
+            lparam: 0,
+        };
+        let served = |api, message, wparam, carried: &[u8]| {
+            let mut block = block(head(message, wparam), carried);
+            let served = serve(api, &mut block);
+            (served, block)
+        };
+        let rect = Rect::new(1, 2, 3, 4);
+        let (s, _) = served(FN_INOUTNCCALCSIZE, 0x83, 0, rect.as_bytes());
+        assert_eq!(
+            s,
+            Some(Served {
+                answer: -7,
+                out: 16
+            })
+        );
+        let pos = WindowPos {
+            cx: 250,
+            ..WindowPos::default()
+        };
+        let (s, _) = served(FN_INOUTLPWINDOWPOS, 0x46, 0, pos.as_bytes());
+        assert_eq!(
+            s,
+            Some(Served {
+                answer: -7,
+                out: 28
+            })
+        );
+        let (s, _) = served(FN_INLPWINDOWPOS, 0x47, 0, pos.as_bytes());
+        assert_eq!(s, Some(Served { answer: -7, out: 0 }));
+        let style = StyleStruct {
+            style_old: 1,
+            style_new: 2,
+        };
+        let (s, _) = served(FN_INOUTSTYLECHANGE, 0x7C, 0xFFFF_FFF0, style.as_bytes());
+        assert_eq!(s, Some(Served { answer: -7, out: 8 }));
+
+        let params = NcCalcSizeParams {
+            rects: [rect; 3],
+            pos: 0xDEAD,
+        };
+        let mut carried = params.as_bytes().to_vec();
+        carried.extend_from_slice(pos.as_bytes());
+        let (s, block) = served(FN_INOUTNCCALCSIZE, 0x83, 1, &carried);
+        assert_eq!(
+            s,
+            Some(Served {
+                answer: -7,
+                out: 52
+            })
+        );
+        let at = core::mem::size_of::<CallbackMsg>();
+        let written = NcCalcSizeParams::read_from(&block, at).unwrap();
+        assert_eq!(written.rects, [rect; 3]);
+        assert_eq!(
+            written.pos,
+            address_of((block.as_ptr() as usize + at + 52) as *const u8)
+        );
+        // The TRUE form's block holds the WINDOWPOS too: without it, nothing is called.
+        let (s, _) = served(FN_INOUTNCCALCSIZE, 0x83, 1, params.as_bytes());
+        assert_eq!(s, None);
+        HEARD.with(|heard| heard.take());
     }
 
     /// A block too short for its slot's structure, or a slot that is not a message's, calls

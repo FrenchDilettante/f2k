@@ -873,8 +873,8 @@ fn call_back_create(hwnd: u32, proc: u32, message: u32, create: CreateStructW, n
     for &unit in name.iter().chain(&[0]) {
         block.extend_from_slice(&unit.to_ne_bytes());
     }
-    if let Some(answer) = crate::callback::serve(rtl::callback::FN_INLPCREATESTRUCT, &mut block) {
-        wm(|wm| wm.answers.push((message, answer)));
+    if let Some(served) = crate::callback::serve(rtl::callback::FN_INLPCREATESTRUCT, &mut block) {
+        wm(|wm| wm.answers.push((message, served.answer)));
     }
 }
 

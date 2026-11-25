@@ -120,6 +120,19 @@ pub struct WindowPos {
     pub flags: u32,
 }
 
+/// NCCALCSIZE_PARAMS (52 bytes): WM_NCCALCSIZE's lParam when its wParam is TRUE (SetWindowPos's
+/// resize): the new window rectangle, the old one and the old client rectangle (in the parent's
+/// client coordinates for a child window), and the WINDOWPOS of the move. The procedure leaves the
+/// new client rectangle in the first.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NcCalcSizeParams {
+    /// rgrc: the new window rectangle, the old window rectangle, the old client rectangle.
+    pub rects: [Rect; 3],
+    /// lppos: the address of the move's WINDOWPOS.
+    pub pos: u32,
+}
+
 /// WINDOWPLACEMENT (44 bytes): a window's show state and its places, as GetWindowPlacement answers
 /// them and SetWindowPlacement takes them; NtUserGetWindowPlacement and NtUserSetWindowPlacement
 /// carry it.
@@ -247,6 +260,7 @@ const _: () = {
     assert!(offset_of!(WindowInfo, style) == 36);
     assert!(offset_of!(WindowInfo, atom_window_type) == 56);
     assert!(size_of::<WindowPos>() == 28);
+    assert!(size_of::<NcCalcSizeParams>() == 52);
     assert!(size_of::<WindowPlacement>() == 44);
     assert!(offset_of!(WindowPlacement, normal) == 28);
     assert!(offset_of!(WindowPos, flags) == 24);
@@ -257,6 +271,8 @@ const _: () = {
 unsafe impl Pod for WindowInfo {}
 // SAFETY: seven 32-bit integers.
 unsafe impl Pod for WindowPos {}
+// SAFETY: three RECTs and a 32-bit integer, no padding (the assert above pins the size).
+unsafe impl Pod for NcCalcSizeParams {}
 // SAFETY: nine 32-bit integers.
 unsafe impl Pod for WindowData {}
 // SAFETY: six 32-bit integers.

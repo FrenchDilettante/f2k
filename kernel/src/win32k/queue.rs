@@ -30,12 +30,14 @@
 //! Windows 2000's `xxx` routines call back. So a zero answer to WM_NCCREATE cancels the creation,
 //! -1 to WM_CREATE fails it, and whatever the procedure does meanwhile (SetFocus from WM_ACTIVATE,
 //! another window made from WM_CREATE) happens inside the decision, in Windows' order. What the
-//! procedure changes in the structure it was handed (WM_NCCALCSIZE's rectangle) does not come back
-//! yet. A message to another thread's window is queued for that thread as a sent message, and the
-//! decision goes on with the default procedure's answer (1 to WM_NCCREATE, 0 to the rest): the
-//! thread's next read hands it out first, before anything posted, with the procedure to call and a
-//! copy of the structure the message points at ([`rtl::user::Receipt`]); user32 calls the
-//! procedure and hands the answer back ([`end_sent`]), which nobody waits for.
+//! structure the procedure was handed comes back through the callback's output block, bounded by
+//! the structure's size ([`read_back`]): WM_NCCALCSIZE's client rectangle, WM_WINDOWPOSCHANGING's
+//! new place, WM_STYLECHANGING's new style. A message to another thread's window is queued for that
+//! thread as a sent message, and the decision goes on with the default procedure's answer (1 to
+//! WM_NCCREATE, 0 to the rest): the thread's next read hands it out first, before anything posted,
+//! with the procedure to call and a copy of the structure the message points at
+//! ([`rtl::user::Receipt`]); user32 calls the procedure and hands the answer back ([`end_sent`]),
+//! which nobody waits for.
 //!
 //! SendMessage to another thread's window is queued the same way, its sender waiting for the answer
 //! ([`send`], [`await_reply`]) and, as Windows 2000's sender does, handling the messages sent to
@@ -86,9 +88,11 @@ use rtl::callback::{
     FN_DWORD,
     FN_INLPCREATESTRUCT,
     FN_INLPWINDOWPOS,
+    FN_INOUTLPWINDOWPOS,
     FN_INOUTNCCALCSIZE,
     FN_INOUTSTYLECHANGE,
     FN_NCDESTROY,
+    OUT_MAX,
 };
 use rtl::pod::Pod;
 use rtl::user::{
@@ -146,8 +150,10 @@ use super::window::{
     WParam,
     WindowId,
     WindowManager,
+    WindowPos,
     Windows,
     THREADS,
+    WM_WINDOWPOSCHANGING,
 };
 use crate::sched::thread::ThreadId;
 use crate::slots::{self, Codec, Match, Record, Reuse, Slots};
@@ -2030,9 +2036,16 @@ pub fn defer(windows: &mut Windows, target: WindowId, message: &Message) {
     let Some(receiver) = windows.queues.queue_of(thread) else {
         return;
     };
+    // A resize's WM_NCCALCSIZE goes as the rectangle form (wParam FALSE): a receipt carries one
+    // structure, and nobody reads the answer back yet.
+    let mut wparam = message.wparam;
     let carried = match message.payload {
         Payload::None => Carried::None,
         Payload::Rect(r) => Carried::Rect(r),
+        Payload::CalcSize(calc) => {
+            wparam = 0;
+            Carried::Rect(calc.rects[0])
+        }
         Payload::WindowPos(w) => Carried::WindowPos(w),
         Payload::Style(style) => Carried::Style(style),
         Payload::Create(_) => return,
@@ -2044,7 +2057,7 @@ pub fn defer(windows: &mut Windows, target: WindowId, message: &Message) {
         hwnd,
         proc,
         message: message.message,
-        wparam: message.wparam,
+        wparam,
         lparam: message.lparam,
         carried,
         ..Sent::EMPTY
@@ -2058,7 +2071,9 @@ pub fn defer(windows: &mut Windows, target: WindowId, message: &Message) {
 /// (rtl::callback's notes): the `__fn*` slot its payload's kind names, the input block's head, and
 /// the structure the block carries after it (its first `length` bytes). A creation message's
 /// window name follows the structure in the block ([`Windows::create_text`]); its CREATESTRUCTW's
-/// lpszClass is the class's atom, as a receipt's was.
+/// lpszClass is the class's atom, as a receipt's was. WM_NCCALCSIZE's NCCALCSIZE_PARAMS is
+/// followed by its WINDOWPOS (its lppos 0: user32 points it at the copy); WM_WINDOWPOSCHANGING
+/// goes to the in-out WINDOWPOS slot, WM_WINDOWPOSCHANGED to the input-only one.
 pub fn callback_input(
     windows: &Windows,
     classes: &class::Registry,
@@ -2082,6 +2097,22 @@ pub fn callback_input(
         Payload::None if message.message == WM_NCDESTROY => (FN_NCDESTROY, &[]),
         Payload::None => (FN_DWORD, &[]),
         Payload::Rect(r) => (FN_INOUTNCCALCSIZE, r.as_bytes()),
+        Payload::CalcSize(calc) => {
+            let params = rtl::window::NcCalcSizeParams {
+                rects: calc.rects,
+                pos: 0,
+            };
+            let length = size_of::<rtl::window::NcCalcSizeParams>();
+            input.carried[..length].copy_from_slice(params.as_bytes());
+            input.carried[length..length + size_of::<WindowPos>()]
+                .copy_from_slice(calc.pos.as_bytes());
+            input.api = FN_INOUTNCCALCSIZE;
+            input.length = length + size_of::<WindowPos>();
+            return input;
+        }
+        Payload::WindowPos(p) if message.message == WM_WINDOWPOSCHANGING => {
+            (FN_INOUTLPWINDOWPOS, p.as_bytes())
+        }
         Payload::WindowPos(p) => (FN_INLPWINDOWPOS, p.as_bytes()),
         Payload::Style(style) => (FN_INOUTSTYLECHANGE, style.as_bytes()),
         Payload::Create(p) => {
@@ -2105,9 +2136,10 @@ pub fn callback_input(
                 class: u32::from(class),
                 ex_style: p.ex_style,
             };
-            input.carried.copy_from_slice(create.as_bytes());
+            let length = size_of::<CreateStructW>();
+            input.carried[..length].copy_from_slice(create.as_bytes());
             input.api = FN_INLPCREATESTRUCT;
-            input.length = CARRIED;
+            input.length = length;
             return input;
         }
     };
@@ -2117,8 +2149,56 @@ pub fn callback_input(
     input
 }
 
-/// The longest structure a callback's block carries: a CREATESTRUCTW.
-const CARRIED: usize = core::mem::size_of::<CreateStructW>();
+/// The longest structure a callback's block carries: an NCCALCSIZE_PARAMS and its WINDOWPOS (a
+/// CREATESTRUCTW is shorter).
+const CARRIED: usize = size_of::<rtl::window::NcCalcSizeParams>() + size_of::<WindowPos>();
+const _: () = assert!(CARRIED >= size_of::<CreateStructW>());
+
+/// What a callback's output block hands back after the LRESULT (rtl::callback's notes): at most
+/// [`OUT_MAX`] bytes, read from the user's output block by the issuer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CallbackOut {
+    pub bytes: [u8; OUT_MAX],
+    /// How many of them the routine handed back.
+    pub length: usize,
+}
+
+/// The structure `message` carried written back from the callback output `out` (the bytes after
+/// the LRESULT): for the in-out slots only ([`rtl::callback::out_size`]) and only when the routine
+/// handed back the whole structure; anything shorter (an untrusted routine's short or missing
+/// block) leaves the structure as it was sent, anything longer is not read. WM_NCCALCSIZE's
+/// TRUE form takes back its three rectangles, not lppos; WM_WINDOWPOSCHANGED and the creation's
+/// structures are input only.
+pub fn read_back(api: u32, message: &mut Message, out: &CallbackOut) {
+    let wanted = rtl::callback::out_size(api, message.wparam);
+    if wanted == 0 || out.length < wanted {
+        return;
+    }
+    let bytes = &out.bytes[..wanted];
+    match (&mut message.payload, api) {
+        (Payload::Rect(rect), FN_INOUTNCCALCSIZE) => {
+            if let Some(back) = rtl::gdi::Rect::from_bytes(bytes) {
+                *rect = back;
+            }
+        }
+        (Payload::CalcSize(calc), FN_INOUTNCCALCSIZE) => {
+            if let Some(back) = rtl::window::NcCalcSizeParams::from_bytes(bytes) {
+                calc.rects = back.rects;
+            }
+        }
+        (Payload::WindowPos(pos), FN_INOUTLPWINDOWPOS) => {
+            if let Some(back) = WindowPos::from_bytes(bytes) {
+                *pos = back;
+            }
+        }
+        (Payload::Style(style), FN_INOUTSTYLECHANGE) => {
+            if let Some(back) = StyleStruct::from_bytes(bytes) {
+                *style = back;
+            }
+        }
+        _ => {}
+    }
+}
 
 /// A message's callback, as [`callback_input`] makes it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2182,13 +2262,13 @@ impl<H: Hold> Session for QueueSession<H> {
     fn send(&mut self, target: WindowId, message: &mut Message) -> LResult {
         let windows = self.windows();
         let Some(proc) = windows.client_proc(target) else {
-            return default_answer(message.message);
+            return window::default_procedure(windows, target, message);
         };
         if let Some(answer) = call_back(&mut self.0, target, proc, message) {
             return answer;
         }
         defer(self.windows(), target, message);
-        default_answer(message.message)
+        window::default_procedure(self.windows(), target, message)
     }
 
     fn activate(&mut self, target: WindowId, command: window::Activate) -> bool {
@@ -2211,13 +2291,16 @@ impl<H: Hold> Session for QueueSession<H> {
 /// The callback `message` to `target` is, when `target` is a window of the running thread's and
 /// `hold` can let the lock go: the procedure `proc`'s answer, or 0 when the callback failed (the
 /// kernel stack has no room for it, the user stack cannot take its block, the routine took an
-/// exception or answered no LRESULT). None when the message is not one to call back.
+/// exception or answered no LRESULT). The structure the message carries comes back as the
+/// procedure left it, for the in-out slots ([`read_back`]: the user's output block copied while
+/// the lock is let go, no more than the structure's size). None when the message is not one to
+/// call back.
 #[cfg(target_arch = "x86")]
 fn call_back<H: Hold>(
     hold: &mut H,
     target: WindowId,
     proc: u32,
-    message: &Message,
+    message: &mut Message,
 ) -> Option<LResult> {
     use crate::win32k::text::Staged;
     // The running thread, by its client id: a window's thread record is the window registry's,
@@ -2253,15 +2336,36 @@ fn call_back<H: Hold>(
         rtl::pod::slice_bytes(units),
         terminator,
     ];
-    hold.unlocked(|passive| {
+    let wanted = rtl::callback::out_size(input.api, message.wparam);
+    let (answer, out) = hold.unlocked(|passive| {
+        let mut out = CallbackOut {
+            bytes: [0; OUT_MAX],
+            length: 0,
+        };
         let reply = crate::user::callback::call_user_mode(passive, input.api, &parts);
         if reply.status != STATUS_SUCCESS || (reply.length as usize) < size_of::<LResult>() {
-            return 0;
+            return (0, out);
         }
-        crate::user::args::UserPtr::<LResult>::at(reply.output)
-            .read()
-            .unwrap_or(0)
-    })
+        let output = crate::user::args::UserAddr(reply.output);
+        let Ok(answer) = output.cast::<LResult>().read() else {
+            return (0, out);
+        };
+        // The structure after the answer: no more than the slot's, and only when the routine
+        // handed back that much (the length is the routine's word, the copy probed and
+        // fault-tolerant).
+        let handed = (reply.length as usize - size_of::<LResult>()).min(wanted);
+        if handed == wanted
+            && output
+                .offset(size_of::<LResult>() as u32)
+                .read(&mut out.bytes[..handed])
+                .is_ok()
+        {
+            out.length = handed;
+        }
+        (answer, out)
+    })?;
+    read_back(input.api, message, &out);
+    Some(answer)
 }
 
 /// The host has no user mode to call back: every send is queued.
@@ -2270,7 +2374,7 @@ fn call_back<H: Hold>(
     _hold: &mut H,
     _target: WindowId,
     _proc: u32,
-    _message: &Message,
+    _message: &mut Message,
 ) -> Option<LResult> {
     None
 }
@@ -3380,6 +3484,7 @@ mod tests {
         WM_NCCALCSIZE,
         WM_NCDESTROY,
         WM_SIZE,
+        WM_STYLECHANGING,
         WM_USER,
     };
 
@@ -3479,6 +3584,172 @@ mod tests {
         );
         assert_eq!((input.api, input.length), (FN_INOUTNCCALCSIZE, 16));
         assert_eq!(&input.carried[..16], rect.as_bytes());
+
+        // A resize's WM_NCCALCSIZE (wParam TRUE): the NCCALCSIZE_PARAMS, lppos 0, then the
+        // WINDOWPOS.
+        let pos = WindowPos {
+            hwnd: h,
+            cx: 250,
+            flags: 0x14,
+            ..WindowPos::default()
+        };
+        let calc = window::CalcSize {
+            rects: [rect, rtl::gdi::Rect::new(5, 6, 7, 8), rect],
+            pos,
+        };
+        let mut resize = message(WM_NCCALCSIZE, Payload::CalcSize(calc));
+        resize.wparam = 1;
+        let input = callback_input(&m.windows, &m.classes, w, PROC, &resize);
+        assert_eq!((input.api, input.length), (FN_INOUTNCCALCSIZE, 80));
+        let params = rtl::window::NcCalcSizeParams::from_bytes(&input.carried[..52]).unwrap();
+        assert_eq!((params.rects, params.pos), (calc.rects, 0));
+        assert_eq!(&input.carried[52..80], pos.as_bytes());
+
+        // WM_WINDOWPOSCHANGING's WINDOWPOS goes in and out, WM_WINDOWPOSCHANGED's in only.
+        let slot = |number| {
+            let input = callback_input(
+                &m.windows,
+                &m.classes,
+                w,
+                PROC,
+                &message(number, Payload::WindowPos(pos)),
+            );
+            assert_eq!(&input.carried[..28], pos.as_bytes());
+            (input.api, input.length)
+        };
+        assert_eq!(slot(WM_WINDOWPOSCHANGING), (FN_INOUTLPWINDOWPOS, 28));
+        assert_eq!(slot(window::WM_WINDOWPOSCHANGED), (FN_INLPWINDOWPOS, 28));
+    }
+
+    /// A callback's output: `bytes` after the LRESULT.
+    fn out(bytes: &[u8]) -> CallbackOut {
+        let mut out = CallbackOut {
+            bytes: [0; OUT_MAX],
+            length: bytes.len().min(OUT_MAX),
+        };
+        out.bytes[..out.length].copy_from_slice(&bytes[..out.length]);
+        out
+    }
+
+    /// The in-out slots' structures come back as the procedure left them: WM_NCCALCSIZE's
+    /// rectangle, or its NCCALCSIZE_PARAMS's three rectangles (not lppos, nor the WINDOWPOS);
+    /// WM_WINDOWPOSCHANGING's WINDOWPOS; WM_STYLECHANGING's STYLESTRUCT.
+    #[test]
+    fn a_callbacks_structure_comes_back() {
+        let message = |message, wparam, payload| Message {
+            message,
+            wparam,
+            lparam: 0,
+            payload,
+        };
+        let rect = rtl::gdi::Rect::new(0, 0, 200, 100);
+        let client = rtl::gdi::Rect::new(10, 10, 190, 90);
+        let mut m = message(WM_NCCALCSIZE, 0, Payload::Rect(rect));
+        read_back(FN_INOUTNCCALCSIZE, &mut m, &out(client.as_bytes()));
+        assert_eq!(m.payload, Payload::Rect(client));
+
+        let calc = window::CalcSize {
+            rects: [rect; 3],
+            pos: WindowPos::default(),
+        };
+        let back = rtl::window::NcCalcSizeParams {
+            rects: [client, rect, client],
+            pos: 0x7FFE_0000,
+        };
+        let mut m = message(WM_NCCALCSIZE, 1, Payload::CalcSize(calc));
+        read_back(FN_INOUTNCCALCSIZE, &mut m, &out(back.as_bytes()));
+        assert_eq!(
+            m.payload,
+            Payload::CalcSize(window::CalcSize {
+                rects: [client, rect, client],
+                pos: WindowPos::default(),
+            })
+        );
+
+        let pos = WindowPos {
+            x: 60,
+            y: 70,
+            cx: 220,
+            cy: 130,
+            ..WindowPos::default()
+        };
+        let edited = WindowPos {
+            cx: 250,
+            flags: 0x2,
+            ..pos
+        };
+        let mut m = message(WM_WINDOWPOSCHANGING, 0, Payload::WindowPos(pos));
+        read_back(FN_INOUTLPWINDOWPOS, &mut m, &out(edited.as_bytes()));
+        assert_eq!(m.payload, Payload::WindowPos(edited));
+
+        let style = StyleStruct {
+            style_old: 0x04C0_0000,
+            style_new: 0x04C8_0000,
+        };
+        let stuck = StyleStruct {
+            style_new: 0x04CC_0000,
+            ..style
+        };
+        let mut m = message(WM_STYLECHANGING, -16i32 as u32, Payload::Style(style));
+        read_back(FN_INOUTSTYLECHANGE, &mut m, &out(stuck.as_bytes()));
+        assert_eq!(m.payload, Payload::Style(stuck));
+    }
+
+    /// A routine's output is untrusted: one shorter than the slot's structure leaves the structure
+    /// as it was sent, the bytes past it are not read, an input-only slot's are ignored, and a
+    /// payload of another kind than the slot's is not written.
+    #[test]
+    fn a_short_or_foreign_callback_output_changes_nothing() {
+        let rect = rtl::gdi::Rect::new(0, 0, 200, 100);
+        let client = rtl::gdi::Rect::new(10, 10, 190, 90);
+        let mut m = Message {
+            message: WM_NCCALCSIZE,
+            wparam: 0,
+            lparam: 0,
+            payload: Payload::Rect(rect),
+        };
+        read_back(FN_INOUTNCCALCSIZE, &mut m, &out(&client.as_bytes()[..12]));
+        assert_eq!(m.payload, Payload::Rect(rect), "short");
+        read_back(FN_INOUTNCCALCSIZE, &mut m, &out(&[]));
+        assert_eq!(m.payload, Payload::Rect(rect), "none");
+        let mut long = client.as_bytes().to_vec();
+        long.extend_from_slice(&[0xFF; 36]);
+        read_back(FN_INOUTNCCALCSIZE, &mut m, &out(&long));
+        assert_eq!(
+            m.payload,
+            Payload::Rect(client),
+            "longer: the rectangle alone"
+        );
+
+        // The TRUE form wants the whole NCCALCSIZE_PARAMS: a RECT's worth is short.
+        let calc = window::CalcSize {
+            rects: [rect; 3],
+            pos: WindowPos::default(),
+        };
+        let mut m = Message {
+            message: WM_NCCALCSIZE,
+            wparam: 1,
+            lparam: 0,
+            payload: Payload::CalcSize(calc),
+        };
+        read_back(FN_INOUTNCCALCSIZE, &mut m, &out(client.as_bytes()));
+        assert_eq!(m.payload, Payload::CalcSize(calc));
+
+        let pos = WindowPos {
+            cx: 220,
+            ..WindowPos::default()
+        };
+        let edited = WindowPos { cx: 250, ..pos };
+        let mut m = Message {
+            message: window::WM_WINDOWPOSCHANGED,
+            wparam: 0,
+            lparam: 0,
+            payload: Payload::WindowPos(pos),
+        };
+        read_back(FN_INLPWINDOWPOS, &mut m, &out(edited.as_bytes()));
+        assert_eq!(m.payload, Payload::WindowPos(pos), "input only");
+        read_back(FN_INOUTNCCALCSIZE, &mut m, &out(edited.as_bytes()));
+        assert_eq!(m.payload, Payload::WindowPos(pos), "another kind's slot");
     }
 
     /// The host's session queues every message, but a creation's: WM_NCCALCSIZE first, its

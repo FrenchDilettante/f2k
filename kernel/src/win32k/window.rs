@@ -68,17 +68,19 @@
 //!
 //! Seams recorded: every send and window-manager call the decisions make goes through the
 //! [`Session`] trait; the services run them in the queue's session
-//! ([`super::queue::QueueSession`]), which queues each message for the window's thread and answers
-//! as the default procedure does, and the boot in [`DefaultSession`]; monitors come from the
-//! display slice (the boot sets the primary monitor's work area). The frame is the default
-//! procedure's: WM_NCCALCSIZE is sent, and the client rectangle is the window's less the frame,
-//! caption and menu bar its styles and its menu give ([`Windows::default_client`], rtl::nonclient's
-//! rules, which user32's default procedure draws by); a framed window's frame shows anew (shown,
-//! sized, SWP_FRAMECHANGED) with WM_NCPAINT, and a window hidden uncovers the windows under it:
-//! invalid there, their frames painted. A thread's end takes its windows and its queue, on its way
-//! out ([`WindowManager::end_thread`]); its record, empty, outlives it until its process's end,
-//! which takes the process's classes and its threads' records at its teardown
-//! ([`WindowManager::end_process`]).
+//! ([`super::queue::QueueSession`]), which calls a window of the deciding thread's own back and
+//! queues a message for another thread's window, answering as the default procedure does, and the
+//! boot in [`DefaultSession`]; monitors come from the display slice (the boot sets the primary
+//! monitor's work area). The client rectangle is WM_NCCALCSIZE's answer ([`Session::calc_client`]):
+//! the procedure's, or, where the window manager answers as the default procedure, the window's
+//! less the frame, caption and menu bar its styles and its menu give ([`Windows::default_client`],
+//! rtl::nonclient's rules, which user32's default procedure computes and draws by); the handlers of
+//! WM_WINDOWPOSCHANGING and WM_STYLECHANGING may change the new place and the new style. A framed
+//! window's frame shows anew (shown, sized, SWP_FRAMECHANGED) with WM_NCPAINT, and a window hidden
+//! uncovers the windows under it: invalid there, their frames painted. A thread's end takes its
+//! windows and its queue, on its way out ([`WindowManager::end_thread`]); its record, empty,
+//! outlives it until its process's end, which takes the process's classes and its threads' records
+//! at its teardown ([`WindowManager::end_process`]).
 
 // Parts of the decision logic have no caller until the message slice lands (the activation and
 // hook state, the zombie's references).
@@ -515,8 +517,52 @@ pub struct Message {
     pub wparam: WParam,
     pub lparam: LParam,
     /// The payload a handler may read or write: the create parameters for WM_NCCREATE/WM_CREATE,
-    /// the rectangle for WM_NCCALCSIZE, nothing otherwise.
+    /// the rectangle or NCCALCSIZE_PARAMS for WM_NCCALCSIZE, the WINDOWPOS and STYLESTRUCT of the
+    /// position and style messages, nothing otherwise. A send to a procedure hands back what the
+    /// procedure left in it (WM_NCCALCSIZE, WM_WINDOWPOSCHANGING, WM_STYLECHANGING); a send the
+    /// default procedure answers leaves WM_NCCALCSIZE's as it would ([`default_procedure`]).
     pub payload: Payload,
+}
+
+/// WM_NCCALCSIZE's NCCALCSIZE_PARAMS (wParam TRUE), as SetWindowPos's resize sends it: the new
+/// window rectangle (the new client rectangle on the way back), the old one and the old client
+/// rectangle, and the move's WINDOWPOS (which the procedure's lppos points at; not read back).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CalcSize {
+    pub rects: [Rect; 3],
+    pub pos: WindowPos,
+}
+
+/// The window rectangles a resize's WM_NCCALCSIZE reports ([`Session::calc_client`]'s TRUE
+/// form), in screen coordinates: the window's rectangle and client rectangle before it, and the
+/// move's WINDOWPOS.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Resize {
+    pub window: Rect,
+    pub client: Rect,
+    pub pos: WindowPos,
+}
+
+/// The default window procedure's answer to `message` for `target`, as the window manager gives it
+/// when no client procedure answers (a window whose procedure is the window manager's, a message
+/// queued for another thread, a session that cannot call back): WM_NCCREATE and
+/// WM_QUERYENDSESSION answer 1, the rest 0; WM_NCCALCSIZE's rectangle (either form's first) is
+/// made the client rectangle the window's frame leaves inside it ([`Windows::default_client`]), as
+/// user32's DefWindowProc makes it. A window gone leaves the payload as it is.
+pub fn default_procedure(windows: &Windows, target: WindowId, message: &mut Message) -> LResult {
+    if message.message == WM_NCCALCSIZE && windows.pool.is_live(target) {
+        match &mut message.payload {
+            Payload::Rect(rect) => *rect = windows.default_client(target, *rect),
+            Payload::CalcSize(calc) => {
+                calc.rects[0] = windows.default_client(target, calc.rects[0])
+            }
+            _ => {}
+        }
+    }
+    match message.message {
+        WM_NCCREATE | rtl::user::WM_QUERYENDSESSION => 1,
+        _ => 0,
+    }
 }
 
 /// A message's payload.
@@ -524,7 +570,10 @@ pub struct Message {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Payload {
     None,
+    /// WM_NCCALCSIZE's window rectangle (wParam FALSE), the client rectangle on the way back.
     Rect(Rect),
+    /// WM_NCCALCSIZE's NCCALCSIZE_PARAMS (wParam TRUE).
+    CalcSize(CalcSize),
     Create(CreateParams),
     /// WM_WINDOWPOSCHANGING's and WM_WINDOWPOSCHANGED's WINDOWPOS (a WM_WINDOWPOSCHANGING handler
     /// may change it).
@@ -576,13 +625,10 @@ pub trait Session {
         self.parts().1
     }
 
-    /// Send `message` to `target`; the handler's answer. The default procedure continues a
-    /// creation (WM_NCCREATE answers 1) and answers 0 to everything else.
-    fn send(&mut self, _target: WindowId, message: &mut Message) -> LResult {
-        match message.message {
-            WM_NCCREATE => 1,
-            _ => 0,
-        }
+    /// Send `message` to `target`; the handler's answer, and its payload as the handler left it.
+    /// The default answers as the default procedure does ([`default_procedure`]).
+    fn send(&mut self, target: WindowId, message: &mut Message) -> LResult {
+        default_procedure(self.windows(), target, message)
     }
 
     /// The WM_SIZE send (wparam is the SIZE_* command, lparam the client area's width and height,
@@ -604,23 +650,44 @@ pub trait Session {
         );
     }
 
-    /// WM_NCCALCSIZE to `target` for the window rectangle `rect`: the client rectangle. The send
-    /// goes through [`Session::send`]; the answer is the default procedure's, the frame the
-    /// window's styles give taken off ([`Windows::default_client`]): the rectangle the procedure
-    /// hands back is not read back yet. A window the procedure destroyed meanwhile answers `rect`.
-    fn calc_client(&mut self, target: WindowId, rect: Rect) -> Rect {
+    /// WM_NCCALCSIZE to `target` for the window rectangle `rect` (screen coordinates): the client
+    /// rectangle the handler hands back, in screen coordinates. A creation's (`resize` none) sends
+    /// the rectangle alone, wParam FALSE; a resize's sends an NCCALCSIZE_PARAMS, wParam TRUE: the
+    /// new rectangle, the old one and the old client rectangle, and the WINDOWPOS (as Windows
+    /// 2000's SetWindowPos does). The rectangles go in the parent's client coordinates for a child
+    /// window and come back from them. A procedure's answer is its own (user32's DefWindowProc
+    /// takes the frame off); one the default procedure answers has the frame taken off by the
+    /// window manager ([`default_procedure`]). The WVR_* answer is not used: F2K keeps no valid
+    /// bits to copy. A window the procedure destroyed meanwhile answers `rect`.
+    fn calc_client(&mut self, target: WindowId, rect: Rect, resize: Option<Resize>) -> Rect {
+        let (dx, dy) = self.windows().parent_origin(target);
+        let local = |r: Rect| r.saturating_offset_back(dx, dy);
+        let (wparam, payload) = match resize {
+            None => (0, Payload::Rect(local(rect))),
+            Some(resize) => (
+                1,
+                Payload::CalcSize(CalcSize {
+                    rects: [local(rect), local(resize.window), local(resize.client)],
+                    pos: resize.pos,
+                }),
+            ),
+        };
         let mut message = Message {
             message: WM_NCCALCSIZE,
-            wparam: 0,
+            wparam,
             lparam: 0,
-            payload: Payload::Rect(rect),
+            payload,
         };
         self.send(target, &mut message);
-        let windows = self.windows();
-        if !windows.pool.is_live(target) {
+        if !self.windows().pool.is_live(target) {
             return rect;
         }
-        windows.default_client(target, rect)
+        let client = match message.payload {
+            Payload::Rect(client) => client,
+            Payload::CalcSize(calc) => calc.rects[0],
+            _ => local(rect),
+        };
+        client.saturating_offset(dx, dy)
     }
 
     /// The frame of `target` to be painted: WM_NCPAINT sent, wParam 1 (the whole frame).
@@ -2524,7 +2591,7 @@ impl Windows {
 
         // WM_NCCALCSIZE: the client rect, the window's less the frame.
         let window_rect = windows.at(id).window_rect;
-        let client = s.calc_client(id, window_rect);
+        let client = s.calc_client(id, window_rect, None);
         if Windows::gone_in_creation(s, id) {
             return Err(Failure::Refused);
         }
@@ -3988,13 +4055,20 @@ impl Windows {
             if !windows.pool.is_live(window) {
                 return Err(Failure::InvalidWindowHandle);
             }
+            // The handler's WINDOWPOS, as Windows 2000 takes it: its place, size, flags and
+            // insert-after (an insert-after naming no window keeps the asked one). The window it
+            // names stays this one, and F2K's private show bit stays the caller's.
             if let Payload::WindowPos(changed) = message.payload {
                 if changed.insert_after != pos.insert_after {
                     after = windows
                         .insert_after_of(changed.insert_after)
                         .unwrap_or(after);
                 }
-                pos = changed;
+                pos = WindowPos {
+                    hwnd: pos.hwnd,
+                    flags: changed.flags & !SWP_SHOWWINDOW_CALL,
+                    ..changed
+                };
             }
         }
         let windows = s.windows();
@@ -4035,7 +4109,12 @@ impl Windows {
         }
         let old_client = windows.at(window).client_rect;
         let client = if sized || flags & SWP_FRAMECHANGED != 0 {
-            let client = s.calc_client(window, rect);
+            let resize = Resize {
+                window: old,
+                client: old_client,
+                pos: WindowPos { flags, ..pos },
+            };
+            let client = s.calc_client(window, rect, Some(resize));
             let windows = s.windows();
             if !windows.pool.is_live(window) {
                 return Err(Failure::InvalidWindowHandle);
@@ -4720,7 +4799,12 @@ impl Windows {
         };
         s.send(window, &mut changing);
         let windows = s.windows();
+        // The handler's new style sticks, as Windows 2000's SetWindowLong takes it (the private
+        // ANSI-creator bit kept off the extended style still).
         let new = match changing.payload {
+            Payload::Style(style) if index == rtl::window::GWL_EXSTYLE => {
+                style.style_new & !ANSI_CREATOR_BIT
+            }
             Payload::Style(style) => style.style_new,
             _ => value,
         };
@@ -6202,6 +6286,10 @@ mod tests {
         changing_answer: Option<WindowPos>,
         /// The client rectangle a WM_NCCALCSIZE handler answers, as an inset of the window's.
         nccalc_inset: i32,
+        /// (target, wParam, payload) for every WM_NCCALCSIZE, as sent.
+        calcs: Vec<(WindowId, WParam, Payload)>,
+        /// The new style a WM_STYLECHANGING handler answers instead of the one it got.
+        style_answer: Option<u32>,
         nccreate_answer: LResult,
         create_answer: LResult,
         hide_works: bool,
@@ -6233,6 +6321,8 @@ mod tests {
                 positions: Vec::new(),
                 changing_answer: None,
                 nccalc_inset: 0,
+                calcs: Vec::new(),
+                style_answer: None,
                 nccreate_answer: 1,
                 create_answer: 0,
                 hide_works: true,
@@ -6303,21 +6393,6 @@ mod tests {
             (&mut *self.windows, &mut *self.classes)
         }
 
-        /// The handler's inset when it has one, the default procedure's frame otherwise.
-        fn calc_client(&mut self, target: WindowId, rect: Rect) -> Rect {
-            let mut message = Message {
-                message: WM_NCCALCSIZE,
-                wparam: 0,
-                lparam: 0,
-                payload: Payload::Rect(rect),
-            };
-            self.send(target, &mut message);
-            match message.payload {
-                Payload::Rect(client) if self.rec.nccalc_inset != 0 => client,
-                _ => self.windows.default_client(target, rect),
-            }
-        }
-
         /// The frame paints are not among the decisions' messages these tests follow.
         fn paint_frame(&mut self, _target: WindowId) {}
 
@@ -6363,12 +6438,35 @@ mod tests {
                     self.windows.at_mut(target).style |= WS_VISIBLE;
                 }
             }
-            if message.message == WM_NCCALCSIZE && self.rec.nccalc_inset != 0 {
-                if let Payload::Rect(ref mut r) = message.payload {
-                    r.left += self.rec.nccalc_inset;
-                    r.top += self.rec.nccalc_inset;
-                    r.right -= self.rec.nccalc_inset;
-                    r.bottom -= self.rec.nccalc_inset;
+            if let Payload::Style(ref mut style) = message.payload {
+                if message.message == rtl::user::WM_STYLECHANGING {
+                    if let Some(answer) = self.rec.style_answer {
+                        style.style_new = answer;
+                    }
+                }
+            }
+            // WM_NCCALCSIZE: the handler's inset when it has one, the default procedure's frame
+            // otherwise.
+            if message.message == WM_NCCALCSIZE {
+                self.rec
+                    .calcs
+                    .push((target, message.wparam, message.payload.clone()));
+                let inset = self.rec.nccalc_inset;
+                let r = match message.payload {
+                    Payload::Rect(ref mut r) => Some(r),
+                    Payload::CalcSize(ref mut calc) => Some(&mut calc.rects[0]),
+                    _ => None,
+                };
+                match r {
+                    Some(r) if inset != 0 => {
+                        r.left += inset;
+                        r.top += inset;
+                        r.right -= inset;
+                        r.bottom -= inset;
+                    }
+                    _ => {
+                        default_procedure(self.windows, target, message);
+                    }
                 }
             }
             if self.rec.destroy_self_on == Some(message.message) {
@@ -9175,6 +9273,167 @@ mod tests {
             Ok((ex, false))
         );
         assert_eq!(w.at(id).ex_style, ex | WS_EX_TOOLWINDOW);
+    }
+
+    /// A WM_STYLECHANGING handler's new style sticks, and WM_STYLECHANGED reports it (Windows
+    /// 2000's SetWindowLong takes the STYLESTRUCT back); its extended style still loses the
+    /// private ANSI-creator bit.
+    #[test]
+    fn a_style_changing_handlers_new_style_sticks() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let id = create(w, c, t, atom, WS_OVERLAPPED | WS_CAPTION, &mut pump).unwrap();
+        let h = w.handle_of(id);
+        let style = w.at(id).style;
+        pump.style_answer = Some(style | WS_THICKFRAME);
+        assert_eq!(
+            Windows::set_window_long(
+                &mut pump.on(w, c),
+                OWNER,
+                h,
+                rtl::window::GWL_STYLE,
+                style | WS_SYSMENU,
+                false
+            ),
+            Ok((style, false))
+        );
+        assert_eq!(w.at(id).style, style | WS_THICKFRAME);
+        let ex = w.at(id).ex_style;
+        pump.style_answer = Some(ex | WS_EX_TOOLWINDOW | ANSI_CREATOR_BIT);
+        assert_eq!(
+            Windows::set_window_long(
+                &mut pump.on(w, c),
+                OWNER,
+                h,
+                rtl::window::GWL_EXSTYLE,
+                ex,
+                false
+            ),
+            Ok((ex, false))
+        );
+        assert_eq!(w.at(id).ex_style, ex | WS_EX_TOOLWINDOW);
+    }
+
+    /// WM_NCCALCSIZE's two forms: a creation sends the window rectangle (wParam FALSE), a resize an
+    /// NCCALCSIZE_PARAMS (wParam TRUE) with the new and old window rectangles, the old client
+    /// rectangle and the move's WINDOWPOS; a child's in its parent's client coordinates. The
+    /// handler's client rectangle is the window's (back in screen coordinates); one the default
+    /// procedure answers has the frame taken off.
+    #[test]
+    fn nccalcsize_carries_both_forms_and_its_answer_counts() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let top = create(w, c, t, atom, WS_POPUP | WS_BORDER, &mut pump).unwrap();
+        // The default procedure's: a one-pixel border off the window 10,20 100x80.
+        assert_eq!(w.at(top).client_rect, Rect::new(11, 21, 109, 99));
+        assert_eq!(
+            pump.calcs,
+            [(top, 0, Payload::Rect(Rect::new(10, 20, 110, 100)))]
+        );
+        pump.nccalc_inset = 5;
+        let mut a = args(atom, WS_CHILD);
+        (a.x, a.y, a.cx, a.cy) = (5, 6, 20, 10);
+        a.parent = Some(top);
+        let child = Windows::create_window_ex(&mut pump.on(w, c), t, &a).unwrap();
+        assert_eq!(
+            pump.calcs.last().unwrap(),
+            &(child, 0, Payload::Rect(Rect::new(5, 6, 25, 16))),
+            "a child's in its parent's client coordinates"
+        );
+        assert_eq!(w.at(child).window_rect, Rect::new(16, 27, 36, 37));
+        assert_eq!(w.at(child).client_rect, Rect::new(21, 32, 31, 32));
+
+        pump.calcs.clear();
+        let flags = SWP_NOZORDER | SWP_NOACTIVATE;
+        assert_eq!(
+            Windows::set_window_pos(
+                &mut pump.on(w, c),
+                child,
+                InsertAfter::Top,
+                7,
+                8,
+                40,
+                30,
+                flags
+            ),
+            Ok(())
+        );
+        let [(target, wparam, Payload::CalcSize(calc))] = pump.calcs.as_slice() else {
+            panic!("one WM_NCCALCSIZE, wParam TRUE: {:?}", pump.calcs);
+        };
+        assert_eq!((*target, *wparam), (child, 1));
+        assert_eq!(
+            calc.rects,
+            [
+                Rect::new(7, 8, 47, 38),
+                Rect::new(5, 6, 25, 16),
+                Rect::new(10, 11, 20, 11),
+            ]
+        );
+        assert_eq!(
+            (
+                calc.pos.hwnd,
+                calc.pos.x,
+                calc.pos.y,
+                calc.pos.cx,
+                calc.pos.cy
+            ),
+            (w.handle_of(child), 7, 8, 40, 30)
+        );
+        assert_eq!(w.at(child).window_rect, Rect::new(18, 29, 58, 59));
+        assert_eq!(w.at(child).client_rect, Rect::new(23, 34, 53, 54));
+
+        // The default procedure answers the TRUE form as the FALSE one.
+        pump.nccalc_inset = 0;
+        assert_eq!(
+            Windows::set_window_pos(
+                &mut pump.on(w, c),
+                top,
+                InsertAfter::Top,
+                0,
+                0,
+                50,
+                40,
+                flags | SWP_NOMOVE
+            ),
+            Ok(())
+        );
+        assert_eq!(w.at(top).client_rect, Rect::new(11, 21, 59, 59));
+    }
+
+    /// WM_WINDOWPOSCHANGING's handler adding SWP_NOMOVE and setting cx (guigeo `edits`): the
+    /// window keeps its place and takes the handler's width; the WINDOWPOS's window stays the one
+    /// moved, whatever the handler wrote there.
+    #[test]
+    fn a_window_pos_changing_handlers_edit_counts() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let id = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
+        pump.changing_answer = Some(WindowPos {
+            hwnd: 0x1234,
+            insert_after: 0,
+            x: 60,
+            y: 70,
+            cx: 250,
+            cy: 130,
+            flags: SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOMOVE,
+        });
+        assert_eq!(
+            Windows::set_window_pos(
+                &mut pump.on(w, c),
+                id,
+                InsertAfter::Top,
+                60,
+                70,
+                220,
+                130,
+                SWP_NOZORDER | SWP_NOACTIVATE
+            ),
+            Ok(())
+        );
+        assert_eq!(w.at(id).window_rect, Rect::new(10, 20, 260, 150));
+        let (_, _, changed) = *pump.positions.last().unwrap();
+        assert_eq!(changed.hwnd, w.handle_of(id));
     }
 
     /// The window's own fields: GWL_USERDATA, GWL_HINSTANCE and a child's GWL_ID set and answered,
