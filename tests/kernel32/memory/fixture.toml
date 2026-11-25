@@ -8,9 +8,8 @@ virtual = ["released: state 0x10000 protect 0x1 type 0x0 region * allocprotect 0
 image = ["past the image end: state 0x10000 protect 0x1 type 0x0 region * allocprotect 0x0"]
 
 [pending]
-# Not captured yet: their output.txt blocks are placeholders, which tests/capture.bat memory replaces
+# Not captured yet: its output.txt block is a placeholder, which tests/capture.bat memory replaces
 # once tests/build.bat memory has rebuilt memory.exe.
-handles = "F2K's GlobalLock and LocalLock hand a freed moveable handle back as a pointer, GMEM_MODIFY on an unknown handle succeeds and does not make a fixed block moveable, a locked block may move without GMEM_MOVEABLE, and no flag is refused as invalid"
 heapcap = "F2K's heap with a maximum size takes blocks past 0x7FFF8, its refusals leave the last error untouched, and HEAP_GENERATE_EXCEPTIONS raises for a NULL block's HeapReAlloc"
 
 [pins]

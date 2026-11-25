@@ -178,6 +178,12 @@ impl HandleCalls for BaseHandles<'_> {
     fn is_valid(&self, entry: usize) -> bool {
         ntcall::is_valid_handle(&self.0.borrow(), entry)
     }
+
+    /// Windows 2000's BASE_HANDLE_MARK_BIT: a handle is its 8-byte entry's second word, so bit 2
+    /// is set, where every heap block's pointer is 8-byte aligned.
+    fn marked(&self, handle: usize) -> bool {
+        handle & 4 != 0
+    }
 }
 
 /// The process heap's Local and Global memory, over ntdll's heap calls and kernel32's handle table,
@@ -205,10 +211,20 @@ fn finish(outcome: Outcome) -> usize {
     outcome.value
 }
 
-/// LocalAlloc / GlobalAlloc.
+/// LocalAlloc.
 #[unsafe(no_mangle)]
 extern "C" fn f2k_k32_local_alloc(flags: u32, size: usize) -> usize {
-    finish(with_memory(|memory| memory.alloc(flags, size)))
+    finish(with_memory(|memory| {
+        memory.alloc(flags, size, Family::Local)
+    }))
+}
+
+/// GlobalAlloc: LocalAlloc's, over the GMEM_ flags.
+#[unsafe(no_mangle)]
+extern "C" fn f2k_k32_global_alloc(flags: u32, size: usize) -> usize {
+    finish(with_memory(|memory| {
+        memory.alloc(flags, size, Family::Global)
+    }))
 }
 
 /// LocalFree / GlobalFree.
@@ -223,10 +239,16 @@ extern "C" fn f2k_k32_local_lock(handle: usize) -> usize {
     finish(with_memory(|memory| memory.lock(handle)))
 }
 
-/// LocalUnlock / GlobalUnlock.
+/// LocalUnlock.
 #[unsafe(no_mangle)]
 extern "C" fn f2k_k32_local_unlock(handle: usize) -> usize {
-    finish(with_memory(|memory| memory.unlock(handle)))
+    finish(with_memory(|memory| memory.unlock(handle, Family::Local)))
+}
+
+/// GlobalUnlock: LocalUnlock's, answering TRUE where it has no lock to release.
+#[unsafe(no_mangle)]
+extern "C" fn f2k_k32_global_unlock(handle: usize) -> usize {
+    finish(with_memory(|memory| memory.unlock(handle, Family::Global)))
 }
 
 /// LocalHandle / GlobalHandle.
@@ -253,10 +275,20 @@ extern "C" fn f2k_k32_global_flags(handle: usize) -> usize {
     finish(with_memory(|memory| memory.flags(handle, Family::Global)))
 }
 
-/// LocalReAlloc / GlobalReAlloc.
+/// LocalReAlloc.
 #[unsafe(no_mangle)]
 extern "C" fn f2k_k32_local_realloc(handle: usize, size: usize, flags: u32) -> usize {
-    finish(with_memory(|memory| memory.realloc(handle, size, flags)))
+    finish(with_memory(|memory| {
+        memory.realloc(handle, size, flags, Family::Local)
+    }))
+}
+
+/// GlobalReAlloc: LocalReAlloc's, over the GMEM_ flags.
+#[unsafe(no_mangle)]
+extern "C" fn f2k_k32_global_realloc(handle: usize, size: usize, flags: u32) -> usize {
+    finish(with_memory(|memory| {
+        memory.realloc(handle, size, flags, Family::Global)
+    }))
 }
 
 /// GlobalCompact: obsolete, as Windows 2000 documents it: no block moves or is discarded, and

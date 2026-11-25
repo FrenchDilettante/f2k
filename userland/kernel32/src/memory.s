@@ -3,7 +3,8 @@
 # family on the process heap and its RtlAllocateHandle family on kernel32's handle table, and
 # RtlCreateHeap/RtlDestroyHeap, cdecl):
 # each export re-pushes its arguments for the body and pops its stdcall block. A Local and a Global
-# export share a body, as on NT, but keep exports of their own.
+# export share a body, as on NT, but keep exports of their own; Alloc, Unlock, ReAlloc and Flags
+# have a Global body of their own (the flags they take and their answers differ).
 .text
 
 .p2align 4
@@ -48,7 +49,7 @@ _f2k_export_LocalAlloc:
 _f2k_export_GlobalAlloc:
     push dword ptr [esp+8]
     push dword ptr [esp+8]
-    call _f2k_k32_local_alloc
+    call _f2k_k32_global_alloc
     add esp, 8
     ret 8
 
@@ -96,7 +97,7 @@ _f2k_export_LocalUnlock:
 .globl _f2k_export_GlobalUnlock
 _f2k_export_GlobalUnlock:
     push dword ptr [esp+4]
-    call _f2k_k32_local_unlock
+    call _f2k_k32_global_unlock
     add esp, 4
     ret 4
 
@@ -164,6 +165,6 @@ _f2k_export_GlobalReAlloc:
     push dword ptr [esp+12]
     push dword ptr [esp+12]
     push dword ptr [esp+12]
-    call _f2k_k32_local_realloc
+    call _f2k_k32_global_realloc
     add esp, 12
     ret 12

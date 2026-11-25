@@ -68,6 +68,11 @@ pub trait HandleCalls {
     fn free(&self, entry: usize) -> bool;
     /// Whether `entry` is an entry of the table in use.
     fn is_valid(&self, entry: usize) -> bool;
+    /// Whether `handle` carries the mark of the table's handles, which no heap block's pointer
+    /// does: the Local and Global calls take a marked one for a movable block's handle (refused
+    /// with ERROR_INVALID_HANDLE when its entry is not in use), any other for a fixed block's
+    /// pointer.
+    fn marked(&self, handle: usize) -> bool;
 }
 
 /// A handle table and the virtual memory it grows in, making the calls itself (the host tests').
@@ -91,6 +96,20 @@ impl<V: Vm> HandleCalls for OnTable<'_, V> {
     fn is_valid(&self, entry: usize) -> bool {
         self.table.borrow().is_valid(entry)
     }
+
+    /// The host's words are 8 bytes, as are its heap blocks' alignment, so no bit tells a handle
+    /// from a pointer there: a handle is marked by lying at an entry's second word inside the
+    /// table's reservation.
+    fn marked(&self, handle: usize) -> bool {
+        let table = self.table.borrow();
+        let size = ENTRY;
+        handle.checked_sub(WORD).is_some_and(|entry| {
+            table.committed_handles != 0
+                && entry >= table.committed_handles
+                && entry < table.max_reserved_handles
+                && (entry - table.committed_handles).is_multiple_of(size)
+        })
+    }
 }
 
 /// The handle table's shape: as many entries as movable blocks may exist (0xFFFF), each the two
@@ -102,6 +121,11 @@ pub const ENTRY_SIZE: u32 = ENTRY as u32;
 pub const MOVEABLE: u32 = 0x0002;
 pub const ZEROINIT: u32 = 0x0040;
 pub const MODIFY: u32 = 0x0080;
+/// The flags each family's allocation takes (GMEM_VALID_FLAGS, LMEM_VALID_FLAGS); its reallocation
+/// takes MODIFY too. Any other bit is refused with ERROR_INVALID_PARAMETER (the memory capture's
+/// handles section).
+const GLOBAL_VALID_FLAGS: u32 = 0x7F72;
+const LOCAL_VALID_FLAGS: u32 = 0x0F72;
 const LOCKCOUNT: usize = 0x00FF;
 const DISCARDED: usize = 0x4000;
 const INVALID_HANDLE: usize = 0x8000;
@@ -130,6 +154,7 @@ pub const NO_ERROR: u32 = 0;
 use crate::winerror::{
     ERROR_DISCARDED,
     ERROR_INVALID_HANDLE,
+    ERROR_INVALID_PARAMETER,
     ERROR_NOT_ENOUGH_MEMORY,
     ERROR_NOT_LOCKED,
 };
@@ -168,14 +193,44 @@ pub struct Memory<'a, H, T> {
     pub handles: &'a T,
 }
 
-/// The family a flags call answers for: LocalFlags' or GlobalFlags' values.
+/// The family a call answers for, where the two differ: the flags they take and LocalFlags' or
+/// GlobalFlags' values, and LocalUnlock's or GlobalUnlock's answers.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Family {
     Local,
     Global,
 }
 
+impl Family {
+    /// The flags the family's allocation takes.
+    fn valid_flags(self) -> u32 {
+        match self {
+            Family::Local => LOCAL_VALID_FLAGS,
+            Family::Global => GLOBAL_VALID_FLAGS,
+        }
+    }
+}
+
+/// What a handle names: a fixed block's pointer (unmarked), a movable block's entry in use (lock
+/// count, data pointer, attributes), or a marked handle whose entry is not in use.
+enum Target {
+    Fixed,
+    Movable(usize, usize, usize),
+    Stale,
+}
+
 impl<H: HeapCalls, T: HandleCalls> Memory<'_, H, T> {
+    /// What `handle` names ([`Target`]).
+    fn target(&self, handle: usize) -> Target {
+        if !self.handles.marked(handle) {
+            return Target::Fixed;
+        }
+        match self.entry_with_attributes(handle) {
+            Some((lock, data, attributes)) => Target::Movable(lock, data, attributes),
+            None => Target::Stale,
+        }
+    }
+
     /// A movable handle's entry: (lock count, data pointer), when `handle` is one.
     fn entry(&self, handle: usize) -> Option<(usize, usize)> {
         self.entry_with_attributes(handle)
@@ -223,8 +278,12 @@ impl<H: HeapCalls, T: HandleCalls> Memory<'_, H, T> {
         Some(block + PREFIX)
     }
 
-    /// LocalAlloc / GlobalAlloc.
-    pub fn alloc(&self, flags: u32, size: usize) -> Outcome {
+    /// LocalAlloc / GlobalAlloc: null with ERROR_INVALID_PARAMETER for a flag outside the
+    /// family's.
+    pub fn alloc(&self, flags: u32, size: usize, family: Family) -> Outcome {
+        if flags & !family.valid_flags() != 0 {
+            return failed(0, ERROR_INVALID_PARAMETER);
+        }
         let zero = flags & ZEROINIT != 0;
         let made = if flags & MOVEABLE == 0 {
             self.heap
@@ -260,41 +319,49 @@ impl<H: HeapCalls, T: HandleCalls> Memory<'_, H, T> {
 
     /// LocalLock / GlobalLock: the data pointer, a movable block's lock count raised (to its
     /// ceiling, 255, where it stays: the memory capture's 300 locks); null with ERROR_DISCARDED
-    /// for a discarded block.
+    /// for a discarded block, with ERROR_INVALID_HANDLE for a stale handle (the memory capture's
+    /// freed block); a fixed block's pointer back.
     pub fn lock(&self, handle: usize) -> Outcome {
-        match self.entry(handle) {
-            Some((_, 0)) => failed(0, ERROR_DISCARDED),
-            Some((count, data)) => {
+        match self.target(handle) {
+            Target::Movable(_, 0, _) => failed(0, ERROR_DISCARDED),
+            Target::Movable(count, data, _) => {
                 if count < LOCKCOUNT {
                     self.set_entry(handle, count + 1, data);
                 }
                 ok(data)
             }
-            None => ok(handle),
+            Target::Stale => failed(0, ERROR_INVALID_HANDLE),
+            Target::Fixed => ok(handle),
         }
     }
 
     /// LocalUnlock / GlobalUnlock: TRUE while the block stays locked; FALSE with the last error
     /// NO_ERROR once the last lock goes, as the documentation gives it (the memory capture's
-    /// GlobalUnlock of the last lock: err=0).
-    pub fn unlock(&self, handle: usize) -> Outcome {
-        match self.entry(handle) {
-            Some((0, _)) => failed(0, ERROR_NOT_LOCKED),
-            Some((1, data)) => {
+    /// GlobalUnlock of the last lock: err=0). A stale handle sets ERROR_INVALID_HANDLE, and
+    /// GlobalUnlock answers it TRUE where LocalUnlock answers FALSE (the memory capture's freed
+    /// block); a fixed block has no lock to release: GlobalUnlock answers TRUE, LocalUnlock FALSE
+    /// with ERROR_NOT_LOCKED (Windows 2000's kernel32 starts each from that answer).
+    pub fn unlock(&self, handle: usize, family: Family) -> Outcome {
+        let global = usize::from(family == Family::Global);
+        match self.target(handle) {
+            Target::Movable(0, ..) => failed(0, ERROR_NOT_LOCKED),
+            Target::Movable(1, data, _) => {
                 self.set_entry(handle, 0, data);
                 failed(0, NO_ERROR)
             }
-            Some((count, data)) => {
+            Target::Movable(count, data, _) => {
                 self.set_entry(handle, count - 1, data);
                 ok(1)
             }
-            None => ok(0),
+            Target::Stale => failed(global, ERROR_INVALID_HANDLE),
+            Target::Fixed if family == Family::Global => ok(1),
+            Target::Fixed => failed(0, ERROR_NOT_LOCKED),
         }
     }
 
     /// LocalHandle / GlobalHandle: the handle of the block whose data is at `pointer`.
     pub fn handle_of(&self, pointer: usize) -> usize {
-        if self.entry(pointer).is_some() {
+        if self.handles.marked(pointer) {
             return pointer;
         }
         let Some(prefix) = pointer.checked_sub(PREFIX) else {
@@ -313,10 +380,11 @@ impl<H: HeapCalls, T: HandleCalls> Memory<'_, H, T> {
     /// LocalSize / GlobalSize: the block's size; zero for a discarded one, zero with
     /// ERROR_INVALID_HANDLE for an unknown one.
     pub fn size(&self, handle: usize) -> Outcome {
-        let size = match self.entry(handle) {
-            Some((_, 0)) => Some(0),
-            Some((_, data)) => self.heap.size(0, data - PREFIX).map(|s| s - PREFIX),
-            None => self.heap.size(0, handle),
+        let size = match self.target(handle) {
+            Target::Movable(_, 0, _) => Some(0),
+            Target::Movable(_, data, _) => self.heap.size(0, data - PREFIX).map(|s| s - PREFIX),
+            Target::Stale => None,
+            Target::Fixed => self.heap.size(0, handle),
         };
         match size {
             Some(size) => ok(size),
@@ -355,14 +423,15 @@ impl<H: HeapCalls, T: HandleCalls> Memory<'_, H, T> {
     /// LocalFree / GlobalFree: null on success, the handle back (and ERROR_INVALID_HANDLE) on
     /// failure.
     pub fn free(&self, handle: usize) -> Outcome {
-        let freed = match self.entry(handle) {
-            Some((_, data)) => {
+        let freed = match self.target(handle) {
+            Target::Movable(_, data, _) => {
                 if data != 0 {
                     self.heap.free(0, data - PREFIX);
                 }
                 self.handles.free(handle - WORD)
             }
-            None => handle == 0 || self.heap.free(0, handle),
+            Target::Stale => false,
+            Target::Fixed => handle == 0 || self.heap.free(0, handle),
         };
         if freed {
             ok(0)
@@ -371,57 +440,98 @@ impl<H: HeapCalls, T: HandleCalls> Memory<'_, H, T> {
         }
     }
 
-    /// LocalReAlloc / GlobalReAlloc: a movable block's data resized (and moved as it must), or
+    /// LocalReAlloc / GlobalReAlloc: a movable block's data resized (and moved as it must; a locked
+    /// one moves only under the MOVEABLE flag, else it is resized in place or not at all), or
     /// discarded for no bytes while it is unlocked (GlobalDiscard's call: the handle stays, its
     /// attributes with it); a fixed block resized in place, or moved when the call allows it. Under
-    /// the MODIFY flag, a movable block's discardable attribute is set as the flags say, and
-    /// nothing is resized.
-    pub fn realloc(&self, handle: usize, size: usize, flags: u32) -> Outcome {
+    /// the MODIFY flag nothing is resized: a movable block's discardable attribute is set as the
+    /// flags say, and a fixed block is made movable by MOVEABLE ([`Memory::make_movable`]). A flag
+    /// outside the family's (MODIFY aside) is refused with ERROR_INVALID_PARAMETER, a stale handle
+    /// with ERROR_INVALID_HANDLE (the memory capture's handles section).
+    pub fn realloc(&self, handle: usize, size: usize, flags: u32, family: Family) -> Outcome {
+        if flags & !(family.valid_flags() | MODIFY) != 0 {
+            return failed(0, ERROR_INVALID_PARAMETER);
+        }
         let zero = if flags & ZEROINIT != 0 {
             HEAP_ZERO_MEMORY
         } else {
             0
         };
-        let result = if flags & MODIFY != 0 {
-            if let Some((_, _, attributes)) = self.entry_with_attributes(handle) {
+        let result = match self.target(handle) {
+            Target::Stale => return failed(0, ERROR_INVALID_HANDLE),
+            Target::Movable(_, _, attributes) if flags & MODIFY != 0 => {
                 let discardable = flags as usize & DISCARDABLE;
                 self.set_attributes(handle, attributes & !DISCARDABLE | discardable);
+                Some(handle)
             }
-            Some(handle)
-        } else {
-            match self.entry(handle) {
-                Some((0, data)) if size == 0 && flags & MOVEABLE != 0 => {
-                    if data != 0 {
-                        self.heap.free(0, data - PREFIX);
-                    }
-                    self.set_entry(handle, 0, 0);
+            Target::Fixed if flags & MODIFY != 0 => {
+                if flags & MOVEABLE != 0 {
+                    self.make_movable(handle, flags)
+                } else {
                     Some(handle)
                 }
-                Some((count, 0)) => self.new_data(handle, size, zero != 0).map(|data| {
-                    self.set_entry(handle, count, data);
-                    handle
-                }),
-                Some((count, data)) => size
-                    .checked_add(PREFIX)
-                    .and_then(|bytes| self.heap.realloc(zero, data - PREFIX, bytes))
+            }
+            Target::Movable(0, data, _) if size == 0 && flags & MOVEABLE != 0 => {
+                if data != 0 {
+                    self.heap.free(0, data - PREFIX);
+                }
+                self.set_entry(handle, 0, 0);
+                Some(handle)
+            }
+            Target::Movable(count, 0, _) => self.new_data(handle, size, zero != 0).map(|data| {
+                self.set_entry(handle, count, data);
+                handle
+            }),
+            Target::Movable(count, data, _) => {
+                let in_place = if count != 0 && flags & MOVEABLE == 0 {
+                    HEAP_REALLOC_IN_PLACE_ONLY
+                } else {
+                    0
+                };
+                size.checked_add(PREFIX)
+                    .and_then(|bytes| self.heap.realloc(zero | in_place, data - PREFIX, bytes))
                     .map(|block| {
                         self.set_entry(handle, count, block + PREFIX);
                         handle
-                    }),
-                None => {
-                    let in_place = if flags & MOVEABLE == 0 {
-                        HEAP_REALLOC_IN_PLACE_ONLY
-                    } else {
-                        0
-                    };
-                    self.heap.realloc(zero | in_place, handle, size)
-                }
+                    })
+            }
+            Target::Fixed => {
+                let in_place = if flags & MOVEABLE == 0 {
+                    HEAP_REALLOC_IN_PLACE_ONLY
+                } else {
+                    0
+                };
+                self.heap.realloc(zero | in_place, handle, size)
             }
         };
         match result {
             Some(handle) => ok(handle),
             None => failed(0, ERROR_NOT_ENOUGH_MEMORY),
         }
+    }
+
+    /// A fixed block made movable (ReAlloc's MODIFY|MOVEABLE): a new handle, unlocked, whose data
+    /// is a copy of the block in a new one, the old block freed — so its pointer is no longer the
+    /// data's. Its attributes: discardable as the flags say, and shared for DDE whatever they say
+    /// (the memory capture's GlobalFlags of such a block: 0x2000 with its lock count). None, the
+    /// block untouched, when there is no room or `pointer` is no block.
+    fn make_movable(&self, pointer: usize, flags: u32) -> Option<usize> {
+        let size = self.heap.size(0, pointer)?;
+        let entry = self.handles.allocate()?;
+        let handle = entry + WORD;
+        write(entry, ALLOCATED);
+        self.set_attributes(handle, DDESHARE | flags as usize & DISCARDABLE);
+        self.set_entry(handle, 0, 0);
+        let Some(data) = self.new_data(handle, size, false) else {
+            self.handles.free(entry);
+            return None;
+        };
+        // SAFETY: two live blocks of the heap, distinct (the new one was just allocated while the
+        // old one lives), each at least `size` bytes long.
+        unsafe { core::ptr::copy_nonoverlapping(pointer as *const u8, data as *mut u8, size) };
+        self.heap.free(0, pointer);
+        self.set_entry(handle, 0, data);
+        Some(handle)
     }
 }
 
@@ -465,25 +575,32 @@ mod tests {
     #[test]
     fn local_memory_follows_the_capture() {
         with_memory(|memory, _| {
-            let fixed = memory.alloc(ZEROINIT, 100);
+            let fixed = memory.alloc(ZEROINIT, 100, Family::Global);
             assert_eq!(fixed.error, None);
             assert!(bytes(fixed.value, 100).iter().all(|&b| b == 0));
             assert_eq!(memory.size(fixed.value), ok(100));
             bytes(fixed.value, 100).fill(9);
-            let moved = memory.realloc(fixed.value, 5000, MOVEABLE);
+            let moved = memory.realloc(fixed.value, 5000, MOVEABLE, Family::Global);
             assert_eq!(bytes(moved.value, 100), &[9; 100]);
             assert_eq!(memory.size(moved.value), ok(5000));
             assert_eq!(memory.free(moved.value), ok(0));
 
-            let handle = memory.alloc(MOVEABLE, 64).value;
+            let handle = memory.alloc(MOVEABLE, 64, Family::Global).value;
             let data = memory.lock(handle).value;
             assert_ne!(handle, data, "a movable handle is not its pointer");
             assert_eq!(memory.flags(handle, Family::Local), ok(1), "lock count 1");
             assert_eq!(memory.handle_of(data), handle);
             assert_eq!(read(handle), data, "*handle is the data pointer");
-            assert_eq!(memory.unlock(handle), failed(0, NO_ERROR), "the last lock");
-            assert_eq!(memory.unlock(handle), failed(0, ERROR_NOT_LOCKED));
-            let grown = memory.realloc(handle, 9000, MOVEABLE);
+            assert_eq!(
+                memory.unlock(handle, Family::Global),
+                failed(0, NO_ERROR),
+                "the last lock"
+            );
+            assert_eq!(
+                memory.unlock(handle, Family::Global),
+                failed(0, ERROR_NOT_LOCKED)
+            );
+            let grown = memory.realloc(handle, 9000, MOVEABLE, Family::Global);
             assert_eq!(grown, ok(handle));
             assert_eq!(memory.size(handle), ok(9000));
             assert_eq!(memory.free(handle), ok(0));
@@ -502,14 +619,18 @@ mod tests {
     #[test]
     fn handles_are_table_entries() {
         with_memory(|memory, _| {
-            let first = memory.alloc(MOVEABLE, 8).value;
-            let second = memory.alloc(MOVEABLE, 8).value;
+            let first = memory.alloc(MOVEABLE, 8, Family::Global).value;
+            let second = memory.alloc(MOVEABLE, 8, Family::Global).value;
             assert_eq!(second - first, ENTRY, "consecutive entries");
             memory.lock(second);
             memory.lock(second);
             assert_eq!(read(second - WORD), ALLOCATED | 2 << 16);
             assert_eq!(memory.free(first), ok(0));
-            assert_eq!(memory.alloc(MOVEABLE, 8).value, first, "reused");
+            assert_eq!(
+                memory.alloc(MOVEABLE, 8, Family::Global).value,
+                first,
+                "reused"
+            );
         });
     }
 
@@ -518,11 +639,14 @@ mod tests {
     #[test]
     fn a_zero_byte_movable_block_is_discarded() {
         with_memory(|memory, _| {
-            let handle = memory.alloc(MOVEABLE, 0).value;
+            let handle = memory.alloc(MOVEABLE, 0, Family::Global).value;
             assert_eq!(memory.size(handle), ok(0));
             assert_eq!(memory.flags(handle, Family::Global), ok(DISCARDED));
             assert_eq!(memory.lock(handle), failed(0, ERROR_DISCARDED));
-            assert_eq!(memory.realloc(handle, 16, MOVEABLE), ok(handle));
+            assert_eq!(
+                memory.realloc(handle, 16, MOVEABLE, Family::Global),
+                ok(handle)
+            );
             assert_ne!(memory.lock(handle).value, 0);
             assert_eq!(memory.free(handle), ok(0));
         });
@@ -550,45 +674,155 @@ mod tests {
     fn global_flags_follow_the_capture() {
         with_memory(|memory, _| {
             let flags = |handle| memory.flags(handle, Family::Global);
-            let fixed = memory.alloc(0, 64).value;
+            let fixed = memory.alloc(0, 64, Family::Global).value;
             memory.lock(fixed);
             assert_eq!(flags(fixed), ok(0), "a fixed block counts no lock");
             memory.free(fixed);
 
-            let handle = memory.alloc(MOVEABLE, 64).value;
+            let handle = memory.alloc(MOVEABLE, 64, Family::Global).value;
             for _ in 0..300 {
                 memory.lock(handle);
             }
             assert_eq!(flags(handle), ok(0xFF), "the ceiling");
             for _ in 0..299 {
-                memory.unlock(handle);
+                memory.unlock(handle, Family::Global);
             }
             assert_eq!(flags(handle), ok(0));
-            assert_eq!(memory.unlock(handle), failed(0, ERROR_NOT_LOCKED));
+            assert_eq!(
+                memory.unlock(handle, Family::Global),
+                failed(0, ERROR_NOT_LOCKED)
+            );
             memory.free(handle);
 
-            let handle = memory.alloc(MOVEABLE | DISCARDABLE as u32, 64).value;
+            let handle = memory
+                .alloc(MOVEABLE | DISCARDABLE as u32, 64, Family::Global)
+                .value;
             assert_eq!(flags(handle), ok(0x0100));
             assert_eq!(memory.flags(handle, Family::Local), ok(0x0F00));
-            assert_eq!(memory.realloc(handle, 0, MOVEABLE), ok(handle), "discarded");
+            assert_eq!(
+                memory.realloc(handle, 0, MOVEABLE, Family::Global),
+                ok(handle),
+                "discarded"
+            );
             assert_eq!(flags(handle), ok(0x4100));
             assert_eq!(memory.lock(handle), failed(0, ERROR_DISCARDED));
-            assert_eq!(memory.realloc(handle, 32, MOVEABLE), ok(handle));
+            assert_eq!(
+                memory.realloc(handle, 32, MOVEABLE, Family::Global),
+                ok(handle)
+            );
             assert_eq!(flags(handle), ok(0x0100));
             memory.free(handle);
 
-            let handle = memory.alloc(MOVEABLE | DDESHARE as u32, 64).value;
+            let handle = memory
+                .alloc(MOVEABLE | DDESHARE as u32, 64, Family::Global)
+                .value;
             assert_eq!(flags(handle), ok(0x2000));
             assert_eq!(memory.flags(handle, Family::Local), ok(0));
             memory.free(handle);
-            let fixed = memory.alloc(DISCARDABLE as u32, 64).value;
+            let fixed = memory.alloc(DISCARDABLE as u32, 64, Family::Global).value;
             assert_eq!(flags(fixed), ok(0), "a fixed block keeps no attribute");
             memory.free(fixed);
 
-            let handle = memory.alloc(MOVEABLE, 64).value;
+            let handle = memory.alloc(MOVEABLE, 64, Family::Global).value;
             memory.free(handle);
             assert_eq!(flags(handle), failed(0x8000, ERROR_INVALID_HANDLE));
             assert_eq!(flags(0), failed(0x8000, ERROR_INVALID_HANDLE));
+        });
+    }
+
+    /// The memory fixture's handles section: a freed movable handle refused by every call, the
+    /// MODIFY conversions, a locked block that may only grow in place, and the flags refused.
+    #[test]
+    fn handles_follow_the_capture() {
+        with_memory(|memory, _| {
+            let stale = memory.alloc(MOVEABLE, 64, Family::Global).value;
+            memory.free(stale);
+            assert_eq!(memory.lock(stale), failed(0, ERROR_INVALID_HANDLE));
+            assert_eq!(
+                memory.unlock(stale, Family::Global),
+                failed(1, ERROR_INVALID_HANDLE)
+            );
+            assert_eq!(
+                memory.unlock(stale, Family::Local),
+                failed(0, ERROR_INVALID_HANDLE)
+            );
+            assert_eq!(memory.size(stale), failed(0, ERROR_INVALID_HANDLE));
+            for flags in [MOVEABLE, MODIFY | DISCARDABLE as u32] {
+                assert_eq!(
+                    memory.realloc(stale, 128, flags, Family::Global),
+                    failed(0, ERROR_INVALID_HANDLE)
+                );
+            }
+            assert_eq!(memory.free(stale), failed(stale, ERROR_INVALID_HANDLE));
+
+            // A fixed block made movable: a new handle, the data copied elsewhere, shared for DDE.
+            let fixed = memory.alloc(0, 64, Family::Global).value;
+            bytes(fixed, 64).fill(5);
+            let handle = memory
+                .realloc(fixed, 0, MODIFY | MOVEABLE, Family::Global)
+                .value;
+            assert_ne!(handle, fixed);
+            let data = memory.lock(handle).value;
+            assert_ne!(data, fixed);
+            assert_eq!(bytes(data, 64), &[5; 64]);
+            assert_eq!(memory.flags(handle, Family::Global), ok(0x2001));
+            memory.unlock(handle, Family::Global);
+            memory.free(handle);
+
+            let handle = memory.alloc(MOVEABLE, 64, Family::Global).value;
+            let modify = |flags| memory.realloc(handle, 0, flags, Family::Global);
+            assert_eq!(modify(MODIFY | DISCARDABLE as u32), ok(handle));
+            assert_eq!(memory.flags(handle, Family::Global), ok(0x0100));
+            assert_eq!(modify(MODIFY), ok(handle));
+            assert_eq!(memory.flags(handle, Family::Global), ok(0));
+            memory.free(handle);
+
+            // A locked block grows in place only, unless MOVEABLE lets it move.
+            let handle = memory.alloc(MOVEABLE, 64, Family::Global).value;
+            let data = memory.lock(handle).value;
+            let spacer = memory.alloc(0, 64, Family::Global).value;
+            assert_eq!(
+                memory.realloc(handle, 0x4_0000, 0, Family::Global),
+                failed(0, ERROR_NOT_ENOUGH_MEMORY)
+            );
+            assert_eq!(read(handle), data, "unmoved");
+            assert_eq!(
+                memory.realloc(handle, 0x4_0000, MOVEABLE, Family::Global),
+                ok(handle)
+            );
+            assert_eq!(memory.flags(handle, Family::Global), ok(1));
+            memory.free(handle);
+            memory.free(spacer);
+
+            // Flags outside each family's.
+            for (flags, family) in [
+                (MOVEABLE | 0x8000, Family::Global),
+                (0x0001, Family::Global),
+                (MOVEABLE | MODIFY, Family::Global),
+                (MOVEABLE | 0x2000, Family::Local),
+                (0x8000, Family::Local),
+            ] {
+                assert_eq!(
+                    memory.alloc(flags, 64, family),
+                    failed(0, ERROR_INVALID_PARAMETER)
+                );
+            }
+            let handle = memory.alloc(MOVEABLE | 0x2000, 64, Family::Global).value;
+            assert_ne!(handle, 0, "GMEM_DDESHARE is Global's");
+            assert_eq!(
+                memory.realloc(handle, 128, MOVEABLE | 0x0001, Family::Global),
+                failed(0, ERROR_INVALID_PARAMETER)
+            );
+            memory.free(handle);
+
+            // A fixed block's unlock: GlobalUnlock answers TRUE, LocalUnlock FALSE.
+            let fixed = memory.alloc(0, 16, Family::Local).value;
+            assert_eq!(memory.unlock(fixed, Family::Global), ok(1));
+            assert_eq!(
+                memory.unlock(fixed, Family::Local),
+                failed(0, ERROR_NOT_LOCKED)
+            );
+            memory.free(fixed);
         });
     }
 }
