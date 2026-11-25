@@ -937,20 +937,24 @@ def test_stale_builds_logs_and_variants_are_pruned(tmp_path):
     hours = 3600
     now = time.time()
 
-    def made(relative: str, age: float, directory: bool = False):
+    def made(relative: str, age: float, directory: bool = False, finished: bool = True):
         path = tmp_path / relative
         if directory:
             path.mkdir(parents=True)
-            (path / "run-id").write_text("an earlier run")
-            os.utime(path / "run-id", (now - age, now - age))
+            if finished:
+                (path / "run-id").write_text("an earlier run")
+                os.utime(path / "run-id", (now - age, now - age))
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("")
         os.utime(path, (now - age, now - age))
         return path
 
-    old_build = made("builds/fault-test-user", 5 * hours, directory=True)
+    unused = made("builds/fault-test-user", 8 * 24 * hours, directory=True)
+    last_week = made("builds/fault-test-ud", 5 * 24 * hours, directory=True)  # still cached
+    unfinished = made("builds/nest-smoke", 5 * hours, directory=True, finished=False)
     old_failure = made("builds/irq-smoke.failed", 5 * hours)
+    old_run = made("builds/run.sources", 5 * hours)
     running = made("builds/default", 0.1 * hours, directory=True)  # another run's, in flight
     lock = made("build.lock", 50 * hours)
     old_log = made("logs/test_kernel_crash.log", 72 * hours)
@@ -959,9 +963,154 @@ def test_stale_builds_logs_and_variants_are_pruned(tmp_path):
 
     f2kboot.prune(tmp_path, now=now)
 
-    assert not old_build.exists() and not old_failure.exists() and not old_variant.exists()
-    assert not old_log.exists()
-    assert running.exists() and fresh_log.exists() and lock.exists()
+    assert not unused.exists() and not unfinished.exists() and not old_failure.exists()
+    assert not old_run.exists() and not old_variant.exists() and not old_log.exists()
+    assert last_week.exists() and running.exists() and fresh_log.exists() and lock.exists()
+
+
+# --- Builds are reused while their sources are unchanged ---------------------------------------
+
+
+def git(root, *args: str) -> None:
+    subprocess.run(["git", "-C", str(root), *args], check=True, capture_output=True)
+
+
+@pytest.fixture
+def checkout(tmp_path):
+    """A git checkout with a few committed files."""
+    root = tmp_path / "checkout"
+    for relative, text in (("Makefile", "TARGET ?= x86-f2k\n"), ("kernel/src/lib.rs", "fn a() {}\n"),
+                           ("README.md", "# F2K\n"), ("tests/core/test_a.py", "x = 1\n"),
+                           ("tests/core/a/output.txt", "A\n")):
+        (root / relative).parent.mkdir(parents=True, exist_ok=True)
+        (root / relative).write_text(text)
+    git(root, "init", "-q")
+    git(root, "add", ".")
+    git(root, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "files")
+    return root
+
+
+def test_the_fingerprint_follows_every_build_input(checkout, monkeypatch):
+    fingerprint = f2kboot.source_fingerprint(checkout)
+    assert fingerprint is not None and fingerprint == f2kboot.source_fingerprint(checkout)
+    seen = {fingerprint}
+
+    def changed() -> bool:
+        now = f2kboot.source_fingerprint(checkout)
+        new = now not in seen
+        seen.add(now)
+        return new
+
+    (checkout / "kernel/src/lib.rs").write_text("fn a() { b() }\n")  # modified
+    assert changed()
+    git(checkout, "add", "kernel/src/lib.rs")  # the same content, staged
+    assert not changed()
+    (checkout / "kernel/src/lib.rs").write_text("fn a() {}\n")  # back to the committed content
+    assert changed()  # (the worktree's content counts, not the index's)
+    (checkout / "kernel/src/new.rs").write_text("")  # untracked
+    assert changed()
+    (checkout / "tests/core/a/output.txt").unlink()  # deleted (a .txt under tests/ may be read)
+    assert changed()
+    (checkout / "Cargo.lock").write_text("lock")  # ignored by git, read by cargo
+    assert changed()
+    monkeypatch.setenv("RUSTFLAGS", "-C force-frame-pointers=yes")
+    assert changed()
+    monkeypatch.setenv("TARGET", "other")  # a Makefile variable
+    assert changed()
+
+
+def test_the_fingerprint_ignores_files_no_build_reads(checkout):
+    fingerprint = f2kboot.source_fingerprint(checkout)
+    (checkout / "README.md").write_text("# F2K, changed\n")
+    (checkout / "tests/core/test_a.py").write_text("x = 2\n")
+    (checkout / "tests/core/test_b.py").write_text("")
+    (checkout / ".scratch").mkdir()
+    (checkout / ".scratch/notes").write_text("")
+    assert f2kboot.source_fingerprint(checkout) == fingerprint
+
+
+def test_no_fingerprint_outside_a_checkout(tmp_path):
+    assert f2kboot.source_fingerprint(tmp_path) is None
+
+
+@pytest.fixture
+def fake_make(tmp_path, monkeypatch):
+    """f2kboot.build with its make replaced: each call records its features and writes a kernel and
+    disk with their stamps, as `make disk` does; `sources` is what source_fingerprint returns
+    (None: git cannot tell), `fail` makes the next make fail."""
+    work, built_dir = tmp_path / "qemu", tmp_path / "built"
+    built_dir.mkdir()
+    monkeypatch.setattr(f2kboot, "WORK", work)
+    monkeypatch.setattr(f2kboot, "BUILT_KERNEL", built_dir / "f2k-kernel")
+    monkeypatch.setattr(f2kboot, "BUILT_DISK", built_dir / "f2k-disk.img")
+    state = SimpleNamespace(makes=[], sources="sources-1", fail=False)
+    monkeypatch.setattr(f2kboot, "source_fingerprint", lambda root=None: state.sources)
+    real_run = subprocess.run
+
+    def run(arguments, **kwargs):
+        if arguments[:2] != ["make", "disk"]:
+            return real_run(arguments, **kwargs)
+        features = arguments[2].split("=", 1)[1]
+        state.makes.append(features)
+        if state.fail:
+            state.fail = False
+            return SimpleNamespace(returncode=2, stdout="error: the kernel did not build\n")
+        stamp = f"features={features}\nprofile={f2kboot.PROFILE}\n"
+        for path in (f2kboot.BUILT_KERNEL, f2kboot.BUILT_DISK):
+            path.unlink(missing_ok=True)
+            path.write_text(f"{features} from {state.sources}")
+            f2kboot.stamp_path(path).write_text(stamp)
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(f2kboot.subprocess, "run", run)
+    return state
+
+
+def test_a_build_is_reused_across_runs_while_its_sources_are_unchanged(fake_make):
+    first = f2kboot.build(["irq-smoke"], "run-1")
+    assert f2kboot.build(["irq-smoke"], "run-1") == first
+    assert first.kernel.read_text() == "irq-smoke from sources-1"
+    assert fake_make.makes == ["irq-smoke"]
+    # A later run, nothing changed: no make.
+    assert f2kboot.build(["irq-smoke"], "run-2") == first
+    assert fake_make.makes == ["irq-smoke"]
+    # The sources changed: built again, then reused within that run.
+    fake_make.sources = "sources-2"
+    assert f2kboot.build(["irq-smoke"], "run-3").kernel.read_text() == "irq-smoke from sources-2"
+    f2kboot.build(["irq-smoke"], "run-3")
+    assert fake_make.makes == ["irq-smoke", "irq-smoke"]
+    # Each feature set is a build of its own.
+    f2kboot.build([], "run-3")
+    assert fake_make.makes == ["irq-smoke", "irq-smoke", ""]
+
+
+def test_a_build_made_while_its_sources_changed_serves_its_run_alone(fake_make, monkeypatch):
+    fingerprints = iter(["sources-1", "sources-1", "sources-2"])  # the run's, before, after make
+    monkeypatch.setattr(f2kboot, "source_fingerprint", lambda root=None: next(fingerprints))
+    f2kboot.build(["irq-smoke"], "run-1")
+    f2kboot.build(["irq-smoke"], "run-1")
+    assert fake_make.makes == ["irq-smoke"]
+    fingerprints = iter(["sources-1", "sources-1", "sources-1"])
+    f2kboot.build(["irq-smoke"], "run-2")
+    assert fake_make.makes == ["irq-smoke", "irq-smoke"]
+
+
+def test_nothing_is_reused_when_git_cannot_tell(fake_make):
+    fake_make.sources = None
+    f2kboot.build([], "run-1")
+    f2kboot.build([], "run-1")
+    f2kboot.build([], "run-2")
+    assert fake_make.makes == ["", ""]
+
+
+def test_a_failed_build_fails_the_rest_of_its_run_and_is_retried_by_the_next(fake_make):
+    fake_make.fail = True
+    for _ in range(2):
+        with pytest.raises(f2kboot.BuildError, match="the kernel did not build"):
+            f2kboot.build(["nest-smoke"], "run-1")
+    assert fake_make.makes == ["nest-smoke"]
+    f2kboot.build(["nest-smoke"], "run-2")
+    assert fake_make.makes == ["nest-smoke", "nest-smoke"]
 
 
 def test_a_build_of_another_profile_is_refused(tmp_path):

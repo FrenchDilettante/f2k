@@ -3,8 +3,9 @@
 Three pieces the test modules share:
 
 - builds: `make disk` with a set of cargo features, kept per feature set under target/qemu/builds
-  and reused for the rest of the test run (the builds serialize across pytest-xdist workers on a
-  file lock: they share cargo's target directory);
+  and reused for the rest of the test run, and by later runs while the sources are unchanged
+  (`source_fingerprint`; the builds serialize across pytest-xdist workers on a file lock: they
+  share cargo's target directory);
 - boots: QEMU with COM1 logged to a file, the disk loaded into guest memory as a Multiboot module
   for the kernel's RAM disk (`storage_args`), or attached to the IDE controller as a snapshot (a
   test declaring `storage = "ide"`, a Limine boot, or a run with F2K_STORAGE=ide), so boots run side
@@ -39,6 +40,7 @@ import ctypes
 import ctypes.util
 import fcntl
 import functools
+import hashlib
 import json
 import os
 import re
@@ -95,32 +97,146 @@ def read_text(path: Path) -> str | None:
 BUILD_TIMEOUT = float(os.environ.get("F2K_BUILD_TIMEOUT", "1200"))
 
 
+# --- What a build was made from -------------------------------------------------------------------
+#
+# A build directory is reused, across test runs too, for as long as the sources it was built from
+# are unchanged. Neither make nor cargo can say so cheaply: the Makefile's targets are phony
+# (`make disk` always remakes the image, about 1.3 s), and cargo's own check costs about 0.8 s a
+# feature set even when nothing recompiles, serialized on the build lock. So each build records a
+# digest of everything it reads (`source_fingerprint`): git's view of the checkout, exact on
+# content (the index's blob ids for the files git status reports unchanged, which it re-reads when
+# their stat information cannot be trusted; the content of each modified or untracked file), the
+# inputs git ignores (the Cargo.lock files, Limine's binaries), the toolchain (`rustc -vV`: the
+# channel is an undated nightly) and the environment make and cargo read. A request whose digest
+# differs from the recorded one rebuilds.
+
+# The checkout's files no build reads, by path: changing one keeps the builds. Every other file
+# counts, tracked or not.
+NOT_BUILD_INPUTS = re.compile(r"(^|/)[^/]*\.md$|^tests/.*\.py$|^\.scratch/")
+# The inputs git ignores, relative to the checkout (globs; a missing one counts as missing).
+IGNORED_BUILD_INPUTS = ("Cargo.lock", "*/Cargo.lock", "*/*/Cargo.lock", "boot/limine/limine",
+                        "boot/limine/limine-bios.sys")
+# The environment a build reads besides the Makefile's own variables (`VAR ?= …`).
+BUILD_ENVIRONMENT = re.compile(r"^(RUST|CARGO|F2K_)")
+
+
+def source_fingerprint(root: Path = REPO_ROOT) -> str | None:
+    """A digest of everything `make disk` reads in the checkout at `root` (see above), or None when
+    git cannot tell (nothing is reused then)."""
+
+    def run(*command: str) -> bytes:
+        return subprocess.run(command, cwd=root, check=True, capture_output=True).stdout
+
+    try:
+        # Without optional locks, status leaves the index alone (a concurrent git command's).
+        status = run("git", "--no-optional-locks", "status", "--porcelain=v2", "-z",
+                     "--untracked-files=all", "--ignore-submodules=all", "--no-renames")
+        index = run("git", "ls-files", "--stage", "-z")
+        toolchain = run("rustc", "-vV")
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    files: dict[str, str] = {}
+    for entry in index.decode("utf-8", "surrogateescape").split("\0"):
+        if entry:
+            info, path = entry.split("\t", 1)
+            files[path] = info
+    # The files git reports changed (modified, added, deleted, unmerged, untracked): their content.
+    records = iter(status.decode("utf-8", "surrogateescape").split("\0"))
+    for record in records:
+        kind = record[:1]
+        if kind == "1":
+            path = record.split(" ", 8)[8]
+        elif kind == "2":
+            path = record.split(" ", 9)[9]
+            next(records, None)  # the path it was renamed from
+        elif kind == "u":
+            path = record.split(" ", 10)[10]
+        elif kind == "?":
+            path = record[2:]
+        else:
+            continue
+        files[path] = content_digest(root / path)
+    digest = hashlib.sha256()
+    for path in sorted(files):
+        if not NOT_BUILD_INPUTS.search(path):
+            digest.update(f"{path}\0{files[path]}\n".encode("utf-8", "surrogateescape"))
+    for pattern in IGNORED_BUILD_INPUTS:
+        for path in sorted(root.glob(pattern)) or [root / pattern]:
+            relative = path.relative_to(root).as_posix()
+            if not relative.startswith(("target/", ".")):
+                digest.update(f"{relative}\0{content_digest(path)}\n".encode())
+    digest.update(toolchain)
+    makefile = read_text(root / "Makefile") or ""
+    names = set(re.findall(r"^(\w+)\s*\?=", makefile, re.M))
+    for name in sorted(os.environ):
+        if name in names or BUILD_ENVIRONMENT.match(name):
+            digest.update(f"{name}={os.environ[name]}\n".encode("utf-8", "surrogateescape"))
+    return digest.hexdigest()
+
+
+def content_digest(path: Path) -> str:
+    """A file's content as a digest, with its executable bit (a symbolic link's target), or
+    "missing"."""
+    try:
+        if path.is_symlink():
+            return "link " + os.readlink(path)
+        executable = "x " if os.access(path, os.X_OK) else ""
+        return executable + hashlib.sha256(path.read_bytes()).hexdigest()
+    except (FileNotFoundError, NotADirectoryError, IsADirectoryError):
+        return "missing"
+
+
+def run_fingerprint(run_id: str) -> str | None:
+    """The sources' fingerprint as this test run (`run_id`) first saw them, taken once per run, by
+    the first request that takes the build lock (the caller holds it)."""
+    path = WORK / "builds" / "run.sources"
+    recorded = read_text(path)
+    if recorded is not None and recorded.startswith(run_id + "\n"):
+        return recorded.split("\n", 1)[1] or None
+    fingerprint = source_fingerprint()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"{run_id}\n{fingerprint or ''}")
+    return fingerprint
+
+
 def build(features: list[str], run_id: str) -> Build:
-    """The kernel and disk built with `features`: built once per test run (`run_id`), then
-    reused. A build that failed in this run fails every later request at once, with its output."""
+    """The kernel and disk built with `features`, then reused: by the rest of the test run
+    (`run_id`), and by later runs for as long as the sources are those it was built from
+    (`source_fingerprint`). A build that failed in this run fails every later request at once, with
+    its output."""
     key = "+".join(features) or "default"
     if PROFILE != "dev":
         key = f"{PROFILE}-{key}"
     out = WORK / "builds" / key
+    built = Build(out / "f2k-kernel", out / "f2k-disk.img")
     marker = out / "run-id"
+    sources = out / "sources"
     failed = WORK / "builds" / f"{key}.failed"
-    # Already built in this run: the marker is written only once the build's files are in place,
+    arguments = ["make", "disk", f"CARGO_FEATURES={','.join(features)}", f"KERNEL_PROFILE={PROFILE}"]
+    command = " ".join(arguments)
+    # Already taken by this run: the marker is written only once the build's files are in place,
     # and nothing rewrites them within a run, so this check needs no lock (and does not wait behind
     # another worker's build of a different feature set).
     if read_text(marker) == run_id:
-        return Build(out / "f2k-kernel", out / "f2k-disk.img")
+        return built
     WORK.mkdir(parents=True, exist_ok=True)
     with open(WORK / "build.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         if read_text(marker) == run_id:
-            return Build(out / "f2k-kernel", out / "f2k-disk.img")
+            return built
         recorded = read_text(failed)
         if recorded is not None and recorded.startswith(run_id + "\n"):
             raise BuildError(recorded.split("\n", 1)[1])
-        command = f"make disk CARGO_FEATURES={','.join(features)} KERNEL_PROFILE={PROFILE}"
+        # Built from the sources this run started with (by an earlier run): reused, and claimed for
+        # this run, so no later request in it rebuilds the files under a boot reading them.
+        fingerprint = run_fingerprint(run_id)
+        if fingerprint is not None and read_text(sources) == f"{fingerprint}\n{command}":
+            marker.write_text(run_id)
+            return built
+        before = source_fingerprint()
         try:
             made = subprocess.run(
-                ["make", "disk", f"CARGO_FEATURES={','.join(features)}", f"KERNEL_PROFILE={PROFILE}"],
+                arguments,
                 cwd=REPO_ROOT,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -144,6 +260,7 @@ def build(features: list[str], run_id: str) -> Build:
             failed.parent.mkdir(parents=True, exist_ok=True)
             failed.write_text(f"{run_id}\n{error}")
             raise BuildError(error)
+        after = source_fingerprint()
         shutil.rmtree(out, ignore_errors=True)
         out.mkdir(parents=True)
         shutil.copy2(BUILT_KERNEL, out / "f2k-kernel")
@@ -155,21 +272,30 @@ def build(features: list[str], run_id: str) -> Build:
             os.link(BUILT_DISK, out / "f2k-disk.img")
         except OSError:
             shutil.copy2(BUILT_DISK, out / "f2k-disk.img")
+        # What it was built from, for the later runs: only when the sources held still through the
+        # build (an edit during it leaves a build of no one state, which this run alone uses).
+        if before is not None and before == after:
+            sources.write_text(f"{before}\n{command}")
         marker.write_text(run_id)
-    return Build(out / "f2k-kernel", out / "f2k-disk.img")
+    return built
 
 
-# How long a test run's leftovers are kept: a build directory serves only the run that made it (the
-# cache is keyed on the run id), so one an hour old belongs to no run still going; a log is kept
-# for two days for inspection (each test rewrites its own, so only removed or renamed tests' logs
-# grow old); a disk variant outlives its boot only when the boot's process died.
+# How long the leftovers are kept: a build directory serves every run while the sources it was
+# built from are unchanged (each run that uses it rewrites its marker), so one unused for a week
+# belongs to sources or a feature set gone by; a build that never finished (no marker), a recorded
+# failure and a run's fingerprint serve only their own run, so one an hour old belongs to no run
+# still going; a log is kept for two days for inspection (each test rewrites its own, so only
+# removed or renamed tests' logs grow old); a disk variant outlives its boot only when the boot's
+# process died.
+CACHE_AGE = 7 * 86400.0
 BUILD_AGE = 3600.0
 LOG_AGE = 2 * 86400.0
 
 
 def prune(work: Path = WORK, now: float | None = None) -> None:
-    """Remove the earlier runs' leftovers under `work`: their builds and recorded build failures,
-    stale logs, and stray disk variants. Called once per test session, before anything builds."""
+    """Remove the earlier runs' leftovers under `work`: builds unused for a while, unfinished ones
+    and recorded build failures, stale logs, and stray disk variants. Called once per test session,
+    before anything builds."""
     now = time.time() if now is None else now
 
     def older(path: Path, age: float) -> bool:
@@ -181,9 +307,10 @@ def prune(work: Path = WORK, now: float | None = None) -> None:
     builds = work / "builds"
     for entry in builds.iterdir() if builds.is_dir() else ():
         if entry.is_dir():
-            # A build's age is its marker's (written last); one without a marker never finished.
+            # A build's last use is its marker's time (written last); one without a marker never
+            # finished.
             marker = entry / "run-id"
-            if older(marker if marker.exists() else entry, BUILD_AGE):
+            if older(marker, CACHE_AGE) if marker.exists() else older(entry, BUILD_AGE):
                 shutil.rmtree(entry, ignore_errors=True)
         elif older(entry, BUILD_AGE):
             entry.unlink(missing_ok=True)
