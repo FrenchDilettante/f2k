@@ -30,38 +30,17 @@ use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 use cmd::batch::{self, LineReader};
 use cmd::builtins::files;
-use cmd::flow::label;
+use cmd::control::{Flow, Host, BLOCK};
+use cmd::flow::label::{self, Goto};
 use cmd::flow::repeat::{self, Scope};
 use cmd::switches::{self, Then};
 use cmd::syntax::{self, Element, Join, Kind, Redirection, Redirections, Syntax, Target};
 use cmd::{search, Command, Echo, Set, TooLong, Unexpanded};
 
-mod control;
 mod exec;
 mod set_switch;
 
 exe::entry!(main);
-
-/// What a command leaves the shell to do.
-enum Flow {
-    /// Go on: the next line.
-    Next,
-    /// `exit /b` in a batch file: that batch ends (one that called it goes on).
-    EndBatch,
-    /// Every batch file ends, back to the prompt (Ctrl+C answered Y, or batches nested too deep).
-    Abort,
-    /// `exit`: the shell ends with the code.
-    Exit(u32),
-    /// `goto`: the batch file goes on after the label its [`Batch::label`] holds.
-    Goto,
-    /// A batch file run without `call`: it takes the place of the one running, whose
-    /// [`Batch::arguments`] now hold its path and its line.
-    Chain,
-}
-
-/// The units a block (a line and the lines a group it opens holds, expanded) may hold in a batch
-/// file, at the prompt and in `/C`'s string.
-const BLOCK: usize = 4096;
 
 /// The units a label `goto` goes to may hold.
 const LABEL: usize = 128;
@@ -659,94 +638,191 @@ fn echo_line(line: &[u16], spaced: bool) {
     };
 }
 
-/// A line's commands, as its `&`s separate them: each run in turn, until one ends the batch or the
-/// shell. In a `for`'s command, `scope` holds the loops' variables, replaced in each command's
-/// words as it runs (never in the line's syntax: see [`Scope`]).
+/// A line's commands, as its operators join them, run in the shell (see
+/// [`cmd::control::run_line`]), `batch` the batch file it comes from. In a `for`'s command, `scope`
+/// holds the loops' variables.
 pub(crate) fn run_line(
     text: &[u16],
     state: &mut cmd::State,
     batch: Option<&Batch>,
     scope: Option<&Scope<'_>>,
 ) -> Flow {
-    for (part, _) in syntax::parts(text, Join::Then) {
-        if cmd::trim(part).is_empty() {
-            continue;
-        }
-        match run_or_else(part, state, batch, scope) {
-            Flow::Next => {}
-            flow => return flow,
-        }
-    }
-    Flow::Next
+    cmd::control::run_line(
+        text,
+        state,
+        &mut Run {
+            batch,
+            shell: Shell,
+        },
+        scope,
+    )
 }
 
-/// Commands `||` joins: each runs while those before it failed (their return code not 0).
-fn run_or_else(
-    text: &[u16],
-    state: &mut cmd::State,
-    batch: Option<&Batch>,
-    scope: Option<&Scope<'_>>,
-) -> Flow {
-    for (index, (part, _)) in syntax::parts(text, Join::OrElse).enumerate() {
-        if index > 0 && state.return_code == 0 {
-            break;
-        }
-        match run_and_then(part, state, batch, scope) {
-            Flow::Next => {}
-            flow => return flow,
-        }
-    }
-    Flow::Next
+/// The shell as the control flow runs in it ([`cmd::control::Host`]): the batch file the line
+/// comes from, if any, and the process's environment.
+struct Run<'a> {
+    batch: Option<&'a Batch>,
+    shell: Shell,
 }
 
-/// Commands `&&` joins: each runs while those before it succeeded (their return code 0).
-fn run_and_then(
-    text: &[u16],
-    state: &mut cmd::State,
-    batch: Option<&Batch>,
-    scope: Option<&Scope<'_>>,
-) -> Flow {
-    for (index, (part, _)) in syntax::parts(text, Join::AndThen).enumerate() {
-        if index > 0 && state.return_code != 0 {
-            break;
+impl Host for Run<'_> {
+    fn variables(&mut self) -> &mut dyn cmd::Variables {
+        &mut self.shell
+    }
+
+    fn simple(&mut self, text: &[u16], state: &mut cmd::State, scope: Option<&Scope<'_>>) -> Flow {
+        run_simple(text, state, self.batch, scope)
+    }
+
+    fn pipeline(
+        &mut self,
+        text: &[u16],
+        state: &mut cmd::State,
+        scope: Option<&Scope<'_>>,
+    ) -> Flow {
+        pipeline(text, state, scope)
+    }
+
+    fn group(
+        &mut self,
+        inner: &[u16],
+        redirections: &[u16],
+        state: &mut cmd::State,
+        scope: Option<&Scope<'_>>,
+    ) -> Flow {
+        let mut list = Redirections::default();
+        syntax::group_redirections(redirections, &mut list);
+        let mut redirected = Redirected::save();
+        if !redirected.apply(list.list(), state, scope) {
+            return Flow::Next;
         }
-        let flow = if syntax::parts(part, Join::Pipe).nth(1).is_some() {
-            pipeline(part, state, scope)
-        } else {
-            run_element(part, state, batch, scope)
+        cmd::control::run_line(inner, state, self, scope)
+    }
+
+    fn malformed(&mut self, error: Syntax<'_>, state: &mut cmd::State) -> Flow {
+        malformed(error, state, self.batch)
+    }
+
+    fn echo(&mut self, command: &[u16], spaced: bool) {
+        echo_line(command, spaced);
+    }
+
+    fn print(&mut self, text: core::fmt::Arguments<'_>) {
+        let _ = exe::stdout().print(text);
+    }
+
+    fn report(&mut self, text: core::fmt::Arguments<'_>) {
+        let _ = exe::stderr().print(text);
+    }
+
+    fn interrupted(&mut self) -> bool {
+        exe::take_interrupt() && (self.batch.is_none() || terminate())
+    }
+
+    fn exists(&mut self, name: &[u16]) -> bool {
+        !name.is_empty() && (exe::attributes(name).is_ok() || exe::find(name).is_ok())
+    }
+
+    fn defined(&mut self, name: &[u16]) -> bool {
+        // One unit's room tells whether there is a value.
+        !matches!(exe::environment_variable(name, &mut [0; 1]), Ok(None))
+    }
+
+    fn find(
+        &mut self,
+        pattern: &[u16],
+        each: &mut dyn FnMut(&mut Self, &[u16], u32) -> Flow,
+    ) -> Flow {
+        let Ok(found) = exe::find(pattern) else {
+            return Flow::Next;
         };
-        match flow {
-            Flow::Next => {}
-            flow => return flow,
+        for found in found {
+            match each(self, found.name(), found.attributes) {
+                Flow::Next => {}
+                flow => return flow,
+            }
+        }
+        Flow::Next
+    }
+
+    fn directory<'b>(
+        &mut self,
+        root: &[u16],
+        buffer: &'b mut [u16; exe::MAX_PATH],
+    ) -> Option<&'b [u16]> {
+        let directory = if root.is_empty() {
+            exe::current_directory(buffer)
+        } else {
+            exe::full_path(root, buffer)
+        };
+        directory.ok()
+    }
+
+    #[inline(never)]
+    fn file_lines(
+        &mut self,
+        name: &[u16],
+        each: &mut dyn FnMut(&mut Self, &[u16]) -> Flow,
+    ) -> Option<Flow> {
+        let file = exe::open_file(name).ok()?;
+        let mut reader = LineReader::default();
+        let mut units = [0; cmd::LINE];
+        loop {
+            let line = match next_line(|buffer| file.read(buffer), &mut reader, &mut units) {
+                Ok(Some(line)) => line,
+                _ => return Some(Flow::Next),
+            };
+            match each(self, line) {
+                Flow::Next => {}
+                flow => return Some(flow),
+            }
         }
     }
-    Flow::Next
-}
 
-/// One command between the operators, run in the shell: a group's line with the group's
-/// redirections, or a simple command (see [`run_simple`]).
-fn run_element(
-    text: &[u16],
-    state: &mut cmd::State,
-    batch: Option<&Batch>,
-    scope: Option<&Scope<'_>>,
-) -> Flow {
-    match syntax::element(text) {
-        Ok(Element::Group {
-            inner,
-            redirections,
-        }) => {
-            let mut list = Redirections::default();
-            syntax::group_redirections(redirections, &mut list);
-            let mut redirected = Redirected::save();
-            if !redirected.apply(list.list(), state, scope) {
+    /// The lines `command` writes, run as Windows' cmd runs it: in a `cmd /c` of its own, its
+    /// standard output a pipe the shell reads. Each line is handled as it comes; the command is
+    /// waited for once its output ends.
+    #[inline(never)]
+    fn command_lines(
+        &mut self,
+        command: &[u16],
+        each: &mut dyn FnMut(&mut Self, &[u16]) -> Flow,
+    ) -> Flow {
+        let Ok((read, write)) = exe::create_pipe() else {
+            return Flow::Next;
+        };
+        let process = {
+            let mut piped = Redirected::save();
+            if piped.hand(exe::Standard::Output, &write).is_err() {
                 return Flow::Next;
             }
-            run_line(inner, state, batch, scope)
-        }
-        Ok(Element::Flow(keyword, text)) => control::run(keyword, text, state, batch, scope),
-        Ok(Element::Simple(text)) => run_simple(text, state, batch, scope),
-        Err(error) => malformed(error, state, batch),
+            child_shell(command)
+        };
+        // The shell keeps no writing end: the output ends when the command's does.
+        drop(write);
+        let Ok(process) = process else {
+            return Flow::Next;
+        };
+        let mut reader = LineReader::default();
+        let mut units = [0; cmd::LINE];
+        let flow = loop {
+            // The pipe is read as the standard input is, put in its place for the read.
+            let input = exe::standard_handle(exe::Standard::Input);
+            let _ = exe::set_standard_handle(exe::Standard::Input, read.raw());
+            let line = next_line(exe::read_standard_input, &mut reader, &mut units);
+            let _ = exe::set_standard_handle(exe::Standard::Input, input);
+            let line = match line {
+                Ok(Some(line)) => line,
+                _ => break Flow::Next,
+            };
+            match each(self, line) {
+                Flow::Next => {}
+                flow => break flow,
+            }
+        };
+        drop(read);
+        let _ = process.wait();
+        flow
     }
 }
 
@@ -1154,7 +1230,7 @@ fn dispatch(
             // either ends it with the ERRORLEVEL.
             return Flow::Exit(exit.code.unwrap_or(state.errorlevel));
         }
-        Command::Goto(argument) => return control::goto(argument, state, batch),
+        Command::Goto(argument) => return goto(argument, state, batch),
         Command::ChangeDirectory(None) => print_current_directory(state),
         Command::ChangeDirectory(Some(path)) => {
             if exe::set_current_directory(path).is_err() {
@@ -1221,7 +1297,7 @@ fn dispatch(
 /// `%%X%%` in a batch file reads X's value), then run as a command, a batch file it names coming
 /// back here once it ends. The ERRORLEVEL becomes what the command returns: 0 after `call echo`,
 /// a program's exit code, the ERRORLEVEL a batch file leaves, 1 for a command not recognized.
-/// `call :label` runs the batch file from its label (see [`control::call_label`]). `call` alone
+/// `call :label` runs the batch file from its label (see [`call_label`]). `call` alone
 /// fails.
 fn call(argument: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> Flow {
     if cmd::trim(argument).is_empty() {
@@ -1295,9 +1371,63 @@ fn call_text(
 /// What `call` runs: a label of the batch file, or a command.
 fn call_line(line: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> Flow {
     if label::calls_label(line) {
-        control::call_label(line, state, batch)
+        call_label(line, state, batch)
     } else {
         dispatch(cmd::parse(line), state, batch, true)
+    }
+}
+
+/// `goto`'s argument: in a batch file, the label its batch file goes on after (its
+/// [`Batch::label`]), or its end for `:eof`; without a label, `No batch label specified to GOTO
+/// command.`, and the batch file ends, the ERRORLEVEL 1. At the prompt, nothing.
+fn goto(argument: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> Flow {
+    let Some(batch) = batch else {
+        return Flow::Next;
+    };
+    match label::goto(argument) {
+        Goto::Missing => {
+            let _ = exe::stderr().print(format_args!("{}", label::MISSING));
+            state.failed();
+            Flow::EndBatch
+        }
+        Goto::End => Flow::EndBatch,
+        Goto::Label(name) => {
+            let mut slot = batch.label.borrow_mut();
+            let length = name.len().min(slot.0.len());
+            slot.0[..length].copy_from_slice(&name[..length]);
+            slot.1 = length;
+            Flow::Goto
+        }
+    }
+}
+
+/// `call :label arguments` (expanded): the batch file the line comes from run again from after
+/// its label, as a batch file of its own whose `%0` is `:label` and whose arguments are those
+/// after it, the label looked for from where the batch file is; back here once it ends, the
+/// ERRORLEVEL its return code, as after a batch file `call` runs. Outside a batch file, `Invalid
+/// attempt to call batch label outside of batch script.`, and it fails.
+fn call_label(line: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> Flow {
+    let Some(batch) = batch else {
+        let _ = exe::stderr().print(format_args!("{}", label::OUTSIDE));
+        state.failed();
+        return Flow::Next;
+    };
+    let line = cmd::trim(line);
+    let name = label::called(line);
+    let mut path = [0; exe::MAX_PATH];
+    let path = {
+        let arguments = batch.arguments.borrow();
+        let own = arguments.path();
+        path[..own.len()].copy_from_slice(own);
+        &path[..own.len()]
+    };
+    let start = Entry::Label(name, batch.offset.get());
+    match run_batch(path, line, batch.depth + 1, batch.cmd_script, start, state) {
+        flow @ (Flow::Exit(_) | Flow::Abort) => flow,
+        _ => {
+            state.return_code = state.errorlevel;
+            Flow::Next
+        }
     }
 }
 

@@ -16,6 +16,7 @@
 pub mod arith;
 pub mod batch;
 pub mod builtins;
+pub mod control;
 pub mod flow;
 pub mod help;
 pub mod search;
