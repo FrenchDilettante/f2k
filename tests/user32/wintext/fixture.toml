@@ -55,6 +55,7 @@ custom = [
 ]
 internal = ["user32.InternalGetWindowText"]
 xproc = [
+    "user32.FindWindowW",
     "user32.GetWindowThreadProcessId",
     "user32.GetWindowTextW",
     "user32.SendMessageW",

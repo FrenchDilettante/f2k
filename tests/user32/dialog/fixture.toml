@@ -57,10 +57,12 @@ units = [
     "user32.GetDialogBaseUnits",
     "user32.MapDialogRect",
 ]
+# DM_GETDEFID's answer is DefDlgProcW's.
 keys = [
     "user32.IsDialogMessageW",
     "user32.IsDialogMessageA",
     "user32.GetFocus",
+    "user32.DefDlgProcW",
 ]
 msgbox = [
     "user32.MessageBoxW",

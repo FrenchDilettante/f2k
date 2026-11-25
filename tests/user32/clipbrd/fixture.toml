@@ -53,7 +53,10 @@ formats = [
     "user32.SetClipboardData",
     "user32.GetClipboardData",
 ]
+# The procedure records WM_DESTROYCLIPBOARD only while InSendMessage answers FALSE (the program's
+# own EmptyClipboard sent it).
 owner = [
+    "user32.InSendMessage",
     "user32.OpenClipboard",
     "user32.EmptyClipboard",
     "user32.GetClipboardOwner",

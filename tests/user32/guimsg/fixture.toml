@@ -47,19 +47,25 @@ regmsg = [
 msgpos = [
     "user32.GetMessageTime",
     "user32.GetMessagePos",
+    "user32.GetMessageW",
 ]
-wait = ["user32.WaitMessage"]
+# The 300 ms timer's WM_TIMER is what ends the second WaitMessage.
+wait = ["user32.WaitMessage", "user32.SetTimer"]
+# PostThreadMessageW's WM_QUIT is what ends the second thread ("the second thread ended").
 smto = [
     "user32.SendMessageTimeoutW",
     "user32.SendMessageTimeoutA",
+    "user32.PostThreadMessageW",
 ]
 hung = [
     "user32.SendMessageTimeoutW",
     "user32.IsHungAppWindow",
+    "user32.PostThreadMessageW",
 ]
 notify = [
     "user32.SendNotifyMessageW",
     "user32.SendNotifyMessageA",
+    "user32.PostThreadMessageW",
 ]
 quota = ["user32.PostMessageW", "user32.PeekMessageW"]
 postptr = ["user32.PostMessageW", "user32.PostMessageA"]

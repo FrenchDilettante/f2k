@@ -42,8 +42,12 @@ wndproc = [
     "user32.CallWindowProcA",
     "user32.IsWindowUnicode",
 ]
+# The dialog's GWL_WNDPROC is DefDlgProcW's or DefDlgProcA's address, and DefDlgProcW answers the
+# dialog procedure's DWL_MSGRESULT.
 dialog = [
     "user32.CreateDialogIndirectParamW",
+    "user32.DefDlgProcW",
+    "user32.DefDlgProcA",
     "user32.GetWindowLongW",
     "user32.GetWindowLongA",
     "user32.SetWindowLongW",
