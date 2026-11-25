@@ -516,12 +516,14 @@ pub fn translate(
 /// lock, each time the lock is let go ([`publish`]).
 static TAKES_KEYBOARD: AtomicBool = AtomicBool::new(false);
 
-/// Publish whether the keyboard's bytes go to win32k: the window manager's bridges' last step,
+/// Publish whether the keyboard's bytes go to win32k, and the foreground window's process for the
+/// foreground quantum (`crate::process::foreground`): the window manager's bridges' last step,
 /// under its lock.
 pub fn publish(windows: &Windows) {
-    TAKES_KEYBOARD.store(
-        super::focus::foreground_window(windows).is_some(),
-        Ordering::SeqCst,
+    let foreground = super::focus::foreground_window(windows);
+    TAKES_KEYBOARD.store(foreground.is_some(), Ordering::SeqCst);
+    crate::process::foreground::publish_gui(
+        foreground.map(|window| windows.thread(windows.window_thread(window)).process),
     );
 }
 

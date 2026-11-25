@@ -211,9 +211,18 @@ fn show_fresh<M: CellMemory, P: Io>(vga: &mut TextScreen<M, P>) {
 }
 
 /// SYS_CSR_CALL's service: CsrClientCallServer(message, capture buffer, API number, data length),
-/// answered for the calling process.
+/// answered for the calling process; then a settle point of the foreground processes (see
+/// `crate::process::foreground`), whose consoles or processes the call (or an earlier change) may
+/// have moved.
 #[cfg(target_arch = "x86")]
 fn service(frame: &mut crate::user::TrapFrame, args: &[u32], passive: &mut At<Passive>) {
+    serve(frame, args, passive);
+    crate::process::foreground::sync();
+}
+
+/// [`service`]'s call, served.
+#[cfg(target_arch = "x86")]
+fn serve(frame: &mut crate::user::TrapFrame, args: &[u32], passive: &mut At<Passive>) {
     let mut call = crate::nt::call::NtCall::new(frame, passive);
     let other = match args[2] >> 16 {
         rtl::console::base::BASE_SERVER => Some(base_call_server as OtherServer),
@@ -409,6 +418,7 @@ fn allocate_console(_api: u32, data: &mut [u8]) -> NtStatus {
                 );
             }
             server.present();
+            crate::process::foreground::console_changed();
             STATUS_SUCCESS
         })
     })
@@ -433,6 +443,7 @@ fn free_console(_api: u32, _data: &mut [u8]) -> NtStatus {
             server.ctrl.leave(process);
             let event = server.consoles.release_unused(index);
             server.present();
+            crate::process::foreground::console_changed();
             (STATUS_SUCCESS, event)
         })
     });
@@ -764,6 +775,7 @@ pub fn disconnect(process: ObjectId) {
         server.present();
         event
     });
+    crate::process::foreground::console_changed();
     if let Some(event) = event {
         crate::ob::release(event);
     }
@@ -779,6 +791,21 @@ pub fn inherit(creator: ObjectId, child: ObjectId) {
         let consoles = &mut SERVER.get(dispatch).consoles;
         let console = consoles.console_of(creator);
         consoles.attach(child, console)
+    });
+    crate::process::foreground::console_changed();
+}
+
+/// Whether each of `processes` is attached to the foreground console, into `out` (as long): the
+/// console's half of the foreground processes (see `crate::process::foreground`), as csrss marks
+/// the processes of the console that has the focus.
+#[cfg(target_arch = "x86")]
+pub fn on_foreground_console(processes: &[Option<ObjectId>], out: &mut [bool]) {
+    crate::level::raised::<Dispatch, _>(|dispatch| {
+        let consoles = &SERVER.get(dispatch).consoles;
+        let foreground = consoles.foreground();
+        for (process, out) in processes.iter().zip(out) {
+            *out = process.is_some_and(|process| consoles.console_of(process) == Some(foreground));
+        }
     });
 }
 
@@ -1012,6 +1039,7 @@ fn announce_process(data: &mut [u8]) -> NtStatus {
                 crate::level::raised::<Dispatch, _>(|dispatch| {
                     if SERVER.get(dispatch).consoles.attach(process, None) {
                         *handles = Handles::empty();
+                        crate::process::foreground::console_changed();
                     }
                 })
             });

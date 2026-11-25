@@ -2503,7 +2503,8 @@ mod target {
 
     /// Run `f` in a session over the locked window manager ([`QueueSession`]), the window
     /// manager's decisions' way in, then set the events of the queues it gave something, once the
-    /// lock is let go.
+    /// lock is let go, and settle the foreground processes, which a change of the foreground
+    /// window moves (`crate::process::foreground`).
     pub fn with_session<R>(
         passive: &mut At<Passive>,
         f: impl FnOnce(&mut QueueSession<Locked<'_>>) -> R,
@@ -2514,6 +2515,7 @@ mod target {
             (result, Signals::take(session.manager()))
         };
         signals.raise(passive);
+        crate::process::foreground::sync();
         result
     }
 

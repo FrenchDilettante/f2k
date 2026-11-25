@@ -272,6 +272,9 @@ pub fn create_process(
             child.set_console(creator.console().inherited());
             // The creator's console, until its announcement says otherwise (see `crate::csr`).
             crate::csr::inherit(creator.object(), child.object());
+            // The child on its creator's console takes its place in the foreground or the
+            // background (csrss's at the connection of a process to a console).
+            crate::process::foreground::sync();
             // The creator's process group, until its announcement says otherwise (see
             // `crate::csr`'s base server).
             child.set_process_group(creator.process_group());
@@ -464,11 +467,11 @@ pub fn set_information_process(
             let base = class_base_priority(class.priority_class)?;
             #[cfg(target_arch = "x86")]
             {
+                // PsSetProcessPriorityByClass, the process kept in the foreground or the
+                // background: the idle class's quantum is never stretched.
                 let record = target.record();
-                crate::sched::DISPATCHER
-                    .get(&mut call.passive().raise::<crate::level::Dispatch>())
-                    .set_process_priority(record.sched_ptr(), base);
                 record.set_priority_class(class.priority_class);
+                record.set_priority_by_class(record.foreground(), Some(base));
             }
             #[cfg(not(target_arch = "x86"))]
             let _ = base;

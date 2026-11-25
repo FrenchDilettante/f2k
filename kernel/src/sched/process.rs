@@ -1,8 +1,9 @@
 //! The process record's scheduling side, and the process object's body.
 //!
 //! A process owns the scheduling parameters its threads start from: the base priority and the
-//! quantum. The quantum is fixed — set once here at creation to the kernel's one constant, never
-//! varied — so "the thread quantum" is always this record's value. A process is always resident in
+//! quantum. The quantum starts at the kernel's two-tick base and is stretched while the process is
+//! in the foreground (`crate::process::foreground`); "the thread quantum" is always this record's
+//! value, read at each reset. A process is always resident in
 //! F2K (there is no process swapping), so a process's whole scheduling state is the fact of owning
 //! runnable threads or not.
 //!
@@ -37,8 +38,8 @@ pub struct SchedProcess {
     pub(super) dir_phys: u32,
     /// The priority every attached thread starts from.
     pub(super) base_priority: i8,
-    /// The quantum every thread of this process resets to: the fixed kernel constant, written once
-    /// here.
+    /// The quantum every thread of this process resets to (KPROCESS's ThreadQuantum): the two-tick
+    /// base, stretched while the process is in the foreground (`crate::process::foreground`).
     pub(super) thread_quantum: i8,
     /// Whether wait-exit boosts are refused for this process's threads (inherited at thread
     /// attach).
@@ -111,7 +112,7 @@ impl ListKind for ProcessThreads {
 }
 
 impl SchedProcess {
-    /// A scheduling record with the given directory base and base priority, the fixed thread
+    /// A scheduling record with the given directory base and base priority, the base thread
     /// quantum, no threads, nothing attached, and both policies off, outside the process pool.
     pub const fn new(dir_phys: u32, base_priority: i8) -> Self {
         Self::pooled(dir_phys, base_priority, NOT_POOLED)
@@ -164,6 +165,11 @@ impl SchedProcess {
     /// The quantum this process's threads reset to.
     pub fn thread_quantum(&self) -> i8 {
         self.thread_quantum
+    }
+
+    /// Set the quantum this process's threads reset to: each thread takes it at its next reset.
+    pub fn set_thread_quantum(&mut self, quantum: i8) {
+        self.thread_quantum = quantum;
     }
 
     /// The kernel stacks lent out (the sentinel before the first thread).
@@ -286,7 +292,7 @@ impl ProcessObject {
 mod tests {
     use super::*;
 
-    /// A fresh record: the directory base as given, base priority as given, the fixed quantum, the
+    /// A fresh record: the directory base as given, base priority as given, the base quantum, the
     /// no-threads sentinel, no threads, both policies off.
     #[test]
     fn process_defaults() {

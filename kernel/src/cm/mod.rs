@@ -43,7 +43,10 @@
 //! and `USER`, as Windows 2000 spells them), the current user's hive `\Registry\User\jeb`
 //! (Windows names it after the user's SID), and the computer's name,
 //! `\Registry\Machine\SYSTEM\CurrentControlSet\Control\ComputerName\ComputerName`'s
-//! `ComputerName`, REG_SZ "QEMU". A hive's root (`\Registry`, its two roots, `SYSTEM`, the user's
+//! `ComputerName`, REG_SZ "QEMU", and the scheduler's priority separation,
+//! `\Registry\Machine\SYSTEM\CurrentControlSet\Control\PriorityControl`'s
+//! `Win32PrioritySeparation`, REG_DWORD 2 (Windows 2000 Professional's default; see
+//! `crate::process::foreground`). A hive's root (`\Registry`, its two roots, `SYSTEM`, the user's
 //! hive) cannot be deleted.
 
 use core::alloc::Layout;
@@ -93,6 +96,15 @@ pub const SEPARATOR: u16 = b'\\' as u16;
 
 /// REG_SZ: a value's type, a NUL-terminated string.
 pub const REG_SZ: u32 = 1;
+
+/// REG_DWORD: a value's type, a 32-bit number, little-endian.
+pub const REG_DWORD: u32 = 4;
+
+/// The key of the scheduler's priority separation, below the root.
+pub const PRIORITY_CONTROL: &str = "MACHINE\\SYSTEM\\CurrentControlSet\\Control\\PriorityControl";
+
+/// The priority separation's value (see `crate::process::foreground`).
+pub const PRIORITY_SEPARATION: &str = "Win32PrioritySeparation";
 
 /// A key: its record and the record's generation. The generation is 32 bits: a stale key would
 /// name its record's new key only after some four billion deletes of that one record, where 16 bits
@@ -507,6 +519,24 @@ impl Registry {
         put_units(&mut data, &ascii_units::<5>("QEMU"));
         self.set_bytes(computer, &name, REG_SZ, &data, 0)
             .expect("the registry holds the seed");
+        let priority = make(self, PRIORITY_CONTROL, false);
+        let name = ascii_units::<23>(PRIORITY_SEPARATION);
+        let data = crate::process::foreground::DEFAULT_PRIORITY_SEPARATION.to_le_bytes();
+        self.set_bytes(priority, &name, REG_DWORD, &data, 0)
+            .expect("the registry holds the seed");
+    }
+
+    /// The REG_DWORD value `name` of the key `path` names below the root (both ASCII), if it is
+    /// one.
+    pub fn dword(&self, path: &str, name: &str) -> Option<u32> {
+        let key = self
+            .open(self.root(), &ascii_units::<128>(path)[..path.len()])
+            .ok()?;
+        let value = self
+            .query_value(key, &ascii_units::<64>(name)[..name.len()])
+            .ok()?;
+        let data: [u8; 4] = value.data.try_into().ok()?;
+        (value.kind == REG_DWORD).then(|| u32::from_le_bytes(data))
     }
 
     /// `\Registry`, the root key.
@@ -1057,6 +1087,15 @@ pub fn with_registry<R>(step: impl FnOnce(&mut Registry) -> R) -> R {
     level::raised::<High, _>(|high| step(REGISTRY.get(high)))
 }
 
+/// The registry's Win32PrioritySeparation (`PriorityControl`'s), read at boot as Windows 2000's
+/// kernel reads it (its control vector, into PsRawPrioritySeparation); the Professional default
+/// when it is missing or no REG_DWORD.
+#[cfg(target_arch = "x86")]
+pub fn priority_separation() -> u32 {
+    with_registry(|registry| registry.dword(PRIORITY_CONTROL, PRIORITY_SEPARATION))
+        .unwrap_or(crate::process::foreground::DEFAULT_PRIORITY_SEPARATION)
+}
+
 /// Flush the hives to their files, the shutdown's step before the file systems are done, as
 /// Windows 2000's kernel flushes them when it shuts down. Nothing to write yet: the hives live in
 /// kernel memory alone, none of them on disk.
@@ -1135,6 +1174,18 @@ mod tests {
         let value = r.query_value(name, &wide("computername")).unwrap();
         assert_eq!(value.kind, REG_SZ);
         assert_eq!(value.data, b"Q\0E\0M\0U\0\0\0");
+        let priority = r
+            .open(
+                root,
+                &wide("Machine\\System\\CurrentControlSet\\Control\\PriorityControl"),
+            )
+            .unwrap();
+        let value = r
+            .query_value(priority, &wide("Win32PrioritySeparation"))
+            .unwrap();
+        assert_eq!((value.kind, value.data), (REG_DWORD, &[2, 0, 0, 0][..]));
+        assert_eq!(r.dword(PRIORITY_CONTROL, PRIORITY_SEPARATION), Some(2));
+        assert_eq!(r.dword(PRIORITY_CONTROL, "Missing"), None);
         assert_eq!(
             r.delete(user, 0),
             Err(STATUS_CANNOT_DELETE),

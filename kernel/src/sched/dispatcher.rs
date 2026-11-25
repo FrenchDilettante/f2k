@@ -2484,6 +2484,45 @@ mod tests {
         assert!(quantum_end_requested());
     }
 
+    /// A1b: the foreground switch (PsSetProcessPriorityByClass): the process's thread quantum
+    /// stretched, then its base set again, hands every thread of it — the running one too — a
+    /// fresh quantum of the new length and clears its boost; a stretched quantum survives five
+    /// ticks and ends on the sixth, and the reset keeps the stretch until the process goes back.
+    #[test]
+    fn the_foreground_switch_stretches_every_threads_quantum() {
+        let d = dispatcher();
+        let p = process(8);
+        let (t, mut u) = (thread(p), thread(p));
+        run(d, t);
+        u.priority = 10;
+        charge_tick();
+        assert_eq!(t.quantum(), QUANTUM_RESET - QUANTUM_TICK);
+
+        let stretched = 3 * QUANTUM_RESET;
+        unsafe { (*p).set_thread_quantum(stretched) };
+        d.set_process_priority(unsafe { &mut *p }, 8);
+        assert_eq!(t.quantum(), stretched, "the running thread's fresh quantum");
+        assert_eq!(u.quantum(), stretched);
+        assert_eq!(u.priority(), 8, "the boost cleared");
+
+        for _ in 0..5 {
+            charge_tick();
+            assert!(!quantum_end_requested());
+        }
+        charge_tick();
+        assert!(quantum_end_requested(), "the sixth tick ends it");
+        assert!(d.dispatch_target().is_none());
+        assert_eq!(t.quantum(), stretched, "the reset keeps the stretch");
+
+        // Back to the background: the base quantum again.
+        unsafe { (*p).set_thread_quantum(QUANTUM_RESET) };
+        d.set_process_priority(unsafe { &mut *p }, 8);
+        assert_eq!(t.quantum(), QUANTUM_RESET);
+        charge_tick();
+        charge_tick();
+        assert!(quantum_end_requested());
+    }
+
     /// A1a: a tick charges the running thread's kernel or user time as the interrupted mode says,
     /// in the slots while it runs; the switch hands the times back to its record, and the
     /// incoming thread's come out of its own.

@@ -3,8 +3,9 @@
 //! Threads are the kernel's unit of execution. Each carries a priority (0-31: 0-15 variable, 16-31
 //! realtime), a base priority it decays toward, and a quantum — the run time granted before the
 //! scheduler reconsiders the processor. The quantum is charged three units per clock tick and reset
-//! to six, so one quantum spans two ticks; it is the same fixed value for every process, set once
-//! at creation.
+//! to its process's thread quantum: six, two ticks, for a background process, stretched for the
+//! foreground one (three times, by Windows 2000 Professional's default; see
+//! `crate::process::foreground`).
 //!
 //! The dispatcher keeps one ready list per priority plus a 32-bit summary whose bit P is set while
 //! ready list P is non-empty, so selection scans bits instead of lists: the highest-priority
@@ -190,7 +191,8 @@ pub const NORMAL_BASE: i8 = 8;
 /// The amount charged against the running thread's quantum per clock tick.
 pub const QUANTUM_TICK: i8 = 3;
 
-/// The full quantum a thread starts each scheduling cycle with: two ticks' worth.
+/// The base quantum (THREAD_QUANTUM): two ticks' worth, what a background process's threads reset
+/// to (the foreground's is stretched, see `crate::process::foreground`).
 pub const QUANTUM_RESET: i8 = QUANTUM_TICK * 2;
 
 /// The amount a completed wait charges against the quantum.

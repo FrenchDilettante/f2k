@@ -131,6 +131,9 @@ pub fn executive() {
 
     // The registry: its arena, and the keys Windows 2000 has from its boot on.
     crate::cm::init();
+    // The scheduler's quantum table, by the registry's priority separation (PspInitPhase0's
+    // PsChangeQuantumTable): before the first process.
+    crate::process::foreground::set_priority_separation(crate::cm::priority_separation());
 
     // The I/O manager for the drivers NtLoadDriver loads: its arena, its load lock, and the
     // System process's stand-in PsInitialSystemProcess names.

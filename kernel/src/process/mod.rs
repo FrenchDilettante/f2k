@@ -85,6 +85,9 @@ pub mod teardowns;
 /// The process's thread ordinals: which thread holds which TEB page.
 pub mod ordinals;
 
+/// The foreground process and its stretched quantum (Windows 2000's priority separation).
+pub mod foreground;
+
 pub use pool::MAX_PROCESSES;
 #[cfg(target_arch = "x86")]
 pub use pool::{current, queue_reap, reap_pending};
@@ -216,6 +219,10 @@ impl IdentityCell {
 struct ProcessState {
     /// The priority class (PROCESS_PRIORITY_CLASS_*, ProcessPriorityClass's value).
     priority_class: u8,
+    /// Whether the process is in the foreground (Windows 2000 keeps it as the process's memory
+    /// priority, MEMORY_PRIORITY_FOREGROUND): its threads' quantum is stretched (see
+    /// [`foreground`]).
+    foreground: bool,
     /// The hard-error mode (DefaultHardErrorProcessing, ProcessDefaultHardErrorMode's value: the
     /// hard-error and fault dialogs it governs never exist here; the value is kept for its round
     /// trip).
@@ -253,6 +260,7 @@ impl ProcessState {
     const fn fresh() -> Self {
         ProcessState {
             priority_class: NORMAL_PRIORITY_CLASS,
+            foreground: false,
             hard_error_mode: DEFAULT_HARD_ERROR_MODE,
             console: rtl::console::Handles::standard(),
             process_group: 0,
@@ -357,9 +365,12 @@ pub const DEFAULT_HARD_ERROR_MODE: u32 = 1;
 
 /// How many threads a process can have alive besides its main thread: its created threads'
 /// ordinals ([`ordinals`]). A terminated thread's ordinal is reused once nothing references its
-/// object, so this bounds the live threads, not the threads created (the threads fixture's scale
-/// block keeps 64 children alive at once).
-pub const CHILD_THREADS: usize = 64;
+/// object, so this bounds the live threads, not the threads created. The threads fixture's scale
+/// block creates 100 fire-and-forget threads in a row, and its creator, in the foreground, runs on
+/// a stretched quantum (see [`foreground`]): all 100 may be alive at once, as on Windows 2000,
+/// which has no such bound. The object manager's thread pool ([`crate::ob::THREADS`]) bounds the
+/// system's threads above this.
+pub const CHILD_THREADS: usize = 100;
 
 /// How many handle-table slots one hold of a table reaches where a walk of the whole table
 /// releases the lock between its steps (the exit's closing of every handle, an inheritance): few
@@ -431,7 +442,11 @@ impl Process {
                 "a free process record has no thread"
             );
             *sched = SchedProcess::pooled(dir_phys, crate::sched::NORMAL_BASE, object.index);
+            // A new process starts in the background (PspForegroundQuantum[0]); the next settle
+            // point moves it to the foreground when it belongs there.
+            sched.set_thread_quantum(foreground::thread_quantum(false, NORMAL_PRIORITY_CLASS));
         });
+        foreground::console_changed();
         self.with_handles(|table| {
             table.drain(|_| unreachable!("a free process record holds no handle"))
         });
@@ -626,6 +641,31 @@ impl Process {
     /// Record the process's priority class (the scheduling side is the caller's).
     pub fn set_priority_class(&self, class: u8) {
         locked(&self.state, |state| state.priority_class = class);
+    }
+
+    /// Whether the process is in the foreground (see [`foreground`]).
+    pub fn foreground(&self) -> bool {
+        locked(&self.state, |state| state.foreground)
+    }
+
+    /// Put the process in the foreground or the background, as Windows 2000's
+    /// PsSetProcessPriorityByClass does: its threads' quantum the one its state and priority class
+    /// take ([`foreground::thread_quantum`]), then its base priority set again — `base`, or the
+    /// one it has — which hands each of its threads a fresh quantum and clears its decay
+    /// (KeSetPriorityProcess, [`crate::sched::dispatcher::Dispatcher::set_process_priority`]).
+    pub fn set_priority_by_class(&self, foreground: bool, base: Option<i8>) {
+        let class = locked(&self.state, |state| {
+            state.foreground = foreground;
+            state.priority_class
+        });
+        let quantum = foreground::thread_quantum(foreground, class);
+        crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+            let dispatcher = crate::sched::DISPATCHER.get(dispatch);
+            let sched = self.sched.get_mut(dispatcher);
+            sched.set_thread_quantum(quantum);
+            let base = base.unwrap_or(sched.base_priority());
+            dispatcher.set_process_priority(self.sched_ptr(), base);
+        });
     }
 
     /// The process's hard-error mode.
