@@ -11,55 +11,41 @@
 //! ObReferenceObjectByHandle's order (the handle, the kind, then the access: [`check`]), and a
 //! handle short of them is STATUS_ACCESS_DENIED.
 
+// The standard, generic and kinds' rights, from their one home.
+pub use rtl::nt::access::{
+    DIRECTORY_ALL_ACCESS,
+    DIRECTORY_CREATE_OBJECT,
+    DIRECTORY_CREATE_SUBDIRECTORY,
+    DIRECTORY_QUERY,
+    DIRECTORY_TRAVERSE,
+    EVENT_MODIFY_STATE,
+    EVENT_QUERY_STATE,
+    GENERIC_ALL,
+    GENERIC_EXECUTE,
+    GENERIC_READ,
+    GENERIC_WRITE,
+    MAXIMUM_ALLOWED,
+    MUTANT_ALL_ACCESS,
+    MUTANT_QUERY_STATE,
+    SECTION_MAP_EXECUTE,
+    SECTION_MAP_READ,
+    SECTION_MAP_WRITE,
+    SECTION_QUERY,
+    SEMAPHORE_ALL_ACCESS,
+    SEMAPHORE_MODIFY_STATE,
+    SEMAPHORE_QUERY_STATE,
+    SYNCHRONIZE,
+    TIMER_ALL_ACCESS,
+    TIMER_MODIFY_STATE,
+    TIMER_QUERY_STATE,
+};
+use rtl::nt::access::{STANDARD_RIGHTS_EXECUTE, STANDARD_RIGHTS_READ, STANDARD_RIGHTS_WRITE};
+
 use super::ObjectType;
 use crate::status::{NtStatus, STATUS_ACCESS_DENIED};
-
-/// The standard rights.
-pub const READ_CONTROL: u32 = 0x0002_0000;
-pub const SYNCHRONIZE: u32 = 0x0010_0000;
-pub const STANDARD_RIGHTS_REQUIRED: u32 = 0x000F_0000;
-/// What the generic rights carry of the standard ones: READ_CONTROL alone, each.
-const STANDARD_RIGHTS_READ: u32 = READ_CONTROL;
-const STANDARD_RIGHTS_WRITE: u32 = READ_CONTROL;
-const STANDARD_RIGHTS_EXECUTE: u32 = READ_CONTROL;
-
-/// The generic rights, and MAXIMUM_ALLOWED.
-pub const MAXIMUM_ALLOWED: u32 = 0x0200_0000;
-pub const GENERIC_ALL: u32 = 0x1000_0000;
-pub const GENERIC_EXECUTE: u32 = 0x2000_0000;
-pub const GENERIC_WRITE: u32 = 0x4000_0000;
-pub const GENERIC_READ: u32 = 0x8000_0000;
 /// The specific and standard rights: what a mask names besides the generic ones (the process,
 /// thread, file, key and token mappings keep the same).
 const SPECIFIC_AND_STANDARD: u32 = 0x00FF_FFFF;
-
-/// The event rights (winnt.h).
-pub const EVENT_QUERY_STATE: u32 = 0x0001;
-pub const EVENT_MODIFY_STATE: u32 = 0x0002;
-/// The mutant rights: querying alone (releasing is the owner's, whatever its handle grants).
-pub const MUTANT_QUERY_STATE: u32 = 0x0001;
-pub const MUTANT_ALL_ACCESS: u32 = STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | MUTANT_QUERY_STATE;
-/// The semaphore rights.
-pub const SEMAPHORE_QUERY_STATE: u32 = 0x0001;
-pub const SEMAPHORE_MODIFY_STATE: u32 = 0x0002;
-pub const SEMAPHORE_ALL_ACCESS: u32 =
-    STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | SEMAPHORE_QUERY_STATE | SEMAPHORE_MODIFY_STATE;
-/// The timer rights.
-pub const TIMER_QUERY_STATE: u32 = 0x0001;
-pub const TIMER_MODIFY_STATE: u32 = 0x0002;
-pub const TIMER_ALL_ACCESS: u32 =
-    STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | TIMER_QUERY_STATE | TIMER_MODIFY_STATE;
-/// The section rights.
-pub const SECTION_QUERY: u32 = 0x0001;
-pub const SECTION_MAP_WRITE: u32 = 0x0002;
-pub const SECTION_MAP_READ: u32 = 0x0004;
-pub const SECTION_MAP_EXECUTE: u32 = 0x0008;
-/// The object directory rights.
-pub const DIRECTORY_QUERY: u32 = 0x0001;
-pub const DIRECTORY_TRAVERSE: u32 = 0x0002;
-pub const DIRECTORY_CREATE_OBJECT: u32 = 0x0004;
-pub const DIRECTORY_CREATE_SUBDIRECTORY: u32 = 0x0008;
-pub const DIRECTORY_ALL_ACCESS: u32 = STANDARD_RIGHTS_REQUIRED | 0x000F;
 
 /// A kind's GENERIC_MAPPING: the rights each generic right stands for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -193,6 +179,8 @@ pub fn signal_right(kind: ObjectType) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
+    use rtl::nt::access::READ_CONTROL;
+
     use super::*;
 
     const KINDS: [ObjectType; 17] = [

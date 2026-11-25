@@ -18,6 +18,7 @@ use core::mem::{offset_of, size_of};
 use crate::pod::Pod;
 use crate::status::{NtStatus, STATUS_INVALID_PARAMETER};
 
+pub mod access;
 pub mod info;
 
 /// A UNICODE_STRING: its length and room in bytes, and its buffer (an address, or an offset in a

@@ -50,11 +50,8 @@ use crate::{caller_bytes, caller_bytes_mut, Out};
 const OBJ_INHERIT: u32 = 0x02;
 const OBJ_CASE_INSENSITIVE: u32 = 0x40;
 
-/// The key rights the calls ask for.
-const KEY_QUERY_VALUE: u32 = 0x0001;
-const KEY_SET_VALUE: u32 = 0x0002;
-const DELETE: u32 = 0x0001_0000;
-const MAXIMUM_ALLOWED: u32 = 0x0200_0000;
+// The key rights the calls ask for.
+use rtl::nt::access::{DELETE, KEY_QUERY_VALUE, KEY_SET_VALUE, MAXIMUM_ALLOWED};
 
 /// The value types whose data is text.
 pub const REG_SZ: u32 = 1;

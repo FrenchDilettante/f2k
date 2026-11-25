@@ -10,6 +10,8 @@
 //! exception the body raises, a fault reading the caller's text (NULL among them) too.
 
 use rtl::cstr::len_until_nul;
+// FILE_MAP_WRITE, the access a monitor's buffer is opened with.
+use rtl::nt::access::FILE_MAP_WRITE;
 // DBG_PRINTEXCEPTION_C: a debugger's print, its arguments the text's length (its terminator
 // counted) and its address.
 use rtl::status::DBG_PRINTEXCEPTION_C;
@@ -17,9 +19,6 @@ use rtl::status::DBG_PRINTEXCEPTION_C;
 use crate::edge::{wide_units, InWStr};
 use crate::heap::HeapArray;
 use crate::ntcall;
-
-/// FILE_MAP_WRITE, the access a monitor's buffer is opened with.
-const FILE_MAP_WRITE: u32 = 0x0002;
 
 /// The monitor's buffer's name, NUL-terminated UTF-16.
 const DBWIN_BUFFER: [u16; 13] = {

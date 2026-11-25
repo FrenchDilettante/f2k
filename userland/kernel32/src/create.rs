@@ -153,16 +153,16 @@ const IMAGE_FILE_MACHINE_I386: u16 = 0x014C;
 const IMAGE_SUBSYSTEM_WINDOWS_GUI: u32 = 2;
 const IMAGE_SUBSYSTEM_WINDOWS_CUI: u32 = 3;
 
+use rtl::nt::access::FILE_EXECUTE;
 /// The image's open: for execution, synchronizable; shared for reading and deleting, as an image
 /// is; a file, synchronous I/O.
-const FILE_EXECUTE: u32 = 0x0020;
 pub(crate) const OPEN_ACCESS: u32 = files::SYNCHRONIZE | FILE_EXECUTE;
 pub(crate) const OPEN_SHARE: u32 = files::FILE_SHARE_READ | files::FILE_SHARE_DELETE;
 pub(crate) const OPEN_OPTIONS: u32 =
     files::FILE_SYNCHRONOUS_IO_NONALERT | files::FILE_NON_DIRECTORY_FILE;
 
-/// THREAD_ALL_ACCESS: what the first thread's handle grants.
-const THREAD_ALL_ACCESS: u32 = 0x001F_03FF;
+// THREAD_ALL_ACCESS: what the first thread's handle grants.
+use rtl::nt::access::THREAD_ALL_ACCESS;
 
 /// The memory services' type and protection for the environment and the parameters block.
 const MEM_COMMIT: u32 = 0x1000;

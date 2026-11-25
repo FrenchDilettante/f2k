@@ -32,6 +32,20 @@
 //! way.
 
 use rtl::array_vec::ArrayVec;
+// The key rights, and the generic rights' mapping for keys and what MAXIMUM_ALLOWED grants
+// (every key right).
+#[cfg_attr(not(target_arch = "x86"), allow(unused_imports))]
+pub use rtl::nt::access::{
+    DELETE,
+    KEY_ALL_ACCESS,
+    KEY_ENUMERATE_SUB_KEYS,
+    KEY_EXECUTE,
+    KEY_QUERY_VALUE,
+    KEY_READ,
+    KEY_SET_VALUE,
+    KEY_WRITE,
+};
+use rtl::nt::access::{GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ, GENERIC_WRITE, MAXIMUM_ALLOWED};
 use rtl::nt::info::{
     KeyBasicInformation,
     KeyFullInformation,
@@ -43,22 +57,6 @@ use rtl::nt::info::{
 };
 
 use crate::status::*;
-
-/// The key rights.
-pub const KEY_QUERY_VALUE: u32 = 0x0001;
-pub const KEY_SET_VALUE: u32 = 0x0002;
-pub const KEY_ENUMERATE_SUB_KEYS: u32 = 0x0008;
-pub const DELETE: u32 = 0x0001_0000;
-/// The generic rights' mapping for keys, and what MAXIMUM_ALLOWED grants (every key right).
-pub const KEY_READ: u32 = 0x0002_0019;
-pub const KEY_WRITE: u32 = 0x0002_0006;
-pub const KEY_EXECUTE: u32 = 0x0002_0019;
-pub const KEY_ALL_ACCESS: u32 = 0x000F_003F;
-const GENERIC_READ: u32 = 0x8000_0000;
-const GENERIC_WRITE: u32 = 0x4000_0000;
-const GENERIC_EXECUTE: u32 = 0x2000_0000;
-const GENERIC_ALL: u32 = 0x1000_0000;
-const MAXIMUM_ALLOWED: u32 = 0x0200_0000;
 /// The standard and the key-specific rights: what a request names besides the generic ones.
 const SPECIFIC_AND_STANDARD: u32 = 0x00FF_FFFF;
 

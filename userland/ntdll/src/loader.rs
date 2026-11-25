@@ -385,21 +385,17 @@ fn report(body: impl FnOnce(&mut Line) -> core::fmt::Result) {
     crate::dbgprint::print(&shown[..shown.len() - 1]);
 }
 
-/// The open, section and view arguments a load passes, as Windows 2000's loader passes them: the
-/// file opened to read and execute, shared for reading and deleting, synchronously, never a
-/// directory; an image section mapped for reading and executing; the view shared, PAGE_READWRITE
-/// (an image's pages take their sections' protections).
-const FILE_READ_DATA: u32 = 0x1;
-const FILE_EXECUTE: u32 = 0x20;
-const SYNCHRONIZE: u32 = 0x10_0000;
+// The open, section and view arguments a load passes, as Windows 2000's loader passes them: the
+// file opened to read and execute, shared for reading and deleting, synchronously, never a
+// directory; an image section mapped for reading and executing; the view shared, PAGE_READWRITE
+// (an image's pages take their sections' protections).
+use rtl::nt::access::{FILE_EXECUTE, FILE_READ_DATA, SYNCHRONIZE};
 const FILE_SHARE_READ: u32 = 0x1;
 const FILE_SHARE_DELETE: u32 = 0x4;
 const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;
 const FILE_NON_DIRECTORY_FILE: u32 = 0x40;
 const OBJ_CASE_INSENSITIVE: u32 = 0x40;
-const SECTION_QUERY: u32 = 0x1;
-const SECTION_MAP_READ: u32 = 0x4;
-const SECTION_MAP_EXECUTE: u32 = 0x8;
+use rtl::nt::access::{SECTION_MAP_EXECUTE, SECTION_MAP_READ, SECTION_QUERY};
 const PAGE_READWRITE: u32 = 0x4;
 const PAGE_EXECUTE: u32 = 0x10;
 const SEC_IMAGE: u32 = 0x0100_0000;

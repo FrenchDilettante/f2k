@@ -16,10 +16,7 @@ use crate::ntcall::{self, NamedPipe};
 /// (0x120116).
 const READ_END_ACCESS: u32 = GENERIC_READ | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE;
 const WRITE_END_ACCESS: u32 = GENERIC_WRITE | SYNCHRONIZE;
-const GENERIC_READ: u32 = 0x8000_0000;
-const GENERIC_WRITE: u32 = 0x4000_0000;
-const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
-const SYNCHRONIZE: u32 = 0x0010_0000;
+use rtl::nt::access::{FILE_WRITE_ATTRIBUTES, GENERIC_READ, GENERIC_WRITE, SYNCHRONIZE};
 
 /// The share access: the pipe goes both ways (FILE_SHARE_READ and FILE_SHARE_WRITE make its
 /// configuration); the write end shares reading.

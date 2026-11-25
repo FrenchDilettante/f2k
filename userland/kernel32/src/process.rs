@@ -353,10 +353,9 @@ pub extern "system" fn set_process_affinity_mask(process: u32, mask: u32) -> u32
     win32_bool(ntcall::set_process(process, PROCESS_AFFINITY_MASK, &mask))
 }
 
-/// What GetProcessVersion opens another process for: its PEB's address (PROCESS_QUERY_INFORMATION)
-/// and its memory (PROCESS_VM_READ).
-const PROCESS_VM_READ: u32 = 0x0010;
-const PROCESS_QUERY_INFORMATION: u32 = 0x0400;
+// What GetProcessVersion opens another process for: its PEB's address (PROCESS_QUERY_INFORMATION)
+// and its memory (PROCESS_VM_READ).
+use rtl::nt::access::{PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
 
 /// GetProcessVersion: the Windows version the process's image is built for, its subsystem version
 /// as MAKELONG(minor, major) — the calling process's (an id of 0, or its own) from its image's

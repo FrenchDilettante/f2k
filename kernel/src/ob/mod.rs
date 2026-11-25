@@ -187,11 +187,9 @@ impl Entry {
 
 /// The documented all-access masks, granted to the creator's handle (an event's the services
 /// take from their caller: the tests' entries name it).
-#[cfg_attr(not(test), allow(dead_code))]
-pub const EVENT_ALL_ACCESS: u32 = 0x001F_0003;
-pub const THREAD_ALL_ACCESS: u32 = 0x001F_03FF;
-pub const PROCESS_ALL_ACCESS: u32 = 0x001F_0FFF;
-pub const SECTION_ALL_ACCESS: u32 = 0x000F_001F;
+#[cfg_attr(not(test), allow(unused_imports))]
+pub use rtl::nt::access::EVENT_ALL_ACCESS;
+pub use rtl::nt::access::{PROCESS_ALL_ACCESS, SECTION_ALL_ACCESS, THREAD_ALL_ACCESS};
 
 /// GetExitCodeProcess's and GetExitCodeThread's answer for one still running.
 pub const STILL_ACTIVE: u32 = 259;

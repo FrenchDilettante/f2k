@@ -57,9 +57,9 @@ const LEFT_CTRL_PRESSED: u32 = 0x0008;
 const SHIFT_PRESSED: u32 = 0x0010;
 const ENHANCED_KEY: u32 = 0x0100;
 
-/// CreateFileA's arguments for `CONIN$`: read and write access, shared both ways, the device as it
-/// is.
-const GENERIC_READ_WRITE: u32 = 0xC000_0000;
+// CreateFileA's arguments for `CONIN$`: read and write access, shared both ways, the device as it
+// is.
+use rtl::nt::access::{GENERIC_READ, GENERIC_WRITE};
 const FILE_SHARE_READ_WRITE: u32 = 3;
 const OPEN_EXISTING: u32 = 3;
 
@@ -130,7 +130,7 @@ impl Console {
         if let Input::Unopened = self.input {
             let opened = kernel32::create_file(
                 c"CONIN$",
-                GENERIC_READ_WRITE,
+                GENERIC_READ | GENERIC_WRITE,
                 FILE_SHARE_READ_WRITE,
                 None,
                 OPEN_EXISTING,

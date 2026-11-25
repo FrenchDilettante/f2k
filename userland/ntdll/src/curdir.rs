@@ -10,6 +10,10 @@
 //! RootDirectory), as on Windows 2000.
 
 use rtl::cstr::units_until_nul;
+// NtOpenFile's arguments for a current directory: traverse and synchronize, the share modes
+// Windows 2000 opens it with (read and write: the directory cannot be deleted while it is
+// current), a directory, synchronous I/O; OBJ_CASE_INSENSITIVE | OBJ_INHERIT.
+use rtl::nt::access::{FILE_TRAVERSE, SYNCHRONIZE};
 use rtl::nt::info::FileBasicInformation;
 use rtl::path::{
     dos_path_to_nt,
@@ -27,12 +31,6 @@ use rtl::sys;
 
 use crate::params::{with_own_parameters, OwnParameters};
 use crate::service::{self, ObjectAttributes};
-
-/// NtOpenFile's arguments for a current directory: traverse and synchronize, the share modes
-/// Windows 2000 opens it with (read and write: the directory cannot be deleted while it is
-/// current), a directory, synchronous I/O; OBJ_CASE_INSENSITIVE | OBJ_INHERIT.
-const FILE_TRAVERSE: u32 = 0x20;
-const SYNCHRONIZE: u32 = 0x10_0000;
 const FILE_SHARE_READ_WRITE: u32 = 0x3;
 const FILE_DIRECTORY_FILE: u32 = 0x1;
 const FILE_SYNCHRONOUS_IO_NONALERT: u32 = 0x20;

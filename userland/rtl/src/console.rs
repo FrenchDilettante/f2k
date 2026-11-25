@@ -702,8 +702,7 @@ pub const HANDLE_FLAG_INHERIT: u32 = 1;
 /// DuplicateHandle's options and the access a console handle carries.
 const DUPLICATE_CLOSE_SOURCE: u32 = 1;
 const DUPLICATE_SAME_ACCESS: u32 = 2;
-const GENERIC_READ: u32 = 0x8000_0000;
-const GENERIC_WRITE: u32 = 0x4000_0000;
+use crate::nt::access::{GENERIC_READ, GENERIC_WRITE};
 
 /// CreateConsoleScreenBuffer's one kind of buffer F2K makes (CONSOLE_GRAPHICS_BUFFER's bitmaps
 /// it does not).

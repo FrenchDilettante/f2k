@@ -18,8 +18,8 @@ use rtl::winerror::ERROR_BUFFER_OVERFLOW;
 const KEY: &[u8] =
     b"\\Registry\\Machine\\System\\CurrentControlSet\\Control\\ComputerName\\ComputerName";
 const VALUE: &[u8] = b"ComputerName";
-/// KEY_QUERY_VALUE: the one right the read needs.
-const KEY_QUERY_VALUE: u32 = 0x0001;
+// KEY_QUERY_VALUE: the one right the read needs.
+use rtl::nt::access::KEY_QUERY_VALUE;
 /// KeyValuePartialInformation: the value's type and data, after three dwords (its title index,
 /// type and data length).
 const KEY_VALUE_PARTIAL_INFORMATION: u32 = 2;

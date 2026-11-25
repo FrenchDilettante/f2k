@@ -226,8 +226,7 @@ fn load_as_datafile(name: Name<'_>) -> Result<u32, Failure> {
 const DATAFILE_ACCESS: u32 = files::GENERIC_READ | files::SYNCHRONIZE;
 const DATAFILE_SHARE: u32 = files::FILE_SHARE_READ | files::FILE_SHARE_DELETE;
 const DATAFILE_OPTIONS: u32 = files::FILE_SYNCHRONOUS_IO_NONALERT | files::FILE_NON_DIRECTORY_FILE;
-const SECTION_QUERY: u32 = 0x0001;
-const SECTION_MAP_READ: u32 = 0x0004;
+use rtl::nt::access::{SECTION_MAP_READ, SECTION_QUERY};
 const PAGE_READONLY: u32 = 0x02;
 const SEC_COMMIT: u32 = 0x0800_0000;
 const VIEW_SHARE: u32 = 1;

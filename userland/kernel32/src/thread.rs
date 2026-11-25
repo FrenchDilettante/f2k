@@ -56,8 +56,8 @@ const TLS_OUT_OF_INDEXES: u32 = 0xFFFF_FFFF;
 /// theirs.
 const TEB_SLOTS: u32 = 64;
 
-/// THREAD_ALL_ACCESS: what CreateThread's handle grants.
-const THREAD_ALL_ACCESS: u32 = 0x001F_03FF;
+// THREAD_ALL_ACCESS: what CreateThread's handle grants.
+use rtl::nt::access::THREAD_ALL_ACCESS;
 
 /// CreateThread's flags: CREATE_SUSPENDED, and STACK_SIZE_PARAM_IS_A_RESERVATION (the stack size is
 /// the reservation, not the commit).

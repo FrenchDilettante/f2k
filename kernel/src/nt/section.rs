@@ -68,16 +68,18 @@ const VIEW_UNMAP: u32 = 2;
 const MEM_TOP_DOWN: u32 = 0x10_0000;
 const SEC_NO_CHANGE: u32 = 0x40_0000;
 
-/// The section access rights a view's protection needs, and the generic rights' mapping onto them.
-const SECTION_QUERY: u32 = 0x0001;
-const SECTION_MAP_WRITE: u32 = 0x0002;
-const SECTION_MAP_READ: u32 = 0x0004;
-const SECTION_MAP_EXECUTE: u32 = 0x0008;
-const GENERIC_READ: u32 = 0x8000_0000;
-const GENERIC_WRITE: u32 = 0x4000_0000;
-const GENERIC_EXECUTE: u32 = 0x2000_0000;
-const GENERIC_ALL: u32 = 0x1000_0000;
-const MAXIMUM_ALLOWED: u32 = 0x0200_0000;
+// The section access rights a view's protection needs, and the generic rights' mapping onto them.
+use rtl::nt::access::{
+    GENERIC_ALL,
+    GENERIC_EXECUTE,
+    GENERIC_READ,
+    GENERIC_WRITE,
+    MAXIMUM_ALLOWED,
+    SECTION_MAP_EXECUTE,
+    SECTION_MAP_READ,
+    SECTION_MAP_WRITE,
+    SECTION_QUERY,
+};
 
 /// The allocation granularity: views start on it, and view offsets are multiples of it.
 const GRANULARITY: u32 = crate::mem::vm::GRANULARITY;

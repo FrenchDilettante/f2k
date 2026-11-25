@@ -89,11 +89,9 @@ pub const O_BINARY: i32 = 0x8000;
 pub const S_IREAD: i32 = 0x0100;
 pub const S_IWRITE: i32 = 0x0080;
 
-/// CreateFileA's values `_open` asks with: the access, the sharing (`_SH_DENYNO`: both ways), the
-/// dispositions and the attributes.
-const GENERIC_READ: u32 = 0x8000_0000;
-const GENERIC_WRITE: u32 = 0x4000_0000;
-const DELETE: u32 = 0x0001_0000;
+// CreateFileA's values `_open` asks with: the access, the sharing (`_SH_DENYNO`: both ways), the
+// dispositions and the attributes.
+use rtl::nt::access::{DELETE, GENERIC_READ, GENERIC_WRITE};
 const FILE_SHARE_READ_WRITE: u32 = 0x3;
 const CREATE_NEW: u32 = 1;
 const CREATE_ALWAYS: u32 = 2;

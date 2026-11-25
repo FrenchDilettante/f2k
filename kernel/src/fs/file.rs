@@ -70,33 +70,25 @@ pub const SHARE_ALL: u8 = ACCESS_READ | ACCESS_WRITE | ACCESS_DELETE;
 
 /// The file access rights (winnt.h), and the generic rights' mapping onto them.
 pub mod rights {
-    pub const FILE_READ_DATA: u32 = 0x0001;
-    pub const FILE_WRITE_DATA: u32 = 0x0002;
-    pub const FILE_APPEND_DATA: u32 = 0x0004;
-    pub const FILE_READ_EA: u32 = 0x0008;
-    pub const FILE_WRITE_EA: u32 = 0x0010;
-    pub const FILE_EXECUTE: u32 = 0x0020;
-    pub const FILE_READ_ATTRIBUTES: u32 = 0x0080;
-    pub const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
-    pub const DELETE: u32 = 0x0001_0000;
-    pub const READ_CONTROL: u32 = 0x0002_0000;
-    pub const SYNCHRONIZE: u32 = 0x0010_0000;
-    pub const MAXIMUM_ALLOWED: u32 = 0x0200_0000;
-    pub const GENERIC_ALL: u32 = 0x1000_0000;
-    pub const GENERIC_EXECUTE: u32 = 0x2000_0000;
-    pub const GENERIC_WRITE: u32 = 0x4000_0000;
-    pub const GENERIC_READ: u32 = 0x8000_0000;
-    pub const FILE_ALL_ACCESS: u32 = 0x001F_01FF;
-    pub const FILE_GENERIC_READ: u32 =
-        READ_CONTROL | FILE_READ_DATA | FILE_READ_ATTRIBUTES | FILE_READ_EA | SYNCHRONIZE;
-    pub const FILE_GENERIC_WRITE: u32 = READ_CONTROL
-        | FILE_WRITE_DATA
-        | FILE_WRITE_ATTRIBUTES
-        | FILE_WRITE_EA
-        | FILE_APPEND_DATA
-        | SYNCHRONIZE;
-    pub const FILE_GENERIC_EXECUTE: u32 =
-        READ_CONTROL | FILE_READ_ATTRIBUTES | FILE_EXECUTE | SYNCHRONIZE;
+    pub use rtl::nt::access::{
+        DELETE,
+        FILE_ALL_ACCESS,
+        FILE_APPEND_DATA,
+        FILE_EXECUTE,
+        FILE_GENERIC_EXECUTE,
+        FILE_GENERIC_READ,
+        FILE_GENERIC_WRITE,
+        FILE_READ_ATTRIBUTES,
+        FILE_READ_DATA,
+        FILE_WRITE_ATTRIBUTES,
+        FILE_WRITE_DATA,
+        GENERIC_ALL,
+        GENERIC_EXECUTE,
+        GENERIC_READ,
+        GENERIC_WRITE,
+        MAXIMUM_ALLOWED,
+        SYNCHRONIZE,
+    };
 
     /// The specific rights an access mask asks for: the generic rights mapped (the file object's
     /// GENERIC_MAPPING), MAXIMUM_ALLOWED as every right (no security descriptors are kept).

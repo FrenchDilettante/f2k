@@ -14,24 +14,23 @@
 //! TOKEN_ADJUST_PRIVILEGES to adjust (and TOKEN_QUERY too when the old state is asked for, as the
 //! documentation says), TOKEN_DUPLICATE to duplicate.
 
+use rtl::nt::access::{GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ, GENERIC_WRITE, MAXIMUM_ALLOWED};
+// The token rights (winnt.h's TOKEN_*), and the generic rights' mapping for tokens and what
+// MAXIMUM_ALLOWED grants (every token right).
+#[cfg_attr(not(target_arch = "x86"), allow(unused_imports))]
+pub use rtl::nt::access::{
+    TOKEN_ADJUST_PRIVILEGES,
+    TOKEN_ALL_ACCESS,
+    TOKEN_DUPLICATE,
+    TOKEN_EXECUTE,
+    TOKEN_QUERY,
+    TOKEN_QUERY_SOURCE,
+    TOKEN_READ,
+    TOKEN_WRITE,
+};
+
 use crate::se;
 use crate::status::*;
-
-/// The token rights (winnt.h's TOKEN_*).
-pub const TOKEN_DUPLICATE: u32 = 0x0002;
-pub const TOKEN_QUERY: u32 = 0x0008;
-pub const TOKEN_QUERY_SOURCE: u32 = 0x0010;
-pub const TOKEN_ADJUST_PRIVILEGES: u32 = 0x0020;
-/// The generic rights' mapping for tokens, and what MAXIMUM_ALLOWED grants (every token right).
-pub const TOKEN_READ: u32 = 0x0002_0008;
-pub const TOKEN_WRITE: u32 = 0x0002_00E0;
-pub const TOKEN_EXECUTE: u32 = 0x0002_0000;
-pub const TOKEN_ALL_ACCESS: u32 = 0x000F_01FF;
-const GENERIC_READ: u32 = 0x8000_0000;
-const GENERIC_WRITE: u32 = 0x4000_0000;
-const GENERIC_EXECUTE: u32 = 0x2000_0000;
-const GENERIC_ALL: u32 = 0x1000_0000;
-const MAXIMUM_ALLOWED: u32 = 0x0200_0000;
 /// The standard and the token-specific rights: what a request names besides the generic ones.
 const SPECIFIC_AND_STANDARD: u32 = 0x00FF_FFFF;
 

@@ -18,8 +18,8 @@ use crate::service::{self, ObjectAttributes};
 /// OBJECT_ATTRIBUTES' OBJ_CASE_INSENSITIVE.
 const OBJ_CASE_INSENSITIVE: u32 = 0x40;
 
-/// KEY_QUERY_VALUE: the access the options' key is opened with.
-const KEY_QUERY_VALUE: u32 = 0x0001;
+// KEY_QUERY_VALUE: the access the options' key is opened with.
+use rtl::nt::access::KEY_QUERY_VALUE;
 
 /// NtQueryValueKey's KeyValuePartialInformation class.
 const KEY_VALUE_PARTIAL_INFORMATION: u32 = 2;

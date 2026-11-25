@@ -721,8 +721,8 @@ pub fn create_section(
     created(status, handle)
 }
 
+use rtl::nt::access::SECTION_ALL_ACCESS;
 /// SECTION_ALL_ACCESS, the image section's protection (PAGE_EXECUTE) and SEC_IMAGE.
-const SECTION_ALL_ACCESS: u32 = 0x000F_001F;
 const PAGE_EXECUTE: u32 = 0x10;
 const SEC_IMAGE: u32 = 0x0100_0000;
 
@@ -868,8 +868,8 @@ pub fn query_image(section: u32) -> Result<SectionImageInformation, NtStatus> {
     Ok(information)
 }
 
-/// PROCESS_ALL_ACCESS: what CreateProcess's process handle grants.
-const PROCESS_ALL_ACCESS: u32 = 0x001F_0FFF;
+// PROCESS_ALL_ACCESS: what CreateProcess's process handle grants.
+use rtl::nt::access::PROCESS_ALL_ACCESS;
 
 /// NtCreateProcess: a process of the image section, its parent `parent`, the parent's inheritable
 /// handles copied when `inherit_handles`; no debug or exception port. The process's handle.

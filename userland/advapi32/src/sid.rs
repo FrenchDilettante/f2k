@@ -39,7 +39,7 @@ const TOKEN_USER: u32 = 1;
 const TOKEN_GROUPS: u32 = 2;
 const TOKEN_TYPE: u32 = 8;
 const TOKEN_IMPERSONATION_LEVEL: u32 = 9;
-const TOKEN_QUERY: u32 = 0x0008;
+use rtl::nt::access::TOKEN_QUERY;
 /// TOKEN_TYPE's TokenPrimary, and SECURITY_IMPERSONATION_LEVEL's SecurityIdentification.
 const TOKEN_PRIMARY: u32 = 1;
 const SECURITY_IDENTIFICATION: u32 = 1;

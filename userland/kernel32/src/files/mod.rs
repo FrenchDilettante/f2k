@@ -37,6 +37,16 @@ pub const MAX_PATH: usize = 260;
 pub const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
 
 // The statuses the file calls tell apart.
+// The file access rights and the generic ones the calls ask for.
+pub use rtl::nt::access::{
+    DELETE,
+    FILE_LIST_DIRECTORY,
+    FILE_READ_ATTRIBUTES,
+    FILE_WRITE_ATTRIBUTES,
+    GENERIC_READ,
+    GENERIC_WRITE,
+    SYNCHRONIZE,
+};
 use rtl::status::{
     STATUS_END_OF_FILE,
     STATUS_INVALID_HANDLE,
@@ -62,15 +72,6 @@ use rtl::winerror::{
     ERROR_NOT_ENOUGH_MEMORY,
     ERROR_PATH_NOT_FOUND,
 };
-
-/// The file access rights and the generic ones the calls ask for.
-pub const FILE_LIST_DIRECTORY: u32 = 0x0001;
-pub const FILE_READ_ATTRIBUTES: u32 = 0x0080;
-pub const FILE_WRITE_ATTRIBUTES: u32 = 0x0100;
-pub const DELETE: u32 = 0x0001_0000;
-pub const SYNCHRONIZE: u32 = 0x0010_0000;
-pub const GENERIC_WRITE: u32 = 0x4000_0000;
-pub const GENERIC_READ: u32 = 0x8000_0000;
 
 /// The share modes.
 pub const FILE_SHARE_READ: u32 = 0x1;

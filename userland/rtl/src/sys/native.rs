@@ -41,8 +41,8 @@ pub fn system_version() -> crate::version::VersionInfo {
     }
 }
 
+use crate::nt::access::EVENT_ALL_ACCESS;
 /// EVENT_ALL_ACCESS, and NtCreateEvent's SynchronizationEvent type.
-const EVENT_ALL_ACCESS: u32 = 0x001F_0003;
 const SYNCHRONIZATION_EVENT: u32 = 1;
 
 /// The current-process pseudo-handle, and the virtual-memory calls' constants.

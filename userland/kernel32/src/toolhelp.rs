@@ -67,10 +67,9 @@ const SNAPSHOT_ACCESS: u32 = 0x000F_0007;
 const PAGE_READWRITE: u32 = 0x04;
 const SEC_COMMIT: u32 = 0x0800_0000;
 
-/// The access a module or heap list opens its process with: PROCESS_QUERY_INFORMATION and
-/// PROCESS_VM_READ.
-const PROCESS_QUERY_INFORMATION: u32 = 0x0400;
-const PROCESS_VM_READ: u32 = 0x0010;
+// The access a module or heap list opens its process with: PROCESS_QUERY_INFORMATION and
+// PROCESS_VM_READ.
+use rtl::nt::access::{PROCESS_QUERY_INFORMATION, PROCESS_VM_READ};
 
 /// PROCESSENTRY32W (tlhelp32.h): one process of a snapshot.
 #[repr(C)]

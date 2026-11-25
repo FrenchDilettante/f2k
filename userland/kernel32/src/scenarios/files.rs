@@ -25,8 +25,7 @@ const STDOUT: u32 = 0x7;
 const STDERR: u32 = 0xB;
 const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
 const INVALID_SET_FILE_POINTER: u32 = 0xFFFF_FFFF;
-const GENERIC_READ: u32 = 0x8000_0000;
-const GENERIC_WRITE: u32 = 0x4000_0000;
+use rtl::nt::access::{GENERIC_READ, GENERIC_WRITE};
 
 /// The hello fixture's one console write: the CRT's text-mode stdout hands WriteFile CR LF.
 const HELLO: &[u8] = b"Hello, world!\r\n";

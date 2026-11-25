@@ -30,12 +30,9 @@ const SEC_NOCACHE: u32 = 0x1000_0000;
 /// The access a mapping's handle is made with: STANDARD_RIGHTS_REQUIRED, SECTION_QUERY and
 /// SECTION_MAP_READ, and SECTION_MAP_WRITE for a read-write mapping.
 const MAPPING_ACCESS: u32 = 0x000F_0000 | 0x0001 | 0x0004;
-const SECTION_MAP_WRITE: u32 = 0x0002;
-
-/// The view access rights.
-const FILE_MAP_COPY: u32 = 0x0001;
-const FILE_MAP_WRITE: u32 = 0x0002;
-const FILE_MAP_READ: u32 = 0x0004;
+use rtl::nt::access::SECTION_MAP_WRITE;
+// The view access rights.
+use rtl::nt::access::{FILE_MAP_COPY, FILE_MAP_READ, FILE_MAP_WRITE};
 
 /// NtMapViewOfSection's ViewShare disposition.
 const VIEW_SHARE: u32 = 1;

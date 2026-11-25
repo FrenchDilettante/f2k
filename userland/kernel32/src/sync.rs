@@ -36,6 +36,12 @@ const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
 const WAIT_FAILED: u32 = 0xFFFF_FFFF;
 const WAIT_IO_COMPLETION: u32 = 0xC0;
 
+use rtl::nt::access::{
+    EVENT_ALL_ACCESS,
+    MUTANT_ALL_ACCESS,
+    SEMAPHORE_ALL_ACCESS,
+    TIMER_ALL_ACCESS,
+};
 use rtl::status::{
     STATUS_ALERTED,
     STATUS_INVALID_PARAMETER,
@@ -49,11 +55,6 @@ use rtl::winerror::{
     ERROR_INVALID_PARAMETER,
     ERROR_NOT_SUPPORTED,
 };
-
-const EVENT_ALL_ACCESS: u32 = 0x001F_0003;
-const MUTANT_ALL_ACCESS: u32 = 0x001F_0001;
-const SEMAPHORE_ALL_ACCESS: u32 = 0x001F_0003;
-const TIMER_ALL_ACCESS: u32 = 0x001F_0003;
 
 /// The event and timer types: notification (manual-reset) and synchronization (auto-reset).
 const NOTIFICATION: u32 = 0;

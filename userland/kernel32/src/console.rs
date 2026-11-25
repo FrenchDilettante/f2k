@@ -56,9 +56,8 @@ use crate::nt::{self, ApiMessage};
 use crate::ntcall::FastPebLock;
 
 const INVALID_HANDLE_VALUE: u32 = 0xFFFF_FFFF;
+use rtl::nt::access::{GENERIC_READ, GENERIC_WRITE};
 use rtl::winerror::{ERROR_INVALID_PARAMETER, ERROR_OPERATION_ABORTED};
-const GENERIC_READ: u32 = 0x8000_0000;
-const GENERIC_WRITE: u32 = 0x4000_0000;
 
 own_data! {
     /// The console's input-wait handle, once the server gave it.

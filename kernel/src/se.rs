@@ -245,9 +245,10 @@ pub const GROUPS: [(Sid, u32); 8] = [
     (LOCAL, GROUP),
 ];
 
+// The default DACL's ACE mask.
+use rtl::nt::access::GENERIC_ALL;
 /// The default DACL's ACEs: ACCESS_ALLOWED_ACE_TYPE, no flags, GENERIC_ALL, to
 /// BUILTIN\Administrators and SYSTEM.
-const GENERIC_ALL: u32 = 0x1000_0000;
 const DEFAULT_DACL: [Sid; 2] = [ADMINISTRATORS, LOCAL_SYSTEM];
 
 /// The bytes the default DACL takes: the ACL's header, then each ACE's header, mask and SID.

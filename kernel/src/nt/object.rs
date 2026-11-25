@@ -24,26 +24,29 @@ use crate::status::*;
 pub const DUPLICATE_CLOSE_SOURCE: u32 = 1;
 pub const DUPLICATE_SAME_ACCESS: u32 = 2;
 
-/// The process access rights (winnt.h's PROCESS_*).
-pub const PROCESS_TERMINATE: u32 = 0x0001;
-pub const PROCESS_CREATE_THREAD: u32 = 0x0002;
-pub const PROCESS_VM_OPERATION: u32 = 0x0008;
-pub const PROCESS_VM_READ: u32 = 0x0010;
-pub const PROCESS_VM_WRITE: u32 = 0x0020;
-pub const PROCESS_DUP_HANDLE: u32 = 0x0040;
-pub const PROCESS_CREATE_PROCESS: u32 = 0x0080;
-pub const PROCESS_SET_QUOTA: u32 = 0x0100;
-pub const PROCESS_SET_INFORMATION: u32 = 0x0200;
-pub const PROCESS_QUERY_INFORMATION: u32 = 0x0400;
-
-/// The standard and generic rights a process access mask may carry.
-const READ_CONTROL: u32 = 0x0002_0000;
-const SYNCHRONIZE: u32 = 0x0010_0000;
-const MAXIMUM_ALLOWED: u32 = 0x0200_0000;
-const GENERIC_ALL: u32 = 0x1000_0000;
-const GENERIC_EXECUTE: u32 = 0x2000_0000;
-const GENERIC_WRITE: u32 = 0x4000_0000;
-const GENERIC_READ: u32 = 0x8000_0000;
+// The process access rights (winnt.h's PROCESS_*).
+// The standard and generic rights a process access mask may carry.
+use rtl::nt::access::{
+    GENERIC_ALL,
+    GENERIC_EXECUTE,
+    GENERIC_READ,
+    GENERIC_WRITE,
+    MAXIMUM_ALLOWED,
+    READ_CONTROL,
+    SYNCHRONIZE,
+};
+pub use rtl::nt::access::{
+    PROCESS_CREATE_PROCESS,
+    PROCESS_CREATE_THREAD,
+    PROCESS_DUP_HANDLE,
+    PROCESS_QUERY_INFORMATION,
+    PROCESS_SET_INFORMATION,
+    PROCESS_SET_QUOTA,
+    PROCESS_TERMINATE,
+    PROCESS_VM_OPERATION,
+    PROCESS_VM_READ,
+    PROCESS_VM_WRITE,
+};
 
 /// The process access a mask amounts to: its generic rights mapped as the process type maps them
 /// (read: querying and reading memory; write: changing the process, its memory and its handles;
