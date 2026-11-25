@@ -6,8 +6,15 @@ description = "batdir - dir over a directory the script makes: the long format s
 kind = "script"
 gate = true
 # `start /WAIT /B spawnkid out` does not wait (Windows 2000's start waits for nothing with /B, its
-# ERRORLEVEL 9 shows), so the script runs `spawnkid sleep 100` after the `out` line's echo: the
-# kid's two lines land before `start /D` on both machines (the retake's output was unchanged).
+# ERRORLEVEL 9 shows), nor does the `where` kid's: each kid runs beside the script, and where its
+# lines land among the script's is a race on both machines, decided by the scheduler (the script's
+# echo comes first only if cmd's quantum does not end between the start and the echo; the `where`
+# kid's lines come before the next kid's end only if its own quantum does not end first). On F2K
+# under QEMU the clock's ticks are the host's while the work is emulated, so both sides lose
+# under load. The kids write to a file (`> batdird\out.txt 2>&1`, `> batdird\where.txt`), which
+# the script types after a pause (`spawnkid sleep 100`, `200`): the lines are the capture's, in
+# its order, whatever the scheduler does. Pending a retake on Windows 2000, its output expected
+# unchanged.
 # dir's lines carry what varies by machine and by run: the volume's label and serial number, the
 # directory's full path (the script's directory, \CORPUS on F2K), each entry's date and time, and
 # the bytes free. The rest of each line, its columns, stays compared. A listing's bytes add up its

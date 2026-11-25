@@ -7,7 +7,9 @@ rem /S, the DIRCMD variable's switches and /-B overriding one, and a file
 rem that does not exist (the message, and ERRORLEVEL after it). Then start
 rem /WAIT /B of spawnkid (its exit code, its output), with a title and /D
 rem (the directory it starts in), and start /B, which does not wait
-rem (ERRORLEVEL after each), then a pause for that one to end. The dates
+rem (ERRORLEVEL after each), then a pause for that one to end. The kids
+rem start /WAIT /B leaves running write to files the script types after
+rem a pause, so their lines land in one order. The dates
 rem and times, the volume's label and serial number, the bytes free and
 rem the directory's full path are masked.
 rd /s /q batdird > nul 2> nul
@@ -37,13 +39,17 @@ echo dir batdird\none.txt: %ERRORLEVEL%
 spawnkid exit 9
 start /WAIT /B spawnkid exit 4
 echo start /WAIT /B: %ERRORLEVEL%
-start /WAIT /B spawnkid out
+rem start /WAIT /B does not wait on Windows 2000: the kid runs on beside the script, its
+rem lines going to a file, shown after a pause that gives it time to write them
+start /WAIT /B spawnkid out > batdird\out.txt 2>&1
 echo start /WAIT /B spawnkid out: %ERRORLEVEL%
-rem start /WAIT /B does not wait on Windows 2000: give the kid time to write its lines
 spawnkid sleep 100
+type batdird\out.txt
 set F2KHOME=%CD%
-start "batdir" /WAIT /B /Dbatdird "%CD%\spawnkid.exe" where
+start "batdir" /WAIT /B /Dbatdird "%CD%\spawnkid.exe" where > batdird\where.txt
 echo start /D: %ERRORLEVEL%
+spawnkid sleep 200
+type batdird\where.txt
 spawnkid exit 9
 start /B spawnkid exit 7
 echo start /B: %ERRORLEVEL%
