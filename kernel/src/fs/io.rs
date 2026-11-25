@@ -205,8 +205,10 @@ mod target {
     }
 
     /// Whether the open file `record` is mapped (a section holds it): it cannot be cut short nor
-    /// deleted.
+    /// deleted. Its callers are about to cut, overwrite or delete it: its image, when only cached,
+    /// is purged first (Windows 2000's MmFlushImageSection), so only a mapping in use refuses.
     pub fn mapped(record: FileRecordId) -> bool {
+        crate::nt::section::purge_cached_image(record);
         with_records(|records| records.get(record).user_mapped > 0)
     }
 

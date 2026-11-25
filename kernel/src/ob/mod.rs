@@ -381,8 +381,17 @@ impl SectionObject {
 /// from its record ([`crate::fs::file::FileRecord::image`], NT's section object pointers): the
 /// first image section of the file makes it, and later ones share it, so every process's view of a
 /// DLL maps the same frames (its writable pages copy-on-write). It holds the file object it was
-/// made from — the file stays open, counted as mapped, while it lives — and lives while an image
-/// section or a view references it; its last reference gives its frames and its file back.
+/// made from — the file stays open, counted as mapped, while it lives.
+///
+/// It is active while an image section or a view references it. Its last reference leaves it
+/// cached, as Windows 2000 keeps an image's control area once its last view goes: still its file's,
+/// its frames parked on Standby ([`Followup::Park`]) where the allocator may take them, so the
+/// file's next image section revives it and takes back the frames still its own without reading
+/// the file. A cached segment is purged — its frames and its file given back — when its file is
+/// cut, overwritten, written or deleted ([`Directory::purge_segment`]), when the table needs its
+/// record for another image ([`Directory::make_room_for_segment`], the least recently cached
+/// first), and at quiescence. A segment whose file changed while it was active is detached: no
+/// longer its file's, its last reference deletes it.
 #[derive(Clone, Copy)]
 pub struct ImageSegment {
     /// Its frames, page by page, made as views first need them.
@@ -393,6 +402,14 @@ pub struct ImageSegment {
     pub image_base: u32,
     /// The image's size as mapped.
     pub size: u32,
+    /// Whether it is no longer its file's (the file changed while it was active): its last
+    /// reference deletes it instead of caching it.
+    pub detached: bool,
+    /// Whether its frames are parked on Standby (a cached segment's, once its caching finished).
+    pub parked: bool,
+    /// Its place in the order the cached segments were cached in: the least recent is the first
+    /// to give its record up.
+    cached_at: u32,
 }
 
 impl ImageSegment {
@@ -407,7 +424,25 @@ impl ImageSegment {
             },
             image_base: 0,
             size: 0,
+            detached: false,
+            parked: false,
+            cached_at: 0,
         }
+    }
+
+    /// An active segment of `file_object`'s image, its frames not made yet.
+    pub const fn new(file_object: ObjectId, image_base: u32, size: u32) -> Self {
+        ImageSegment {
+            file_object,
+            image_base,
+            size,
+            ..ImageSegment::none()
+        }
+    }
+
+    /// How many pages the image spans as mapped.
+    pub fn pages(&self) -> u32 {
+        self.size.div_ceil(crate::mem::vm::PAGE)
     }
 }
 
@@ -463,11 +498,16 @@ impl DesktopObject {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Followup {
     /// A section or an image segment was deleted: its frames (taken out of its record) and the
-    /// file object a file's section or a segment held are the caller's to release.
+    /// file object a file's section or a segment held are the caller's to release. A cached
+    /// segment's frames are parked: `parked` is then its image's page count.
     Section {
         frames: crate::mem::vm::SectionFrames,
         file_object: Option<ObjectId>,
+        parked: Option<u32>,
     },
+    /// An image segment's last reference went: it stays cached, its frames to park on Standby
+    /// (unless it is referenced again first).
+    Park(SegmentId),
     /// A file object's last handle closed (its cleanup), for the device it is open on: a disk
     /// file's share access leaves the file's record, the byte-range locks the object holds go, its
     /// delete-on-close marks the file delete-pending, and the last cleanup of a delete-pending
@@ -940,7 +980,8 @@ impl Directory {
         }
     }
 
-    /// Drop a reference on the image segment `id`; the last one deletes it, its frames and the
+    /// Drop a reference on the image segment `id`. The last one leaves it cached, its frames for
+    /// the caller to park ([`Followup::Park`]); a detached segment's deletes it, its frames and the
     /// file object it held left to the caller.
     pub fn dereference_segment(&mut self, id: SegmentId) -> Option<Followup> {
         let header = self.segment_header(id)?;
@@ -948,7 +989,59 @@ impl Directory {
         if header.pointers != 0 {
             return None;
         }
-        Some(self.delete_segment(id.index))
+        if self.segments.records[id.index as usize].detached {
+            return Some(self.delete_segment(id.index));
+        }
+        let cached_at = self.cached_segments().map(|(_, at)| at + 1).max();
+        self.segments.records[id.index as usize].cached_at = cached_at.unwrap_or(0);
+        Some(Followup::Park(id))
+    }
+
+    /// The cached segments (live, no reference): their pool index and when they were cached.
+    fn cached_segments(&self) -> impl Iterator<Item = (u16, u32)> + '_ {
+        self.segments
+            .headers
+            .iter()
+            .zip(self.segments.records.iter())
+            .enumerate()
+            .filter(|(_, (header, _))| header.live && header.pointers == 0)
+            .map(|(index, (_, record))| (index as u16, record.cached_at))
+    }
+
+    /// Whether `id` names a cached segment: its file's still, no reference holding it.
+    pub fn segment_cached(&mut self, id: SegmentId) -> bool {
+        self.segment_header(id)
+            .is_some_and(|header| header.pointers == 0)
+    }
+
+    /// Purge the image segment `id` because its file changes (Windows 2000's
+    /// MmFlushImageSection): a cached one is deleted, its frames and file left to the caller; an
+    /// active one is detached from its file, deleted with its last reference (see
+    /// [`ImageSegment`]).
+    pub fn purge_segment(&mut self, id: SegmentId) -> Option<Followup> {
+        let header = self.segment_header(id)?;
+        if header.pointers == 0 {
+            return Some(self.delete_segment(id.index));
+        }
+        self.segments.records[id.index as usize].detached = true;
+        None
+    }
+
+    /// Purge the next cached segment (at quiescence, or a volume's end), none once none is left.
+    pub fn purge_next_cached(&mut self) -> Option<Followup> {
+        let (index, _) = self.cached_segments().next()?;
+        Some(self.delete_segment(index))
+    }
+
+    /// Make room for a new segment when the table is full: the least recently cached segment is
+    /// purged, its frames and file left to the caller. None when there is room already, or when
+    /// every segment is active (the create is then refused).
+    pub fn make_room_for_segment(&mut self) -> Option<Followup> {
+        if self.segments.headers.iter().any(|header| !header.live) {
+            return None;
+        }
+        let (index, _) = self.cached_segments().min_by_key(|&(_, at)| at)?;
+        Some(self.delete_segment(index))
     }
 
     /// Delete the image segment at pool `index`: its record is dead and its ids stale.
@@ -964,6 +1057,7 @@ impl Directory {
         Followup::Section {
             frames: segment.frames,
             file_object: Some(segment.file_object),
+            parked: segment.parked.then(|| segment.pages()),
         }
     }
 
@@ -1301,6 +1395,7 @@ impl Directory {
                     None => Some(Followup::Section {
                         frames: section.frames,
                         file_object: section.file_object,
+                        parked: None,
                     }),
                 }
             }
@@ -1497,9 +1592,12 @@ impl Directory {
             let live = self.headers(kind).iter().position(|header| header.live);
             if let Some(index) = live {
                 let id = self.id(kind, index as u16);
-                return Some(Leak {
-                    followup: self.delete(id),
-                });
+                // A leaked image section's segment goes with it, not into the cache.
+                let followup = match self.delete(id) {
+                    Some(Followup::Park(segment)) => Some(self.delete_segment(segment.index)),
+                    followup => followup,
+                };
+                return Some(Leak { followup });
             }
         }
         // The image sections went above, and every view with its process: a segment left is a
@@ -1617,12 +1715,14 @@ mod target {
             Followup::Section {
                 frames,
                 file_object,
+                parked,
             } => {
-                crate::nt::section::release_frames(frames);
+                crate::nt::section::release_frames(frames, parked);
                 if let Some(file_object) = file_object {
                     unmap_file(file_object);
                 }
             }
+            Followup::Park(segment) => crate::nt::section::park_segment(segment),
             Followup::FileCleanup {
                 object,
                 context,
@@ -2532,20 +2632,22 @@ mod tests {
         assert_eq!(directory.create_section(SectionObject::none()), None);
     }
 
-    /// The image segment table fills at its capacity — another image file's section is refused —
-    /// and a segment whose last reference went leaves its record to the next.
+    /// The image segment table fills at its capacity — another image file's section is refused
+    /// while every segment is active — and a cached segment gives its record up to the next, the
+    /// least recently cached first.
     #[test]
     fn the_segment_table_fills_and_reuses() {
         let directory = directory();
-        let segment = |index: u16| ImageSegment {
-            frames: crate::mem::vm::SectionFrames::empty(),
-            file_object: ObjectId {
-                kind: ObjectType::File,
-                index,
-                generation: 0,
-            },
-            image_base: 0x1000_0000,
-            size: 0x3000,
+        let segment = |index: u16| {
+            ImageSegment::new(
+                ObjectId {
+                    kind: ObjectType::File,
+                    index,
+                    generation: 0,
+                },
+                0x1000_0000,
+                0x3000,
+            )
         };
         let segments: Vec<_> = (0..SEGMENTS as u16)
             .map(|index| directory.create_segment(segment(index)).unwrap())
@@ -2561,15 +2663,55 @@ mod tests {
             "the refusal made nothing"
         );
 
-        let freed = segments[SEGMENTS / 2];
-        assert!(
-            directory.dereference_segment(freed).is_some(),
+        assert_eq!(
+            directory.make_room_for_segment(),
+            None,
+            "an active segment is never evicted"
+        );
+
+        // Two segments are cached, the later one first.
+        let (older, newer) = (segments[SEGMENTS / 2], segments[3]);
+        assert_eq!(
+            directory.dereference_segment(older),
+            Some(Followup::Park(older))
+        );
+        assert_eq!(
+            directory.dereference_segment(newer),
+            Some(Followup::Park(newer))
+        );
+        assert!(directory.segment_cached(older) && directory.segment_cached(newer));
+        assert_eq!(
+            directory.create_segment(segment(0)),
+            None,
+            "a cached segment keeps its record"
+        );
+        // Room is made from the least recently cached.
+        let evicted = directory.make_room_for_segment();
+        assert_eq!(
+            evicted,
+            Some(Followup::Section {
+                frames: crate::mem::vm::SectionFrames::empty(),
+                file_object: Some(segment(SEGMENTS as u16 / 2).file_object),
+                parked: None,
+            }),
             "its file goes back"
         );
+        assert!(directory.segment(older).is_none(), "its id is stale");
         let reused = directory.create_segment(segment(0)).unwrap();
-        assert_eq!(reused.index, freed.index, "the freed record is reused");
-        assert!(directory.segment(freed).is_none(), "under a new generation");
+        assert_eq!(reused.index, older.index, "the evicted record is reused");
         assert_eq!(directory.create_segment(segment(1)), None, "full again");
+        assert!(directory.segment_cached(newer), "the newer stays cached");
+        assert_eq!(
+            directory.make_room_for_segment().map(|_| ()),
+            Some(()),
+            "then it goes"
+        );
+        assert!(directory.segment(newer).is_none());
+        assert_eq!(
+            directory.make_room_for_segment(),
+            None,
+            "room, so nothing goes"
+        );
     }
 
     /// The file-object table fills at its capacity — an open is refused, nothing made — and a file
@@ -3011,6 +3153,7 @@ mod tests {
             Some(Followup::Section {
                 frames: crate::mem::vm::SectionFrames::empty(),
                 file_object: Some(file_object),
+                parked: None,
             })
         );
         assert_eq!(
@@ -3045,12 +3188,7 @@ mod tests {
             generation: 2,
         };
         let segment = directory
-            .create_segment(ImageSegment {
-                frames: crate::mem::vm::SectionFrames::empty(),
-                file_object,
-                image_base: 0x1000_0000,
-                size: 0x3000,
-            })
+            .create_segment(ImageSegment::new(file_object, 0x1000_0000, 0x3000))
             .unwrap();
         // The first process's loader: its section made the segment (the creator's reference is
         // the section's), its view holds the segment, and its handle closes.
@@ -3073,29 +3211,49 @@ mod tests {
         assert_eq!(closed(directory, second), vec![]);
         assert_eq!(directory.release_mapping(view), None);
         assert_eq!(directory.segments.live(), 1, "one segment for the file");
+        // The last view leaves it cached, its frames to park, and a later section revives it.
+        assert_eq!(
+            directory.release_mapping(view),
+            Some(Followup::Park(segment))
+        );
+        assert!(
+            directory.segment_cached(segment),
+            "cached, its file's still"
+        );
+        assert!(directory.reference_segment(segment), "revived");
+        assert!(!directory.segment_cached(segment));
+        assert_eq!(
+            directory.dereference_segment(segment),
+            Some(Followup::Park(segment))
+        );
+        // The file changes: the cached segment is purged, its frames and file given back.
         let gone = Followup::Section {
             frames: crate::mem::vm::SectionFrames::empty(),
             file_object: Some(file_object),
+            parked: None,
         };
-        assert_eq!(directory.release_mapping(view), Some(gone));
+        assert_eq!(directory.purge_segment(segment), Some(gone));
         assert!(directory.segment(segment).is_none(), "its id is stale");
         assert!(!directory.reference_segment(segment));
+        assert_eq!(directory.purge_segment(segment), None);
         assert_eq!(directory.release_mapping(view), None);
         // A section that outlives the views is the last holder in its turn.
         let again = directory
-            .create_segment(ImageSegment {
-                frames: crate::mem::vm::SectionFrames::empty(),
-                file_object,
-                image_base: 0x1000_0000,
-                size: 0x3000,
-            })
+            .create_segment(ImageSegment::new(file_object, 0x1000_0000, 0x3000))
             .unwrap();
         assert_eq!(again.index, segment.index, "the record is reused");
         assert_ne!(again, segment, "under a new generation");
         let section = image_section(directory, again);
         assert!(directory.reference_segment(again), "a view");
         assert_eq!(directory.release_mapping(Mapping::Image(again)), None);
-        assert_eq!(closed(directory, section), vec![gone]);
+        assert_eq!(closed(directory, section), vec![Followup::Park(again)]);
+        // A segment whose file changes while it is active is detached: its last reference deletes
+        // it.
+        assert!(directory.reference_segment(again), "revived");
+        assert_eq!(directory.purge_segment(again), None, "detached");
+        assert!(directory.segment(again).is_some(), "still mapped");
+        assert_eq!(directory.dereference_segment(again), Some(gone));
+        assert!(directory.segment(again).is_none());
         // A data view holds its section, as before.
         let data = directory.create_section(SectionObject::none()).unwrap();
         assert_eq!(
@@ -3103,6 +3261,7 @@ mod tests {
             Some(Followup::Section {
                 frames: crate::mem::vm::SectionFrames::empty(),
                 file_object: None,
+                parked: None,
             })
         );
     }
@@ -3114,24 +3273,37 @@ mod tests {
         let directory = directory();
         let segment = |directory: &mut Directory, index| {
             directory
-                .create_segment(ImageSegment {
-                    frames: crate::mem::vm::SectionFrames::empty(),
-                    file_object: ObjectId {
+                .create_segment(ImageSegment::new(
+                    ObjectId {
                         kind: ObjectType::File,
                         index,
                         generation: 0,
                     },
-                    image_base: 0x1000_0000,
-                    size: 0x1000,
-                })
+                    0x1000_0000,
+                    0x1000,
+                ))
                 .unwrap()
         };
         let held = segment(directory, 1);
         image_section(directory, held);
         segment(directory, 2);
+        // A cached segment is no leak: it is purged ahead of the sweep.
+        let cached = segment(directory, 3);
+        assert_eq!(
+            directory.dereference_segment(cached),
+            Some(Followup::Park(cached))
+        );
+        assert!(directory.purge_next_cached().is_some());
+        assert_eq!(directory.purge_next_cached(), None);
         let (leaks, followups) = sweep(directory);
         assert_eq!(leaks, 2, "the section and the lone segment");
         assert_eq!(followups.len(), 2);
+        assert!(
+            followups
+                .iter()
+                .all(|followup| matches!(followup, Followup::Section { .. })),
+            "the leaked section's segment goes with it, not into the cache"
+        );
         assert_eq!(directory.segments.live(), 0);
     }
 

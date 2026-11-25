@@ -1377,13 +1377,16 @@ fn audit_objects(process: &Process, quiescent: bool) {
     }
     // With no process left, the console has none attached: its input-wait event goes with it.
     crate::csr::release_input_event();
+    // The images cached for their next run are no leak: they go first, giving their frames and
+    // their files back.
+    crate::nt::section::purge_image_cache();
     // The sweep, one leak at a time: a leaked section's frames are given back between the steps,
     // outside the directory's lock (the file records are forgotten whole after).
     let mut leaked = 0;
     while let Some(leak) = crate::ob::locked(crate::ob::Directory::sweep_next) {
         leaked += 1;
-        if let Some(crate::ob::Followup::Section { frames, .. }) = leak.followup {
-            crate::nt::section::release_frames(frames);
+        if let Some(crate::ob::Followup::Section { frames, parked, .. }) = leak.followup {
+            crate::nt::section::release_frames(frames, parked);
         }
     }
     crate::ob::locked(crate::ob::Directory::sweep_end);

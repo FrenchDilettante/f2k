@@ -267,9 +267,15 @@ fn rename(record: FileRecordId, replace: bool, target: (FileName, Start)) -> Res
                     root: false,
                     attributes: existing.attributes,
                 };
-                // Whether it is open is asked only of a name a rename may replace.
-                let open =
-                    !same && replace && with_records(|records| records.find(&existing).is_some());
+                // Whether it is open is asked only of a name a rename may replace; its image, when
+                // only cached, is purged first (it holds the file open).
+                let open = !same && replace && {
+                    let found = with_records(|records| records.find(&existing));
+                    if let Some(record) = found {
+                        crate::nt::section::purge_cached_image(record);
+                    }
+                    with_records(|records| records.find(&existing).is_some())
+                };
                 rename_over(replace, same, entry, open)?;
                 (
                     File::plain(existing.parent_cluster, 0, true),

@@ -262,6 +262,8 @@ fn write_disk(
         if length == 0 {
             return Ok(0);
         }
+        // The file's image, cached or mapped, is no longer what the file holds.
+        crate::nt::section::forget_image(record);
         let mut chunk = [0u8; CHUNK];
         let mut done = 0u32;
         let mut failure = None;

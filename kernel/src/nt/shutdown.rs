@@ -186,6 +186,8 @@ mod target {
 
     impl Machine for Kernel {
         fn close_volume(&mut self) {
+            // The images cached for a next run hold their files open: they go with the volume.
+            crate::nt::section::purge_image_cache();
             with_boot_volume(|volume| volume.close());
         }
 

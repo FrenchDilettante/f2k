@@ -31,7 +31,13 @@
 //! the image then), every later one shares it, so every process's view of a DLL maps the same
 //! frames. The segment holds the file object, so the file stays open — and cannot be truncated or
 //! deleted — while any image section or view of it lives; a view holds the segment, not the
-//! section, so the section's handle can be closed as soon as the view is mapped. A view is the
+//! section, so the section's handle can be closed as soon as the view is mapped. Its last reference
+//! leaves it cached, as Windows 2000 keeps an image's control area: its frames parked on Standby
+//! ([`park_segment`]), where the allocator may take them, so the next run of the image takes back
+//! the pages still its own without reading the file. A cached image is purged when its file is
+//! about to be cut, overwritten, deleted or replaced ([`purge_cached_image`], NT's
+//! MmFlushImageSection) or written ([`forget_image`]), when its record is needed for another image,
+//! at quiescence and at shutdown. A view is the
 //! whole image at its preferred base — an image is never relocated, so a base another region holds
 //! is STATUS_CONFLICTING_ADDRESSES — a MEM_IMAGE reservation whose pages carry their sections'
 //! protections, as the loader maps a program's (a writable section's pages copy-on-write: the
@@ -679,9 +685,77 @@ mod target {
     use crate::nt::sync;
     use crate::ob::{self, ObjectId, ObjectType};
 
-    /// A section is gone: it drops its hold on its frames.
-    pub fn release_frames(mut frames: crate::mem::vm::SectionFrames) {
-        frames.release(&mut CurrentPages);
+    /// A section is gone: it drops its hold on its frames. A cached image segment's are parked,
+    /// its image `parked` pages long: each still its own comes off Standby first.
+    pub fn release_frames(mut frames: crate::mem::vm::SectionFrames, parked: Option<u32>) {
+        match parked {
+            Some(pages) => frames.release_parked(&mut CurrentPages, pages),
+            None => frames.release(&mut CurrentPages),
+        }
+    }
+
+    /// An image segment's last reference went ([`ob::Followup::Park`]): while it is still cached
+    /// (not referenced again meanwhile, nor purged), its frames go to Standby, linked to their
+    /// slots, so the allocator may take them and the file's next image section takes back the
+    /// ones still its own (see [`ob::ImageSegment`]).
+    pub fn park_segment(segment: ob::SegmentId) {
+        ob::locked(|directory| {
+            if !directory.segment_cached(segment) {
+                return;
+            }
+            let record = directory.segment(segment).expect("a cached segment lives");
+            if !record.parked {
+                let pages = record.pages();
+                record.frames.park(&mut CurrentPages, pages);
+                record.parked = true;
+            }
+        });
+    }
+
+    /// The file `record`'s image segment, when it is cached, is purged: the file is about to be
+    /// cut, overwritten or deleted (Windows 2000's MmFlushImageSection, which FastFat asks before
+    /// each). An active one stays: the file is mapped, and the change is refused.
+    pub fn purge_cached_image(record: crate::fs::file::FileRecordId) {
+        flush_image(record, false);
+    }
+
+    /// The file `record` is written: its image segment is no longer its image. A cached one is
+    /// purged; an active one detached, so the file's next image section reads the file again, and
+    /// the segment is deleted, not cached, with its last reference.
+    pub fn forget_image(record: crate::fs::file::FileRecordId) {
+        flush_image(record, true);
+    }
+
+    fn flush_image(record: crate::fs::file::FileRecordId, detach: bool) {
+        let Some(segment) = crate::fs::file::with_records(|records| records.get(record).image)
+        else {
+            return;
+        };
+        let purged = ob::locked(|directory| {
+            let cached = directory.segment_cached(segment);
+            (cached || detach).then(|| directory.purge_segment(segment))
+        });
+        let Some(followup) = purged else {
+            return;
+        };
+        // The file's next image section makes a segment of its own.
+        crate::fs::file::with_records(|records| {
+            let record = records.get_mut(record);
+            if record.image == Some(segment) {
+                record.image = None;
+            }
+        });
+        if let Some(followup) = followup {
+            ob::finish(followup);
+        }
+    }
+
+    /// Purge every cached image segment (at quiescence, before the leak sweep: a cached segment is
+    /// no leak).
+    pub fn purge_image_cache() {
+        while let Some(followup) = ob::locked(ob::Directory::purge_next_cached) {
+            ob::finish(followup);
+        }
     }
 
     /// The record of the file a section's or a segment's file object opens: a disk file's, as
@@ -845,9 +919,10 @@ mod target {
             Some((_, image_base, size)) => (image_base, size),
             None => crate::process::threads::critical_region(|| read_layout(file))?,
         };
-        // What a section refused leaves (its new segment's frames and file), finished once the
-        // directory is released.
+        // What a section refused leaves (its new segment's frames and file), and the cached
+        // segment purged to make room for a new one, finished once the directory is released.
         let mut left = None;
+        let mut evicted = None;
         let result = sync::create(
             passive,
             slot,
@@ -857,18 +932,27 @@ mod target {
             |directory| {
                 let segment = match segment_of(directory) {
                     Some((id, _, _)) => {
+                        // A cached segment revives: the frames it parked and still owns come
+                        // back off Standby, no page read again.
+                        let cached = directory.segment_cached(id);
                         let held = directory.reference_segment(id);
                         debug_assert!(held, "the file's segment lives");
+                        let record = directory.segment(id).expect("held");
+                        if cached && record.parked {
+                            let pages = record.pages();
+                            record.frames.revive(&mut CurrentPages, pages);
+                            record.parked = false;
+                        }
                         id
                     }
                     None => {
                         let (image_base, size) = layout;
-                        let id = directory.create_segment(ob::ImageSegment {
-                            frames: crate::mem::vm::SectionFrames::empty(),
+                        evicted = directory.make_room_for_segment();
+                        let id = directory.create_segment(ob::ImageSegment::new(
                             file_object,
                             image_base,
                             size,
-                        })?;
+                        ))?;
                         let held = directory.reference(file_object);
                         debug_assert!(held, "the handle's file object lives");
                         crate::fs::file::with_records(|records| {
@@ -897,7 +981,7 @@ mod target {
                 section
             },
         );
-        if let Some(followup) = left {
+        for followup in [evicted, left].into_iter().flatten() {
             ob::finish(followup);
         }
         result
@@ -1272,7 +1356,7 @@ mod target {
             let frame = match made {
                 Some(frame) => Ok(frame),
                 None => ob::locked(|directory| {
-                    segment_frames(directory, segment).frame(table, page, |frame| {
+                    segment_frames(directory, segment).image_frame(table, page, |frame| {
                         crate::mem::paging::write_frame(frame, 0, &buffer);
                     })
                 }),
@@ -1379,7 +1463,11 @@ mod target {
             ob::locked(|directory| directory.file(object).and_then(|file| file.disk()))
         });
         let mut file = match record {
-            Some(record) => crate::fs::io::file_at(record),
+            Some(record) => {
+                // The file is written: its image, cached or mapped, is no longer what it holds.
+                forget_image(record);
+                crate::fs::io::file_at(record)
+            }
             None => file,
         };
         let ok = write_back_pages(
@@ -1495,7 +1583,10 @@ mod host {
     use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 
     /// A section is gone: the host has no frames to give back.
-    pub fn release_frames(_frames: crate::mem::vm::SectionFrames) {}
+    pub fn release_frames(_frames: crate::mem::vm::SectionFrames, _parked: Option<u32>) {}
+
+    /// A segment's caching: the host has no frames to park.
+    pub fn park_segment(_segment: crate::ob::SegmentId) {}
 
     unserved! {
         create_section(UserPtr<u32>, u32, UserAddr, UserPtr<u64>, u32, u32, Handle);
