@@ -1,0 +1,10 @@
+# batlabel: one test, the script's one block (`cmd /c batlabel.cmd`, output.txt); see tests/README.md,
+# "Script fixtures".
+# Declared ahead of its capture (shallow-gui-cmd finding 26): batedge's long labels each met a goto
+# before them or a label of 140 characters on their scan, so they do not tell how Windows 2000's
+# cmd.exe reads a label past 128 characters. Each case here is a batch file of its own.
+description = "batlabel - goto and call to labels around 128 characters, each case in a batch file and a cmd.exe of its own: a label of 128 characters, one of 129 by its whole name and by its first 128, a name of 140 characters whose first 128 are a label's, a short label after a label of 140 characters, a label of 40 characters by its first 39, call of a label of 129 characters."
+kind = "script"
+gate = true
+timeout = 60
+pending = "not captured yet: the placeholder block awaits the next VM trip (tests\\capture.bat batlabel)"

@@ -29,7 +29,7 @@ tests/
 ├── cmd/        # script fixtures, run by cmd.exe: batecho, batset, batlevel, batexit, batcd,
 │               # batver, battype, batredir, batcall, batcode, batclr, batpext, batdyn, batquot,
 │               # batstd, batops, batline, bathelp, batdir, batpipe, batforq, batlong, batedge,
-│               # batflow; HAND-CAPTURES.md, the interactive checks
+│               # batflow, batlabel; HAND-CAPTURES.md, the interactive checks
 ├── harness/    # checks of the tests and the repository themselves (no QEMU)
 └── common/     # f2kt.h, srcsum.c: shared by the fixtures' sources; f2kd.h, f2kdhost.h and
                 #  f2kdproto.h: the kernel-mode fixtures' driver and companion sides

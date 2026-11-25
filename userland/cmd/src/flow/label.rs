@@ -6,6 +6,11 @@
 //!
 //! A label is looked for from where the batch file is to its end, then from its start, as `goto
 //! /?` says; it is compared whatever the case of its letters.
+//!
+//! `goto` and `call` keep the first [`LONGEST`] units of the label they are given ([`kept`]), as
+//! Windows 2000's cmd reads it into a buffer of 128 characters (batedge's capture: its message
+//! for a label of 140 characters shows the first 128), while a label line's word is compared
+//! whole: a label longer than 128 characters can never be gone to.
 
 use core::fmt;
 
@@ -83,6 +88,14 @@ pub fn called(text: &[u16]) -> &[u16] {
     word(text.strip_prefix(&[COLON]).unwrap_or(text))
 }
 
+/// The units of a label `goto` and `call` keep.
+pub const LONGEST: usize = 128;
+
+/// The label `goto` or `call` looks for: the first [`LONGEST`] units of the one given.
+pub fn kept(label: &[u16]) -> &[u16] {
+    &label[..label.len().min(LONGEST)]
+}
+
 /// What `goto` without a label prints.
 pub const MISSING: &str = "No batch label specified to GOTO command.\r\n";
 
@@ -140,5 +153,45 @@ mod tests {
         assert!(!calls_label(&wide("x.cmd :sub")));
         assert_eq!(called(&wide(" :sub a b")), wide("sub"));
         assert_eq!(called(&wide(":eof")), wide("eof"));
+    }
+
+    /// `prefix` then digits, `length` units in all.
+    fn long(prefix: &str, length: usize) -> String {
+        let digits = (0..length - prefix.len()).map(|n| char::from(b'0' + (n % 10) as u8));
+        prefix.chars().chain(digits).collect()
+    }
+
+    #[test]
+    fn a_label_of_128_units_is_kept_whole_and_found() {
+        let label = long("batlabel_", LONGEST);
+        let target = wide(&label);
+        assert_eq!(kept(&target), &target[..]);
+        assert!(names(&wide(&format!(":{label}")), kept(&target)));
+    }
+
+    #[test]
+    fn a_longer_label_is_cut_and_never_found() {
+        // batedge: `goto` to a label of 140 characters reports its first 128 missing.
+        let label = long("batedge_goto_long_", 140);
+        let target = wide(&label);
+        assert_eq!(kept(&target), &target[..LONGEST]);
+        assert!(!names(&wide(&format!(":{label}")), kept(&target)));
+        assert_eq!(
+            NotFound(kept(&target)).to_string(),
+            format!(
+                "The system cannot find the batch label specified - {}\r\n",
+                &label[..LONGEST]
+            )
+        );
+        // A label of its first 128 units, though, is the one it goes to.
+        let line = format!(":{}", &label[..LONGEST]);
+        assert!(names(&wide(&line), kept(&target)));
+    }
+
+    #[test]
+    fn a_label_is_not_found_by_its_first_characters() {
+        // batedge's label of 40 characters, gone to by its first 39.
+        let label = long("batedge_prefix_forty_", 40);
+        assert!(!names(&wide(&format!(":{label}")), &wide(&label[..39])));
     }
 }

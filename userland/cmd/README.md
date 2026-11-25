@@ -427,6 +427,7 @@ goto :eof
 
 In a batch file, goes on with the line after the line `:label` (the label's word, after a colon at the line's start, its blanks skipped).
 The label is looked for from the line after the one running to the batch file's end, then from its start, whatever the case of its letters; a `:` before `label` is dropped.
+`goto` and `call :label` keep the label's first 128 characters, and a label line's word is compared whole, so a label of more than 128 characters is never found, and a longer name finds the label of its first 128.
 A label that is not there prints `The system cannot find the batch label specified - label` and ends the batch file, the ERRORLEVEL 1; `goto` alone prints `No batch label specified to GOTO command.` and does the same.
 `goto :eof` ends the batch file, or what `call :label` runs.
 `goto` leaves the block, the `if` and the `for` it is in.
@@ -964,6 +965,7 @@ What Windows 2000's cmd.exe has and this one does not:
 ## Differences from Windows 2000
 
 - The banner, `ver` and `$V` show `F2K [Version 5.00.2195]`; Windows 2000 shows `Microsoft Windows 2000 [Version 5.00.2195]`, and its banner has a copyright line too.
+- A label of more than 128 characters is reported missing, its first 128 shown, and the batch file ends with ERRORLEVEL 1: Windows 2000's message runs on past the 128th character into other text, and its `cmd /c` ends with -1 (batedge's capture; batlabel, not captured yet, separates the cases).
 - A block holds 4,096 characters at most once expanded, and a batch file's block echoes as it was read, its lines as they are; labels in a block are skipped.
 - `>>` appends after the file's last byte, whatever it is: Windows' cmd writes over a Ctrl+Z ending the file.
 - A command a pipe runs in a shell of its own is handed as the line holds it, its escapes kept, only a group rebuilt: Windows rebuilds every command from what it read, so `echo a^&b | x` runs `echo a&b` there.

@@ -4,9 +4,12 @@
 # time: after a goto to a label of 140 characters, whose "cannot find" message shows the label's
 # first 128 characters followed by the label the goto before went to ("long140"), and, printing
 # nothing, after a goto by a label's first 39 characters and one to a name that differs from a
-# label past its 128th. That reads as a fault in its own label handling (a buffer of 128
-# characters with no end), not a rule F2K could follow; a capture of labels of 128 to 140
-# characters without a goto before them would tell more.
+# label past its 128th. The last two never reach their goto: their `goto prefix` and `goto past128`
+# scan past the line naming the label of 140 characters (`:batedge_goto_long_...`), and the first
+# went through a goto before, so none of the three shows how a label past 128 characters is read
+# on its own. batlabel holds those cases each in a batch file of its own. F2K keeps a label's first
+# 128 characters (cmd::flow::label::kept) and compares a label line's word whole, as the first
+# case's message shows Windows does; it reports the labels missing and ends with 1.
 description = "batedge - small corners of the batch language: %~ with a modifier cmd.exe does not know, in a called label (each in a cmd.exe of its own); a caret at a line's end joining the next line and escaping its first character, after rem, inside quotes, doubled, and set's value of a line feed; call's second pass over carets, in quotes and out, and over a variable's; if's string order (LSS, GTR, EQU and /i over case, punctuation, a hyphen and digits), its numbers past 2^31-1, octal and hexadecimal; and labels of 40 and 140 characters, a goto by a label's first 39 characters and one differing from a label past its 128th (each in a cmd.exe of its own)."
 kind = "script"
 gate = true

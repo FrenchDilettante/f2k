@@ -1,0 +1,5 @@
+# F2K capture of batlabel (tests\capture.bat)
+
+>>> cmd /c batlabel.cmd
+(not captured yet: tests\capture.bat batlabel replaces this placeholder)
+<<< exit code=0

@@ -42,9 +42,6 @@ mod set_switch;
 
 exe::entry!(main);
 
-/// The units a label `goto` goes to may hold.
-const LABEL: usize = 128;
-
 /// A batch file's arguments, its own copy: its name as typed and what followed it on its line,
 /// its path as found, and how `shift` moved them.
 struct Arguments {
@@ -105,7 +102,7 @@ struct Batch {
     /// it does, whatever their own extension.
     cmd_script: bool,
     /// The label `goto` goes to, and its length.
-    label: RefCell<([u16; LABEL], usize)>,
+    label: RefCell<([u16; label::LONGEST], usize)>,
     /// Where its file is read: the bytes before the line after the one running, where `call
     /// :label` starts looking for its label.
     offset: Cell<u64>,
@@ -117,7 +114,7 @@ impl Batch {
             arguments: RefCell::new(Arguments::new(line, path)),
             depth,
             cmd_script,
-            label: RefCell::new(([0; LABEL], 0)),
+            label: RefCell::new(([0; label::LONGEST], 0)),
             offset: Cell::new(0),
         }
     }
@@ -1392,10 +1389,10 @@ fn goto(argument: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> Flow
         }
         Goto::End => Flow::EndBatch,
         Goto::Label(name) => {
+            let name = label::kept(name);
             let mut slot = batch.label.borrow_mut();
-            let length = name.len().min(slot.0.len());
-            slot.0[..length].copy_from_slice(&name[..length]);
-            slot.1 = length;
+            slot.0[..name.len()].copy_from_slice(name);
+            slot.1 = name.len();
             Flow::Goto
         }
     }
@@ -1413,7 +1410,7 @@ fn call_label(line: &[u16], state: &mut cmd::State, batch: Option<&Batch>) -> Fl
         return Flow::Next;
     };
     let line = cmd::trim(line);
-    let name = label::called(line);
+    let name = label::kept(label::called(line));
     let mut path = [0; exe::MAX_PATH];
     let path = {
         let arguments = batch.arguments.borrow();
