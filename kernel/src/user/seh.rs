@@ -314,19 +314,19 @@ pub fn fault_record(
     status: u32,
     cr2: u32,
 ) -> (u32, u32, [u32; 3], usize) {
-    use crate::process::exit::status;
+    use rtl::status::{STATUS_ACCESS_VIOLATION, STATUS_BREAKPOINT, STATUS_GUARD_PAGE_VIOLATION};
     let eip = frame.eip;
     match (vector, status) {
-        (3, status::BREAKPOINT) => (
+        (3, STATUS_BREAKPOINT) => (
             eip.wrapping_sub(1),
             eip.wrapping_sub(1),
             [0, frame.ecx, frame.edx],
             3,
         ),
-        (14, status::ACCESS_VIOLATION | status::GUARD_PAGE_VIOLATION) => {
+        (14, STATUS_ACCESS_VIOLATION | STATUS_GUARD_PAGE_VIOLATION) => {
             (eip, eip, [(frame.error_code >> 1) & 1, cr2, 0], 2)
         }
-        (_, status::ACCESS_VIOLATION) => (eip, eip, [0, u32::MAX, 0], 2),
+        (_, STATUS_ACCESS_VIOLATION) => (eip, eip, [0, u32::MAX, 0], 2),
         _ => (eip, eip, [0, 0, 0], 0),
     }
 }
@@ -925,33 +925,37 @@ mod tests {
     /// parameters.
     #[test]
     fn faults_raise_their_records() {
-        use crate::process::exit::status;
+        use rtl::status::{
+            STATUS_ACCESS_VIOLATION,
+            STATUS_BREAKPOINT,
+            STATUS_INTEGER_DIVIDE_BY_ZERO,
+        };
         let at = |eip: u32, error_code: u32| TrapFrame {
             eip,
             error_code,
             ..frame()
         };
         assert_eq!(
-            fault_record(&at(0x401000, 0x6), 14, status::ACCESS_VIOLATION, 0x1234),
+            fault_record(&at(0x401000, 0x6), 14, STATUS_ACCESS_VIOLATION, 0x1234),
             (0x401000, 0x401000, [1, 0x1234, 0], 2)
         );
         assert_eq!(
-            fault_record(&at(0x401000, 0x4), 14, status::ACCESS_VIOLATION, 0),
+            fault_record(&at(0x401000, 0x4), 14, STATUS_ACCESS_VIOLATION, 0),
             (0x401000, 0x401000, [0, 0, 0], 2)
         );
         assert_eq!(
-            fault_record(&at(0x401000, 0), 13, status::ACCESS_VIOLATION, 0),
+            fault_record(&at(0x401000, 0), 13, STATUS_ACCESS_VIOLATION, 0),
             (0x401000, 0x401000, [0, u32::MAX, 0], 2)
         );
         assert_eq!(
-            fault_record(&at(0x401001, 0), 3, status::BREAKPOINT, 0),
+            fault_record(&at(0x401001, 0), 3, STATUS_BREAKPOINT, 0),
             (0x401000, 0x401000, [0, 6, 5], 3)
         );
         assert_eq!(
-            fault_record(&at(0x401000, 0), 0, status::INTEGER_DIVIDE_BY_ZERO, 0).3,
+            fault_record(&at(0x401000, 0), 0, STATUS_INTEGER_DIVIDE_BY_ZERO, 0).3,
             0
         );
-        let record = exception_record(status::ACCESS_VIOLATION, 0, 0x401000, &[1, 0x1234]);
+        let record = exception_record(STATUS_ACCESS_VIOLATION, 0, 0x401000, &[1, 0x1234]);
         let words: Vec<u32> = record
             .as_bytes()
             .chunks_exact(4)

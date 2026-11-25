@@ -28,25 +28,20 @@ pub struct Fault {
 /// The vector a raised exception's end reports: it came from RaiseException, not a CPU trap.
 pub const RAISED_VECTOR: u32 = u32::MAX;
 
-/// The exception codes the faults raise (the documented NTSTATUS values).
-pub mod status {
-    pub const ACCESS_VIOLATION: u32 = 0xC000_0005;
-    pub const ILLEGAL_INSTRUCTION: u32 = 0xC000_001D;
-    pub const ARRAY_BOUNDS_EXCEEDED: u32 = 0xC000_008C;
-    pub const FLOAT_INVALID_OPERATION: u32 = 0xC000_0090;
-    pub const INTEGER_DIVIDE_BY_ZERO: u32 = 0xC000_0094;
-    pub const INTEGER_OVERFLOW: u32 = 0xC000_0095;
-    pub const PRIVILEGED_INSTRUCTION: u32 = 0xC000_0096;
-    /// Raised when the stack's guard page cannot grow it (with only the reservation's
-    /// never-committed bottom page left).
-    pub const STACK_OVERFLOW: u32 = 0xC000_00FD;
-    pub const FLOAT_MULTIPLE_TRAPS: u32 = 0xC000_02B5;
-    /// A guard page fired outside the running thread's stack (its access raises this, once).
-    pub const GUARD_PAGE_VIOLATION: u32 = 0x8000_0001;
-    pub const DATATYPE_MISALIGNMENT: u32 = 0x8000_0002;
-    pub const BREAKPOINT: u32 = 0x8000_0003;
-    pub const SINGLE_STEP: u32 = 0x8000_0004;
-}
+// The exception codes the faults raise (the documented NTSTATUS values).
+use rtl::status::{
+    STATUS_ACCESS_VIOLATION,
+    STATUS_ARRAY_BOUNDS_EXCEEDED,
+    STATUS_BREAKPOINT,
+    STATUS_DATATYPE_MISALIGNMENT,
+    STATUS_FLOAT_INVALID_OPERATION,
+    STATUS_FLOAT_MULTIPLE_TRAPS,
+    STATUS_ILLEGAL_INSTRUCTION,
+    STATUS_INTEGER_DIVIDE_BY_ZERO,
+    STATUS_INTEGER_OVERFLOW,
+    STATUS_PRIVILEGED_INSTRUCTION,
+    STATUS_SINGLE_STEP,
+};
 
 /// The exception code a user-mode trap raises, as Windows 2000's trap handlers map them. A general
 /// protection fault is a privileged instruction when the faulting instruction is one (`privileged`,
@@ -54,17 +49,17 @@ pub mod status {
 /// violation (the stack overflow is decided before this, from the stack's own bookkeeping).
 pub fn fault_status(vector: u32, privileged: bool) -> u32 {
     match vector {
-        0 => status::INTEGER_DIVIDE_BY_ZERO,
-        1 => status::SINGLE_STEP,
-        3 => status::BREAKPOINT,
-        4 => status::INTEGER_OVERFLOW,
-        5 => status::ARRAY_BOUNDS_EXCEEDED,
-        6 => status::ILLEGAL_INSTRUCTION,
-        13 if privileged => status::PRIVILEGED_INSTRUCTION,
-        16 => status::FLOAT_INVALID_OPERATION,
-        17 => status::DATATYPE_MISALIGNMENT,
-        19 => status::FLOAT_MULTIPLE_TRAPS,
-        _ => status::ACCESS_VIOLATION,
+        0 => STATUS_INTEGER_DIVIDE_BY_ZERO,
+        1 => STATUS_SINGLE_STEP,
+        3 => STATUS_BREAKPOINT,
+        4 => STATUS_INTEGER_OVERFLOW,
+        5 => STATUS_ARRAY_BOUNDS_EXCEEDED,
+        6 => STATUS_ILLEGAL_INSTRUCTION,
+        13 if privileged => STATUS_PRIVILEGED_INSTRUCTION,
+        16 => STATUS_FLOAT_INVALID_OPERATION,
+        17 => STATUS_DATATYPE_MISALIGNMENT,
+        19 => STATUS_FLOAT_MULTIPLE_TRAPS,
+        _ => STATUS_ACCESS_VIOLATION,
     }
 }
 
@@ -562,12 +557,12 @@ mod tests {
 
     const PAGE_FAULT: Fault = Fault {
         vector: 14,
-        status: status::ACCESS_VIOLATION,
+        status: STATUS_ACCESS_VIOLATION,
         in_user_copy: false,
     };
     const COPY_FAULT: Fault = Fault {
         vector: 14,
-        status: status::ACCESS_VIOLATION,
+        status: STATUS_ACCESS_VIOLATION,
         in_user_copy: true,
     };
 
@@ -591,7 +586,7 @@ mod tests {
         assert_eq!(fault_status(13, true), 0xC000_0096);
         assert_eq!(fault_status(13, false), 0xC000_0005);
         assert_eq!(fault_status(4, false), 0xC000_0095);
-        assert_eq!(status::STACK_OVERFLOW, 0xC000_00FD);
+        assert_eq!(rtl::status::STATUS_STACK_OVERFLOW, 0xC000_00FD);
     }
 
     /// The privileged-instruction decode: the fixture's hlt, cli and `in al, dx`, the rest of the

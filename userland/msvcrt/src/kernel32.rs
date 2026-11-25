@@ -56,10 +56,9 @@ fn succeeded(done: u32) -> Result<(), Win32Error> {
 
 /// A noncontinuable exception raised with `code` and no arguments: it does not return.
 pub fn raise_noncontinuable(code: u32) -> ! {
-    /// EXCEPTION_NONCONTINUABLE.
-    const NONCONTINUABLE: u32 = 1;
+    use rtl::seh::EXCEPTION_NONCONTINUABLE;
     // SAFETY: no arguments (a null array of none).
-    unsafe { imports::RaiseException(code, NONCONTINUABLE, 0, core::ptr::null()) };
+    unsafe { imports::RaiseException(code, EXCEPTION_NONCONTINUABLE, 0, core::ptr::null()) };
     // A noncontinuable exception does not resume its raiser.
     unreachable!()
 }

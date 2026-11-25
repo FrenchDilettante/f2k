@@ -309,7 +309,8 @@ fn resolve_or_end(frame: &mut ExceptionFrame) {
         // spent. A thread attached to another process's address space (the kernel's copy into
         // that process's memory) has no stack there: its guard is any other.
         if crate::mem::vm::fire_guard(&mut crate::mem::vm::CurrentPages, cr2) {
-            use crate::process::exit::status;
+            use rtl::status::{STATUS_GUARD_PAGE_VIOLATION, STATUS_STACK_OVERFLOW};
+
             use crate::user::stack::{grow_on_guard, Growth};
             let growth = if crate::sched::attach::running_attached() {
                 Growth::NotStack
@@ -318,8 +319,8 @@ fn resolve_or_end(frame: &mut ExceptionFrame) {
             };
             match growth {
                 Growth::Grown => return,
-                Growth::Overflow => raised = Some(status::STACK_OVERFLOW),
-                Growth::NotStack => raised = Some(status::GUARD_PAGE_VIOLATION),
+                Growth::Overflow => raised = Some(STATUS_STACK_OVERFLOW),
+                Growth::NotStack => raised = Some(STATUS_GUARD_PAGE_VIOLATION),
             }
         }
     }
@@ -418,7 +419,7 @@ fn resolve_or_end(frame: &mut ExceptionFrame) {
         // containment, its own report.
         crate::process::threads::fault_exit(crate::process::exit::Fault {
             vector: frame.vector,
-            status: crate::process::exit::status::ACCESS_VIOLATION,
+            status: rtl::status::STATUS_ACCESS_VIOLATION,
             in_user_copy: true,
         });
     }

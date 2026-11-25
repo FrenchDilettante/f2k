@@ -88,9 +88,9 @@ unsafe extern "C" fn run_release(release: *const u8) {
 
 #[cfg(all(target_arch = "x86", not(test)))]
 mod frame {
-    /// EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND: the record's flags in an unwind's handler
-    /// call.
-    const EXCEPTION_UNWIND: u32 = 0x6;
+    // EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND: the record's flags in an unwind's handler
+    // call.
+    use rtl::seh::EXCEPTION_UNWIND;
 
     /// `call(data)` under a registration of its own on `fs:[0]`, `{next, handler, release,
     /// data for release}`, taken off when `call` returns. The handler calls `release(data)` when

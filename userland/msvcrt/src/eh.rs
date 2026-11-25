@@ -366,15 +366,12 @@ mod platform {
     use core::mem::offset_of;
 
     use rtl::seh::ExceptionRecord;
+    // EXCEPTION_NONCONTINUABLE: a throw's flags. EXCEPTION_UNWINDING, and either unwind flag:
+    // a handler's call for an unwind.
+    use rtl::seh::{EXCEPTION_NONCONTINUABLE, EXCEPTION_UNWIND, EXCEPTION_UNWINDING};
 
     use super::*;
     use crate::kernel32;
-
-    /// EXCEPTION_NONCONTINUABLE: a throw's flags.
-    const EXCEPTION_NONCONTINUABLE: u32 = rtl::seh::EXCEPTION_NONCONTINUABLE;
-    /// EXCEPTION_UNWINDING, and either unwind flag: a handler's call for an unwind.
-    const EXCEPTION_UNWINDING: u32 = rtl::seh::EXCEPTION_UNWINDING;
-    const EXCEPTION_UNWIND: u32 = rtl::seh::EXCEPTION_UNWIND;
     /// ExceptionContinueSearch: every frame handler's answer when it does not take the exception.
     const CONTINUE_SEARCH: u32 = rtl::seh::EXCEPTION_CONTINUE_SEARCH;
 

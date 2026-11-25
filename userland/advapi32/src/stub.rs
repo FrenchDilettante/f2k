@@ -12,15 +12,14 @@
 
 use core::ffi::CStr;
 
+// EXCEPTION_NONCONTINUABLE: what a stub that cannot fail raises STATUS_NOT_IMPLEMENTED as.
+use rtl::seh::EXCEPTION_NONCONTINUABLE;
 use rtl::status::STATUS_NOT_IMPLEMENTED;
 use rtl::stub::{describe, Entry, Fails, Line};
 // ERROR_CALL_NOT_IMPLEMENTED: "This function is not supported on this system."
 use rtl::winerror::ERROR_CALL_NOT_IMPLEMENTED;
 
 use crate::imports::{self, Probed};
-
-/// EXCEPTION_NONCONTINUABLE: what a stub that cannot fail raises STATUS_NOT_IMPLEMENTED as.
-const EXCEPTION_NONCONTINUABLE: u32 = 1;
 
 /// Log the call to `entry` with `args` (one value per argument, in order) and `reason`, then fail
 /// as `entry` fails.
