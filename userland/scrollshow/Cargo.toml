@@ -1,0 +1,13 @@
+[package]
+name = "scrollshow"
+version = "0.1.0"
+edition = "2021"
+
+# The program: scrollshow.exe (the target names its images .dll: the Makefile copies it to its name).
+[[bin]]
+name = "scrollshow"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+exe = { path = "../exe" }
