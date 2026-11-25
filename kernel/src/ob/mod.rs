@@ -25,8 +25,9 @@
 //! itself is a directory object, permanent: made at its first open, never deleted.
 //!
 //! Names live in one namespace for all kinds (the `\BaseNamedObjects` directory): a name binds one
-//! live object, compares exactly (Win32 object names are case-sensitive), and goes with the bound
-//! object's last handle.
+//! live object, compares exactly (Win32 object names are case-sensitive; a caller's
+//! OBJ_CASE_INSENSITIVE folds the comparison), and goes with the bound object's last handle. A
+//! name is kept as the UTF-16 units its creator's UNICODE_STRING gave, whatever they are.
 //!
 //! # The directory's lock
 //!
@@ -527,22 +528,51 @@ pub struct Leak {
     pub followup: Option<Followup>,
 }
 
+/// The units of `prefix`, an ASCII string.
+const fn ascii_units<const N: usize>(prefix: &[u8; N]) -> [u16; N] {
+    let mut units = [0u16; N];
+    let mut index = 0;
+    while index < N {
+        units[index] = prefix[index] as u16;
+        index += 1;
+    }
+    units
+}
+
+/// The session prefixes, `Global\` and `Local\`, as units.
+const GLOBAL_PREFIX: [u16; 7] = ascii_units(b"Global\\");
+const LOCAL_PREFIX: [u16; 6] = ascii_units(b"Local\\");
+
 /// A program's object name as the namespace keeps it: without a `Global\` or `Local\` prefix.
 /// There is one session, so the global namespace and the session's local one are the same
 /// directory (Windows 2000 with Terminal Services keeps `\Sessions\<n>\BaseNamedObjects` apart).
 /// The prefixes are matched as spelled.
-pub fn namespace_name(name: &[u8]) -> &[u8] {
-    name.strip_prefix(b"Global\\")
-        .or_else(|| name.strip_prefix(b"Local\\"))
+pub fn namespace_name(name: &[u16]) -> &[u16] {
+    name.strip_prefix(&GLOBAL_PREFIX[..])
+        .or_else(|| name.strip_prefix(&LOCAL_PREFIX[..]))
         .unwrap_or(name)
 }
 
-/// One name-table entry.
+/// Whether two names are the same one: unit for unit, or, `case_insensitive` (the caller's
+/// OBJ_CASE_INSENSITIVE), each unit upper-cased as the kernel's case-insensitive comparisons fold
+/// it ([`rtl::path::upcase`]).
+fn same_name(a: &[u16], b: &[u16], case_insensitive: bool) -> bool {
+    if case_insensitive {
+        a.len() == b.len()
+            && a.iter()
+                .zip(b)
+                .all(|(&x, &y)| rtl::path::upcase(x) == rtl::path::upcase(y))
+    } else {
+        a == b
+    }
+}
+
+/// One name-table entry: the name's UTF-16 units, as the caller's UNICODE_STRING gave them.
 #[derive(Clone, Copy)]
 struct NameEntry {
     object: Option<ObjectId>,
     length: u16,
-    bytes: [u8; MAX_NAME],
+    units: [u16; MAX_NAME],
 }
 
 impl NameEntry {
@@ -550,12 +580,12 @@ impl NameEntry {
         NameEntry {
             object: None,
             length: 0,
-            bytes: [0; MAX_NAME],
+            units: [0; MAX_NAME],
         }
     }
 
-    fn name(&self) -> &[u8] {
-        &self.bytes[..self.length as usize]
+    fn name(&self) -> &[u16] {
+        &self.units[..self.length as usize]
     }
 }
 
@@ -1304,17 +1334,20 @@ impl Directory {
 
     // --- Names -------------------------------------------------------------------------------
 
-    /// The live object `name` binds (its session prefix aside, see [`namespace_name`]).
-    pub fn lookup_name(&self, name: &[u8]) -> Option<ObjectId> {
+    /// The live object `name` binds (its session prefix aside, see [`namespace_name`]), compared
+    /// exactly or, `case_insensitive` (OBJ_CASE_INSENSITIVE), folded (see [`same_name`]).
+    pub fn lookup_name(&self, name: &[u16], case_insensitive: bool) -> Option<ObjectId> {
         let name = namespace_name(name);
-        self.names
-            .iter()
-            .find_map(|entry| entry.object.filter(|_| entry.name() == name))
+        self.names.iter().find_map(|entry| {
+            entry
+                .object
+                .filter(|_| same_name(entry.name(), name, case_insensitive))
+        })
     }
 
-    /// The name `id` is bound to in the namespace, as the namespace keeps it; none for an object
-    /// without one.
-    pub fn name_of(&self, id: ObjectId) -> Option<&[u8]> {
+    /// The name `id` is bound to in the namespace, as the namespace keeps it (UTF-16 units, as
+    /// its creator spelled them); none for an object without one.
+    pub fn name_of(&self, id: ObjectId) -> Option<&[u16]> {
         self.names
             .iter()
             .find(|entry| entry.object == Some(id))
@@ -1322,7 +1355,7 @@ impl Directory {
     }
 
     /// Bind `name` to `id` (its session prefix aside).
-    pub fn bind_name(&mut self, name: &[u8], id: ObjectId) -> Result<(), NameError> {
+    pub fn bind_name(&mut self, name: &[u16], id: ObjectId) -> Result<(), NameError> {
         let name = namespace_name(name);
         if name.len() > MAX_NAME {
             return Err(NameError::TooLong);
@@ -1334,7 +1367,7 @@ impl Directory {
             .ok_or(NameError::Full)?;
         entry.object = Some(id);
         entry.length = name.len() as u16;
-        entry.bytes[..name.len()].copy_from_slice(name);
+        entry.units[..name.len()].copy_from_slice(name);
         Ok(())
     }
 
@@ -1747,9 +1780,9 @@ mod target {
 
     /// The live object `name` binds, referenced (the look-up and the reference in one hold of the
     /// directory, so the object cannot go between them); none when it binds none.
-    pub fn reference_by_name(name: &[u8]) -> Option<ObRef> {
+    pub fn reference_by_name(name: &[u16], case_insensitive: bool) -> Option<ObRef> {
         locked(|directory| {
-            let id = directory.lookup_name(name)?;
+            let id = directory.lookup_name(name, case_insensitive)?;
             directory.reference(id).then(|| ObRef { id })
         })
     }
@@ -1892,6 +1925,11 @@ mod tests {
     // A directory comes with a fresh dispatcher of its own, which holds its dispatcher objects'
     // bodies.
 
+    /// `text`'s UTF-16 units: a name as a UNICODE_STRING gives it.
+    fn w(text: &str) -> Vec<u16> {
+        text.encode_utf16().collect()
+    }
+
     fn directory() -> &'static mut Directory {
         crate::sched::testkit::dispatcher();
         let mut directory = Box::<Directory>::new_uninit();
@@ -2006,19 +2044,22 @@ mod tests {
         let directory = directory();
         let id = directory.create_semaphore(0, 1).unwrap();
         published(directory, id);
-        directory.bind_name(b"F2K.sync.semaphore", id).unwrap();
-        assert_eq!(directory.lookup_name(b"F2K.sync.semaphore"), Some(id));
+        directory.bind_name(&w("F2K.sync.semaphore"), id).unwrap();
         assert_eq!(
-            directory.lookup_name(b"f2k.sync.semaphore"),
+            directory.lookup_name(&w("F2K.sync.semaphore"), false),
+            Some(id)
+        );
+        assert_eq!(
+            directory.lookup_name(&w("f2k.sync.semaphore"), false),
             None,
             "case-sensitive"
         );
-        assert_eq!(directory.lookup_name(b"F2K.sync"), None);
+        assert_eq!(directory.lookup_name(&w("F2K.sync"), false), None);
         assert!(directory.reference(id));
         assert_eq!(closed(directory, id), vec![]);
         assert!(directory.is_live(id));
         assert_eq!(
-            directory.lookup_name(b"F2K.sync.semaphore"),
+            directory.lookup_name(&w("F2K.sync.semaphore"), false),
             None,
             "the last handle took the name"
         );
@@ -2026,8 +2067,82 @@ mod tests {
         let other = directory
             .create_event(EventKind::Notification, false)
             .unwrap();
-        directory.bind_name(b"F2K.sync.semaphore", other).unwrap();
-        assert_eq!(directory.lookup_name(b"F2K.sync.semaphore"), Some(other));
+        directory
+            .bind_name(&w("F2K.sync.semaphore"), other)
+            .unwrap();
+        assert_eq!(
+            directory.lookup_name(&w("F2K.sync.semaphore"), false),
+            Some(other)
+        );
+    }
+
+    /// A name is any UTF-16 units: a CJK name, one with a surrogate pair, and a lone surrogate each
+    /// bind and look up as given, kept apart from the names they would collapse to in a code page.
+    #[test]
+    fn a_name_is_any_utf16_units() {
+        let directory = directory();
+        let cjk = directory
+            .create_event(EventKind::Notification, false)
+            .unwrap();
+        let pair = directory.create_mutex().unwrap();
+        let lone = directory.create_semaphore(0, 1).unwrap();
+        directory.bind_name(&w("\u{4E8B}\u{4EF6}"), cjk).unwrap();
+        directory.bind_name(&w("F2K.\u{1F600}"), pair).unwrap();
+        directory.bind_name(&[0x41, 0xD800, 0x42], lone).unwrap();
+        assert_eq!(
+            directory.lookup_name(&w("\u{4E8B}\u{4EF6}"), false),
+            Some(cjk)
+        );
+        assert_eq!(
+            directory.lookup_name(&w("\u{4E8B}\u{4EF6}"), true),
+            Some(cjk)
+        );
+        assert_eq!(
+            directory.lookup_name(&w("F2K.\u{1F600}"), false),
+            Some(pair)
+        );
+        assert_eq!(
+            directory.lookup_name(&[0x41, 0xD800, 0x42], false),
+            Some(lone)
+        );
+        assert_eq!(directory.lookup_name(&w("??"), false), None, "no best fit");
+        assert_eq!(directory.lookup_name(&w("\u{4E8B}"), false), None);
+        assert_eq!(
+            directory.name_of(cjk),
+            Some(&w("\u{4E8B}\u{4EF6}")[..]),
+            "the units as given"
+        );
+        assert_eq!(directory.name_of(pair), Some(&w("F2K.\u{1F600}")[..]));
+    }
+
+    /// OBJ_CASE_INSENSITIVE folds the comparison as the kernel's upcase table does (ASCII and
+    /// Latin-1 letters; other units compare as they are); without it a name compares exactly.
+    #[test]
+    fn a_case_insensitive_lookup_folds() {
+        let directory = directory();
+        let id = directory
+            .create_event(EventKind::Notification, false)
+            .unwrap();
+        directory.bind_name(&w("Caf\u{E9}.\u{4E8B}"), id).unwrap();
+        assert_eq!(
+            directory.lookup_name(&w("CAF\u{C9}.\u{4E8B}"), true),
+            Some(id)
+        );
+        assert_eq!(
+            directory.lookup_name(&w("caf\u{e9}.\u{4E8B}"), true),
+            Some(id)
+        );
+        assert_eq!(directory.lookup_name(&w("CAF\u{C9}.\u{4E8B}"), false), None);
+        assert_eq!(
+            directory.lookup_name(&w("Caf\u{E9}.\u{4E8B}"), false),
+            Some(id)
+        );
+        assert_eq!(directory.lookup_name(&w("Cafe.\u{4E8B}"), true), None);
+        assert_eq!(
+            directory.lookup_name(&w("Local\\CAF\u{C9}.\u{4E8B}"), true),
+            Some(id),
+            "past the session prefix"
+        );
     }
 
     /// The name table refuses an over-long name and fills at its capacity.
@@ -2038,15 +2153,16 @@ mod tests {
             .create_event(EventKind::Notification, false)
             .unwrap();
         assert_eq!(
-            directory.bind_name(&[b'x'; MAX_NAME + 1], id),
+            directory.bind_name(&[u16::from(b'x'); MAX_NAME + 1], id),
             Err(NameError::TooLong)
         );
         for index in 0..NAMES {
-            directory
-                .bind_name(format!("n{index}").as_bytes(), id)
-                .unwrap();
+            directory.bind_name(&w(&format!("n{index}")), id).unwrap();
         }
-        assert_eq!(directory.bind_name(b"one more", id), Err(NameError::Full));
+        assert_eq!(
+            directory.bind_name(&w("one more"), id),
+            Err(NameError::Full)
+        );
     }
 
     /// A full name table refuses the next name, and the names an object's deletion frees serve the
@@ -2060,26 +2176,33 @@ mod tests {
         let second = directory.create_mutex().unwrap();
         for index in 0..NAMES - 1 {
             directory
-                .bind_name(format!("n{index}").as_bytes(), first)
+                .bind_name(&w(&format!("n{index}")), first)
                 .unwrap();
         }
-        directory.bind_name(b"second", second).unwrap();
+        directory.bind_name(&w("second"), second).unwrap();
         assert_eq!(
-            directory.bind_name(b"refused", second),
+            directory.bind_name(&w("refused"), second),
             Err(NameError::Full)
         );
-        assert_eq!(directory.lookup_name(b"refused"), None, "nothing bound");
+        assert_eq!(
+            directory.lookup_name(&w("refused"), false),
+            None,
+            "nothing bound"
+        );
 
         assert_eq!(directory.dereference(second), None);
         assert_eq!(
-            directory.lookup_name(b"second"),
+            directory.lookup_name(&w("second"), false),
             None,
             "its name went with it"
         );
         let third = directory.create_semaphore(0, 1).unwrap();
-        directory.bind_name(b"third", third).unwrap();
-        assert_eq!(directory.lookup_name(b"third"), Some(third));
-        assert_eq!(directory.bind_name(b"refused", third), Err(NameError::Full));
+        directory.bind_name(&w("third"), third).unwrap();
+        assert_eq!(directory.lookup_name(&w("third"), false), Some(third));
+        assert_eq!(
+            directory.bind_name(&w("refused"), third),
+            Err(NameError::Full)
+        );
     }
 
     /// An object whose last handle closes while a thread waits on it stays live — the wait holds
@@ -2597,13 +2720,13 @@ mod tests {
         let leaked = directory
             .create_event(EventKind::Notification, true)
             .unwrap();
-        directory.bind_name(b"left", leaked).unwrap();
+        directory.bind_name(&w("left"), leaked).unwrap();
         let main = directory.create_thread_in(0..1).unwrap();
         record(ThreadId(main.index)).teb_va = 0x7FFD_E000;
         assert_eq!(sweep(directory).0, 2);
         assert_eq!(directory.live_objects(), 0);
         assert!(!directory.is_live(leaked));
-        assert_eq!(directory.lookup_name(b"left"), None);
+        assert_eq!(directory.lookup_name(&w("left"), false), None);
         assert_eq!(
             record(ThreadId(main.index)).teb_va(),
             0,
@@ -2647,10 +2770,10 @@ mod tests {
             .create_event(EventKind::Notification, false)
             .unwrap();
         published(directory, a_event);
-        directory.bind_name(b"F2K.a", a_event).unwrap();
+        directory.bind_name(&w("F2K.a"), a_event).unwrap();
         let b_semaphore = directory.create_semaphore(0, 1).unwrap();
         published(directory, b_semaphore);
-        directory.bind_name(b"F2K.b", b_semaphore).unwrap();
+        directory.bind_name(&w("F2K.b"), b_semaphore).unwrap();
         // The first process opens the second's semaphore by its name.
         assert!(directory.handle_opened(b_semaphore));
 
@@ -2663,13 +2786,13 @@ mod tests {
         }
         directory.process_ended(a);
         assert!(!directory.is_live(a_event), "its own went with its handle");
-        assert_eq!(directory.lookup_name(b"F2K.a"), None);
+        assert_eq!(directory.lookup_name(&w("F2K.a"), false), None);
         for id in [a_main, a_child] {
             let ended = record(ThreadId(id.index));
             assert!(ended.process.is_null() && ended.teb_va() == 0, "reset");
         }
         assert_eq!(directory.counts(b_semaphore), Some((1, 1)), "the other's");
-        assert_eq!(directory.lookup_name(b"F2K.b"), Some(b_semaphore));
+        assert_eq!(directory.lookup_name(&w("F2K.b"), false), Some(b_semaphore));
         assert!(directory.is_live(b_thread));
         let b_record = record(ThreadId(b_thread.index));
         assert!(core::ptr::eq(b_record.process, b) && b_record.teb_va() == 0x7FFD_C000);
@@ -2731,24 +2854,30 @@ mod tests {
             .create_event(EventKind::Notification, false)
             .unwrap();
         published(directory, event);
-        directory.bind_name(b"Global\\F2K.ready", event).unwrap();
-        assert_eq!(directory.lookup_name(b"F2K.ready"), Some(event));
-        assert_eq!(directory.lookup_name(b"Local\\F2K.ready"), Some(event));
-        assert_eq!(directory.lookup_name(b"Global\\F2K.ready"), Some(event));
+        directory.bind_name(&w("Global\\F2K.ready"), event).unwrap();
+        assert_eq!(directory.lookup_name(&w("F2K.ready"), false), Some(event));
         assert_eq!(
-            directory.lookup_name(b"global\\F2K.ready"),
+            directory.lookup_name(&w("Local\\F2K.ready"), false),
+            Some(event)
+        );
+        assert_eq!(
+            directory.lookup_name(&w("Global\\F2K.ready"), false),
+            Some(event)
+        );
+        assert_eq!(
+            directory.lookup_name(&w("global\\F2K.ready"), false),
             None,
             "the prefix as spelled"
         );
         // Another kind finds the same binding: its create sees a kind mismatch.
-        let found = directory.lookup_name(b"F2K.ready").unwrap();
+        let found = directory.lookup_name(&w("F2K.ready"), false).unwrap();
         assert_eq!(found.kind, ObjectType::Event);
         assert_eq!(
-            namespace_name(b"Local\\"),
-            b"",
+            namespace_name(&w("Local\\")),
+            w(""),
             "a bare prefix names nothing"
         );
-        assert_eq!(namespace_name(b"Session\\1"), b"Session\\1");
+        assert_eq!(namespace_name(&w("Session\\1")), w("Session\\1"));
     }
 
     /// A process object's deletion is claimed while its own reference alone holds it: the moment

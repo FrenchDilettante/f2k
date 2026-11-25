@@ -337,12 +337,16 @@ const NAME_UNITS: usize = 32
 const NAMED_PIPE_PREFIX: &[u8] = b"\\Device\\NamedPipe\\";
 const NAMED_OBJECTS_PREFIX: &[u8] = b"\\BaseNamedObjects\\";
 
-/// `prefix` then `name` (code page 1252 bytes, as the namespace keeps names) into `out`: the units
+/// `prefix` (ASCII) then `name` (UTF-16 units, as the namespace keeps names) into `out`: the units
 /// written.
-fn name_units(prefix: &[u8], name: &[u8], out: &mut [u16]) -> usize {
+fn name_units(prefix: &[u8], name: &[u16], out: &mut [u16]) -> usize {
+    let units = prefix
+        .iter()
+        .map(|&byte| u16::from(byte))
+        .chain(name.iter().copied());
     let mut count = 0;
-    for &byte in prefix.iter().chain(name) {
-        out[count] = rtl::cp1252::MB_TO_WC[usize::from(byte)];
+    for unit in units {
+        out[count] = unit;
         count += 1;
     }
     count
@@ -1366,11 +1370,19 @@ mod tests {
         assert_eq!(empty, UnicodeString::default());
         assert_eq!(needed, 8);
         let mut out = [0u16; 64];
-        let count = name_units(NAMED_PIPE_PREFIX, b"x", &mut out);
+        let count = name_units(NAMED_PIPE_PREFIX, &[u16::from(b'x')], &mut out);
         assert_eq!(
             std::string::String::from_utf16_lossy(&out[..count]),
             "\\Device\\NamedPipe\\x"
         );
+        // A named object's name comes back as the units it was made with, a lone surrogate too.
+        let name = [0x4E8B, 0x4EF6, 0xD800];
+        let count = name_units(NAMED_OBJECTS_PREFIX, &name, &mut out);
+        assert_eq!(
+            &out[..count - 3],
+            &"\\BaseNamedObjects\\".encode_utf16().collect::<Vec<_>>()[..]
+        );
+        assert_eq!(&out[count - 3..count], &name[..]);
     }
 
     /// The pseudo-handles answer no flags set; any other handle is its entry's.

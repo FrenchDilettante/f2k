@@ -16,9 +16,11 @@ use rtl::nt::{ObjectAttributes, UnicodeString};
 use super::call::UserAddr;
 use crate::status::*;
 
-/// OBJECT_ATTRIBUTES' size, and its Attributes' OBJ_INHERIT and OBJ_OPENIF.
+/// OBJECT_ATTRIBUTES' size, and its Attributes' OBJ_INHERIT, OBJ_CASE_INSENSITIVE and
+/// OBJ_OPENIF.
 const OBJECT_ATTRIBUTES_SIZE: u32 = size_of::<ObjectAttributes<u32>>() as u32;
 pub const OBJ_INHERIT: u32 = 0x2;
+pub const OBJ_CASE_INSENSITIVE: u32 = 0x40;
 pub const OBJ_OPENIF: u32 = 0x80;
 
 /// The longest name read, in units.
@@ -43,6 +45,11 @@ impl<'n> Attributes<'n> {
     /// Whether a handle the call makes is inheritable.
     pub fn inherit(&self) -> bool {
         self.attributes & OBJ_INHERIT != 0
+    }
+
+    /// Whether the name compares case-insensitively (OBJ_CASE_INSENSITIVE).
+    pub fn case_insensitive(&self) -> bool {
+        self.attributes & OBJ_CASE_INSENSITIVE != 0
     }
 
     /// The name's units: none for a null ObjectName, as for an empty name.
@@ -135,27 +142,21 @@ pub fn resolve(units: &[u16], root: u32, root_is_directory: bool) -> Result<Reso
     }
 }
 
-/// An object's name in `\BaseNamedObjects`, as the namespace keeps it: code page 1252 bytes.
-pub type ObjectName = ArrayVec<u8, { crate::ob::MAX_NAME }>;
+/// An object's name in `\BaseNamedObjects`, as the namespace keeps it: the UTF-16 units the
+/// caller's UNICODE_STRING gave.
+pub type ObjectName = ArrayVec<u16, { crate::ob::MAX_NAME }>;
 
-/// The namespace's bytes for an object's name in `\BaseNamedObjects`. `Global\` and `Local\` are
-/// the directory's links to itself (one session); a separator past them names a subdirectory
-/// there is none of (STATUS_OBJECT_PATH_NOT_FOUND). A character the namespace's bytes cannot hold
-/// is STATUS_OBJECT_NAME_INVALID, and so is a name longer than [`crate::ob::MAX_NAME`].
+/// The namespace's units for an object's name in `\BaseNamedObjects`: any units, as Windows 2000's
+/// object manager keeps a UNICODE_STRING (none is translated or refused for its value).
+/// `Global\` and `Local\` are the directory's links to itself (one session); a separator past them
+/// names a subdirectory there is none of (STATUS_OBJECT_PATH_NOT_FOUND). An empty name, or one
+/// longer than [`crate::ob::MAX_NAME`], is STATUS_OBJECT_NAME_INVALID.
 pub fn object_name(units: &[u16]) -> Result<ObjectName, NtStatus> {
     let mut out = ObjectName::new();
-    if units.len() > out.capacity() {
-        return Err(STATUS_OBJECT_NAME_INVALID);
-    }
-    for &unit in units {
-        let narrow = rtl::cp1252::wc_to_mb(unit);
-        if rtl::cp1252::MB_TO_WC[narrow as usize] != unit {
-            return Err(STATUS_OBJECT_NAME_INVALID);
-        }
-        out.push(narrow);
-    }
+    out.try_extend_from_slice(units)
+        .map_err(|_| STATUS_OBJECT_NAME_INVALID)?;
     let name = crate::ob::namespace_name(&out);
-    if name.contains(&b'\\') {
+    if name.contains(&u16::from(b'\\')) {
         return Err(STATUS_OBJECT_PATH_NOT_FOUND);
     }
     if name.is_empty() {
@@ -259,23 +260,38 @@ mod tests {
         );
     }
 
+    /// An object's name is its units as given, whatever they are: a CJK name, a surrogate pair, a
+    /// lone surrogate and a Latin-1 letter alike (Windows 2000 keeps a UNICODE_STRING).
     #[test]
-    fn object_names_are_the_namespace_bytes() {
+    fn object_names_are_the_units_given() {
         assert_eq!(
             object_name(&wide("Global\\E")).as_deref(),
-            Ok(&b"Global\\E"[..])
+            Ok(&wide("Global\\E")[..])
         );
         assert_eq!(
             object_name(&wide("a\\b")),
             Err(STATUS_OBJECT_PATH_NOT_FOUND)
         );
         assert_eq!(
-            object_name(&wide("\u{4E2D}")),
-            Err(STATUS_OBJECT_NAME_INVALID)
+            object_name(&wide("\u{4E8B}\u{4EF6}")).as_deref(),
+            Ok(&[0x4E8B, 0x4EF6][..])
         );
         assert_eq!(
             object_name(&wide("caf\u{E9}")).as_deref(),
-            Ok(&b"caf\xE9"[..])
+            Ok(&wide("caf\u{E9}")[..])
+        );
+        assert_eq!(
+            object_name(&wide("\u{1F600}")).as_deref(),
+            Ok(&[0xD83D, 0xDE00][..])
+        );
+        assert_eq!(object_name(&[0xDC00]).as_deref(), Ok(&[0xDC00][..]));
+        assert_eq!(
+            object_name(&wide("Local\\")),
+            Err(STATUS_OBJECT_NAME_INVALID)
+        );
+        assert_eq!(
+            object_name(&[u16::from(b'a'); crate::ob::MAX_NAME]).map(|name| name.len()),
+            Ok(crate::ob::MAX_NAME)
         );
         assert_eq!(
             object_name(&[u16::from(b'a'); crate::ob::MAX_NAME + 1]),

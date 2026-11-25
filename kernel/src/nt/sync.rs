@@ -34,11 +34,12 @@ use crate::sync::ShortGuard;
 // --- Naming --------------------------------------------------------------------------------------
 
 /// What an OBJECT_ATTRIBUTES asks of a create or an open: the name in `\BaseNamedObjects` (none
-/// for an unnamed object), whether it names the directory itself, and the handle's inheritance and
-/// OBJ_OPENIF.
+/// for an unnamed object), whether it names the directory itself, whether the name compares
+/// case-insensitively (OBJ_CASE_INSENSITIVE), and the handle's inheritance and OBJ_OPENIF.
 struct Request {
     name: Option<ObjectName>,
     directory: bool,
+    case_insensitive: bool,
     inherit: bool,
     open_if: bool,
 }
@@ -48,6 +49,7 @@ fn request(attributes: UserAddr) -> Result<Request, NtStatus> {
     let mut request = Request {
         name: None,
         directory: false,
+        case_insensitive: false,
         inherit: false,
         open_if: false,
     };
@@ -57,6 +59,7 @@ fn request(attributes: UserAddr) -> Result<Request, NtStatus> {
     let mut name = Name::new();
     let read = attributes::read(attributes, &mut name)?;
     request.inherit = read.inherit();
+    request.case_insensitive = read.case_insensitive();
     request.open_if = read.attributes & OBJ_OPENIF != 0;
     let units = read.units();
     if units.is_empty() {
@@ -119,7 +122,7 @@ pub(super) fn create(
     let name = request.name.as_deref();
     let made = {
         let mut directory = ob::lock(passive);
-        match name.and_then(|name| directory.lookup_name(name)) {
+        match name.and_then(|name| directory.lookup_name(name, request.case_insensitive)) {
             Some(existing) => {
                 rules::create_over(Bound::Object(existing.kind), kind, request.open_if)?;
                 directory.reference(existing);
@@ -172,7 +175,8 @@ pub(super) fn open(
     }
     let name = request.name.ok_or(STATUS_OBJECT_NAME_INVALID)?;
     // Referenced as it is found: the object cannot go before its handle holds it.
-    let existing = ob::reference_by_name(&name).ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
+    let existing = ob::reference_by_name(&name, request.case_insensitive)
+        .ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
     rules::open_of(Bound::Object(existing.id().kind), kind, access)?;
     let handle = ob::open(calling_process(), existing.id(), access, request.inherit)
         .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
@@ -238,10 +242,12 @@ pub fn open_directory_object(
     slot.addr().probe(4)?;
     if !request.directory {
         let name = request.name.ok_or(STATUS_OBJECT_NAME_INVALID)?;
-        return Err(match ob::lock(call.passive()).lookup_name(&name) {
-            Some(_) => STATUS_OBJECT_TYPE_MISMATCH,
-            None => STATUS_OBJECT_NAME_NOT_FOUND,
-        });
+        return Err(
+            match ob::lock(call.passive()).lookup_name(&name, request.case_insensitive) {
+                Some(_) => STATUS_OBJECT_TYPE_MISMATCH,
+                None => STATUS_OBJECT_NAME_NOT_FOUND,
+            },
+        );
     }
     // The directory is permanent: no reference is needed to keep it for the handle's insert.
     let id = ob::lock(call.passive())
