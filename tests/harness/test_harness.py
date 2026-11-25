@@ -665,6 +665,14 @@ C
 """
 
 
+def batch_item(param, function, name: str) -> SimpleNamespace:
+    """A stand-in for a block's collected test, as conftest's `batch_name` and `batch_items` read it."""
+    marks = [decorator.mark for decorator in param.marks]
+    return SimpleNamespace(function=function, originalname=name,
+                           callspec=SimpleNamespace(params={"captured": param.values[0]}),
+                           get_closest_marker=lambda mark: next((m for m in marks if m.name == mark), None))
+
+
 def test_a_skipped_block_is_neither_booted_nor_compared(tmp_path, monkeypatch):
     """A `skip` section's block is skipped with its reason, never an expected failure: the batch
     leaves it out of its boot (conftest's `batch_items`), so the boot's command line lists the
@@ -687,12 +695,8 @@ def test_a_skipped_block_is_neither_booted_nor_compared(tmp_path, monkeypatch):
     def test():
         pass
 
-    def item(param):
-        marks = [decorator.mark for decorator in param.marks]
-        return SimpleNamespace(function=test, callspec=SimpleNamespace(params={"captured": param.values[0]}),
-                               get_closest_marker=lambda name: next((m for m in marks if m.name == name), None))
-
-    selected = conftest.batch_items(SimpleNamespace(items=[item(param) for param in params.values()]), test)
+    items = [batch_item(param, test, "test_fakesec") for param in params.values()]
+    selected = conftest.batch_items(SimpleNamespace(items=items), items[0])
     blocks = [each.callspec.params["captured"].block for each in selected]
     assert f2kboot.batch_command_line([block.command for block in blocks]) == (
         "CORPUS\\fakesec.exe a ;; CORPUS\\fakesec.exe c")
@@ -702,6 +706,33 @@ def test_a_skipped_block_is_neither_booted_nor_compared(tmp_path, monkeypatch):
     batch = f2kboot.Batch([block.command for block in blocks], log, tmp_path / "fakesec.log", "done",
                           *f2kboot.split_programs(log))
     assert [batch.verdict(index, [], block) for index, block in enumerate(blocks)] == [None, None]
+
+
+def test_a_separate_section_boots_on_its_own(tmp_path, monkeypatch):
+    """A `separate` section's block is a batch of its own, `<fixture>-<section>` (its boot's log
+    and profile named so), and the fixture's other blocks keep theirs, `<fixture>`; a block of the
+    same section run in another suite's batch (the Limine boot's) stays in that one."""
+    import conftest
+
+    directory = tmp_path / "user32" / "fakesplit"
+    directory.mkdir(parents=True)
+    (directory / "fakesplit.exe").write_bytes(b"MZ")
+    (directory / "output.txt").write_text(SECTIONED_CAPTURE.replace("fakesec", "fakesplit"))
+    (directory / "fixture.toml").write_text('kind = "sectioned"\ngate = true\nseparate = ["down"]\n')
+    monkeypatch.setattr(f2kboot, "fixture_directories", lambda: {"fakesplit": directory})
+    params = f2kboot.corpus_params("fakesplit")
+
+    def test():
+        pass
+
+    items = [batch_item(param, test, "test_fakesplit") for param in params]
+    assert [conftest.batch_name(item) for item in items] == ["fakesplit", "fakesplit-down", "fakesplit"]
+    session = SimpleNamespace(items=items)
+    assert conftest.batch_items(session, items[2]) == [items[0], items[2]]
+    assert conftest.batch_items(session, items[1]) == [items[1]]
+    assert conftest.batch_name(batch_item(params[1], test, "test_limine")) == "limine"
+    with pytest.raises(ValueError, match="nosuch"):
+        f2kboot.blocks("fakesplit", gate=True, separate=["nosuch"])
 
 
 def test_a_section_both_pending_and_skipped_is_refused():

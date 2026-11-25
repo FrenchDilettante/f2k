@@ -14,8 +14,9 @@ Three pieces the test modules share:
   `matches_whole`), and the corpus's capture blocks
   compared against the program output a boot carries (`Block`, `blocks`); a sectioned fixture's
   tests come from its declaration, tests/<dll>/<fixture>/fixture.toml (`corpus_test`); a
-  fixture's blocks run in one boot, each its own process, and each is compared on its own part of
-  the log (`boot_batch`, `Batch`);
+  fixture's blocks run in one boot (but those of its `separate` sections, each in its own:
+  `batch_of`), each its own process, and each is compared on its own part of the log
+  (`boot_batch`, `Batch`);
 - the text screen: a boot that asks for it carries a QMP socket, and the machine's VGA text page is
   read through it while QEMU still runs (`read_text_screen`, `TextScreen`), or drawn as QEMU shows
   it (`screendump`, a PNG; `read_png`, `differing_cells`);
@@ -1637,6 +1638,7 @@ def blocks(
     timeout: float = CORPUS_TIMEOUT,
     retake: str | None = None,
     keys: dict[str, list[dict]] | None = None,
+    separate: list[str] | None = None,
 ) -> list:
     """A fixture's captured blocks as pytest parameters, one per block, its section the id.
 
@@ -1662,6 +1664,8 @@ def blocks(
     - `retake`: the capture must be retaken before it counts (the reason): the blocks are skipped.
     - `keys`: per section, the keys its block waits for a person to press (`KeyStep`'s fields); a
       section the capture has no block for is an error.
+    - `separate`: the sections booted each on its own, beside the boot of the fixture's other
+      blocks (`separate_sections`); a section the capture has no block for is an error.
     """
     import pytest
 
@@ -1673,7 +1677,7 @@ def blocks(
     captured = read_capture(fixture)
     sections = {block.section for block in captured}
     for field_name, keyed in (("pending", pending or {}), ("skip", skip or {}), ("masks", masks or {}),
-                              ("keys", keys or {})):
+                              ("keys", keys or {}), ("separate", separate or [])):
         unknown = sorted(set(keyed) - sections)
         if unknown:
             raise ValueError(f"{fixture}: {field_name} names sections with no captured block: {unknown}")
@@ -1875,6 +1879,28 @@ def system_fonts(fixture: str) -> bool:
     return declared
 
 
+@functools.cache
+def separate_sections(fixture: str) -> tuple[str, ...]:
+    """The sections a sectioned fixture's declaration boots each on its own, its `separate` (none
+    by default): a long section (one waiting out a timeout the real machine waits out too) then
+    runs in a boot of its own, beside the boot of the fixture's other blocks, on another worker,
+    instead of holding the whole batch up."""
+    declared = declaration(fixture).get("separate", [])
+    if not (isinstance(declared, list) and all(isinstance(section, str) and section for section in declared)):
+        raise ValueError(f"{fixture}: separate is a list of section names")
+    if len(set(declared)) != len(declared):
+        raise ValueError(f"{fixture}: separate names a section twice")
+    return tuple(declared)
+
+
+def batch_of(fixture: str, section: str) -> str:
+    """The batch a fixture's block runs in (its boot, named so in the logs and profiles): the
+    fixture's own, `<fixture>`, or for a section it declares `separate`, `<fixture>-<section>`."""
+    if section not in separate_sections(fixture):
+        return fixture
+    return f"{fixture}-{re.sub(r'[^A-Za-z0-9._-]+', '_', section)}"
+
+
 def fixture_storage(fixture: str) -> str | None:
     """Where a fixture's boot reads its disk, its declaration's `storage` (see STORAGES): "ide" for
     a fixture exercising the IDE path; None, the run's storage, by default."""
@@ -1955,6 +1981,7 @@ def corpus_params(fixture: str) -> list:
     boot_under(fixture)  # likewise, its boot_under
     data_files(fixture)  # likewise, its data_files
     system_fonts(fixture)  # likewise, its system_fonts
+    separate_sections(fixture)  # likewise, its separate
     return blocks(
         fixture,
         gate=declared.get("gate", False),
@@ -1965,13 +1992,15 @@ def corpus_params(fixture: str) -> list:
         timeout=float(declared.get("timeout", CORPUS_TIMEOUT)),
         retake=declared.get("retake"),
         keys=declared.get("keys"),
+        separate=declared.get("separate"),
     )
 
 
 def corpus_test(fixture: str) -> Callable:
     """A sectioned or script fixture's test function, from its declaration: one test per captured
     block, run through the `run_block` fixture (tests/conftest.py), which runs the fixture's
-    selected blocks in one boot. A fixture's module binds it to test_<fixture>, the name the test
+    selected blocks in one boot (its `separate` sections each in one of their own: `batch_of`). A
+    fixture's module binds it to test_<fixture>, the name the test
     ids carry and its batch is named after."""
     import pytest
 

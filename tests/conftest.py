@@ -195,28 +195,39 @@ def boot_timeout(request: pytest.FixtureRequest) -> Callable[[float], float]:
 
 def batch_name(item: pytest.Item) -> str:
     """The batch a block's test belongs to: its test function's name, `test_` dropped (a corpus
-    fixture's name, or `limine`). The batch's log and profile are named after it."""
-    return item.originalname.removeprefix("test_")
+    fixture's name, or `limine`), or for a corpus fixture's block of a section the fixture
+    declares `separate`, that section's own (`f2kboot.batch_of`: `<fixture>-<section>`). The
+    batch's log and profile are named after it."""
+    name = item.originalname.removeprefix("test_")
+    captured = item.callspec.params.get("captured")
+    if captured.fixture != name:
+        return name  # another suite's batch of blocks (the Limine boot's): never split
+    return f2kboot.batch_of(name, captured.block.section)
 
 
-def batch_items(session: pytest.Session, function: Callable) -> list[pytest.Item]:
-    """A test function's blocks this session runs, in collection order (the capture's): those
-    collected and selected, skipped ones aside."""
+def batch_items(session: pytest.Session, node: pytest.Item) -> list[pytest.Item]:
+    """The blocks this session runs in a block's batch, in collection order (the capture's): its
+    test function's blocks of the same batch, those collected and selected, skipped ones aside."""
+    name = batch_name(node)
     return [item for item in session.items
-            if getattr(item, "function", None) is function
+            if getattr(item, "function", None) is node.function
             and isinstance(item.callspec.params.get("captured"), f2kboot.Captured)
-            and item.get_closest_marker("skip") is None]
+            and item.get_closest_marker("skip") is None
+            and batch_name(item) == name]
 
 
-# The batches booted by this process, by name: each test function's selected blocks, booted once.
+# The batches booted by this process, by name: each test function's selected blocks (a corpus
+# fixture's `separate` sections each apart), booted once.
 BATCHES: dict[str, f2kboot.Batch] = {}
 
 
 @pytest.fixture
 def run_block(request, builder, boot_timeout, profile_writer) -> Callable[[f2kboot.Captured], None]:
-    """Run one captured block on F2K, in its batch: the first block of a test function to run boots
+    """Run one captured block on F2K, in its batch: the first block of a batch to run boots
     the plain kernel (by QEMU's Multiboot loader, or with `image="disk"` through Limine) with every
-    block of the function this session runs, in order, each its own process, run from the corpus's
+    block of the batch this session runs (its test function's, but for a corpus fixture's
+    `separate` sections, each a batch of its own: `batch_name`), in order, each its own process,
+    run from the corpus's
     directory as its `block_command` (under the fixture's `boot_under` program where it declares
     one, a script fixture's on a copy of the disk with cmd.exe and the script there, a fixture
     declaring `system_programs` or `data_files` on a copy with those programs or files added:
@@ -232,7 +243,7 @@ def run_block(request, builder, boot_timeout, profile_writer) -> Callable[[f2kbo
 
     def run(captured: f2kboot.Captured, image: str = "kernel") -> None:
         name = batch_name(request.node)
-        items = batch_items(request.session, request.function)
+        items = batch_items(request.session, request.node)
         batch = BATCHES.get(name)
         if batch is None:
             build = builder([])
