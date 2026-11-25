@@ -1565,10 +1565,29 @@ pub mod host {
         size: *mut u32,
     ) -> u32 {
         served();
-        let Some(log_font) = font_object(object) else {
+        let color = BRUSHES.with(|brushes| {
+            let brushes = brushes.borrow();
+            brushes
+                .iter()
+                .find(|&&(brush, _)| brush as usize == object)
+                .map(|&(_, color)| color)
+        });
+        let log_brush;
+        let log_font;
+        let bytes = if let Some(color) = color {
+            // The kernel's rule: a solid brush's LOGBRUSH.
+            log_brush = rtl::dib::LogBrush {
+                style: rtl::dib::BS_SOLID,
+                color,
+                hatch: 0,
+            };
+            rtl::pod::Pod::as_bytes(&log_brush)
+        } else if let Some(font) = font_object(object) {
+            log_font = font;
+            rtl::pod::Pod::as_bytes(&log_font)
+        } else {
             return STATUS_INVALID_HANDLE;
         };
-        let bytes = rtl::pod::Pod::as_bytes(&log_font);
         let written = if buffer.is_null() {
             bytes.len()
         } else {

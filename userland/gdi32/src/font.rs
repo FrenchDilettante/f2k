@@ -508,19 +508,6 @@ pub unsafe extern "system" fn create_font_a(
     }
 }
 
-/// GetObjectW and GetObjectA of a stock object: not served yet.
-fn stock_get_object(entry: &rtl::stub::Entry, object: usize, size: i32, buffer: usize) -> i32 {
-    let args = [object as u64, size as u32 as u64, buffer as u64];
-    // SAFETY: the arguments as GetObject's kinds read them (no string).
-    unsafe {
-        stub::stubbed(
-            entry,
-            "a stock object's description not yet implemented",
-            &args,
-        ) as i32
-    }
-}
-
 /// GetObject of a process's object of a kind GetObject does not describe yet (a pen's LOGPEN):
 /// logged for `entry`, once per process for the kind; the call fails as the
 /// service answers.
@@ -543,20 +530,28 @@ fn log_undescribed(entry: &rtl::stub::Entry, object: usize, size: i32, buffer: u
     };
 }
 
-/// GetObjectW: a font object's LOGFONTW (or a brush's LOGBRUSH), its first `size` bytes into
-/// `buffer`, their number (the whole size for no buffer); 0 with the last error for a handle that
-/// names no object. A bitmap's is [`crate::bitmap::get_object`]'s; a stock object goes to the stub
-/// routine.
+/// GetObjectW: a font object's LOGFONTW, its first `size` bytes into `buffer`, their number (the
+/// whole size for no buffer); a brush's LOGBRUSH whole (0 for a buffer too small for it, as
+/// [`crate::stock`] answers a stock brush); 0 with the last error for a handle that names no
+/// object or a negative size. A bitmap's is [`crate::bitmap::get_object`]'s, a stock object's
+/// [`crate::stock::get_object`]'s.
 #[unsafe(export_name = "f2k_export_GetObjectW")]
 pub extern "system" fn get_object_w(object: usize, size: i32, buffer: usize) -> i32 {
     if object_kind(object as u32) == Some(rtl::dib::OBJ_BITMAP) {
         return crate::bitmap::get_object(object, size, buffer);
     }
-    if stock_object(object as u32).is_some() {
-        return stock_get_object(&crate::spec::GetObjectW, object, size, buffer);
-    }
     if size < 0 {
         return failed(ERROR_INVALID_PARAMETER).unwrap_or(0);
+    }
+    if let Some((index, _)) = stock_object(object as u32) {
+        return crate::stock::get_object(index, size, buffer, false);
+    }
+    let brush = matches!(object_of(object as u32), Some((OBJ_BRUSH, _)));
+    if brush && buffer != 0 && (size as usize) < size_of::<rtl::dib::LogBrush>() {
+        // A brush's LOGBRUSH is copied whole or not at all; a handle that names none still fails
+        // with the service's error.
+        let _ = answered(imports::object(object, 0, Caller::NONE));
+        return 0;
     }
     let answer = answered(imports::object(object, size as u32, Caller(buffer)));
     if answer.is_none() {
@@ -567,7 +562,8 @@ pub extern "system" fn get_object_w(object: usize, size: i32, buffer: usize) -> 
 
 /// GetObjectA: a font object's LOGFONTA (GetObjectW's, its face name converted), its first `size`
 /// bytes into `buffer`, their number (the whole size for no buffer); a brush's and a bitmap's as
-/// GetObjectW answers them (they hold no string).
+/// GetObjectW answers them (they hold no string); a stock object's [`crate::stock::get_object`]'s,
+/// a stock font's face name converted.
 ///
 /// # Safety
 ///
@@ -581,11 +577,11 @@ pub unsafe extern "system" fn get_object_a(object: usize, size: i32, buffer: *mu
         // A brush's LOGBRUSH has no string: the wide form's.
         return get_object_w(object, size, buffer as usize);
     }
-    if stock_object(object as u32).is_some() {
-        return stock_get_object(&crate::spec::GetObjectA, object, size, buffer as usize);
-    }
     if size < 0 {
         return failed(ERROR_INVALID_PARAMETER).unwrap_or(0);
+    }
+    if let Some((index, _)) = stock_object(object as u32) {
+        return crate::stock::get_object(index, size, buffer as usize, true);
     }
     let mut wide = LogFontW::zeroed();
     if answered(imports::object(

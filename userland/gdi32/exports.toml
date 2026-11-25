@@ -189,7 +189,7 @@ args = ["handle hgdiobj", "i32 cbBuffer", "ptr lpvObject"]
 impl = { native = "GetObjectW" }
 ordinal = 346
 fails = "0"
-note = "a font object's LOGFONTW, a brush's LOGBRUSH, a bitmap's BITMAP or DIBSECTION; a stock object is a stub"
+note = "a font object's LOGFONTW, a brush's LOGBRUSH, a bitmap's BITMAP or DIBSECTION, a stock object's description"
 
 [[export]]
 name = "NtGdiGetStockObject"
