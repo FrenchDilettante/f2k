@@ -250,23 +250,60 @@ impl<'a> If<'a> {
     where
         'a: 'b,
     {
+        self.map(out, &mut |word, out| {
+            repeat::bind(word, Some(scope), shell, out)
+        })
+    }
+
+    /// The condition with its words' `!NAME!` variables replaced (delayed expansion: see
+    /// [`crate::delayed`]), in `out`, as the `if` runs.
+    pub fn delayed<'b>(
+        &self,
+        errorlevel: u32,
+        in_batch: bool,
+        shell: &mut dyn Variables,
+        out: &'b mut [u16],
+    ) -> Result<If<'b>, TooLong>
+    where
+        'a: 'b,
+    {
+        self.map(out, &mut |word, out| {
+            crate::delayed(word, errorlevel, in_batch, shell, out)
+        })
+    }
+
+    /// Whether a word of the condition holds `unit`.
+    pub fn holds_unit(&self, unit: u16) -> bool {
+        match self.test {
+            Test::Compare { left, right, .. } => left.contains(&unit) || right.contains(&unit),
+            Test::Exist(word) | Test::Defined(word) => word.contains(&unit),
+            _ => false,
+        }
+    }
+
+    /// The condition with each of its words made what `word` makes of it, in `out` (halved for a
+    /// comparison's two). `EXIST`'s name loses the quotes a value brings.
+    fn map<'b>(
+        &self,
+        out: &'b mut [u16],
+        word: &mut dyn FnMut(&'b [u16], &'b mut [u16]) -> Result<&'b [u16], TooLong>,
+    ) -> Result<If<'b>, TooLong>
+    where
+        'a: 'b,
+    {
         let test = match self.test {
             Test::Compare { left, op, right } => {
                 let (first, rest) = out.split_at_mut(out.len() / 2);
                 Test::Compare {
-                    left: repeat::bind(left, Some(scope), shell, first)?,
+                    left: word(left, first)?,
                     op,
-                    right: repeat::bind(right, Some(scope), shell, rest)?,
+                    right: word(right, rest)?,
                 }
             }
-            Test::Exist(name) => Test::Exist(crate::batch::unquote(repeat::bind(
-                name,
-                Some(scope),
-                shell,
-                out,
-            )?)),
-            Test::Defined(name) => Test::Defined(repeat::bind(name, Some(scope), shell, out)?),
-            test => test,
+            Test::Exist(name) => Test::Exist(crate::batch::unquote(word(name, out)?)),
+            Test::Defined(name) => Test::Defined(word(name, out)?),
+            Test::ErrorLevel(number) => Test::ErrorLevel(number),
+            Test::Version(number) => Test::Version(number),
         };
         Ok(If {
             not: self.not,

@@ -86,7 +86,7 @@ pub static CMD: Help = Help {
         ),
         (
             "/V:ON, /V:OFF",
-            "Accepted and ignored: there is no delayed expansion.",
+            "Delayed expansion on or off: !variable! replaced as each command runs.",
         ),
         (
             "/T:fg",
@@ -702,6 +702,9 @@ pub static HELP: &[Help] = &[
              its letters; %variable:*old=new% replaces everything up to the first old.",
             "These names have a value even when no variable is set by them: %CD%, %DATE%, \
              %TIME%, %RANDOM%, %ERRORLEVEL%, %CMDEXTVERSION% and %CMDCMDLINE%.",
+            "With delayed expansion on (CMD /V:ON, SETLOCAL ENABLEDELAYEDEXPANSION), \
+             !variable! is replaced by its value as each command runs, not as its line is \
+             read: a block or a FOR's command sees the values its own commands set.",
         ],
     },
     Help {

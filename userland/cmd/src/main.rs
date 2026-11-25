@@ -10,8 +10,9 @@
 //! group it opens closes), then its commands run as its operators say (`&`, `&&`, `||`, `|`,
 //! groups in parentheses: cmd::syntax), `if` and `for` as src/control.rs runs them, each with its
 //! redirections: the shell's standard handles replaced while it runs, so that a built-in writes to
-//! them and a program is handed them. `exit` ends the shell; `call`, `cd` (or `chdir`), `cls`,
-//! `echo`, `goto`, `path`, `prompt`, `rem`, `set`, `shift`, `type` and `ver` are built in, with the
+//! them and a program is handed them (with delayed expansion on, a command's `!NAME!` replaced
+//! first). `exit` ends the shell; `call`, `cd` (or `chdir`), `cls`, `echo`, `endlocal`, `goto`,
+//! `path`, `prompt`, `rem`, `set`, `setlocal`, `shift`, `type` and `ver` are built in, with the
 //! file, console and clock built-ins (src/exec/); any other command names a program, found in the
 //! current directory and PATH with PATHEXT's extensions. A Windows program is started,
 //! sharing the console, and waited for (Ctrl+C then reaches the program, and the shell waits on); a
@@ -723,6 +724,10 @@ impl Host for Run<'_> {
         &mut self.shell
     }
 
+    fn in_batch(&self) -> bool {
+        self.batch.is_some()
+    }
+
     fn simple(&mut self, text: &[u16], state: &mut cmd::State, scope: Option<&Scope<'_>>) -> Flow {
         run_simple(text, state, self.batch, scope)
     }
@@ -924,8 +929,53 @@ fn run_bound(
 }
 
 /// A simple command's text (its escapes resolved, its loop variables replaced) run with its
-/// redirections (their files' names bound to `scope`).
+/// redirections (their files' names bound to `scope`): with delayed expansion on, its `!NAME!`
+/// replaced first ([`run_delayed`]).
 fn run_command(
+    line: &[u16],
+    redirections: &[Redirection<'_>],
+    state: &mut cmd::State,
+    batch: Option<&Batch>,
+    scope: Option<&Scope<'_>>,
+) -> Flow {
+    if state.delayed && line.contains(&u16::from(b'!')) {
+        run_delayed(line, redirections, state, batch, scope)
+    } else {
+        run_expanded(line, redirections, state, batch, scope)
+    }
+}
+
+/// A simple command's text, delayed expansion on, its `!NAME!` replaced as it runs (see
+/// [`cmd::delayed`]), then run. A text the values make longer than a line prints `The input line
+/// is too long.` and fails.
+#[inline(never)]
+fn run_delayed(
+    line: &[u16],
+    redirections: &[Redirection<'_>],
+    state: &mut cmd::State,
+    batch: Option<&Batch>,
+    scope: Option<&Scope<'_>>,
+) -> Flow {
+    let mut buffer = [0; cmd::LINE];
+    let expanded = cmd::delayed(
+        line,
+        state.errorlevel,
+        batch.is_some(),
+        &mut Shell,
+        &mut buffer[..cmd::MAX_LINE],
+    );
+    match expanded {
+        Ok(expanded) => run_expanded(expanded, redirections, state, batch, scope),
+        Err(TooLong) => {
+            let _ = exe::stderr().print(format_args!("{}", cmd::TOO_LONG));
+            state.failed();
+            Flow::Next
+        }
+    }
+}
+
+/// A simple command's text, every expansion done, run with its redirections.
+fn run_expanded(
     line: &[u16],
     redirections: &[Redirection<'_>],
     state: &mut cmd::State,

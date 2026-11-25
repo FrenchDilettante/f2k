@@ -4,7 +4,8 @@
 //! file or pipe its standard input is. Each line has its `%NAME%` variables expanded, then is read
 //! as src/syntax.rs says: commands joined by `&`, `&&`, `||` and `|`, groups in parentheses,
 //! redirections. Each command either runs a built-in (`call`, `cd` or `chdir`, `cls`, `echo`,
-//! `exit`, `path`, `prompt`, `rem`, `set`, `shift`, `type`, `ver`) or names a program, found as
+//! `endlocal`, `exit`, `path`, `prompt`, `rem`, `set`, `setlocal`, `shift`, `type`, `ver`; with
+//! delayed expansion on, its `!NAME!` replaced first: [`delayed`]) or names a program, found as
 //! cmd.exe finds one (src/search.rs): a Windows program is started and waited for, a batch file
 //! (src/batch.rs) runs its lines in the shell. `if`, `for` and `goto` and its labels are the
 //! batch language's control flow (src/flow/). The program (src/main.rs) makes the calls; this
@@ -1074,6 +1075,78 @@ pub fn expand_within<'a>(
     Ok(&expanded[..length])
 }
 
+const BANG: u16 = b'!' as u16;
+const CARET: u16 = b'^' as u16;
+
+/// Delayed expansion (`/V:ON`, `setlocal ENABLEDELAYEDEXPANSION`): a command's text, as it is about
+/// to run (its escapes resolved, its loop variables replaced), with its `!NAME!` variables
+/// replaced, in `out`; `text` itself when it holds no `!`. As `set /?` documents it, `!NAME!` is
+/// read as the command runs, not as its line is read, so that a block or a `for`'s command sees
+/// the values its own commands set; it takes the dynamic variables and the edits `%NAME%` does
+/// (`!NAME:~1,2!`, `!NAME:a=b!`; see [`expand`]). A value is copied as it is, never read again.
+///
+/// Once the text holds a `!`, a `^` escapes the unit after it, quoted or not, and goes (`^!` is a
+/// `!`); a `!` without one closing it goes. An undefined `!NAME!` is nothing in a batch file
+/// (`in_batch`) and stays as it is typed, as an undefined `%NAME%` does.
+///
+/// TooLong when the result does not fit `out`.
+pub fn delayed<'a>(
+    text: &'a [u16],
+    errorlevel: u32,
+    in_batch: bool,
+    variables: &mut dyn Variables,
+    out: &'a mut [u16],
+) -> Result<&'a [u16], TooLong> {
+    if !text.contains(&BANG) {
+        return Ok(text);
+    }
+    let mut length = 0;
+    let mut at = 0;
+    while at < text.len() {
+        match text[at] {
+            CARET => {
+                if let Some(next) = text.get(at + 1) {
+                    copy(core::slice::from_ref(next), out, &mut length)?;
+                }
+                at += 2;
+            }
+            BANG => {
+                let Some(close) = text[at + 1..].iter().position(|&unit| unit == BANG) else {
+                    at += 1;
+                    continue;
+                };
+                let close = at + 1 + close;
+                let name = &text[at + 1..close];
+                let colon = name.iter().position(|&unit| unit == u16::from(b':'));
+                let edited = colon.is_some_and(|colon| {
+                    let spec = &name[colon + 1..];
+                    spec.first() == Some(&u16::from(b'~')) || spec.contains(&EQUALS)
+                });
+                let found = match colon {
+                    Some(colon) if edited => {
+                        match variable(&name[..colon], errorlevel, variables, &mut out[length..])? {
+                            Some(value) => Some(edit(name, colon, value, &mut out[length..])?),
+                            None => None,
+                        }
+                    }
+                    _ => variable(name, errorlevel, variables, &mut out[length..])?,
+                };
+                match found {
+                    Some(value) => length += value,
+                    None if in_batch => {}
+                    None => copy(&text[at..=close], out, &mut length)?,
+                }
+                at = close + 1;
+            }
+            unit => {
+                copy(&[unit], out, &mut length)?;
+                at += 1;
+            }
+        }
+    }
+    Ok(&out[..length])
+}
+
 /// A variable's value, at the start of `buffer` and `length` units long, edited as `name` (the
 /// text between its `%`s, its colon at `colon`) says: `~offset,count` keeps the part [`cut`]
 /// says, and `old=new` replaces `old` ([`replace`]). A substring whose numbers cannot be read
@@ -2096,6 +2169,62 @@ mod tests {
     fn expanded(line: &str, errorlevel: u32, fake: &mut Fake) -> Result<String, Unexpanded> {
         let mut buffer = [0; 64];
         expand(&wide(line), errorlevel, None, fake, &mut buffer).map(narrow)
+    }
+
+    /// `text` with its `!NAME!` replaced (delayed expansion), in a batch file or typed.
+    fn late(text: &str, in_batch: bool, fake: &mut Fake) -> Result<String, TooLong> {
+        let mut buffer = [0; 64];
+        delayed(&wide(text), 7, in_batch, fake, &mut buffer).map(narrow)
+    }
+
+    #[test]
+    fn delayed_expansion_replaces_bang_variables() {
+        let mut fake = Fake::new(&[("A", "one"), ("B", "!A!"), ("S", "abcdef")]);
+        assert_eq!(
+            late("echo [!A!] [!a!]", true, &mut fake).unwrap(),
+            "echo [one] [one]"
+        );
+        // The dynamic variables, and the edits `%NAME%` takes.
+        assert_eq!(late("!ERRORLEVEL!", true, &mut fake).unwrap(), "7");
+        assert_eq!(
+            late("!S:~1,3! !S:cd=-!", true, &mut fake).unwrap(),
+            "bcd ab-ef"
+        );
+        // A value is not read again.
+        assert_eq!(late("!B!", true, &mut fake).unwrap(), "!A!");
+        // An undefined variable is nothing in a batch file, and stays typed.
+        assert_eq!(late("[!NONE!]", true, &mut fake).unwrap(), "[]");
+        assert_eq!(late("[!NONE!]", false, &mut fake).unwrap(), "[!NONE!]");
+        assert_eq!(late("[!NONE:~1!]", true, &mut fake).unwrap(), "[]");
+        // Too long for its buffer.
+        let long = format!("!A!{}", "x".repeat(64));
+        assert_eq!(late(&long, true, &mut fake), Err(TooLong));
+    }
+
+    #[test]
+    fn delayed_expansion_without_a_bang_changes_nothing() {
+        let mut fake = Fake::new(&[]);
+        let text = wide("echo a^^b \"^&\"");
+        let mut buffer = [0; 4];
+        let same = delayed(&text, 0, true, &mut fake, &mut buffer).unwrap();
+        assert_eq!(same, &text[..]);
+    }
+
+    #[test]
+    fn once_a_bang_is_there_a_caret_escapes_and_a_lone_bang_goes() {
+        let mut fake = Fake::new(&[("A", "one")]);
+        // `^!` is a `!`, quoted or not, and `^^` a `^`.
+        assert_eq!(
+            late("^!A^! \"^!A^!\" !A!", true, &mut fake).unwrap(),
+            "!A! \"!A!\" one"
+        );
+        assert_eq!(late("a^^b^c !A!", true, &mut fake).unwrap(), "a^bc one");
+        // A `!` that none closes goes.
+        assert_eq!(late("echo hi!", true, &mut fake).unwrap(), "echo hi");
+        assert_eq!(late("echo hi!", false, &mut fake).unwrap(), "echo hi");
+        assert_eq!(late("!A!!", true, &mut fake).unwrap(), "one");
+        // A caret ending the text goes.
+        assert_eq!(late("!A!^", true, &mut fake).unwrap(), "one");
     }
 
     /// `line` expanded in a batch whose arguments are `arguments`, found as `C:\\D\\t.cmd`.

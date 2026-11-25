@@ -36,6 +36,9 @@ pub enum Flow {
 /// file, at the prompt and in `/C`'s string.
 pub const BLOCK: usize = 4096;
 
+/// What delayed expansion's variables are between.
+const BANG: u16 = b'!' as u16;
+
 /// The units a path may hold: Windows' MAX_PATH (the runtime's `exe::MAX_PATH`, which the library
 /// cannot name in a host build).
 pub const MAX_PATH: usize = 260;
@@ -45,6 +48,10 @@ pub const MAX_PATH: usize = 260;
 pub trait Host {
     /// The environment and the current directory, as a loop variable's `%~` modifiers read them.
     fn variables(&mut self) -> &mut dyn Variables;
+
+    /// Whether the line comes from a batch file: an undefined `!NAME!` is then nothing (see
+    /// [`crate::delayed`]).
+    fn in_batch(&self) -> bool;
 
     /// A simple command (see [`syntax::Element::Simple`]): its redirections applied, its loop
     /// variables (`scope`) replaced in its words, then run.
@@ -235,7 +242,7 @@ pub fn run<H: Host>(
                 Some(scope) if header.set.contains(&u16::from(b'%')) => {
                     run_bound_for(&header, scope, state, host)
                 }
-                _ => run_for(&header, header.set, state, host, scope),
+                _ => for_set(&header, header.set, state, host, scope),
             },
             Ok(repeat::Header::Help(_)) => help("for", state, host),
             Err(error) => host.malformed(error, state),
@@ -293,9 +300,42 @@ fn run_bound_if<H: Host>(
     }
 }
 
-/// `if`: its command when the condition holds, its `else` command when it does not and it has
-/// one.
+/// `if`: with delayed expansion on, its words' `!NAME!` replaced first ([`run_delayed_if`]); then
+/// [`decide`].
 fn run_if<H: Host>(
+    header: &condition::If<'_>,
+    state: &mut State,
+    host: &mut H,
+    scope: Option<&Scope<'_>>,
+) -> Flow {
+    if state.delayed && header.holds_unit(BANG) {
+        run_delayed_if(header, state, host, scope)
+    } else {
+        decide(header, state, host, scope)
+    }
+}
+
+/// An `if`'s words, delayed expansion on, their `!NAME!` replaced as it runs (see
+/// [`crate::delayed`]). Words the values make longer than a block run nothing, as a bound `if`'s
+/// do.
+#[inline(never)]
+fn run_delayed_if<H: Host>(
+    header: &condition::If<'_>,
+    state: &mut State,
+    host: &mut H,
+    scope: Option<&Scope<'_>>,
+) -> Flow {
+    let mut buffer = [0; BLOCK];
+    let in_batch = host.in_batch();
+    match header.delayed(state.errorlevel, in_batch, host.variables(), &mut buffer) {
+        Ok(expanded) => decide(&expanded, state, host, scope),
+        Err(_) => Flow::Next,
+    }
+}
+
+/// `if` decided: its command when the condition holds, its `else` command when it does not and
+/// it has one.
+fn decide<H: Host>(
     header: &condition::If<'_>,
     state: &mut State,
     host: &mut H,
@@ -327,7 +367,46 @@ fn run_bound_for<H: Host>(
 ) -> Flow {
     let mut buffer = [0; BLOCK];
     match repeat::substitute(header.set, scope, host.variables(), &mut buffer) {
-        Ok(set) => run_for(header, set, state, host, Some(scope)),
+        Ok(set) => for_set(header, set, state, host, Some(scope)),
+        Err(_) => Flow::Next,
+    }
+}
+
+/// A `for`'s set, delayed expansion on, its `!NAME!` replaced as the loop starts (see
+/// [`crate::delayed`]); then the loop ([`run_for`]). A set the values make longer than a block
+/// runs nothing.
+fn for_set<H: Host>(
+    header: &For<'_>,
+    set: &[u16],
+    state: &mut State,
+    host: &mut H,
+    scope: Option<&Scope<'_>>,
+) -> Flow {
+    if state.delayed && set.contains(&BANG) {
+        run_delayed_for(header, set, state, host, scope)
+    } else {
+        run_for(header, set, state, host, scope)
+    }
+}
+
+#[inline(never)]
+fn run_delayed_for<H: Host>(
+    header: &For<'_>,
+    set: &[u16],
+    state: &mut State,
+    host: &mut H,
+    scope: Option<&Scope<'_>>,
+) -> Flow {
+    let mut buffer = [0; BLOCK];
+    let in_batch = host.in_batch();
+    match crate::delayed(
+        set,
+        state.errorlevel,
+        in_batch,
+        host.variables(),
+        &mut buffer,
+    ) {
+        Ok(set) => run_for(header, set, state, host, scope),
         Err(_) => Flow::Next,
     }
 }

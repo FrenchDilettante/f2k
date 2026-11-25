@@ -1,0 +1,5 @@
+# F2K capture of batdelay (tests\capture.bat)
+
+>>> cmd /c batdelay.cmd
+(not captured yet: tests\capture.bat batdelay replaces this placeholder)
+<<< exit code=0

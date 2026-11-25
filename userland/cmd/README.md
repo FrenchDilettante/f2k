@@ -12,21 +12,22 @@ cmd [/Q] [/S] [/A | /U] [/D] [/E:ON | /E:OFF] [/F:ON | /F:OFF] [/V:ON | /V:OFF] 
 
 ## Switches
 
-| Switch                 | Effect                                                                           |
-| ---------------------- | -------------------------------------------------------------------------------- |
-| `/C string`            | Runs `string`, then ends, with its last command's return code (see below).       |
-| `/K string`            | Runs `string`, then goes on interactively.                                       |
-| `/Q`                   | Starts with echo off: no prompt, and batch files' lines are not echoed.          |
-| `/S`                   | Removes the first and the last quote of `string`, whatever it holds (see below). |
-| `/U`                   | Writes to a file or a pipe in UTF-16LE (see below).                              |
-| `/A`                   | Writes to a file or a pipe in the OEM code page, the default (see below).        |
-| `/E:ON`, `/E:OFF`      | Command extensions on or off: `setlocal` saves the mode, and they stay on.       |
-| `/D`, `/F`, `/V`, `/T` | Accepted and ignored, with their `:` values (`/F:ON`, `/T:1F`).                  |
-| `/?`                   | Prints the shell's help and ends with 1, running nothing else, `/C` or `/K` too. |
+| Switch            | Effect                                                                           |
+| ----------------- | -------------------------------------------------------------------------------- |
+| `/C string`       | Runs `string`, then ends, with its last command's return code (see below).       |
+| `/K string`       | Runs `string`, then goes on interactively.                                       |
+| `/Q`              | Starts with echo off: no prompt, and batch files' lines are not echoed.          |
+| `/S`              | Removes the first and the last quote of `string`, whatever it holds (see below). |
+| `/U`              | Writes to a file or a pipe in UTF-16LE (see below).                              |
+| `/A`              | Writes to a file or a pipe in the OEM code page, the default (see below).        |
+| `/V:ON`, `/V:OFF` | Delayed expansion on or off (see [Delayed expansion](#delayed-expansion)).       |
+| `/E:ON`, `/E:OFF` | Command extensions on or off: `setlocal` saves the mode, and they stay on.       |
+| `/D`, `/F`, `/T`  | Accepted and ignored, with their `:` values (`/F:ON`, `/T:1F`).                  |
+| `/?`              | Prints the shell's help and ends with 1, running nothing else, `/C` or `/K` too. |
 
 A switch is `/` and a letter, in either case, and switches may run together (`/q/c`); the program's name ends at a blank or at a `/` (`cmd/c x`).
 Any other letter is ignored too.
-Of `/A` and `/U`, the last one counts, as does the last of `/E:ON` and `/E:OFF`.
+Of `/A` and `/U`, the last one counts, as does the last of `/E:ON` and `/E:OFF`, and of `/V:ON` and `/V:OFF`.
 `/C` and `/K` end the switches: the rest of the command line, its leading blanks skipped, is `string`.
 A word that is not a switch ends the switches, and the shell starts interactively, ignoring the rest.
 
@@ -843,6 +844,27 @@ These names have a value even when the environment has no variable of the name; 
 | `%CMDEXTVERSION%` | `2`.                                                                         |
 | `%CMDCMDLINE%`    | The shell's own command line.                                                |
 
+### Delayed expansion
+
+With delayed expansion on (`/V:ON`, or `setlocal enabledelayedexpansion` in a batch file), each `!NAME!` is replaced by the variable's value as the command it is in runs, not as its line is read, so that a block or a `for`'s command sees the values its own commands set:
+
+```text
+setlocal enabledelayedexpansion
+for %%i in (1 2 3) do (
+set LIST=!LIST!%%i
+echo !LIST!
+)
+```
+
+prints `1`, `12` and `123`, where `%LIST%` would give the value the line was read with each time.
+
+- It is done after the line's `%` expansion, its escapes and a `for`'s variables: in a simple command's text (`set`, `echo`, a program's command line), in `if`'s words as it runs, and in a `for`'s set as the loop starts.
+- `!NAME!` takes the dynamic variables (`!ERRORLEVEL!` is the ERRORLEVEL as the command runs) and the edits `%NAME%` takes (`!NAME:~1,3!`, `!NAME:a=b!`); a value is not read again.
+- Once a command's text holds a `!`, a `^` escapes the character after it, quoted or not, and goes: `^!` is a `!` (so `^^!` in a batch file's line, its first caret an escape when the line is read).
+- A `!` that no other closes goes (`echo hi!` prints `hi`), and an undefined `!NAME!` is nothing in a batch file and stays as typed at the prompt.
+- A `for`'s value is put in before: a file name holding a `!` loses it.
+- The commands a pipe joins, and `for /f`'s command, run in a shell of their own, where it is off.
+
 ## Batch files
 
 A file found with the extension `.bat` or `.cmd` runs in the shell, line by line.
@@ -968,7 +990,6 @@ Anything else leaves the ERRORLEVEL as it is: `echo`, `rem`, `cls`, `title`, `pa
 
 What Windows 2000's cmd.exe has and this one does not:
 
-- Delayed expansion: `/V:ON` and `!VAR!`.
 - The built-in commands `assoc`, `break`, `ftype`, `verify` and `vol`.
 - The `HKCU`/`HKLM\Software\Microsoft\Command Processor` settings: `AutoRun`, `EnableExtensions`, `DelayedExpansion`, `CompletionChar`, `PathCompletionChar` and `DefaultColor`.
   Command extensions are always on, and `/E:OFF` is ignored.
@@ -990,7 +1011,9 @@ What Windows 2000's cmd.exe has and this one does not:
 - These built-in commands of Windows 2000's are not there: `assoc`, `break`, `ftype`, `verify` and `vol`.
   Their names are looked for as programs, and are not recognized (ERRORLEVEL 9009).
 - The help `/?` prints is F2K's own text, and describes F2K's shell.
-- `%~$PATH:` on a batch file's argument (a `for` variable takes it), and delayed expansion (`!VAR!`), are not expanded.
+- `%~$PATH:` on a batch file's argument (a `for` variable takes it) is not expanded.
+- Delayed expansion is not captured: F2K follows `set /?`'s text and the rules later versions of cmd are known to follow (see [Delayed expansion](#delayed-expansion)).
+  A redirection's file name and the `DelayedExpansion` registry setting take no part in it, and a command its values make longer than 2,047 characters prints `The input line is too long.` and fails.
 - A file found by a name with an extension that is no program's (`readme.txt`) is started as a program, and cannot run: Windows opens it with the program its extension is associated with.
 - A typed line or a `/C` string may expand to 2,048 characters: Windows 2000 runs a `/C` string of 2,048 and refuses one of 3,000; no capture shows the bound between.
 - A `for`'s command its items make longer than 4,096 characters runs nothing: Windows 2000 runs one of 3,000 characters and not one of 8,000; no capture shows the bound between.
@@ -999,7 +1022,7 @@ What Windows 2000's cmd.exe has and this one does not:
 - `copy`'s `/V`, `/N` and `/Z` do nothing, and joining text onto a file that already ends with a Ctrl+Z (`copy /a a+b`) leaves that Ctrl+Z in the middle.
 - `color` alone puts back the colours the screen had before the first `color`, not a DefaultColor setting or `/T`'s; a wrong argument prints the syntax error rather than `color`'s help.
 - `ren`, `copy`, `del` and `move` match long names only, never the short (8.3) names Windows also matches.
-- `/D`, `/F`, `/V` and `/T` are ignored, and `/E:OFF` and `setlocal disableextensions` only set a mode `setlocal` saves: command extensions are always on, and there is no AutoRun command, no file name completion and no delayed expansion, and `/T`'s colours are not applied (Windows 2000 has no `/T`).
+- `/D`, `/F` and `/T` are ignored, and `/E:OFF` and `setlocal disableextensions` only set a mode `setlocal` saves: command extensions are always on, and there is no AutoRun command and no file name completion, and `/T`'s colours are not applied (Windows 2000 has no `/T`).
 - `setlocal` past 32 deep, `setlocal` with an argument it does not know, and either outside a batch file are not captured: F2K follows `setlocal /?`'s text and newer versions' messages.
   A batch file run without `call` keeps the `setlocal`s of the one it replaces until it ends.
 - A batch file is opened once and read through: changing it while it runs changes nothing.

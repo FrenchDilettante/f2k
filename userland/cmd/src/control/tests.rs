@@ -33,6 +33,8 @@ struct Shell {
     /// The pass at which Ctrl+C is pressed, counted from 0.
     interrupt: Option<usize>,
     passes: usize,
+    /// Whether the lines come from a batch file.
+    in_batch: bool,
 }
 
 impl Shell {
@@ -48,6 +50,7 @@ impl Shell {
             commands: BTreeMap::new(),
             interrupt: None,
             passes: 0,
+            in_batch: false,
         }
     }
 
@@ -120,12 +123,30 @@ impl Host for Shell {
         &mut self.environment
     }
 
+    fn in_batch(&self) -> bool {
+        self.in_batch
+    }
+
     fn simple(&mut self, text: &[u16], state: &mut State, scope: Option<&Scope<'_>>) -> Flow {
         let mut buffer = vec![0; crate::LINE];
         let mut list = Redirections::default();
         let line = syntax::simple(text, &mut buffer, &mut list).expect("a command that fits");
         let mut bound = vec![0; BLOCK];
         let line = repeat::bind(line, scope, &mut self.environment, &mut bound).unwrap();
+        let mut expanded = vec![0; crate::LINE];
+        let line = if state.delayed {
+            let errorlevel = state.errorlevel;
+            crate::delayed(
+                line,
+                errorlevel,
+                self.in_batch,
+                &mut self.environment,
+                &mut expanded,
+            )
+            .unwrap()
+        } else {
+            line
+        };
         // Blanks and `@`s before the command are the command's own to skip (cmd::parse's).
         let line = narrow(line)
             .trim_start_matches([' ', '\t', '\n', '@'])
@@ -137,6 +158,18 @@ impl Host for Shell {
                 Flow::Next
             }
             Some("goto") => Flow::Goto,
+            // `set NAME=value`, as the program's sets a variable (`set NAME=` deletes it).
+            Some("set") => {
+                let (name, value) = line[4..].split_once('=').unwrap();
+                let name = name.to_uppercase();
+                if value.is_empty() {
+                    self.environment.variables.remove(&name);
+                } else {
+                    self.environment.variables.insert(name, value.to_string());
+                }
+                state.return_code = 0;
+                Flow::Next
+            }
             Some("exitb") => Flow::EndBatch,
             _ => {
                 state.return_code = 0;
@@ -883,4 +916,99 @@ fn each_pass_is_echoed_with_its_values_while_echo_is_on() {
     shell.run_in("for %a in (1 2) do echo [%a]", &mut state);
     assert_eq!(shell.echoed, ["echo [1]", "echo [2]"]);
     assert_eq!(shell.ran, ["echo [1]", "echo [2]"]);
+}
+
+// Delayed expansion (`/V:ON`, `setlocal ENABLEDELAYEDEXPANSION`): `!NAME!` read as each command
+// runs. Not captured yet (batdelay): the expectations are Windows' documented behaviour.
+
+/// `line` run in a batch file, echo off, delayed expansion as `delayed` says.
+fn delayed_run(shell: &mut Shell, line: &str, delayed: bool) -> Flow {
+    shell.in_batch = true;
+    let mut state = State {
+        echo: false,
+        delayed,
+        ..State::default()
+    };
+    shell.run_in(line, &mut state)
+}
+
+#[test]
+fn a_for_s_command_sees_the_values_its_passes_set() {
+    let mut shell = Shell::new();
+    delayed_run(&mut shell, "for %a in (1 2) do set X=%a& echo [!X!]", true);
+    assert_eq!(shell.ran, ["set X=1", "echo [1]", "set X=2", "echo [2]"]);
+    // Without delayed expansion, `!X!` is text.
+    let mut shell = Shell::new();
+    delayed_run(&mut shell, "for %a in (1 2) do set X=%a& echo [!X!]", false);
+    assert_eq!(shell.ran[1], "echo [!X!]");
+}
+
+#[test]
+fn a_block_s_commands_see_the_values_set_before_them() {
+    let mut shell = Shell::new();
+    delayed_run(&mut shell, "(set X=new& echo [%X%] [!X!])", true);
+    // `%X%` was expanded as the line was read (here: never); `!X!` as the command runs.
+    assert_eq!(shell.ran, ["set X=new", "echo [%X%] [new]"]);
+}
+
+#[test]
+fn if_s_words_are_read_as_it_runs() {
+    let mut shell = Shell::new();
+    delayed_run(
+        &mut shell,
+        "set X=1& if !X!==1 (echo one) else echo other",
+        true,
+    );
+    assert_eq!(shell.ran, ["set X=1", "echo one"]);
+    let mut shell = Shell::new();
+    delayed_run(&mut shell, "set X=1& if \"!X!\"==\"1\" echo quoted", true);
+    assert_eq!(shell.ran, ["set X=1", "echo quoted"]);
+    let mut shell = Shell::new();
+    delayed_run(
+        &mut shell,
+        "set X=1& if !X!==1 (echo one) else echo other",
+        false,
+    );
+    assert_eq!(shell.ran, ["set X=1", "echo other"]);
+}
+
+#[test]
+fn a_for_s_set_is_read_as_the_loop_starts() {
+    let mut shell = Shell::new();
+    delayed_run(&mut shell, "set L=a b& for %i in (!L!) do echo %i", true);
+    assert_eq!(shell.ran, ["set L=a b", "echo a", "echo b"]);
+}
+
+#[test]
+fn a_loop_value_is_read_for_bangs_and_carets_after_it_is_put_in() {
+    // The loop's variable is replaced first: a value's `!` is read by delayed expansion (Windows'
+    // known loss of a file name's `!`), and its `^` escapes.
+    let mut shell = Shell::new().file("names.txt", &["x!y", "!B!", "^!B^!"]);
+    shell.environment.variables.insert("B".into(), "bee".into());
+    delayed_run(&mut shell, "for /f %a in (names.txt) do echo %a", true);
+    assert_eq!(shell.ran, ["echo xy", "echo bee", "echo !B!"]);
+    // A set's own `!` is read as the loop starts.
+    let mut shell = Shell::new();
+    shell.environment.variables.insert("B".into(), "bee".into());
+    delayed_run(&mut shell, "for %a in (x!B!y) do echo %a", true);
+    assert_eq!(shell.ran, ["echo xbeey"]);
+}
+
+#[test]
+fn an_undefined_bang_variable_stays_typed() {
+    let mut shell = Shell::new();
+    let mut state = State {
+        echo: false,
+        delayed: true,
+        ..State::default()
+    };
+    shell.run_in("echo [!NONE!] [!BATFLOWN!]", &mut state);
+    assert_eq!(shell.ran, ["echo [!NONE!] [xxx]"]);
+}
+
+#[test]
+fn delayed_expansion_reads_the_errorlevel_as_it_runs() {
+    let mut shell = Shell::new();
+    delayed_run(&mut shell, "code 4 & echo %ERRORLEVEL% !ERRORLEVEL!", true);
+    assert_eq!(shell.ran, ["code 4 ", "echo %ERRORLEVEL% 4"]);
 }
