@@ -109,8 +109,11 @@ fn last(volume: &mut Volume, first: u32) -> Result<(u32, u32), NtStatus> {
 /// Write zeros over `cluster`.
 fn zero_cluster(volume: &mut Volume, cluster: u32) -> Result<(), NtStatus> {
     let first = volume.layout().cluster_lba(cluster);
-    for offset in 0..volume.layout().sectors_per_cluster as u64 {
-        volume.write_sector(first + offset, &[0; 512])?;
+    let per_write = (ZEROS.len() / 512) as u64;
+    let sectors = volume.layout().sectors_per_cluster as u64;
+    for offset in (0..sectors).step_by(per_write as usize) {
+        let count = (sectors - offset).min(per_write) as usize;
+        volume.write_sectors(first + offset, &ZEROS[..count * 512])?;
     }
     Ok(())
 }
@@ -250,54 +253,96 @@ fn extend_chain(
     Ok(Some(growth))
 }
 
-/// Write `data` at byte `offset` of `file`, whose chain covers the span: whole sectors written
-/// directly, partial ones read, patched and written back.
+/// Write `data` at byte `offset` of `file`, whose chain covers the span, along its runs: the
+/// clusters that lie one after another on the disk are one run, its whole sectors written in one
+/// device request; a partly covered sector is read (through the volume's cache), patched and
+/// written back.
 fn write_span(volume: &mut Volume, file: &File, offset: u32, data: &[u8]) -> Result<(), NtStatus> {
     let size = cluster_bytes(volume);
     let mut cluster = nth(volume, file.first_cluster, offset / size)?;
     let mut position = offset;
     let mut done = 0;
+    // The run gathered so far: its first sector, the offset in it, and where it starts in `data`;
+    // it ends at `done`.
+    let mut run: Option<(u64, usize, usize)> = None;
     while done < data.len() {
-        let within = position % size;
-        let lba = volume.layout().cluster_lba(cluster) + (within / 512) as u64;
-        let at = (within % 512) as usize;
-        let take = (512 - at).min(data.len() - done);
-        let mut sector = [0u8; 512];
-        if take != 512 {
-            volume.read_sector(lba, &mut sector)?;
+        let within = (position % size) as usize;
+        let take = (size as usize - within).min(data.len() - done);
+        let lba = volume.layout().cluster_lba(cluster);
+        match run {
+            Some((first, start, from))
+                if within == 0 && first * 512 + (start + done - from) as u64 == lba * 512 => {}
+            _ => {
+                if let Some((first, start, from)) = run {
+                    write_run(volume, first, start, &data[from..done])?;
+                }
+                run = Some((lba, within, done));
+            }
         }
-        sector[at..at + take].copy_from_slice(&data[done..done + take]);
-        volume.write_sector(lba, &sector)?;
         done += take;
         position += take as u32;
-        if done < data.len() && position % size == 0 {
+        if done < data.len() {
             cluster = next(volume, cluster)?.ok_or(STATUS_FILE_CORRUPT_ERROR)?;
         }
+    }
+    match run {
+        Some((first, start, from)) => write_run(volume, first, start, &data[from..]),
+        None => Ok(()),
+    }
+}
+
+/// Write `data` from byte `start` of the consecutive sectors at `lba`: the whole sectors in one
+/// device request, a partly covered one read, patched and written back.
+fn write_run(volume: &mut Volume, lba: u64, start: usize, data: &[u8]) -> Result<(), NtStatus> {
+    let mut at = start;
+    let mut done = 0;
+    while done < data.len() {
+        let sector = lba + (at / 512) as u64;
+        let within = at % 512;
+        let remaining = data.len() - done;
+        let take = if within == 0 && remaining >= 512 {
+            let whole = remaining / 512 * 512;
+            volume.write_sectors(sector, &data[done..done + whole])?;
+            whole
+        } else {
+            let take = (512 - within).min(remaining);
+            let mut bytes = [0u8; 512];
+            volume.read_sector(sector, &mut bytes)?;
+            bytes[within..within + take].copy_from_slice(&data[done..done + take]);
+            volume.write_sector(sector, &bytes)?;
+            take
+        };
+        done += take;
+        at += take;
     }
     Ok(())
 }
 
+/// Zeros for [`zero_span`]'s writes, a page at a time.
+static ZEROS: [u8; 4096] = [0; 4096];
+
 /// Zero `file`'s bytes `[from, to)` within its chain.
 fn zero_span(volume: &mut Volume, file: &File, from: u32, to: u32) -> Result<(), NtStatus> {
-    let zeros = [0u8; 512];
     let mut at = from;
     while at < to {
-        let take = (to - at).min(512 - at % 512);
-        write_span(volume, file, at, &zeros[..take as usize])?;
+        let take = (to - at).min(ZEROS.len() as u32);
+        write_span(volume, file, at, &ZEROS[..take as usize])?;
         at += take;
     }
     Ok(())
 }
 
 /// Grow `file` to `size`: its chain extended (fresh clusters are zeros), and the bytes past the old
-/// end in its old last cluster zeroed. All of it or, on a failure, none: the clusters added are
-/// given back. The clusters added, for a caller whose later step fails to give back. With
-/// [`Fill::Unwritten`] nothing is zeroed.
+/// end in its old last cluster zeroed, up to `written` — a write's start, whose bytes from there on
+/// it writes itself (the size, for a growth that writes nothing). All of it or, on a failure, none:
+/// the clusters added are given back. The clusters added, for a caller whose later step fails to
+/// give back. With [`Fill::Unwritten`] nothing is zeroed.
 fn grow(
     volume: &mut Volume,
     file: &mut File,
     size: u32,
     fill: Fill,
+    written: u32,
 ) -> Result<Option<Growth>, NtStatus> {
     // What the old chain covers, in u64: a size near 4 GiB rounds up past u32.
     let had = if file.first_cluster == 0 {
@@ -309,7 +354,7 @@ fn grow(
     let before = file.first_cluster;
     let growth = reserve(volume, file, size, fill)?;
     let zero_to = match fill {
-        Fill::Zeros => u64::from(size).min(had) as u32,
+        Fill::Zeros => u64::from(size).min(had).min(u64::from(written)) as u32,
         Fill::Unwritten => file.size,
     };
     if let Err(status) = zero_span(volume, file, file.size, zero_to) {
@@ -341,7 +386,7 @@ pub fn write_at(
         .ok_or(STATUS_DISK_FULL)?;
     let before = *file;
     let growth = if end > file.size {
-        grow(volume, file, end, Fill::Zeros)?
+        grow(volume, file, end, Fill::Zeros, offset)?
     } else {
         None
     };
@@ -374,7 +419,7 @@ pub fn set_size_with(
     if size >= file.size {
         let before = *file;
         let growth = if size > file.size {
-            grow(volume, file, size, fill)?
+            grow(volume, file, size, fill, size)?
         } else {
             None
         };
