@@ -3,9 +3,11 @@
 //! A read is a span of the file — an offset and a length — bounded by the size: the clusters before
 //! the offset's are skipped through the FAT reader without being read, and within a cluster only
 //! the sectors the span touches are read; a sector the span covers partly is read whole, through
-//! the volume's cache, and only its covered bytes copied. An end that arrives before the size is
-//! satisfied, a free or bad entry mid-chain, or a link outside the volume is corruption, reported
-//! as a status.
+//! the volume's cache, and only its covered bytes copied. Clusters that lie one after another on
+//! the disk are read as one run — one device request for their whole sectors — as FastFat reads a
+//! file along its runs (its MCB) rather than cluster by cluster. An end that arrives before the
+//! size is satisfied, a free or bad entry mid-chain, or a link outside the volume is corruption,
+//! reported as a status.
 
 use super::fat::FatEntry;
 use super::lookup::File;
@@ -50,19 +52,30 @@ pub fn read_at(
     }
     let mut within = offset % cluster_bytes;
     let mut done = 0;
+    // The run gathered so far: its first sector, the offset in it, and where it starts in the
+    // buffer; it ends at `done`.
+    let mut run: Option<(u64, usize, usize)> = None;
     loop {
         if !layout.is_data_cluster(cluster) {
             return Err(STATUS_FILE_CORRUPT_ERROR);
         }
         let take = (cluster_bytes - within).min(count - done);
-        read_span(
-            volume,
-            layout.cluster_lba(cluster),
-            within,
-            &mut buffer[done..done + take],
-        )?;
+        let lba = layout.cluster_lba(cluster);
+        // A cluster that starts where the run's last one ended extends the run.
+        match run {
+            Some((first, start, from))
+                if within == 0 && (first * 512 + (start + done - from) as u64) == lba * 512 => {}
+            _ => {
+                if let Some((first, start, from)) = run {
+                    read_span(volume, first, start, &mut buffer[from..done])?;
+                }
+                run = Some((lba, within, done));
+            }
+        }
         done += take;
         if done == count {
+            let (first, start, from) = run.expect("a run holds the last cluster");
+            read_span(volume, first, start, &mut buffer[from..done])?;
             return Ok(count);
         }
         cluster = next_cluster(volume, cluster)?;
@@ -84,8 +97,8 @@ fn next_cluster(volume: &mut Volume, cluster: u32) -> Result<u32, NtStatus> {
     }
 }
 
-/// Read the bytes from `start` within the cluster at `lba` into `out`: whole sectors straight into
-/// it in one device read, a partly covered sector through the volume's cache.
+/// Read the bytes from `start` within the consecutive sectors at `lba` into `out`: whole sectors
+/// straight into it in one device read, a partly covered sector through the volume's cache.
 fn read_span(volume: &mut Volume, lba: u64, start: usize, out: &mut [u8]) -> Result<(), NtStatus> {
     let mut at = start;
     let mut done = 0;
@@ -181,10 +194,10 @@ mod tests {
         assert_eq!(device.reads() - before, 4);
     }
 
-    /// One cluster read per step, and the FAT sector once (cached): a 3-cluster file reads three
-    /// clusters and one FAT sector.
+    /// Clusters one after another on the disk are one run: a 3-cluster file along 3 -> 4 -> 5 is
+    /// one device read, and the FAT sector once (cached).
     #[test]
-    fn one_cluster_per_chain_step() {
+    fn consecutive_clusters_are_one_read() {
         let bytes = file_bytes(3 * 512);
         let mut crafted = Crafted::new(1, 16);
         crafted.chain(&[3, 4, 5]);
@@ -199,7 +212,43 @@ mod tests {
             read(&mut volume, &file(3, 1536), &mut buffer),
             STATUS_SUCCESS
         );
-        assert_eq!(device.reads() - before, 3 + 1);
+        assert_eq!(device.reads() - before, 1 + 1);
+    }
+
+    /// A run breaks where the chain jumps: 3 -> 4 -> 9 -> 10 -> 6 is three runs (3-4, 9-10, 6),
+    /// three device reads, the bytes in chain order; a span starting mid-run and ending mid-run
+    /// reads its partial sectors through the volume's cache, the whole ones in the runs.
+    #[test]
+    fn a_fragmented_chain_reads_run_by_run() {
+        let chain = [3u32, 4, 9, 10, 6];
+        let bytes = file_bytes(5 * 512);
+        let mut crafted = Crafted::new(1, 16);
+        crafted.chain(&chain);
+        for (cluster, piece) in chain.iter().zip(bytes.chunks(512)) {
+            crafted.cluster(*cluster, piece);
+        }
+        let device = Counting::over(crafted.device());
+        let mut volume = Volume::mount(device).unwrap();
+        let before = device.reads();
+        let mut buffer = vec![0u8; bytes.len()];
+        assert_eq!(
+            read(&mut volume, &file(3, 5 * 512), &mut buffer),
+            STATUS_SUCCESS
+        );
+        assert_eq!(buffer, bytes);
+        assert_eq!(
+            device.reads() - before,
+            3 + 1,
+            "three runs and the FAT sector"
+        );
+        // 700..2100: cluster 4's tail (partial), then 9 and 10 whole (one run), 6's head
+        // (partial): four reads, the FAT sector cached.
+        let before = device.reads();
+        assert_eq!(
+            read_span_of(&mut volume, &file(3, 5 * 512), 700, 1400),
+            &bytes[700..2100]
+        );
+        assert_eq!(device.reads() - before, 3);
     }
 
     /// An empty file reads nothing, whatever its first cluster says.
