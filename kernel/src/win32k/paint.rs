@@ -42,13 +42,14 @@ use rtl::user::HWND_LOCK_UPDATE_WINDOW;
 use rtl::user::{QS_PAINT, UPDATE_ERASE, UPDATE_NOT_EMPTY, WM_PAINT, WS_CLIPCHILDREN, WS_VISIBLE};
 
 use super::queue::Filter;
-use super::window::{Hwnd, Message, Payload, Session, WindowId, Windows, WINDOWS};
+use super::window::{Hwnd, Message, Payload, Session, WindowId, Windows};
 use crate::sched::thread::ThreadId;
+use crate::slots::{Id, LowestFirst, Record, Slots};
 
 /// One window's update region.
 #[derive(Clone, Copy)]
 struct Update {
-    /// The window; none for a free record.
+    /// The window.
     window: Option<WindowId>,
     /// The window's thread, whose read makes its WM_PAINT.
     thread: ThreadId,
@@ -67,47 +68,87 @@ impl Update {
     };
 }
 
-/// The windows' update regions: a record a window that has one.
+// SAFETY: `write_fresh` writes a whole record.
+unsafe impl Record for Update {
+    unsafe fn write_fresh(at: *mut Self, _: u32) {
+        // SAFETY: the caller's contract.
+        unsafe { at.write(Update::EMPTY) };
+    }
+}
+
+/// The update records' kind of id.
+enum UpdateTag {}
+
+/// An update record's id.
+type UpdateId = Id<UpdateTag>;
+
+/// Update records to a chunk: one page's worth.
+const UPDATES_PER_CHUNK: usize = crate::slots::per_page::<Update>();
+
+const _: () = assert!(Slots::<Update, LowestFirst<UpdateTag>, UPDATES_PER_CHUNK>::CHUNK_PAGES == 1);
+
+/// The windows' update regions: a record a window that has one, taken lowest free first, the
+/// order the WM_PAINT search goes in ([`next_paint`]), grown a page at a time.
 pub struct Updates {
-    records: [Update; WINDOWS],
+    records: Slots<Update, LowestFirst<UpdateTag>, UPDATES_PER_CHUNK>,
 }
 
 impl Updates {
-    /// Write an empty table at `updates`, element by element.
+    /// Write an empty table at `updates`.
     ///
     /// # Safety
     ///
-    /// `updates` is valid for writes, aligned, and the records' final address; its previous
-    /// contents are overwritten, not dropped.
+    /// `updates` is valid for writes and aligned; its previous contents are overwritten, not
+    /// dropped.
     pub unsafe fn write_empty(updates: *mut Updates) {
-        // SAFETY: the caller's contract; every record is written.
+        // SAFETY: the caller's contract.
         unsafe {
-            let records = core::ptr::addr_of_mut!((*updates).records) as *mut Update;
-            for index in 0..WINDOWS {
-                records.add(index).write(Update::EMPTY);
-            }
-        }
+            updates.write(Updates {
+                records: Slots::new(),
+            })
+        };
     }
 
     /// The record of `window`'s update region, when it has one.
-    fn find(&self, window: WindowId) -> Option<usize> {
-        self.records.iter().position(|u| u.window == Some(window))
+    fn find(&self, window: WindowId) -> Option<UpdateId> {
+        self.records
+            .iter()
+            .find(|(_, u)| u.window == Some(window))
+            .map(|(id, _)| id)
+    }
+
+    fn record(&self, window: WindowId) -> Option<&Update> {
+        self.records.get(self.find(window)?)
+    }
+
+    fn record_mut(&mut self, window: WindowId) -> Option<&mut Update> {
+        let id = self.find(window)?;
+        self.records.get_mut(id)
     }
 
     /// The window `window` is being freed: its update region goes.
     pub fn window_gone(&mut self, window: WindowId) {
-        if let Some(at) = self.find(window) {
-            self.records[at] = Update::EMPTY;
+        if let Some(id) = self.find(window) {
+            self.records.free(id);
         }
     }
 
     /// The thread record `thread`'s queue ended: the update regions its reads would paint go.
     pub fn thread_gone(&mut self, thread: ThreadId) {
-        for record in self.records.iter_mut() {
-            if record.window.is_some() && record.thread == thread {
-                *record = Update::EMPTY;
+        for index in 0..self.records.high_water() {
+            let Some(id) = self.records.id_at(index) else {
+                continue;
+            };
+            if self.records.get(id).is_some_and(|u| u.thread == thread) {
+                self.records.free(id);
             }
         }
+    }
+
+    /// How many windows have an update region.
+    #[cfg(test)]
+    fn live(&self) -> u32 {
+        self.records.live()
     }
 }
 
@@ -214,22 +255,24 @@ pub fn invalidate(windows: &mut Windows, window: WindowId, rect: Option<Rect>, e
 fn add(windows: &mut Windows, window: WindowId, rect: Rect, erase: bool) {
     let thread = windows.window_thread(window);
     let updates = &mut windows.queues.updates;
-    let at = match updates.find(window) {
-        Some(at) => at,
-        None => match updates.records.iter().position(|u| u.window.is_none()) {
-            Some(at) => {
-                updates.records[at] = Update {
+    let id = match updates.find(window) {
+        Some(id) => id,
+        None => match updates.records.allocate_or_grow(0, super::pages()) {
+            Ok((id, record)) => {
+                *record = Update {
                     window: Some(window),
                     thread,
                     ..Update::EMPTY
                 };
-                at
+                id
             }
-            // One record a window: the table holds every window's.
-            None => return,
+            // No page left for the record: the window stays as it was, unpainted.
+            Err(_) => return,
         },
     };
-    let record = &mut updates.records[at];
+    let Some(record) = updates.records.get_mut(id) else {
+        return;
+    };
     record.rect = record.rect.union(rect);
     record.erase |= erase;
     windows.queues.wake_thread(thread, QS_PAINT);
@@ -257,16 +300,18 @@ pub fn validate(windows: &mut Windows, window: WindowId, rect: Option<Rect>) {
 /// Take `cut` (client coordinates; everything for none) out of the window's update region.
 fn take_out(windows: &mut Windows, window: WindowId, cut: Option<Rect>) {
     let updates = &mut windows.queues.updates;
-    let Some(at) = updates.find(window) else {
+    let Some(id) = updates.find(window) else {
         return;
     };
-    let record = &mut updates.records[at];
+    let Some(record) = updates.records.get_mut(id) else {
+        return;
+    };
     let left = match cut {
         None => Rect::EMPTY,
         Some(cut) => record.rect.subtract(cut),
     };
     if left.is_empty() {
-        *record = Update::EMPTY;
+        updates.records.free(id);
     } else {
         record.rect = left;
     }
@@ -287,8 +332,7 @@ pub fn invalidate_all(windows: &mut Windows, caller: ThreadId, erase: bool) {
 /// The window's update region: its box (client coordinates) and whether an erase is pending; none
 /// when it has none.
 pub fn update_of(windows: &Windows, window: WindowId) -> Option<(Rect, bool)> {
-    let updates = &windows.queues.updates;
-    let record = &updates.records[updates.find(window)?];
+    let record = windows.queues.updates.record(window)?;
     Some((record.rect, record.erase))
 }
 
@@ -296,11 +340,9 @@ pub fn update_of(windows: &Windows, window: WindowId) -> Option<(Rect, bool)> {
 /// [`UPDATE_NOT_EMPTY`], and [`UPDATE_ERASE`] when `erase` asks the erase and one was pending (no
 /// longer pending: the caller sends WM_ERASEBKGND).
 pub fn update_rect(windows: &mut Windows, window: WindowId, erase: bool) -> (Rect, u32) {
-    let updates = &mut windows.queues.updates;
-    let Some(at) = updates.find(window) else {
+    let Some(record) = windows.queues.updates.record_mut(window) else {
         return (Rect::EMPTY, 0);
     };
-    let record = &mut updates.records[at];
     let mut bits = UPDATE_NOT_EMPTY;
     if erase && record.erase {
         record.erase = false;
@@ -316,6 +358,7 @@ pub fn next_paint(windows: &Windows, thread: ThreadId, filter: &Filter) -> Optio
         .updates
         .records
         .iter()
+        .map(|(_, u)| u)
         .filter(|u| u.thread == thread)
         .filter_map(|u| u.window)
         .filter(|&w| windows.is_live(w))
@@ -593,6 +636,31 @@ mod tests {
         let w = m.windows.window_from_handle(h).unwrap();
         m.windows.set_visible_for_tests(w, true);
         (w, h)
+    }
+
+    /// More windows with update regions than the old fixed table's 256: each keeps its region,
+    /// and the WM_PAINT search goes in the order the regions' records were taken, a freed record
+    /// taken again before any other, as the table took them.
+    #[test]
+    fn update_regions_grow_past_the_old_table() {
+        let (m, atom) = manager();
+        let t = thread(m, 1, 0x100);
+        let windows: Vec<_> = (0..300).map(|i| shown(m, atom, t, i, 0)).collect();
+        for &(w, _) in windows.iter().rev() {
+            invalidate(&mut m.windows, w, None, false);
+        }
+        assert_eq!(m.windows.queues.updates.live(), 300);
+        assert!(windows
+            .iter()
+            .all(|&(w, _)| update_of(&m.windows, w).is_some()));
+        assert_eq!(next_paint(&m.windows, t, &all()), Some(windows[299].1));
+        // The first record and one in the middle go; the next region takes the first.
+        validate(&mut m.windows, windows[299].0, None);
+        validate(&mut m.windows, windows[10].0, None);
+        assert_eq!(next_paint(&m.windows, t, &all()), Some(windows[298].1));
+        invalidate(&mut m.windows, windows[10].0, None, false);
+        assert_eq!(next_paint(&m.windows, t, &all()), Some(windows[10].1));
+        assert_eq!(m.windows.queues.updates.live(), 299);
     }
 
     /// The invalidate, subrect and beginend captures: a hidden window takes no update region —

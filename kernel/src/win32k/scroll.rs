@@ -5,13 +5,11 @@
 //! A window's bars are Windows 2000's SBINFO ([`rtl::scroll::ScrollBars`]: the arrows' disabled
 //! bits, the horizontal bar, the vertical one), which Windows 2000 allocates with a window made
 //! with either style, or when a call first gives it a bar, and keeps for the window's life
-//! (pwnd->pSBInfo). F2K keeps every window's in one table ([`WindowBars`]), each entry naming its
-//! window by id, as the properties' table does ([`super::prop`]): a window made with WS_HSCROLL
-//! or WS_VSCROLL that has no entry yet has a window's bars as they are made (0 to 100, no page,
-//! at 0), its entry made the first time a call changes them; a destroyed window's entry is found
-//! by nothing (its id carries the record's generation), and a full table takes such entries back.
-//! A window whose style lost both bits before any call reached its bars has none, where Windows
-//! 2000's kept the ones its creation made.
+//! (pwnd->pSBInfo). F2K keeps them in the window's record too
+//! ([`Windows::own_scroll_bars`]), made the first time a call changes them: a window made with
+//! WS_HSCROLL or WS_VSCROLL whose record holds none yet has a window's bars as they are made (0 to
+//! 100, no page, at 0); they go with the record. A window whose style lost both bits before any
+//! call reached its bars has none, where Windows 2000's kept the ones its creation made.
 //!
 //! The rules (Windows 2000's xxxSetScrollBar, xxxShowScrollBar, xxxEnableWndSBArrows and
 //! xxxScrollWindowEx, as the scroll capture shows them):
@@ -75,21 +73,14 @@ use rtl::scroll::{
     SW_SCROLLCHILDREN,
 };
 use rtl::user::{WS_HSCROLL, WS_VSCROLL};
-use rtl::winerror::{
-    ERROR_INVALID_PARAMETER,
-    ERROR_INVALID_WINDOW_HANDLE,
-    ERROR_NOT_ENOUGH_MEMORY,
-    ERROR_NO_SCROLLBARS,
-};
+use rtl::winerror::{ERROR_INVALID_PARAMETER, ERROR_INVALID_WINDOW_HANDLE, ERROR_NO_SCROLLBARS};
 
-use super::window::{Hwnd, WindowId, Windows, WINDOWS};
+use super::window::{Hwnd, WindowId, Windows};
 use crate::status::*;
 
 /// Why a scroll bar call failed: the Win32 error code (winerror.h) the decision reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Failure {
-    /// ERROR_NOT_ENOUGH_MEMORY (8): the table is full of live windows' bars.
-    NoMemory,
     /// ERROR_INVALID_PARAMETER (87): a bar there is none of.
     InvalidParameter,
     /// ERROR_INVALID_WINDOW_HANDLE (1400): the handle names no live window.
@@ -102,7 +93,6 @@ impl Failure {
     /// The Win32 error code the decision reports.
     pub const fn code(self) -> u32 {
         match self {
-            Failure::NoMemory => ERROR_NOT_ENOUGH_MEMORY,
             Failure::InvalidParameter => ERROR_INVALID_PARAMETER,
             Failure::InvalidWindowHandle => ERROR_INVALID_WINDOW_HANDLE,
             Failure::NoScrollBars => ERROR_NO_SCROLLBARS,
@@ -116,94 +106,26 @@ impl Failure {
     }
 }
 
-/// One window's bars: its window and its SBINFO.
-#[derive(Clone, Copy)]
-struct Entry {
-    /// The window the bars are; none for a free entry.
-    window: Option<WindowId>,
-    bars: ScrollBars,
+/// The bars of `window` (whose style is `style`): its record's, a window's bars as made when it
+/// has none but its style asks for a bar; none otherwise.
+fn bars(windows: &Windows, window: WindowId, style: u32) -> Option<ScrollBars> {
+    match windows.own_scroll_bars(window) {
+        Some(bars) => Some(bars),
+        None if style & (WS_HSCROLL | WS_VSCROLL) != 0 => Some(ScrollBars::WINDOW),
+        None => None,
+    }
 }
 
-impl Entry {
-    const FREE: Self = Entry {
-        window: None,
-        bars: ScrollBars::WINDOW,
-    };
+/// Whether `window` has bars (see [`bars`]).
+fn has(windows: &Windows, window: WindowId, style: u32) -> bool {
+    bars(windows, window, style).is_some()
 }
 
-/// The windows' bars, every window's in one table (see the module notes).
-pub struct WindowBars {
-    entries: [Entry; WINDOWS],
-}
-
-impl WindowBars {
-    /// Write an empty table at `bars`, entry by entry (by value it would pass through the stack).
-    ///
-    /// # Safety
-    ///
-    /// `bars` is valid for writes, aligned, and the table's final address; its previous contents
-    /// are overwritten, not dropped.
-    pub unsafe fn write_empty(bars: *mut WindowBars) {
-        // SAFETY: the caller's contract; every entry is written.
-        unsafe {
-            let entries = core::ptr::addr_of_mut!((*bars).entries) as *mut Entry;
-            for index in 0..WINDOWS {
-                entries.add(index).write(Entry::FREE);
-            }
-        }
-    }
-
-    fn find(&self, window: WindowId) -> Option<usize> {
-        self.entries.iter().position(|e| e.window == Some(window))
-    }
-
-    /// The bars of `window` (whose style is `style`): its entry's, a window's bars as made when it
-    /// has none but its style asks for a bar; none otherwise.
-    pub fn bars(&self, window: WindowId, style: u32) -> Option<ScrollBars> {
-        match self.find(window) {
-            Some(at) => Some(self.entries[at].bars),
-            None if style & (WS_HSCROLL | WS_VSCROLL) != 0 => Some(ScrollBars::WINDOW),
-            None => None,
-        }
-    }
-
-    /// Whether `window` has bars (see [`WindowBars::bars`]).
-    pub fn has(&self, window: WindowId, style: u32) -> bool {
-        self.bars(window, style).is_some()
-    }
-
-    /// The entry of `window`, made with a window's bars as made when it has none; a full table
-    /// first takes back the entries of the windows `is_live` says are gone, NoMemory when it is
-    /// still full.
-    pub fn make(
-        &mut self,
-        window: WindowId,
-        is_live: impl Fn(WindowId) -> bool,
-    ) -> Result<&mut ScrollBars, Failure> {
-        let at = match self.find(window) {
-            Some(at) => at,
-            None => {
-                let free = |entries: &[Entry]| entries.iter().position(|e| e.window.is_none());
-                let at = match free(&self.entries) {
-                    Some(at) => at,
-                    None => {
-                        for entry in self.entries.iter_mut() {
-                            if entry.window.is_some_and(|w| !is_live(w)) {
-                                *entry = Entry::FREE;
-                            }
-                        }
-                        free(&self.entries).ok_or(Failure::NoMemory)?
-                    }
-                };
-                self.entries[at] = Entry {
-                    window: Some(window),
-                    bars: ScrollBars::WINDOW,
-                };
-                at
-            }
-        };
-        Ok(&mut self.entries[at].bars)
-    }
+/// The bars of `window`'s record, made with a window's bars as made when it has none.
+fn make(windows: &mut Windows, window: WindowId) -> &mut ScrollBars {
+    windows
+        .own_scroll_bars_mut(window)
+        .get_or_insert(ScrollBars::WINDOW)
 }
 
 /// The style bit of the bar `bar` names: WS_HSCROLL for SB_HORZ, WS_VSCROLL for any other.
@@ -224,7 +146,6 @@ pub type Reframe = Option<Hwnd>;
 /// one with SIF_RETURNOLDPOS), and the frame to take again when a bar was shown or hidden.
 pub fn set_bar_info(
     windows: &mut Windows,
-    table: &mut WindowBars,
     handle: Hwnd,
     bar: i32,
     info: &ScrollInfo,
@@ -235,11 +156,10 @@ pub fn set_bar_info(
     let style = windows.window_style(id);
     let bit = style_bit(bar);
     let shown = style & bit != 0;
-    if info.mask & SIF_RANGE == 0 && !table.has(id, style) {
+    if info.mask & SIF_RANGE == 0 && !has(windows, id, style) {
         return Err(Failure::NoScrollBars);
     }
-    let is_live = |w| windows.is_live(w);
-    let bars = table.make(id, is_live)?;
+    let bars = make(windows, id);
     let set = set_parms(bars.bar_mut(bar), info);
     if !set.changed && info.mask & SIF_DISABLENOSCROLL == 0 {
         return Ok((set.result, None));
@@ -268,7 +188,6 @@ pub fn set_bar_info(
 /// InvalidParameter): see the module notes. The frame to take again when a style bit changed.
 pub fn show_bars(
     windows: &mut Windows,
-    table: &mut WindowBars,
     handle: Hwnd,
     bar: i32,
     show: bool,
@@ -285,16 +204,14 @@ pub fn show_bars(
     let style = windows.window_style(id);
     let changed = if show {
         // The bars as the style had them, before the style grows them.
-        if !table.has(id, style) {
-            let is_live = |w| windows.is_live(w);
-            table.make(id, is_live)?;
+        if !has(windows, id, style) {
+            make(windows, id);
         }
         style & bits != bits
     } else {
-        if style & bits != 0 && table.has(id, style) {
+        if style & bits != 0 && has(windows, id, style) {
             // The bars as the style made them, kept once the style loses them.
-            let is_live = |w| windows.is_live(w);
-            table.make(id, is_live)?;
+            make(windows, id);
         }
         style & bits != 0
     };
@@ -308,8 +225,7 @@ pub fn show_bars(
 /// EnableScrollBar's decision for a window's bars `bar` (SB_HORZ, SB_VERT, SB_BOTH): whether the
 /// arrows' bits changed (see the module notes).
 pub fn enable_bar_arrows(
-    windows: &Windows,
-    table: &mut WindowBars,
+    windows: &mut Windows,
     handle: Hwnd,
     bar: i32,
     arrows: u32,
@@ -317,25 +233,18 @@ pub fn enable_bar_arrows(
     let id = windows
         .window_from_handle(handle)
         .ok_or(Failure::InvalidWindowHandle)?;
-    if !table.has(id, windows.window_style(id)) && arrows == ESB_ENABLE_BOTH {
+    if !has(windows, id, windows.window_style(id)) && arrows == ESB_ENABLE_BOTH {
         return Ok(false);
     }
-    let is_live = |w| windows.is_live(w);
-    let bars = table.make(id, is_live)?;
+    let bars = make(windows, id);
     let (flags, changed) = enable_arrows(bars.flags, bar, arrows);
     bars.flags = flags;
     Ok(changed)
 }
 
 /// The window's bars as NtUserQueryWindow answers them; NoScrollBars for a window with none.
-pub fn query_scroll_bars(
-    windows: &Windows,
-    table: &WindowBars,
-    window: WindowId,
-) -> Result<ScrollBars, Failure> {
-    table
-        .bars(window, windows.window_style(window))
-        .ok_or(Failure::NoScrollBars)
+pub fn query_scroll_bars(windows: &Windows, window: WindowId) -> Result<ScrollBars, Failure> {
+    bars(windows, window, windows.window_style(window)).ok_or(Failure::NoScrollBars)
 }
 
 /// ScrollWindowEx's decision, its blit and its children's moves left to the service: the area
@@ -462,8 +371,7 @@ mod services {
         let info = info.cast::<ScrollInfo>().read()?;
         let answer = with_session(call.passive(), |s| {
             let m = s.manager();
-            let (answer, reframed) =
-                set_bar_info(&mut m.windows, &mut m.scroll_bars, window.raw(), bar, &info)?;
+            let (answer, reframed) = set_bar_info(&mut m.windows, window.raw(), bar, &info)?;
             if let Some(handle) = reframed {
                 reframe(s, handle);
             }
@@ -479,7 +387,7 @@ mod services {
         gui_thread(call)?;
         with_session(call.passive(), |s| {
             let m = s.manager();
-            let reframed = show_bars(&mut m.windows, &mut m.scroll_bars, window.raw(), bar, show)?;
+            let reframed = show_bars(&mut m.windows, window.raw(), bar, show)?;
             if let Some(handle) = reframed {
                 reframe(s, handle);
             }
@@ -499,13 +407,7 @@ mod services {
     ) -> NtResult {
         gui_thread(call)?;
         let changed = with_manager(call.passive(), |m| {
-            enable_bar_arrows(
-                &m.windows,
-                &mut m.scroll_bars,
-                window.raw(),
-                bar as i32,
-                arrows,
-            )
+            enable_bar_arrows(&mut m.windows, window.raw(), bar as i32, arrows)
         })
         .map_err(Failure::status)?;
         result.write(changed as u32)?;
@@ -622,7 +524,7 @@ mod services {
                 .windows
                 .window_from_handle(window.raw())
                 .ok_or(STATUS_INVALID_HANDLE)?;
-            query_scroll_bars(&m.windows, &m.scroll_bars, id).map_err(Failure::status)
+            query_scroll_bars(&m.windows, id).map_err(Failure::status)
         })?;
         information.cast::<ScrollBars>().write(bars)?;
         Ok(STATUS_SUCCESS)
@@ -715,7 +617,7 @@ mod tests {
     }
 
     fn set(m: &mut WindowManager, h: Hwnd, bar: i32, info: ScrollInfo) -> Result<i32, Failure> {
-        let (answer, reframe) = set_bar_info(&mut m.windows, &mut m.scroll_bars, h, bar, &info)?;
+        let (answer, reframe) = set_bar_info(&mut m.windows, h, bar, &info)?;
         if let Some(handle) = reframe {
             take_frame(m, handle);
         }
@@ -738,7 +640,7 @@ mod tests {
 
     fn bars(m: &WindowManager, h: Hwnd) -> Result<ScrollBars, Failure> {
         let id = m.windows.window_from_handle(h).unwrap();
-        query_scroll_bars(&m.windows, &m.scroll_bars, id)
+        query_scroll_bars(&m.windows, id)
     }
 
     fn style(m: &WindowManager, h: Hwnd) -> u32 {
@@ -751,6 +653,43 @@ mod tests {
         let id = m.windows.window_from_handle(h).unwrap();
         let (w, c) = (m.windows.window_rect(id), m.windows.client_rect(id));
         (w.width() - c.width(), w.height() - c.height())
+    }
+
+    /// A window's bars are its record's: a destroyed window's go with it, and the window that
+    /// takes its slot next starts with none of them.
+    #[test]
+    fn the_bars_go_with_the_window() {
+        let (m, atom) = manager();
+        let t = thread(m, 1, 0x100);
+        let h = window_at(m, atom, t, WS_POPUP, 0, 40, 40, 200, 150);
+        let old = m.windows.window_from_handle(h).unwrap();
+        assert_eq!(
+            set(m, h, SB_VERT, info(SIF_RANGE | SIF_POS, 0, 99, 0, 7)),
+            Ok(7)
+        );
+        assert_eq!(bars(m, h).unwrap().vert.pos, 7);
+        Windows::destroy_window_handle(
+            &mut QueueSession::new(&mut m.windows, &mut m.classes),
+            t,
+            h,
+        )
+        .unwrap();
+        let next = window_at(m, atom, t, WS_POPUP, 0, 40, 40, 200, 150);
+        let id = m.windows.window_from_handle(next).unwrap();
+        assert_eq!(id.index, old.index, "the slot again");
+        assert_eq!(bars(m, next), Err(Failure::NoScrollBars));
+        assert_eq!(
+            query_window_bars_by_id(m, old),
+            None,
+            "the old id names nothing"
+        );
+    }
+
+    fn query_window_bars_by_id(m: &WindowManager, id: WindowId) -> Option<ScrollBars> {
+        m.windows
+            .is_live(id)
+            .then(|| m.windows.own_scroll_bars(id))
+            .flatten()
     }
 
     /// A window made with both bars has them as made (0 to 100) before any call; a range the page
@@ -870,7 +809,7 @@ mod tests {
         )
         .unwrap();
         let show = |m: &mut WindowManager, bar, on| {
-            let reframe = show_bars(&mut m.windows, &mut m.scroll_bars, h, bar, on)?;
+            let reframe = show_bars(&mut m.windows, h, bar, on)?;
             if let Some(handle) = reframe {
                 take_frame(m, handle);
             }
@@ -892,8 +831,7 @@ mod tests {
         assert_eq!(show(m, 7, true), Err(Failure::InvalidParameter));
         let plain = window_at(m, atom, t, WS_POPUP, 0, 40, 40, 200, 150);
         assert_eq!(
-            show_bars(&mut m.windows, &mut m.scroll_bars, plain, SB_VERT, true)
-                .map(|r| r.is_some()),
+            show_bars(&mut m.windows, plain, SB_VERT, true).map(|r| r.is_some()),
             Ok(true)
         );
         assert_eq!(bars(m, plain).unwrap().vert, ScrollData::WINDOW);
@@ -907,7 +845,7 @@ mod tests {
         let t = thread(m, 1, 0x100);
         let h = window_at(m, atom, t, WS_POPUP | WS_VSCROLL, 0, 40, 40, 200, 150);
         let enable = |m: &mut WindowManager, h, bar, arrows| {
-            enable_bar_arrows(&m.windows, &mut m.scroll_bars, h, bar, arrows)
+            enable_bar_arrows(&mut m.windows, h, bar, arrows)
         };
         assert_eq!(enable(m, h, SB_VERT, ESB_DISABLE_BOTH), Ok(true));
         assert_eq!(enable(m, h, SB_VERT, ESB_DISABLE_BOTH), Ok(false));

@@ -38,46 +38,27 @@ use rtl::icon::{CursorData, ICON_SIZE, RT_CURSOR, RT_ICON, STOCK_CURSORS, STOCK_
 
 use super::class::Owner;
 use super::handle::{UserHandles, UserObject};
+use crate::slots::{Id, LowestFirst, Record, Slots};
 use crate::status::*;
-
-/// How many cursor and icon records the table holds (the stock ones among them).
-pub const CURSORS: usize = 128;
 
 /// A handle naming no cursor or icon: ERROR_INVALID_CURSOR_HANDLE (1402), the Win32 error itself
 /// in a FACILITY_NTWIN32 status, which user32 hands to GetLastError as is.
 pub const INVALID_CURSOR_HANDLE: NtStatus =
     NtStatus::from_win32(rtl::winerror::ERROR_INVALID_CURSOR_HANDLE);
 
-/// A cursor or icon's id: its record in the pool and the record's generation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CursorId {
-    index: u16,
-    generation: u16,
-}
+/// The cursor table's kind of id.
+pub enum CursorTag {}
+
+/// A cursor or icon's id: its slot in the table and the slot's uniqueness count, which moves on
+/// when the record is destroyed, so a destroyed cursor's id names nothing.
+pub type CursorId = Id<CursorTag>;
 
 impl CursorId {
-    /// The id of the record `index`, its first generation (the handle table's tests).
+    /// The id of the slot `index`, its first count (the handle table's tests).
     #[cfg(test)]
     pub const fn for_tests(index: u16) -> Self {
-        CursorId {
-            index,
-            generation: 0,
-        }
+        Id::new(index, 1)
     }
-}
-
-/// One cursor/icon record's header.
-#[derive(Clone, Copy)]
-struct CursorHeader {
-    live: bool,
-    generation: u16,
-}
-
-impl CursorHeader {
-    const DEAD: Self = CursorHeader {
-        live: false,
-        generation: 0,
-    };
 }
 
 /// One cursor or icon record.
@@ -115,55 +96,74 @@ impl Cursor {
     };
 }
 
-/// The cursor and icon records, behind generation-tagged ids. Their handles are the user handle
-/// table's ([`UserHandles`], the window registry's), which the calls that make, find or destroy a
-/// record are lent.
+// SAFETY: `write_fresh` writes a whole record.
+unsafe impl Record for Cursor {
+    unsafe fn write_fresh(at: *mut Self, _: u32) {
+        // SAFETY: the caller's contract.
+        unsafe { at.write(Cursor::EMPTY) };
+    }
+}
+
+/// Cursor records to a chunk: one page's worth.
+const CURSORS_PER_CHUNK: usize = crate::slots::per_page::<Cursor>();
+
+const _: () = assert!(Slots::<Cursor, LowestFirst<CursorTag>, CURSORS_PER_CHUNK>::CHUNK_PAGES == 1);
+
+/// The cursor and icon records, in slots of the slot pool ([`crate::slots`]) grown a page at a
+/// time under the window manager's lock, taken lowest free first as the fixed array was; every
+/// lookup checked. Their handles are the user handle table's ([`UserHandles`], the window
+/// registry's), which the calls that make, find or destroy a record are lent.
 pub struct CursorTable {
-    headers: [CursorHeader; CURSORS],
-    records: [Cursor; CURSORS],
+    slots: Slots<Cursor, LowestFirst<CursorTag>, CURSORS_PER_CHUNK>,
 }
 
 impl CursorTable {
-    /// Write an empty table at `table`, element by element (by value it would pass through the
-    /// stack, which is smaller than it).
+    /// Write an empty table at `table`.
     ///
     /// # Safety
     ///
     /// `table` is valid for writes and aligned; its previous contents are overwritten, not
     /// dropped.
     pub unsafe fn write_empty(table: *mut CursorTable) {
-        use core::ptr::addr_of_mut;
-        // SAFETY: the caller's contract; every field is written, the arrays element by element.
+        // SAFETY: the caller's contract.
         unsafe {
-            let headers = addr_of_mut!((*table).headers) as *mut CursorHeader;
-            let records = addr_of_mut!((*table).records) as *mut Cursor;
-            for index in 0..CURSORS {
-                headers.add(index).write(CursorHeader::DEAD);
-                records.add(index).write(Cursor::EMPTY);
-            }
-        }
+            table.write(CursorTable {
+                slots: Slots::new(),
+            })
+        };
     }
 
-    /// A new cursor or icon record with its handle in `handles`; none when the pool or the handle
-    /// table is full.
+    /// The record `id` names: a destroyed cursor's reads as the empty record its destroy left,
+    /// as it did in the fixed array (a class may still hold the id), never as the slot's next
+    /// record.
+    fn at(&self, id: CursorId) -> &Cursor {
+        self.slots.get(id).unwrap_or(&Cursor::EMPTY)
+    }
+
+    /// The live record `id` names, to change. Only for an id just made or validated.
+    fn at_mut(&mut self, id: CursorId) -> &mut Cursor {
+        self.slots.get_mut(id).expect("a live cursor id")
+    }
+
+    /// The lock count of `id`'s record, when it is live: a destroyed record's locks are nobody's.
+    fn locks_mut(&mut self, id: CursorId) -> Option<&mut u32> {
+        self.slots.get_mut(id).map(|record| &mut record.locks)
+    }
+
+    /// A new cursor or icon record with its handle in `handles`; none when the handle table is
+    /// full or no page is left for the record.
     pub fn make(
         &mut self,
         handles: &mut UserHandles,
         is_icon: bool,
         secret: bool,
     ) -> Option<(CursorId, u32)> {
-        let index = self.headers.iter().position(|h| !h.live)?;
         if handles.is_full() {
             return None;
         }
-        let header = &mut self.headers[index];
-        header.live = true;
-        let id = CursorId {
-            index: index as u16,
-            generation: header.generation,
-        };
+        let (id, record) = self.slots.allocate_or_grow(0, super::pages()).ok()?;
         let handle = handles.insert(UserObject::Cursor(id));
-        self.records[index] = Cursor {
+        *record = Cursor {
             handle,
             secret,
             is_icon,
@@ -173,11 +173,10 @@ impl CursorTable {
     }
 
     /// The cursor or icon `handle` names in `handles`, when the handle is live (its record's
-    /// generation matches); none otherwise (another kind's handle among them).
+    /// count matches); none otherwise (another kind's handle among them).
     pub fn validate(&self, handles: &UserHandles, handle: u32) -> Option<CursorId> {
         let id = handles.cursor(handle)?;
-        let header = self.headers.get(id.index as usize)?;
-        (header.live && header.generation == id.generation).then_some(id)
+        self.slots.get(id).map(|_| id)
     }
 
     /// The same, for an old handle about to be answered: a cursor destroyed meanwhile answers
@@ -188,12 +187,14 @@ impl CursorTable {
 
     /// The handle of `id` (0 for none): the inverse of [`CursorTable::validate`].
     pub fn handle_of(&self, id: Option<CursorId>) -> u32 {
-        id.map_or(0, |id| self.records[id.index as usize].handle)
+        id.map_or(0, |id| self.at(id).handle)
     }
 
     /// Lock `id` (its reference count up), for a class holding it.
     pub fn lock(&mut self, id: CursorId) {
-        self.records[id.index as usize].locks += 1;
+        if let Some(locks) = self.locks_mut(id) {
+            *locks += 1;
+        }
     }
 
     /// Set `slot` to `id`: the old value is unlocked, the new one locked; the slot's previous
@@ -206,8 +207,9 @@ impl CursorTable {
         let old = *slot;
         *slot = id;
         if let Some(old) = old {
-            let locks = &mut self.records[old.index as usize].locks;
-            *locks = locks.saturating_sub(1);
+            if let Some(locks) = self.locks_mut(old) {
+                *locks = locks.saturating_sub(1);
+            }
         }
         if let Some(id) = id {
             self.lock(id);
@@ -218,20 +220,22 @@ impl CursorTable {
     /// Unlock `slot` (its reference count down), clearing it.
     pub fn unlock_slot(&mut self, slot: &mut Option<CursorId>) {
         if let Some(id) = *slot {
-            let locks = &mut self.records[id.index as usize].locks;
-            *locks = locks.saturating_sub(1);
+            if let Some(locks) = self.locks_mut(id) {
+                *locks = locks.saturating_sub(1);
+            }
         }
         *slot = None;
     }
 
     /// Destroy `id`: its record goes, its handle with it.
     pub fn destroy(&mut self, handles: &mut UserHandles, id: CursorId) {
-        let handle = self.records[id.index as usize].handle;
+        let Some(record) = self.slots.get_mut(id) else {
+            return;
+        };
+        let handle = record.handle;
+        *record = Cursor::EMPTY;
         handles.close(handle);
-        self.records[id.index as usize] = Cursor::EMPTY;
-        let header = &mut self.headers[id.index as usize];
-        header.live = false;
-        header.generation = header.generation.wrapping_add(1);
+        self.slots.free(id);
     }
 
     /// A copy of `id`'s image as a small icon: a synthesized record, hidden from apps; none when
@@ -247,17 +251,17 @@ impl CursorTable {
     }
 
     pub fn secret(&self, id: CursorId) -> bool {
-        self.records[id.index as usize].secret
+        self.at(id).secret
     }
 
     pub fn is_icon(&self, id: CursorId) -> bool {
-        self.records[id.index as usize].is_icon
+        self.at(id).is_icon
     }
 
     /// How many locks `id` holds (the tests read this).
     #[cfg(test)]
     pub fn locks(&self, id: CursorId) -> u32 {
-        self.records[id.index as usize].locks
+        self.at(id).locks
     }
 
     // --- LoadIcon's records
@@ -283,7 +287,7 @@ impl CursorTable {
             let Some((id, _)) = self.make(handles, is_icon, false) else {
                 return false;
             };
-            self.records[id.index as usize].data = CursorData {
+            self.at_mut(id).data = CursorData {
                 is_icon: u32::from(is_icon),
                 width: ICON_SIZE,
                 height: ICON_SIZE,
@@ -306,7 +310,7 @@ impl CursorTable {
         owner: Owner,
     ) -> Result<u32, NtStatus> {
         let (id, handle) = self.make(handles, false, false).ok_or(STATUS_NO_MEMORY)?;
-        self.records[id.index as usize].owner = Some(owner);
+        self.at_mut(id).owner = Some(owner);
         Ok(handle)
     }
 
@@ -322,7 +326,7 @@ impl CursorTable {
         let id = self
             .validate(handles, handle)
             .ok_or(INVALID_CURSOR_HANDLE)?;
-        let record = &mut self.records[id.index as usize];
+        let record = self.at_mut(id);
         if record.owner != Some(owner) {
             return Err(INVALID_CURSOR_HANDLE);
         }
@@ -349,11 +353,11 @@ impl CursorTable {
             _ => return None,
         };
         let holder = if module == 0 { None } else { Some(owner) };
-        (0..CURSORS)
-            .find(|&index| {
-                let record = &self.records[index];
-                self.headers[index].live
-                    && record.owner == holder
+        self.slots
+            .iter()
+            .map(|(_, record)| record)
+            .find(|record| {
+                record.owner == holder
                     && !record.secret
                     && record.data.shared != 0
                     && record.data.is_icon == is_icon
@@ -362,19 +366,19 @@ impl CursorTable {
                     && record.data.width == width
                     && record.data.height == height
             })
-            .map(|index| self.records[index].handle)
+            .map(|record| record.handle)
     }
 
     /// What the record `id` holds (CopyIcon's source).
     pub fn data(&self, id: CursorId) -> CursorData {
-        self.records[id.index as usize].data
+        self.at(id).data
     }
 
     /// DestroyIcon and DestroyCursor of `id` by the process `owner`: the record destroyed, unless
     /// it is shared (LoadIcon's, LoadCursor's, a stock one), which stays while its module does, or
     /// a class holds it, which leaves it to the process's end; TRUE in every case.
     pub fn destroy_by(&mut self, handles: &mut UserHandles, owner: Owner, id: CursorId) {
-        let record = &self.records[id.index as usize];
+        let record = self.at(id);
         if record.data.shared != 0 || record.locks > 0 || record.owner != Some(owner) {
             return;
         }
@@ -384,12 +388,11 @@ impl CursorTable {
     /// Destroy every record of the process `owner`, at its end (its classes, which held some, gone
     /// first).
     pub fn destroy_owner(&mut self, handles: &mut UserHandles, owner: Owner) {
-        for index in 0..CURSORS {
-            if self.headers[index].live && self.records[index].owner == Some(owner) {
-                let id = CursorId {
-                    index: index as u16,
-                    generation: self.headers[index].generation,
-                };
+        for index in 0..self.slots.high_water() {
+            let Some(id) = self.slots.id_at(index) else {
+                continue;
+            };
+            if self.at(id).owner == Some(owner) {
                 self.destroy(handles, id);
             }
         }
@@ -397,8 +400,9 @@ impl CursorTable {
 
     /// How many records processes hold.
     pub fn process_records(&self) -> usize {
-        (0..CURSORS)
-            .filter(|&index| self.headers[index].live && self.records[index].owner.is_some())
+        self.slots
+            .iter()
+            .filter(|(_, record)| record.owner.is_some())
             .count()
     }
 }
@@ -597,6 +601,45 @@ mod tests {
             t.validate(&h, t.handle_of(Some(secret))).is_some(),
             "the class registry's own"
         );
+    }
+
+    /// More records than the old fixed table's 128, each its own; a destroyed one's id and handle
+    /// name nothing, its lock and handle read as none, and the next record takes the lowest free
+    /// slot with its count moved on; a process's end takes all of its own.
+    #[test]
+    fn the_table_grows_and_a_destroyed_id_names_nothing() {
+        let (mut t, mut h) = table();
+        let made: Vec<_> = (0..200)
+            .map(|_| t.create_empty(&mut h, OWNER).unwrap())
+            .collect();
+        assert_eq!(t.process_records(), 200);
+        let ids: Vec<_> = made
+            .iter()
+            .map(|&handle| t.validate(&h, handle).unwrap())
+            .collect();
+        let (first, last) = (ids[0], ids[199]);
+        t.destroy_by(&mut h, OWNER, last);
+        t.destroy_by(&mut h, OWNER, first);
+        assert_eq!(t.validate(&h, made[0]), None);
+        assert_eq!(t.handle_of(Some(first)), 0);
+        t.lock(first);
+        assert_eq!(t.locks(first), 0, "a destroyed record's locks are nobody's");
+        let again = t.create_empty(&mut h, OWNER).unwrap();
+        let id = t.validate(&h, again).unwrap();
+        assert_eq!((id.index, id.uniq), (first.index, first.uniq + 1));
+        assert_eq!(t.locks(id), 0);
+        assert_eq!(
+            t.validate(&h, made[0]),
+            None,
+            "the old handle is not the new"
+        );
+        assert_eq!(
+            t.handle_of(Some(CursorId::new(id.index, 0))),
+            0,
+            "a forged id"
+        );
+        t.destroy_owner(&mut h, OWNER);
+        assert_eq!(t.process_records(), 0);
     }
 
     /// The stock cursors and icons: the system's records, each of its own handle, found with the

@@ -64,6 +64,47 @@ pub mod winsta;
 
 use crate::user::syscall::ServiceFn;
 
+/// The pages the window manager's pools (windows, classes, cursors, update regions) grow from:
+/// the kernel's ([`crate::slots::KERNEL_PAGES`]), always taken under the window manager's lock
+/// (a `ShortLock`, where taking pages is legal).
+#[cfg(not(test))]
+fn pages() -> &'static impl crate::slots::Pages {
+    &crate::slots::KERNEL_PAGES
+}
+
+/// The same in a host test: the shared host pages, or the test thread's own budget
+/// ([`test_pages::budget`]), so a test reaches a refusal without starving the others.
+#[cfg(test)]
+fn pages() -> &'static crate::slots::HostPages {
+    test_pages::current()
+}
+
+#[cfg(test)]
+pub(crate) mod test_pages {
+    use core::cell::Cell;
+
+    use crate::slots::HostPages;
+
+    std::thread_local! {
+        static PAGES: Cell<&'static HostPages> = const { Cell::new(&crate::slots::KERNEL_PAGES) };
+    }
+
+    pub(super) fn current() -> &'static HostPages {
+        PAGES.with(Cell::get)
+    }
+
+    /// From now on, this test thread's window manager pools grow from `pages` pages at most.
+    pub fn budget(pages: usize) {
+        let pages = Box::leak(Box::new(HostPages::with_budget(pages)));
+        PAGES.with(|cell| cell.set(pages));
+    }
+
+    /// Back to the shared host pages.
+    pub fn unlimited() {
+        PAGES.with(|cell| cell.set(&crate::slots::KERNEL_PAGES));
+    }
+}
+
 /// The first number of win32k's table: table 1 in the number's bits 12-13.
 pub const WIN32K_BASE: u32 = 0x1000;
 

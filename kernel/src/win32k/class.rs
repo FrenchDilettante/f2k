@@ -88,6 +88,7 @@ use rtl::winerror::{
 use super::handle::UserHandles;
 pub use super::icon::{CursorId, CursorTable};
 use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
+use crate::slots::{Id, LowestFirst, Record, Slots, PAGE};
 use crate::status::*;
 
 /// An atom: a global string atom in 0xC000..=0xFFFF, or an integer atom below that.
@@ -420,8 +421,6 @@ impl Atoms {
 // --- The class pool
 // -----------------------------------------------------------------------------------------
 
-/// How many window classes can exist at once.
-pub const CLASSES: usize = 128;
 /// The class-extra bytes a record holds (registrations asking more are refused: the record is
 /// fixed-size, where a pool allocation of any size would do).
 pub const MAX_CLASS_EXTRA: usize = 512;
@@ -435,28 +434,12 @@ const MAX_OWNERS: usize = crate::process::MAX_PROCESSES + 1;
 /// any process's (an index no process's pool index takes).
 pub const SYSTEM_OWNER: Owner = crate::process::MAX_PROCESSES as Owner;
 
-/// A window class's id: its record in the pool and the record's generation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ClassId {
-    index: u16,
-    generation: u16,
-}
+/// The class pool's kind of id.
+pub enum ClassTag {}
 
-/// One class record's header.
-#[derive(Clone, Copy)]
-struct Header {
-    live: bool,
-    generation: u16,
-}
-
-impl Header {
-    const fn dead() -> Self {
-        Header {
-            live: false,
-            generation: 0,
-        }
-    }
-}
+/// A window class's id: its slot in the class pool and the slot's uniqueness count, which moves
+/// on when the class is freed, so a freed class's id names nothing.
+pub type ClassId = Id<ClassTag>;
 
 /// The flags a class record carries.
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
@@ -572,69 +555,68 @@ impl Class {
             class_dc: None,
             desktop: 0,
             next: None,
-            base: ClassId {
-                index: 0,
-                generation: 0,
-            },
+            // No class: a count of 0 is never a live slot's.
+            base: Id::new(0, 0),
             clones: None,
             extra: [0; MAX_CLASS_EXTRA],
         }
     }
 }
 
-/// The class pool: records behind headers, ids with generations.
+// SAFETY: `write_fresh` writes a whole record.
+unsafe impl Record for Class {
+    unsafe fn write_fresh(at: *mut Self, _: u32) {
+        // SAFETY: the caller's contract.
+        unsafe { at.write(Class::empty()) };
+    }
+}
+
+/// Class records to a chunk: two pages' worth, a slot being its record and 8 bytes.
+const CLASSES_PER_CHUNK: usize = 2 * PAGE / (core::mem::size_of::<Class>() + 8);
+
+// The records hold no pointer, so the target's size and the host's agree.
+const _: () = assert!(Slots::<Class, LowestFirst<ClassTag>, CLASSES_PER_CHUNK>::CHUNK_PAGES == 2);
+
+/// The class pool: the records in slots of the slot pool ([`crate::slots`]), grown a chunk at a
+/// time under the window manager's lock and kept at their peak, taken lowest free first as the
+/// fixed array was. Every lookup is checked.
 struct ClassPool {
-    headers: [Header; CLASSES],
-    records: [Class; CLASSES],
+    slots: Slots<Class, LowestFirst<ClassTag>, CLASSES_PER_CHUNK>,
 }
 
 impl ClassPool {
-    /// Take the lowest free record for a new class (zeroed); none when the pool is exhausted.
+    /// A free record for a new class (renewed empty); none when no page is left to grow by.
     fn allocate(&mut self) -> Option<ClassId> {
-        let index = self.headers.iter().position(|h| !h.live)?;
-        self.headers[index].live = true;
-        self.records[index] = Class::empty();
-        Some(ClassId {
-            index: index as u16,
-            generation: self.headers[index].generation,
-        })
+        let (id, record) = self.slots.allocate_or_grow(0, super::pages()).ok()?;
+        *record = Class::empty();
+        Some(id)
     }
 
-    /// Free `id`'s record: dead, its generation moved on so the id resolves to nothing.
+    /// Free `id`'s record: its count moves on, so the id resolves to nothing.
     fn free(&mut self, id: ClassId) {
-        let header = &mut self.headers[id.index as usize];
-        debug_assert!(
-            header.live && header.generation == id.generation,
-            "a live class id"
-        );
-        header.live = false;
-        header.generation = header.generation.wrapping_add(1);
+        let freed = self.slots.free(id);
+        debug_assert!(freed, "a live class id");
     }
 
-    /// The live record `id` names.
+    /// The live record `id` names; a freed class's id stops here in every build rather than read
+    /// the slot's next class.
     fn at(&self, id: ClassId) -> &Class {
-        let header = &self.headers[id.index as usize];
-        debug_assert!(
-            header.live && header.generation == id.generation,
-            "a live class id"
-        );
-        &self.records[id.index as usize]
+        self.slots.get(id).expect("a live class id")
     }
 
     /// The live record `id` names, mutable.
     fn at_mut(&mut self, id: ClassId) -> &mut Class {
-        let header = &mut self.headers[id.index as usize];
-        debug_assert!(
-            header.live && header.generation == id.generation,
-            "a live class id"
-        );
-        &mut self.records[id.index as usize]
+        self.slots.get_mut(id).expect("a live class id")
     }
 
     fn is_live(&self, id: ClassId) -> bool {
-        self.headers
-            .get(id.index as usize)
-            .is_some_and(|h| h.live && h.generation == id.generation)
+        self.slots.get(id).is_some()
+    }
+
+    /// How many classes are live.
+    #[cfg(test)]
+    fn live(&self) -> u32 {
+        self.slots.live()
     }
 }
 
@@ -889,12 +871,9 @@ impl Registry {
             Atoms::write_empty(addr_of_mut!((*registry).atoms));
             CursorTable::write_empty(addr_of_mut!((*registry).cursors));
             addr_of_mut!((*registry).system).write(None);
-            let headers = addr_of_mut!((*registry).classes.headers) as *mut Header;
-            let records = addr_of_mut!((*registry).classes.records) as *mut Class;
-            for index in 0..CLASSES {
-                headers.add(index).write(Header::dead());
-                records.add(index).write(Class::empty());
-            }
+            addr_of_mut!((*registry).classes).write(ClassPool {
+                slots: Slots::new(),
+            });
             let owners = addr_of_mut!((*registry).owners) as *mut OwnerLists;
             for index in 0..MAX_OWNERS {
                 owners.add(index).write(OwnerLists::default());
@@ -1661,7 +1640,7 @@ impl Registry {
         value: u32,
         menu: MenuArg,
         view: Option<&WindowView>,
-        windows: &[WindowView],
+        windows: &mut dyn Iterator<Item = WindowView>,
         notify: &mut dyn FnMut(&WindowView, WindowNotice),
     ) -> Result<u32, Failure> {
         if window.owner != caller {
@@ -1701,7 +1680,7 @@ impl Registry {
         value: u32,
         menu: MenuArg,
         view: Option<&WindowView>,
-        windows: &[WindowView],
+        windows: &mut dyn Iterator<Item = WindowView>,
         notify: &mut dyn FnMut(&WindowView, WindowNotice),
     ) -> Result<u32, Failure> {
         if window.owner != caller {
@@ -1732,7 +1711,7 @@ impl Registry {
         value: u32,
         menu: MenuArg,
         view: Option<&WindowView>,
-        windows: &[WindowView],
+        windows: &mut dyn Iterator<Item = WindowView>,
         notify: &mut dyn FnMut(&WindowView, WindowNotice),
     ) -> Result<u32, Failure> {
         match index {
@@ -1825,7 +1804,7 @@ impl Registry {
         index: i32,
         data: u32,
         view: Option<&WindowView>,
-        windows: &[WindowView],
+        windows: &mut dyn Iterator<Item = WindowView>,
         notify: &mut dyn FnMut(&WindowView, WindowNotice),
     ) -> CursorSet {
         let mut failure = None;
@@ -1900,7 +1879,7 @@ impl Registry {
         new: Option<CursorId>,
         small: bool,
         view: Option<&WindowView>,
-        windows: &[WindowView],
+        windows: &mut dyn Iterator<Item = WindowView>,
         notify: &mut dyn FnMut(&WindowView, WindowNotice),
     ) -> Option<CursorId> {
         let old = if small {
@@ -1937,8 +1916,8 @@ impl Registry {
         if redraw {
             if self.classes.at(class).window_count > 1 {
                 for window in windows {
-                    if let Some(notice) = notice_for(window, class) {
-                        notify(window, notice);
+                    if let Some(notice) = notice_for(&window, class) {
+                        notify(&window, notice);
                     }
                 }
             } else if let Some(window) = view {
@@ -2004,7 +1983,7 @@ impl Registry {
         record.icon = record.icon.inspect(|&c| self.cursors.lock(c));
         record.icon_sm = record.icon_sm.inspect(|&c| self.cursors.lock(c));
         record.cursor = record.cursor.inspect(|&c| self.cursors.lock(c));
-        self.classes.records[id.index as usize] = record;
+        *self.classes.at_mut(id) = record;
         self.classes.at_mut(class).clones = Some(id);
         Some(id)
     }
@@ -2396,27 +2375,24 @@ pub fn set_class_long(
     let old = {
         let mut manager = super::window::lock(call.passive());
         let super::window::WindowManager {
-            windows,
-            classes,
-            views,
-            ..
+            windows, classes, ..
         } = &mut *manager;
         let target = window_of(windows, window)
             .ok_or(super::window::Failure::InvalidWindowHandle.status())?;
         let view = windows.class_view(window.raw());
-        let count = windows.class_views(views);
+        let (handles, mut views) = windows.handles_and_class_views();
         // The notice has nothing to change yet: the window records cache no small icon and draw
         // no caption until the painting lands.
         classes
             .set_class_long(
-                &mut windows.handles,
+                handles,
                 &target,
                 caller,
                 index,
                 value,
                 menu,
                 view.as_ref(),
-                &views[..count],
+                &mut views,
                 &mut |_, _| {},
             )
             .map_err(Failure::status)?
@@ -2563,7 +2539,7 @@ mod tests {
             value: u32,
             menu: MenuArg,
             view: Option<&WindowView>,
-            windows: &[WindowView],
+            windows: &mut dyn Iterator<Item = WindowView>,
             notify: &mut dyn FnMut(&WindowView, WindowNotice),
         ) -> Result<u32, Failure> {
             self.registry.set_class_long(
@@ -2688,6 +2664,11 @@ mod tests {
 
     /// A notification sink that ignores everything.
     fn noop(_: &WindowView, _: WindowNotice) {}
+
+    /// No window for the icon-change notification to visit.
+    fn no_views() -> core::iter::Empty<WindowView> {
+        core::iter::empty()
+    }
 
     /// A window of `class` on the test's desktop, owned by the test's process.
     fn window(class: ClassId) -> Window {
@@ -2867,17 +2848,32 @@ mod tests {
         assert_eq!(err, Failure::OutOfMemory);
         assert_eq!(registry.atoms.find(&other), 0);
         assert_eq!(registry.cursors.locks(cursor), 0);
-        // A pool exhaustion: no record, no atom, no link.
+        // A pool that cannot grow (no page left): no record, no atom, no link.
         registry.atoms.next = 0xD000; // the table's numbering back in range
-        for i in 0..CLASSES {
-            let name = Name::Text(&wide(&format!("Class{i}")));
-            register(registry, name, &wc, compat40()).unwrap();
-        }
-        let err = register(registry, Name::Text(&wide("Last")), &wc, compat40()).unwrap_err();
+        let before = registry.classes.live() as usize;
+        crate::win32k::test_pages::budget(0);
+        let mut made = 0;
+        let err = loop {
+            let name = Name::Text(&wide(&format!("Class{made}")));
+            match register(registry, name, &wc, compat40()) {
+                Ok(_) => made += 1,
+                Err(err) => break err,
+            }
+        };
+        crate::win32k::test_pages::unlimited();
         assert_eq!(err, Failure::OutOfMemory);
-        assert_eq!(registry.atoms.find(&wide("Last")), 0, "no atom was added");
-        // The 128 live classes hold the cursor's 128 locks; the failed one added none.
-        assert_eq!(registry.cursors.locks(cursor), CLASSES as u32);
+        assert_eq!(
+            made,
+            CLASSES_PER_CHUNK - before,
+            "the chunk's free slots, no more"
+        );
+        let last = wide(&format!("Class{made}"));
+        assert_eq!(registry.atoms.find(&last), 0, "no atom was added");
+        // The live classes hold the cursor's locks; the failed one added none.
+        assert_eq!(registry.cursors.locks(cursor), made as u32);
+        // With pages again, the pool grows and the same registration succeeds.
+        register(registry, Name::Text(&last), &wc, compat40()).unwrap();
+        assert_eq!(registry.cursors.locks(cursor), made as u32 + 1);
     }
 
     /// A string class name goes through the atom table: the duplicate check uses the lookup
@@ -3248,6 +3244,40 @@ mod tests {
         assert!(!registry.classes.is_live(id));
     }
 
+    /// More classes than the old fixed pool's 128, each its own record; unregistered, a class's
+    /// id names nothing, and the next class takes the lowest free slot with its count moved on.
+    #[test]
+    fn the_pool_grows_and_a_freed_id_names_nothing() {
+        let registry = registry();
+        let wc = wnd_class();
+        let names: Vec<_> = (0..200).map(|i| wide(&format!("Many{i}"))).collect();
+        for name in &names {
+            register(registry, Name::Text(name), &wc, compat40()).unwrap();
+        }
+        assert_eq!(registry.classes.live(), 200);
+        let atoms: Vec<_> = names.iter().map(|n| registry.atoms.find(n)).collect();
+        let ids: Vec<_> = atoms
+            .iter()
+            .map(|&atom| registry.class_ptr(atom, OWNER, MODULE).unwrap())
+            .collect();
+        for i in [150, 3] {
+            registry
+                .unregister_class(Name::Text(&names[i]), OWNER, MODULE)
+                .unwrap();
+            assert!(!registry.classes.is_live(ids[i]));
+        }
+        register(registry, Name::Text(&wide("Again")), &wc, compat40()).unwrap();
+        let atom = registry.atoms.find(&wide("Again"));
+        let again = registry.class_ptr(atom, OWNER, MODULE).unwrap();
+        assert_eq!((again.index, again.uniq), (ids[3].index, ids[3].uniq + 1));
+        assert!(
+            !registry.classes.is_live(ids[3]),
+            "the old id is not the new class"
+        );
+        assert!(!registry.classes.is_live(ClassId::new(again.index, 0)));
+        assert!(!registry.classes.is_live(ClassId::new(0xFFFE, 1)));
+    }
+
     /// The fields a registration copies into the record: the WNDCLASSEXW's tail by value, the
     /// window count zero, the class-extra area zeroed (never copied), the strings copied into
     /// the record's own buffers.
@@ -3341,7 +3371,16 @@ mod tests {
         let noop = &mut noop as &mut dyn FnMut(&WindowView, WindowNotice);
         // GCL_STYLE (-26, a dword): the old style is answered.
         let old = registry
-            .set_class_long(&wnd, OWNER, GCL_STYLE, 0x55, MenuArg::None, None, &[], noop)
+            .set_class_long(
+                &wnd,
+                OWNER,
+                GCL_STYLE,
+                0x55,
+                MenuArg::None,
+                None,
+                &mut no_views(),
+                noop,
+            )
             .unwrap();
         assert_eq!(old, CS_HREDRAW | CS_VREDRAW);
         assert_eq!(registry.classes.at(id).style, 0x55);
@@ -3354,7 +3393,7 @@ mod tests {
                 0x1234,
                 MenuArg::None,
                 None,
-                &[],
+                &mut no_views(),
                 noop,
             )
             .unwrap();
@@ -3369,7 +3408,7 @@ mod tests {
                 0x99,
                 MenuArg::None,
                 None,
-                &[],
+                &mut no_views(),
                 noop,
             )
             .unwrap();
@@ -3378,7 +3417,16 @@ mod tests {
         // Bogus and unmapped indexes: 1413.
         for index in [-33, -35, -21, -1] {
             let err = registry
-                .set_class_long(&wnd, OWNER, index, 0, MenuArg::None, None, &[], noop)
+                .set_class_long(
+                    &wnd,
+                    OWNER,
+                    index,
+                    0,
+                    MenuArg::None,
+                    None,
+                    &mut no_views(),
+                    noop,
+                )
                 .unwrap_err();
             assert_eq!(err, Failure::InvalidIndex, "index {index}");
             assert_eq!(err.code(), 1413);
@@ -3392,7 +3440,7 @@ mod tests {
                 4,
                 MenuArg::None,
                 None,
-                &[],
+                &mut no_views(),
                 noop,
             )
             .unwrap_err();
@@ -3407,7 +3455,7 @@ mod tests {
                 0x777,
                 MenuArg::None,
                 None,
-                &[],
+                &mut no_views(),
                 noop,
             )
             .unwrap();
@@ -3423,7 +3471,16 @@ mod tests {
         let clone = other.class;
         assert_ne!(clone, id);
         registry
-            .set_class_long(&wnd, OWNER, GCL_STYLE, 0xAA, MenuArg::None, None, &[], noop)
+            .set_class_long(
+                &wnd,
+                OWNER,
+                GCL_STYLE,
+                0xAA,
+                MenuArg::None,
+                None,
+                &mut no_views(),
+                noop,
+            )
             .unwrap();
         assert_eq!(
             registry.classes.at(clone).style,
@@ -3458,7 +3515,7 @@ mod tests {
                 1,
                 MenuArg::None,
                 None,
-                &[],
+                &mut no_views(),
                 &mut |_, _| {},
             )
             .unwrap_err();
@@ -3475,7 +3532,7 @@ mod tests {
                 0xAABBCCDD,
                 MenuArg::None,
                 None,
-                &[],
+                &mut no_views(),
                 &mut |_, _| {},
             )
             .unwrap();
@@ -3489,7 +3546,7 @@ mod tests {
                 0x11223344,
                 MenuArg::None,
                 None,
-                &[],
+                &mut no_views(),
                 &mut |_, _| {},
             )
             .unwrap();
@@ -3503,7 +3560,16 @@ mod tests {
         let err = registry.set_class_word(&wnd, OWNER, -1, 0).unwrap_err();
         assert_eq!(err, Failure::InvalidIndex);
         let err = registry
-            .set_class_long(&wnd, OWNER, 6, 0, MenuArg::None, None, &[], &mut |_, _| {})
+            .set_class_long(
+                &wnd,
+                OWNER,
+                6,
+                0,
+                MenuArg::None,
+                None,
+                &mut no_views(),
+                &mut |_, _| {},
+            )
             .unwrap_err();
         assert_eq!(err, Failure::InvalidIndex, "6 + 4 > 8");
     }
@@ -3527,7 +3593,7 @@ mod tests {
                     0,
                     MenuArg::None,
                     None,
-                    &[],
+                    &mut no_views(),
                     &mut |_, _| {},
                 )
                 .unwrap_err();
@@ -3543,7 +3609,7 @@ mod tests {
                     0,
                     MenuArg::None,
                     None,
-                    &[],
+                    &mut no_views(),
                     &mut |_, _| {},
                 )
                 .unwrap_err();
@@ -3572,7 +3638,7 @@ mod tests {
                 0,
                 MenuArg::Text(&wide("File")),
                 None,
-                &[],
+                &mut no_views(),
                 noop,
             )
             .unwrap();
@@ -3593,7 +3659,7 @@ mod tests {
                 0,
                 MenuArg::Text(&[]),
                 None,
-                &[],
+                &mut no_views(),
                 noop,
             )
             .unwrap();
@@ -3607,7 +3673,7 @@ mod tests {
                 0,
                 MenuArg::Id(7),
                 None,
-                &[],
+                &mut no_views(),
                 noop,
             )
             .unwrap();
@@ -3621,7 +3687,7 @@ mod tests {
                 0,
                 MenuArg::None,
                 None,
-                &[],
+                &mut no_views(),
                 noop,
             )
             .unwrap();
@@ -3637,7 +3703,7 @@ mod tests {
                 0,
                 MenuArg::Text(&long),
                 None,
-                &[],
+                &mut no_views(),
                 noop,
             )
             .unwrap_err();
@@ -3704,7 +3770,7 @@ mod tests {
                 new_handle,
                 MenuArg::None,
                 None,
-                &views,
+                &mut views.iter().copied(),
                 &mut |w, n| notices.push((w.class, n)),
             )
             .unwrap();
@@ -3762,7 +3828,7 @@ mod tests {
                 third_handle,
                 MenuArg::None,
                 Some(&view),
-                &views,
+                &mut views.iter().copied(),
                 &mut |_, n| got.push(n),
             )
             .unwrap();
@@ -3784,7 +3850,7 @@ mod tests {
                 third_handle,
                 MenuArg::None,
                 Some(&view),
-                &views,
+                &mut views.iter().copied(),
                 &mut |_, n| got.push(n),
             )
             .unwrap();
@@ -3815,7 +3881,7 @@ mod tests {
                 other_handle,
                 MenuArg::None,
                 None,
-                &[],
+                &mut no_views(),
                 &mut |_, _| {},
             )
             .unwrap();
@@ -3832,7 +3898,7 @@ mod tests {
                 sm_handle,
                 MenuArg::None,
                 None,
-                &[],
+                &mut no_views(),
                 &mut |_, _| {},
             )
             .unwrap();
@@ -3869,7 +3935,7 @@ mod tests {
                 new_handle,
                 MenuArg::None,
                 None,
-                &[],
+                &mut no_views(),
                 noop,
             )
             .unwrap();
@@ -3886,7 +3952,7 @@ mod tests {
                 0xDEAD,
                 MenuArg::None,
                 None,
-                &[],
+                &mut no_views(),
                 noop,
             )
             .unwrap_err();
@@ -3902,7 +3968,7 @@ mod tests {
                 0xDEAD,
                 MenuArg::None,
                 None,
-                &[],
+                &mut no_views(),
                 noop,
             )
             .unwrap_err();
@@ -4007,7 +4073,7 @@ mod tests {
                 other_handle,
                 MenuArg::None,
                 None,
-                &[],
+                &mut no_views(),
                 &mut |_, _| {},
             )
             .unwrap();
@@ -4204,7 +4270,7 @@ mod tests {
                 other_handle,
                 MenuArg::None,
                 None,
-                &[],
+                &mut no_views(),
                 &mut |_, _| {},
             )
             .unwrap();

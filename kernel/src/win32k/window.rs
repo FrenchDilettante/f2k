@@ -93,6 +93,7 @@
 #![allow(dead_code)]
 
 use rtl::gdi::Rect;
+use rtl::scroll::ScrollBars;
 pub use rtl::user::StyleStruct;
 use rtl::user::{
     CS_CLASSDC,
@@ -183,6 +184,7 @@ use super::text::Staged;
 use super::text::{Text, Texts};
 use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use crate::sched::thread::ThreadId;
+use crate::slots::{Id, LowestFirst, Record, Slots, PAGE};
 use crate::status::*;
 
 // --- The public ABI and constants (winuser.h, winbase.h, winnt.h)
@@ -926,8 +928,6 @@ impl Hold for Locked<'_> {
 // --- The window pool
 // ---------------------------------------------------------------------------------
 
-/// How many windows can exist at once.
-pub const WINDOWS: usize = 256;
 /// How many threads the create/destroy context holds.
 pub const THREADS: usize = crate::ob::THREADS;
 /// How many desktops the registry tracks.
@@ -939,36 +939,20 @@ pub const PRIMARY_MONITOR: u16 = 0;
 /// The nested window/owner depth limit.
 const NESTED_WINDOW_LIMIT: u32 = 100;
 
-/// A window's id: its record in the pool and the record's generation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WindowId {
-    index: u16,
-    generation: u16,
-}
+/// The window pool's kind of id.
+pub enum WindowTag {}
+
+/// A window's id: its slot in the window pool and the slot's uniqueness count, which moves on
+/// when the record is freed, so a destroyed window's id names nothing (never the record's next
+/// window).
+pub type WindowId = Id<WindowTag>;
 
 impl WindowId {
-    /// The id of the record `index`, its first generation (the handle table's tests).
+    /// The id of the slot `index`, its first count (the handle table's tests).
     #[cfg(test)]
     pub const fn for_tests(index: u16) -> Self {
-        WindowId {
-            index,
-            generation: 0,
-        }
+        Id::new(index, 1)
     }
-}
-
-/// One window record's header.
-#[derive(Clone, Copy)]
-struct Header {
-    live: bool,
-    generation: u16,
-}
-
-impl Header {
-    const DEAD: Self = Header {
-        live: false,
-        generation: 0,
-    };
 }
 
 /// The internal flags a window record carries (the bits that are not public style bits).
@@ -1075,6 +1059,9 @@ struct Window {
     locks: u32,
     /// The destroy cascade's bookkeeping for this window, while a cascade visits it.
     walk: Walk,
+    /// The window's own scroll bars (Windows 2000's pSBInfo), once a call made them
+    /// ([`super::scroll`]).
+    scroll: Option<ScrollBars>,
 }
 
 /// What the destroy cascade keeps in a window's record while it visits the window. The cascade
@@ -1163,6 +1150,7 @@ impl Window {
         restore_maximized: false,
         locks: 0,
         walk: Walk::NONE,
+        scroll: None,
     };
 
     /// The window's kind, from the style's type bits.
@@ -1205,59 +1193,94 @@ fn kind_of(style: u32) -> Kind {
     }
 }
 
-/// The window pool: records behind headers, ids with generations.
+// SAFETY: `write_fresh` writes a whole record.
+unsafe impl Record for Window {
+    unsafe fn write_fresh(at: *mut Self, _: u32) {
+        // SAFETY: the caller's contract.
+        unsafe { at.write(Window::EMPTY) };
+    }
+}
+
+/// Window records to a chunk: four pages' worth, a slot being its record and 8 bytes.
+const WINDOWS_PER_CHUNK: usize = 4 * PAGE / (core::mem::size_of::<Window>() + 8);
+
+// The records hold no pointer, so the target's size and the host's agree.
+const _: () = assert!(Slots::<Window, LowestFirst<WindowTag>, WINDOWS_PER_CHUNK>::CHUNK_PAGES == 4);
+
+/// The window pool: the records in slots of the slot pool ([`crate::slots`]), grown a chunk at a
+/// time from the nonpaged pool under the window manager's lock and kept at their peak. A record is
+/// taken lowest free first, as the fixed array it was took it (the exposed area's walk goes in
+/// that order). Every lookup is checked: a destroyed window's id names nothing, whatever took its
+/// slot since, which matters now that a window procedure runs nested under a send and may destroy
+/// the window its caller still holds the id of.
 struct WindowPool {
-    headers: [Header; WINDOWS],
-    records: [Window; WINDOWS],
+    slots: Slots<Window, LowestFirst<WindowTag>, WINDOWS_PER_CHUNK>,
 }
 
 impl WindowPool {
-    /// Take the lowest free record for a new window (zeroed); none when the pool is exhausted.
+    const fn new() -> Self {
+        WindowPool {
+            slots: Slots::new(),
+        }
+    }
+
+    /// A free record for a new window (renewed empty); none when no page is left to grow by.
     fn allocate(&mut self) -> Option<WindowId> {
-        let index = self.headers.iter().position(|h| !h.live)?;
-        self.headers[index].live = true;
-        self.records[index] = Window::EMPTY;
-        Some(WindowId {
-            index: index as u16,
-            generation: self.headers[index].generation,
-        })
+        let (id, record) = self.slots.allocate_or_grow(0, super::pages()).ok()?;
+        *record = Window::EMPTY;
+        Some(id)
     }
 
-    /// Free `id`'s record: dead, its generation moved on so the id resolves to nothing.
+    /// Free `id`'s record: its count moves on, so the id resolves to nothing.
     fn free(&mut self, id: WindowId) {
-        let header = &mut self.headers[id.index as usize];
-        debug_assert!(
-            header.live && header.generation == id.generation,
-            "a live window id"
-        );
-        header.live = false;
-        header.generation = header.generation.wrapping_add(1);
+        let freed = self.slots.free(id);
+        debug_assert!(freed, "a live window id");
     }
 
-    /// The live record `id` names.
+    /// The live record `id` names; none for a destroyed or forged id.
+    fn get(&self, id: WindowId) -> Option<&Window> {
+        self.slots.get(id)
+    }
+
+    /// The live record `id` names. A destroyed window's id is a caller's bug (it checks
+    /// [`WindowPool::is_live`] after anything that may have destroyed it): it stops here, in every
+    /// build, rather than reading the record's next window.
     fn at(&self, id: WindowId) -> &Window {
-        let header = &self.headers[id.index as usize];
-        debug_assert!(
-            header.live && header.generation == id.generation,
-            "a live window id"
-        );
-        &self.records[id.index as usize]
+        self.slots.get(id).expect("a live window id")
     }
 
     /// The live record `id` names, mutable.
     fn at_mut(&mut self, id: WindowId) -> &mut Window {
-        let header = &mut self.headers[id.index as usize];
-        debug_assert!(
-            header.live && header.generation == id.generation,
-            "a live window id"
-        );
-        &mut self.records[id.index as usize]
+        self.slots.get_mut(id).expect("a live window id")
     }
 
     fn is_live(&self, id: WindowId) -> bool {
-        self.headers
-            .get(id.index as usize)
-            .is_some_and(|h| h.live && h.generation == id.generation)
+        self.slots.get(id).is_some()
+    }
+
+    /// The live window at slot `index`, if one is.
+    fn id_at(&self, index: u32) -> Option<WindowId> {
+        self.slots.id_at(index)
+    }
+
+    /// One past the highest slot ever taken: the walks by slot stop there.
+    fn high_water(&self) -> u32 {
+        self.slots.high_water()
+    }
+
+    /// The live windows' ids and records, in slot order.
+    fn iter(&self) -> impl Iterator<Item = (WindowId, &Window)> + '_ {
+        self.slots.iter()
+    }
+
+    /// The same, to change.
+    fn iter_mut(&mut self) -> impl Iterator<Item = (WindowId, &mut Window)> + '_ {
+        self.slots.iter_mut()
+    }
+
+    /// How many windows are live.
+    fn live(&self) -> usize {
+        self.slots.live() as usize
     }
 }
 
@@ -1521,12 +1544,7 @@ impl Windows {
         use core::ptr::addr_of_mut;
         // SAFETY: the caller's contract; every field is written, the arrays element by element.
         unsafe {
-            let headers = addr_of_mut!((*windows).pool.headers) as *mut Header;
-            let records = addr_of_mut!((*windows).pool.records) as *mut Window;
-            for index in 0..WINDOWS {
-                headers.add(index).write(Header::DEAD);
-                records.add(index).write(Window::EMPTY);
-            }
+            addr_of_mut!((*windows).pool).write(WindowPool::new());
             UserHandles::write_empty(addr_of_mut!((*windows).handles));
             let threads = addr_of_mut!((*windows).threads) as *mut Thread;
             for index in 0..THREADS {
@@ -1657,6 +1675,11 @@ impl Windows {
         self.pool.at(id)
     }
 
+    /// The live record `id` names; none for a destroyed or forged id.
+    fn get(&self, id: WindowId) -> Option<&Window> {
+        self.pool.get(id)
+    }
+
     fn at_mut(&mut self, id: WindowId) -> &mut Window {
         self.pool.at_mut(id)
     }
@@ -1716,23 +1739,27 @@ impl Windows {
         Some(view_of(self.class_window(handle)?.class))
     }
 
-    /// Every live window with a class, as the icon-change notification visits them, into `views`
-    /// (the caller's buffer, an entry a window); the answer is how many were written. The
-    /// notification picks the changed class's own out of them.
-    pub fn class_views(&self, views: &mut [class::WindowView]) -> usize {
-        let live = self
-            .pool
-            .headers
-            .iter()
-            .zip(&self.pool.records)
-            .filter(|(header, _)| header.live)
-            .filter_map(|(_, record)| record.class);
-        let mut written = 0;
-        for (view, class) in views.iter_mut().zip(live) {
-            *view = view_of(class);
-            written += 1;
-        }
-        written
+    /// Every live window with a class, as the icon-change notification visits them, read from
+    /// the records as it goes (no buffer: a window's view is its record's). The notification picks
+    /// the changed class's own out of them.
+    pub fn class_views(&self) -> impl Iterator<Item = class::WindowView> + '_ {
+        Self::views_of(&self.pool)
+    }
+
+    /// The handle table, lent to a class change, beside the windows it notifies
+    /// ([`Windows::class_views`]).
+    pub fn handles_and_class_views(
+        &mut self,
+    ) -> (
+        &mut UserHandles,
+        impl Iterator<Item = class::WindowView> + '_,
+    ) {
+        (&mut self.handles, Self::views_of(&self.pool))
+    }
+
+    fn views_of(pool: &WindowPool) -> impl Iterator<Item = class::WindowView> + '_ {
+        pool.iter()
+            .filter_map(|(_, record)| record.class.map(view_of))
     }
 }
 
@@ -1773,6 +1800,16 @@ impl Windows {
             Proc::Client(proc) if proc != 0 && !w.flags.server_side_proc => Some(proc),
             _ => None,
         }
+    }
+
+    /// The window's own scroll bars, once a call made them ([`super::scroll`]).
+    pub fn own_scroll_bars(&self, id: WindowId) -> Option<ScrollBars> {
+        self.at(id).scroll
+    }
+
+    /// The same, to make or change.
+    pub fn own_scroll_bars_mut(&mut self, id: WindowId) -> &mut Option<ScrollBars> {
+        &mut self.at_mut(id).scroll
     }
 
     /// The window's public style.
@@ -1837,11 +1874,7 @@ impl Windows {
 
     /// Leave every top-level window holding the menu `menu` without one: the menu was destroyed.
     pub fn forget_menu(&mut self, menu: u32) {
-        for index in 0..WINDOWS {
-            if !self.pool.headers[index].live {
-                continue;
-            }
-            let w = &mut self.pool.records[index];
+        for (_, w) in self.pool.iter_mut() {
             if !w.is_child() && w.menu == Menu::Handle(menu) {
                 w.menu = Menu::None;
             }
@@ -3594,15 +3627,7 @@ impl Windows {
 
     /// The live windows, in pool order.
     fn live_windows(&self) -> impl Iterator<Item = WindowId> + '_ {
-        self.pool
-            .headers
-            .iter()
-            .enumerate()
-            .filter(|(_, header)| header.live)
-            .map(|(index, header)| WindowId {
-                index: index as u16,
-                generation: header.generation,
-            })
+        self.pool.iter().map(|(id, _)| id)
     }
 
     /// How many live windows belong to processes (the window manager's own aside): with no
@@ -3673,9 +3698,8 @@ impl Windows {
     /// the process, so a window an earlier end asked, then left (when the process did not answer),
     /// is asked again.
     pub fn session_forget(&mut self, owner: class::Owner) {
-        let pool = &mut self.pool;
-        for (header, w) in pool.headers.iter().zip(pool.records.iter_mut()) {
-            if header.live && w.process == owner {
+        for (_, w) in self.pool.iter_mut() {
+            if w.process == owner {
                 w.flags.session_asked = false;
             }
         }
@@ -4429,15 +4453,15 @@ impl Windows {
     /// 2000 repaints what was under a window hidden or destroyed; F2K's windows do not clip one
     /// another, so every window under the area is repainted, not just what shows.
     fn expose(s: &mut dyn Session, area: Rect, gone: WindowId) {
-        for index in 0..WINDOWS {
+        // By slot, the bound read again each turn: a frame's painting may make or destroy windows
+        // meanwhile, as it could while the pool was a fixed array walked to its end.
+        let mut index = 0;
+        while index < s.windows().pool.high_water() {
             let windows = s.windows();
-            let header = &windows.pool.headers[index];
-            if !header.live {
+            let at = index;
+            index += 1;
+            let Some(id) = windows.pool.id_at(at) else {
                 continue;
-            }
-            let id = WindowId {
-                index: index as u16,
-                generation: header.generation,
             };
             if id == gone || !super::paint::is_shown(windows, id) {
                 continue;
@@ -5060,8 +5084,7 @@ const MESSAGE_CLASS: [u16; 7] = [
 ];
 
 /// The window manager's state behind its one lock: the window registry, the class registry, the
-/// window station's clipboard, and the buffer the icon-change notification gathers the windows
-/// into.
+/// window station's clipboard, the accelerator tables, the properties and the scroll bars.
 ///
 /// One lock guards both registries, as one lock guards all of Windows 2000's window-manager state:
 /// the create and destroy decisions hold both at once, letting go of them only around a callback
@@ -5077,10 +5100,6 @@ pub struct WindowManager {
     pub accels: super::accel::Accelerators,
     /// The windows' properties ([`super::prop`]).
     pub props: super::prop::Props,
-    /// The windows' scroll bars ([`super::scroll`]).
-    pub scroll_bars: super::scroll::WindowBars,
-    /// The icon-change notification's windows (see [`Windows::class_views`]).
-    pub views: [class::WindowView; WINDOWS],
 }
 
 impl WindowManager {
@@ -5093,17 +5112,13 @@ impl WindowManager {
     /// contents are overwritten, not dropped.
     pub unsafe fn write_empty(manager: *mut WindowManager) {
         use core::ptr::addr_of_mut;
-        // SAFETY: the caller's contract, handed on to each registry's own; the views are plain
-        // data (ids and flags), which all-zero bytes make a value of.
+        // SAFETY: the caller's contract, handed on to each registry's own.
         unsafe {
             Windows::write_empty(addr_of_mut!((*manager).windows));
             class::Registry::write_empty(addr_of_mut!((*manager).classes));
             super::clipboard::Clipboard::write_empty(addr_of_mut!((*manager).clipboard));
             super::accel::Accelerators::write_empty(addr_of_mut!((*manager).accels));
             super::prop::Props::write_empty(addr_of_mut!((*manager).props));
-            super::scroll::WindowBars::write_empty(addr_of_mut!((*manager).scroll_bars));
-            let views = addr_of_mut!((*manager).views) as *mut class::WindowView;
-            core::ptr::write_bytes(views, 0, WINDOWS);
         }
     }
 
@@ -6345,7 +6360,7 @@ mod tests {
 
     /// How many window records are live.
     fn live(w: &Windows) -> usize {
-        w.pool.headers.iter().filter(|h| h.live).count()
+        w.pool.live()
     }
 
     /// A registry pair with a thread, the desktop's window and message window, a 640x480 monitor
@@ -6995,13 +7010,110 @@ mod tests {
     // --- Allocation and early record state
     // ------------------------------------------------------------
 
-    /// A full pool fails the create with ERROR_OUTOFMEMORY (14).
+    /// Windows past the old fixed array's 256, each its own record and handle; destroyed, they
+    /// leave the pool at its peak, and the next window takes the lowest slot with its count moved
+    /// on.
+    #[test]
+    fn the_pool_grows_past_its_old_cap() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let ids: Vec<_> = (0..300)
+            .map(|_| create(w, c, t, atom, WS_POPUP, &mut pump).unwrap())
+            .collect();
+        assert_eq!(live(w), 302);
+        let handles: std::collections::BTreeSet<_> =
+            ids.iter().map(|&id| w.handle_of(id)).collect();
+        assert_eq!(handles.len(), 300);
+        assert!(ids
+            .iter()
+            .all(|&id| w.window_from_handle(w.handle_of(id)) == Some(id)));
+        let peak = w.pool.high_water();
+        for &id in &ids {
+            let handle = w.handle_of(id);
+            Windows::destroy_window_handle(&mut pump.on(w, c), t, handle).unwrap();
+        }
+        assert_eq!(live(w), 2, "the desktop's own windows");
+        assert!(ids.iter().all(|&id| !w.is_live(id)));
+        assert_eq!(w.thread(t).window_count, 0);
+        let again = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
+        assert_eq!(again.index, ids[0].index, "the lowest free slot");
+        assert_eq!(again.uniq, ids[0].uniq + 1, "its count moved on");
+        assert_eq!(w.pool.high_water(), peak);
+    }
+
+    /// A destroyed window's id names nothing, before and after a new window takes its slot; a
+    /// forged id — a count of 0, a count ahead of the slot's, a slot past every one made — names
+    /// nothing either.
+    #[test]
+    fn stale_and_forged_ids_name_nothing() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let a = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
+        let b = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
+        let handle = w.handle_of(a);
+        Windows::destroy_window_handle(&mut pump.on(w, c), t, handle).unwrap();
+        assert!(!w.is_live(a));
+        assert!(w.get(a).is_none());
+        assert_eq!(w.window_from_handle(handle), None);
+        let next = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
+        assert_eq!(next.index, a.index);
+        assert_ne!(next, a);
+        assert!(!w.is_live(a), "a new window in the slot is not the old one");
+        assert!(w.is_live(next) && w.is_live(b));
+        let past = w.pool.high_water() as u16;
+        for forged in [
+            WindowId::new(next.index, 0),
+            WindowId::new(next.index, next.uniq + 1),
+            WindowId::new(past, 1),
+            WindowId::new(0xFFFE, 1),
+            WindowId::new(0xFFFF, 1),
+        ] {
+            assert!(!w.is_live(forged), "{forged:?}");
+            assert!(w.get(forged).is_none());
+        }
+    }
+
+    /// A new window takes the lowest free slot whatever order the frees came in, as the fixed
+    /// array did: the walks by slot (an exposed area's repaint, a process's end) keep their order.
+    #[test]
+    fn a_new_window_takes_the_lowest_free_slot() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let ids: Vec<_> = (0..4)
+            .map(|_| create(w, c, t, atom, WS_POPUP, &mut pump).unwrap())
+            .collect();
+        for i in [2, 0] {
+            let handle = w.handle_of(ids[i]);
+            Windows::destroy_window_handle(&mut pump.on(w, c), t, handle).unwrap();
+        }
+        let first = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
+        let second = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
+        assert_eq!((first.index, second.index), (ids[0].index, ids[2].index));
+    }
+
+    /// A destroyed window's id stops at the lookup, in every build, rather than read whatever
+    /// record took its slot.
+    #[test]
+    #[should_panic(expected = "a live window id")]
+    fn a_stale_id_stops_at_the_lookup() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let a = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
+        let handle = w.handle_of(a);
+        Windows::destroy_window_handle(&mut pump.on(w, c), t, handle).unwrap();
+        create(w, c, t, atom, WS_POPUP, &mut pump).unwrap();
+        let _ = w.window_style(a);
+    }
+
+    /// A pool with no page left to grow by fails the create with ERROR_OUTOFMEMORY (14).
     #[test]
     fn a_full_pool_fails_the_create() {
         let (w, c, t, atom, _, _) = setup();
+        crate::win32k::test_pages::budget(0);
         while w.pool.allocate().is_some() {}
         let mut pump = Rec::new(t);
         let err = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap_err();
+        crate::win32k::test_pages::unlimited();
         assert_eq!(err, Failure::OutOfMemory);
         assert_eq!(err.code(), 14);
     }
@@ -7021,18 +7133,27 @@ mod tests {
             OWNER,
             class::MenuArg::None,
         );
-        // Fill the class pool so the clone cannot be made (two records are already taken).
-        for i in 0..(class::CLASSES - 2) {
-            register(
-                c,
+        // Fill the class pool's chunk with no page left to grow it, so the clone cannot be made.
+        crate::win32k::test_pages::budget(0);
+        let mut fill = 0;
+        while c
+            .register_class(
                 &w.handles,
-                class::Name::Text(&wide(&format!("Fill{i}"))),
                 &wnd_class(),
-            );
+                class::Name::Text(&wide(&format!("Fill{fill}"))),
+                class::MenuArg::None,
+                OWNER,
+                compat40(),
+                DESKTOP,
+            )
+            .is_ok()
+        {
+            fill += 1;
         }
         let before = live(w);
         let mut pump = Rec::new(t);
         let err = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap_err();
+        crate::win32k::test_pages::unlimited();
         assert_eq!(err, Failure::CannotFindWindowClass);
         assert_eq!(err.code(), 1407);
         assert_eq!(live(w), before, "the record was freed");
@@ -8867,14 +8988,14 @@ mod tests {
         assert_eq!(w.class_window(0x1234), None);
 
         // The scaffolding's desktop windows have no class: only the two created windows count.
-        let mut views = [w.class_view(w.handle_of(a)).unwrap(); 8];
-        assert_eq!(w.class_views(&mut views), 2);
-        assert_eq!(w.class_views(&mut views[..1]), 1, "cut at the buffer");
+        let views: Vec<_> = w.class_views().collect();
+        assert_eq!(views.len(), 2);
+        assert_eq!(views[0], w.class_view(w.handle_of(a)).unwrap());
 
         let handle = w.handle_of(a);
         Windows::destroy_window_handle(&mut pump.on(w, c), t, handle).unwrap();
         assert_eq!(w.class_window(handle), None);
-        assert_eq!(w.class_views(&mut views), 1);
+        assert_eq!(w.class_views().count(), 1);
     }
 
     /// A create's raw hMenu: a child's id, a top-level window's handle, none for 0.
