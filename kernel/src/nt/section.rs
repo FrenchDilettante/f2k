@@ -34,7 +34,9 @@
 //! section, so the section's handle can be closed as soon as the view is mapped. Its last reference
 //! leaves it cached, as Windows 2000 keeps an image's control area: its frames parked on Standby
 //! ([`park_segment`]), where the allocator may take them, so the next run of the image takes back
-//! the pages still its own without reading the file. A cached image is purged when its file is
+//! the pages still its own without reading the file. The segment's first page is the image's
+//! header page, built from the file's first page when the segment is made: every view and query
+//! parses the headers from it. A cached image is purged when its file is
 //! about to be cut, overwritten, deleted or replaced ([`purge_cached_image`], NT's
 //! MmFlushImageSection) or written ([`forget_image`]), when its record is needed for another image,
 //! at quiescence and at shutdown. A view is the
@@ -914,11 +916,16 @@ mod target {
                 .map(|segment| (id, segment.image_base, segment.size))
         };
         // A file's first image section reads and parses its headers, off the disk with the
-        // directory released; later ones take the layout the segment holds.
+        // directory released, and builds the image's header page from them; later ones take the
+        // layout the segment holds.
         let found = segment_of(&mut ob::lock(passive));
-        let layout = match found {
-            Some((_, image_base, size)) => (image_base, size),
-            None => crate::process::threads::critical_region(|| read_layout(file))?,
+        let (layout, header_page) = match found {
+            Some((_, image_base, size)) => ((image_base, size), None),
+            None => {
+                let (layout, page) =
+                    crate::process::threads::critical_region(|| read_image_start(file))?;
+                (layout, Some(page))
+            }
         };
         // What a section refused leaves (its new segment's frames and file), and the cached
         // segment purged to make room for a new one, finished once the directory is released.
@@ -954,6 +961,23 @@ mod target {
                             image_base,
                             size,
                         ))?;
+                        // The header page is the segment's page 0 from the start, as Windows
+                        // 2000's image control area's first prototype PTE is the page its
+                        // creation read: every view and query takes the headers from it. Without
+                        // a frame for it now, the first view builds it.
+                        if let Some(page) = &header_page {
+                            let _ = segment_frames(directory, id).image_frame(
+                                &mut CurrentPages,
+                                0,
+                                |frame| {
+                                    crate::mem::paging::write_frame(
+                                        crate::mem::phys::PhysAddr::new(frame),
+                                        0,
+                                        page,
+                                    );
+                                },
+                            );
+                        }
                         let held = directory.reference(file_object);
                         debug_assert!(held, "the handle's file object lives");
                         crate::fs::file::with_records(|records| {
@@ -988,14 +1012,58 @@ mod target {
         result
     }
 
-    /// An image file's layout (see [`image_layout`]), from its first page as the volume holds it.
-    fn read_layout(file: &crate::fs::fat32::lookup::File) -> Result<(u32, u32), NtStatus> {
+    /// An image file's layout (see [`image_layout`]) and its header page as mapped (the image's
+    /// page 0: its headers, and whatever part of a section the page holds), from its first page as
+    /// the volume holds it. Only a section's bytes past that first page are read again.
+    fn read_image_start(
+        file: &crate::fs::fat32::lookup::File,
+    ) -> Result<((u32, u32), [u8; PAGE as usize]), NtStatus> {
         let mut headers = [0u8; IMAGE_HEADERS];
-        let headers = &mut headers[..IMAGE_HEADERS.min(file.size as usize)];
+        let length = IMAGE_HEADERS.min(file.size as usize);
+        let headers = &mut headers[..length];
         if crate::fs::io::read_file_at(file, 0, headers).is_none() {
             return Err(STATUS_IO_DEVICE_ERROR);
         }
-        image_layout(headers, file.size)
+        let layout = image_layout(headers, file.size)?;
+        let image = crate::exec::pe::Image::parse_headers(headers, file.size as usize)
+            .map_err(|_| STATUS_INVALID_IMAGE_FORMAT)?;
+        let mut page = [0u8; PAGE as usize];
+        let built = image.map_page(0, &mut page, |offset, out| {
+            let end = offset as usize + out.len();
+            match headers.get(offset as usize..end) {
+                Some(read) => {
+                    out.copy_from_slice(read);
+                    true
+                }
+                None => crate::fs::io::read_file_at(file, offset, out).is_some(),
+            }
+        });
+        if !built {
+            return Err(STATUS_IO_DEVICE_ERROR);
+        }
+        Ok((layout, page))
+    }
+
+    /// The headers of the image segment `segment` (which the caller holds), of the file `file`:
+    /// the segment's page 0 when it holds it — the header page, as an image's mapping and its
+    /// query read the headers through its control area on Windows 2000 — else the file's first
+    /// page read again. The page, and how many of its bytes are the headers' to parse (the file's
+    /// first page, or the whole of a shorter file).
+    fn segment_headers(
+        segment: ob::SegmentId,
+        file: &crate::fs::fat32::lookup::File,
+    ) -> Result<([u8; PAGE as usize], usize), NtStatus> {
+        let mut page = [0u8; PAGE as usize];
+        let length = (file.size as usize).min(IMAGE_HEADERS);
+        let held = ob::locked(|directory| {
+            let frame = segment_frames(directory, segment).made(&CurrentPages, 0)?;
+            crate::mem::paging::read_frame(crate::mem::phys::PhysAddr::new(frame), 0, &mut page);
+            Some(())
+        });
+        if held.is_none() && crate::fs::io::read_file_at(file, 0, &mut page[..length]).is_none() {
+            return Err(STATUS_IO_DEVICE_ERROR);
+        }
+        Ok((page, length))
     }
 
     /// NtOpenSection: a new handle to the live section the name binds (see `sync`'s open).
@@ -1282,7 +1350,8 @@ mod target {
     /// (STATUS_CONFLICTING_ADDRESSES when another region holds any of it), a MEM_IMAGE reservation
     /// whose pages carry their sections' protections, every page the segment's frame. A page not
     /// made yet is built from the file, through the image's section table (its headers parsed
-    /// again from the file's first page). The view holds the segment, not the section. Returns
+    /// from the segment's header page: see [`segment_headers`]). The view holds the segment, not
+    /// the section. Returns
     /// what a process made from the image records of it (see [`ImageView`]). The view is made in
     /// `process`'s address space, the live one, locked a step at a time as [`map_view`]'s is.
     pub fn map_image(
@@ -1304,14 +1373,10 @@ mod target {
             mapped_record(directory.file(file_object).expect("held"))
         });
         let file = crate::fs::io::file_at(record);
-        let mut buffer = [0u8; PAGE as usize];
-        let headers = (file.size as usize).min(IMAGE_HEADERS);
-        if crate::fs::io::read_file_at(&file, 0, &mut buffer[..headers]).is_none() {
-            return Err(STATUS_IO_DEVICE_ERROR);
-        }
         // The image is a view of its header page, which stays as read while `buffer` builds the
         // pages.
-        let header_page = buffer;
+        let (header_page, headers) = segment_headers(segment, &file)?;
+        let mut buffer = [0u8; PAGE as usize];
         let image =
             crate::exec::pe::Image::parse_headers(&header_page[..headers], file.size as usize)
                 .map_err(|_| STATUS_INVALID_IMAGE_FORMAT)?;
@@ -1513,8 +1578,8 @@ mod target {
 
     /// NtQuerySection(SectionHandle, Class, Information, Length, ResultLength): a section's basic
     /// information (see [`SectionBasicInformation::of`]), or an image section's image information,
-    /// read from its image's headers (see [`image_information`]): the file the image segment holds
-    /// is read again, inside a critical region, as the section's first creation read it. The class
+    /// read from its image's headers (see [`image_information`]): the segment's header page (see
+    /// [`segment_headers`]), inside a critical region. The class
     /// and the length are checked first (see [`query_size`]), then the buffers are probed for
     /// writing, then the handle — a section handle granted SECTION_QUERY (see [`query_access`]) —
     /// and last whether a data section is asked its image information
@@ -1563,12 +1628,8 @@ mod target {
                 });
                 let file = crate::fs::io::file_at(file_record);
                 let info = crate::process::threads::critical_region(|| {
-                    let mut headers = [0u8; IMAGE_HEADERS];
-                    let headers = &mut headers[..IMAGE_HEADERS.min(file.size as usize)];
-                    if crate::fs::io::read_file_at(&file, 0, headers).is_none() {
-                        return Err(STATUS_IO_DEVICE_ERROR);
-                    }
-                    image_information(headers, file.size)
+                    let (page, length) = segment_headers(segment, &file)?;
+                    image_information(&page[..length], file.size)
                 })?;
                 information.cast().write(info)?;
             }
