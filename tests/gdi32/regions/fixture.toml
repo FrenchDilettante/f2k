@@ -7,11 +7,6 @@ description = "regions - CreateRectRgn(Indirect), CreatePolygonRgn under both fi
 kind = "sectioned"
 gate = true
 
-[pending]
-clip = "a DC's clipping region is one rectangle (kernel/src/win32k/dc.rs's Dc::clip) and F2K's gdi32 has no clipping calls yet: SelectClipRgn, IntersectClipRect, ExcludeClipRect, OffsetClipRgn, GetClipBox, GetClipRgn, PtVisible and RectVisible are stubs (GetClipRgn answers -1 with ERROR_CALL_NOT_IMPLEMENTED); the regions themselves (CreateRectRgn, GetRgnBox, GetRegionData) are served"
-extclip = "as clip: ExtSelectClipRgn, ExcludeClipRect, IntersectClipRect, GetClipBox and GetClipRgn are stubs (the first ExtSelectClipRgn answers ERROR with ERROR_CALL_NOT_IMPLEMENTED), and no drawing is clipped to a region; FillRgn itself is served"
-update = "a window's update region is a bounding rectangle (kernel/src/win32k/paint.rs), not a region, and user32's InvalidateRgn and GetUpdateRgn are stubs (GetUpdateRgn answers ERROR with ERROR_CALL_NOT_IMPLEMENTED)"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only the exports a section observes, not the helpers it calls around them (the canvas's

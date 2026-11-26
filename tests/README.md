@@ -357,7 +357,7 @@ The fixtures:
   A region prints as its type, its box, its rectangles or a grid of `PtInRegion` answers.
   The `update` window is a topmost 64x48 popup at the screen's corner, shown, since a hidden window keeps no update region; its update region prints as its type and as the same as a region the program built or not.
   Built with `/MD`.
-  Gated; `clip` and `extclip` stay pending while a DC's clipping is one rectangle and F2K's gdi32 has no clipping calls (`SelectClipRgn`, `ExtSelectClipRgn`, `GetClipRgn` and the rest are stubs), and `update` while the update region is a bounding rectangle and `InvalidateRgn` and `GetUpdateRgn` are stubs.
+  Gated.
 
 The `crt` fixtures (msvcrt.dll's) are built with `/MD`: their C runtime is msvcrt.dll's rather than a static copy linked into the program.
 
