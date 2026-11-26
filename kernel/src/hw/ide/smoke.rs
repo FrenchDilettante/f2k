@@ -94,11 +94,17 @@ pub fn run() {
     /// The multi-sector run read from the same place.
     const RUN_SECTORS: usize = 8;
 
+    /// A buffer on a page boundary: the bus master moves only even addresses (an odd one falls
+    /// back to PIO, an interrupt per block), and a byte array's place in a static would otherwise
+    /// follow the kernel image's layout.
+    #[repr(C, align(4096))]
+    struct Aligned<const N: usize>([u8; N]);
+
     /// The run's buffer, too large for the boot stack.
-    static RUN: StaticBuf<[u8; RUN_SECTORS * SECTOR_SIZE]> =
-        StaticBuf::new([0; RUN_SECTORS * SECTOR_SIZE]);
+    static RUN: StaticBuf<Aligned<{ RUN_SECTORS * SECTOR_SIZE }>> =
+        StaticBuf::new(Aligned([0; RUN_SECTORS * SECTOR_SIZE]));
     /// Room for the whole first file.
-    static FILE: StaticBuf<[u8; 32 * 1024]> = StaticBuf::new([0; 32 * 1024]);
+    static FILE: StaticBuf<Aligned<{ 32 * 1024 }>> = StaticBuf::new(Aligned([0; 32 * 1024]));
 
     fn read(device: &dyn BlockDevice, lba: u64, buffer: &mut [u8]) {
         if let Err(status) = device.read(lba, buffer) {
@@ -252,7 +258,7 @@ pub fn run() {
 
     // The first file, found by name in the root directory and read whole through its cluster
     // chain: the bytes the pinned sector checksums came from, now delivered by the file system.
-    let file_buffer = FILE.take();
+    let file_buffer = &mut FILE.take().0;
     let (hello, hello_status) = with_boot_volume(|volume| {
         let hello = lookup(volume, b"HELLO.EXE");
         let status = hello.map(|file| read_file(volume, &file, &mut file_buffer[..]));
@@ -291,7 +297,7 @@ pub fn run() {
         file_lba,
         crc32(&sector)
     );
-    let run = RUN.take();
+    let run = &mut RUN.take().0;
     read(volume, file_sector, run);
     assert_eq!(
         &run[..SECTOR_SIZE],
