@@ -353,8 +353,6 @@ const STARTF_USESHOWWINDOW: u32 = 0x1;
 const STARTF_USECOUNTCHARS: u32 = 0x8;
 #[cfg(target_arch = "x86")]
 const STARTF_USEFILLATTRIBUTE: u32 = 0x10;
-#[cfg(target_arch = "x86")]
-const SW_HIDE: u32 = 0;
 
 /// AllocConsole's API (`rtl::console::api::AllocConsole`), for the calling process: a console of
 /// its own made (see [`consoles`]) — its title the one the message names, read here below the
@@ -400,7 +398,8 @@ fn allocate_console(_api: u32, data: &mut [u8]) -> NtStatus {
         width,
         height,
         attribute,
-        hidden: request.flags & STARTF_USESHOWWINDOW != 0 && request.show_window == SW_HIDE,
+        hidden: request.flags & STARTF_USESHOWWINDOW != 0
+            && request.show_window == rtl::window::SW_HIDE as u32,
     };
     let calling = crate::user::args::calling_process();
     let (process, group) = (calling.object(), calling.process_group());

@@ -3772,6 +3772,7 @@ mod tests {
         WS_CHILD,
         WS_POPUP,
     };
+    use rtl::window::{SWP_NOACTIVATE, SWP_NOCLIENTSIZE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER};
 
     use super::rig::*;
     use super::*;
@@ -4158,7 +4159,7 @@ mod tests {
         let WindowManager {
             windows, classes, ..
         } = &mut *m;
-        let flags = window::SWP_NOSIZE | window::SWP_NOZORDER | window::SWP_NOACTIVATE;
+        let flags = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
         Windows::set_window_pos_handle(
             &mut QueueSession::new(windows, classes),
             h,
@@ -4189,7 +4190,7 @@ mod tests {
         assert_eq!((changed.x, changed.y, changed.hwnd), (7, 8, h));
         assert_eq!(
             changed.flags,
-            flags | window::SWP_NOCLIENTSIZE,
+            flags | SWP_NOCLIENTSIZE,
             "the client area moved, its size kept"
         );
     }
@@ -5449,7 +5450,7 @@ mod tests {
 
         let edited = WindowPos {
             cx: 123,
-            flags: window::SWP_NOMOVE,
+            flags: SWP_NOMOVE,
             ..pos
         };
         end_received(&mut m.windows, b, got, 7, &out(edited.as_bytes()));

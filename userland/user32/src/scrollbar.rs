@@ -54,7 +54,7 @@ use rtl::user::{
     WM_PAINT,
     WS_DISABLED,
 };
-use rtl::window::{QUERY_WINDOW_EXTRA, QUERY_WINDOW_SCROLL_BARS};
+use rtl::window::{QUERY_WINDOW_EXTRA, QUERY_WINDOW_SCROLL_BARS, SW_HIDE, SW_SHOWNORMAL};
 use rtl::winerror::ERROR_INVALID_SCROLLBAR_RANGE;
 
 use crate::draw::{self, BF_MIDDLE, BF_RECT, EDGE_RAISED};
@@ -77,10 +77,6 @@ const COLOR_BTNTEXT: u32 = 18;
 const COLOR_3DFACE: u32 = 15;
 const COLOR_3DSHADOW: u32 = 16;
 const COLOR_3DHILIGHT: u32 = 20;
-
-/// ShowWindow's commands ShowScrollBar gives a control.
-const SW_HIDE: i32 = 0;
-const SW_SHOWNORMAL: i32 = 1;
 
 /// The cases logged in this process: the control's input, ScrollWindowEx's region.
 static LOGGED: rtl::stub::Logged<4> = rtl::stub::Logged::new();

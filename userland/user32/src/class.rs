@@ -29,6 +29,19 @@ use rtl::cstr::ascii_units;
 use rtl::edge::In;
 use rtl::icon::{ICON_SIZE, RT_CURSOR};
 use rtl::user::{CS_DBLCLKS, CS_HREDRAW, CS_PARENTDC, CS_SAVEBITS, CS_VREDRAW};
+use rtl::window::{
+    GCL_CBCLSEXTRA,
+    GCL_CBWNDEXTRA,
+    GCL_HBRBACKGROUND,
+    GCL_HCURSOR,
+    GCL_HICON,
+    GCL_HICONSM,
+    GCL_HMODULE,
+    GCL_MENUNAME,
+    GCL_STYLE,
+    GCL_WNDPROC,
+    GCW_ATOM,
+};
 
 use crate::imports::{self, UserBuffer};
 use crate::procedure::{self, Procedure};
@@ -842,20 +855,6 @@ pub unsafe extern "system" fn get_class_info_ex_a(
 }
 
 // --- Class data ----------------------------------------------------------------------------------
-
-/// The GetClassLong and SetClassLong indexes of a class's own fields (winuser.h's GCL_* and
-/// GCW_ATOM); an index of 0 or more is an offset into the class's extra bytes.
-pub const GCL_MENUNAME: i32 = -8;
-pub const GCL_HBRBACKGROUND: i32 = -10;
-pub const GCL_HCURSOR: i32 = -12;
-pub const GCL_HICON: i32 = -14;
-pub const GCL_HMODULE: i32 = -16;
-pub const GCL_CBWNDEXTRA: i32 = -18;
-pub const GCL_CBCLSEXTRA: i32 = -20;
-pub const GCL_WNDPROC: i32 = -24;
-pub const GCL_STYLE: i32 = -26;
-pub const GCW_ATOM: i32 = -32;
-pub const GCL_HICONSM: i32 = -34;
 
 /// GetClassLong's core, for a caller of the narrow (`ansi`) or wide form: the field of the window's
 /// class at `index` (its procedure and menu name in the caller's form), or the dword of its extra

@@ -758,8 +758,6 @@ pub extern "system" fn get_top_window(window: usize) -> usize {
 /// SetWindowPos(HWND_TOP, SWP_NOMOVE | SWP_NOSIZE); FALSE with 1400 for a handle naming no window.
 #[unsafe(export_name = "f2k_export_BringWindowToTop")]
 pub extern "system" fn bring_window_to_top(window: usize) -> u32 {
-    const SWP_NOSIZE: u32 = 0x0001;
-    const SWP_NOMOVE: u32 = 0x0002;
     set_window_pos(window, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
 }
 
@@ -1006,7 +1004,6 @@ pub extern "system" fn defer_window_pos(
     cy: i32,
     flags: u32,
 ) -> usize {
-    const SWP_NOZORDER: u32 = 0x0004;
     let Some(mut header) = batch(handle) else {
         return failed(ERROR_INVALID_DWP_HANDLE).unwrap_or(0);
     };

@@ -59,6 +59,14 @@ use rtl::user::{
     CS_SAVEBITS,
     CS_VREDRAW,
 };
+use rtl::window::{
+    GCLP_HCURSOR,
+    GCLP_HICON,
+    GCLP_HICONSM,
+    GCLP_MENUNAME,
+    GCLP_WNDPROC,
+    GCL_CBCLSEXTRA,
+};
 use rtl::winerror::{
     ERROR_ACCESS_DENIED,
     ERROR_CANNOT_FIND_WND_CLASS,
@@ -123,22 +131,6 @@ pub const CS_PUBLIC: u32 = CS_VREDRAW
     | CS_BYTEALIGNWINDOW
     | CS_GLOBALCLASS
     | CS_IME;
-
-/// The class-data indexes (winuser.h's GCL_*/GCLP_*/GCW_*).
-pub const GCLP_MENUNAME: i32 = -8;
-pub const GCL_HBRBACKGROUND: i32 = -10;
-pub const GCL_HCURSOR: i32 = -12;
-pub const GCLP_HCURSOR: i32 = -12;
-pub const GCL_HICON: i32 = -14;
-pub const GCLP_HICON: i32 = -14;
-pub const GCL_HMODULE: i32 = -16;
-pub const GCL_CBWNDEXTRA: i32 = -18;
-pub const GCL_CBCLSEXTRA: i32 = -20;
-pub const GCL_WNDPROC: i32 = -24;
-pub const GCLP_WNDPROC: i32 = -24;
-pub const GCL_STYLE: i32 = -26;
-pub const GCW_ATOM: i32 = -32;
-pub const GCLP_HICONSM: i32 = -34;
 
 /// The largest background handle that is a system color rather than a GDI brush: winuser.h's
 /// COLOR_* indexes run 0..=28 and a system color's brush is the handle `color + 1`, so every
@@ -2508,6 +2500,7 @@ mod tests {
     //! The class decision logic's host tests, over a registry of each test's own.
 
     use rtl::testing::wide;
+    use rtl::window::{GCL_HBRBACKGROUND, GCL_STYLE, GCW_ATOM};
 
     use super::*;
 

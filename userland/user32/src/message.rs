@@ -38,7 +38,14 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use rtl::edge::{In, InStr, OutBuf};
 use rtl::status::NtStatus;
 use rtl::user::*;
-use rtl::window::WINDOW_OTHER_PROCESS;
+use rtl::window::{
+    SWP_NOCLIENTMOVE,
+    SWP_NOCLIENTSIZE,
+    SW_MINIMIZE,
+    SW_RESTORE,
+    SW_SHOWMAXIMIZED,
+    WINDOW_OTHER_PROCESS,
+};
 
 use crate::procedure::{self, Procedure};
 use crate::records::Table;
@@ -1015,11 +1022,6 @@ fn update_ui_state(window: usize, wparam: u32) {
     }
 }
 
-/// WM_WINDOWPOSCHANGED's report that the client area kept its size, and its place (Windows 2000's
-/// private SWP_NOCLIENTSIZE and SWP_NOCLIENTMOVE).
-const SWP_NOCLIENTSIZE: u32 = 0x0800;
-const SWP_NOCLIENTMOVE: u32 = 0x1000;
-
 /// DefWindowProc's WM_WINDOWPOSCHANGED: WM_MOVE (the client area's origin in the parent's client
 /// coordinates, the screen's for a top-level window) unless the client area kept its place, then
 /// WM_SIZE (SIZE_MINIMIZED, SIZE_MAXIMIZED or SIZE_RESTORED, and the client area's size) unless it
@@ -1218,10 +1220,6 @@ const SC_CLOSE: u32 = 0xF060;
 const SC_MINIMIZE: u32 = 0xF020;
 const SC_MAXIMIZE: u32 = 0xF030;
 const SC_RESTORE: u32 = 0xF120;
-/// The show commands they show the window with (winuser.h's SW_*).
-const SW_MINIMIZE: i32 = 6;
-const SW_SHOWMAXIMIZED: i32 = 3;
-const SW_RESTORE: i32 = 9;
 
 /// The top-level window `window` is in: itself, or its first ancestor that is not a child.
 fn top_level(window: usize) -> usize {

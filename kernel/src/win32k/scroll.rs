@@ -410,13 +410,7 @@ pub fn scrolls_children(flags: u32) -> bool {
 #[cfg(target_arch = "x86")]
 mod services {
     use rtl::scroll::NULLREGION;
-
-    use super::*;
-    use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
-    use crate::win32k::blit::{blit, Blit, Source};
-    use crate::win32k::queue::{with_manager, with_session};
-    use crate::win32k::window::{
-        Session,
+    use rtl::window::{
         SWP_FRAMECHANGED,
         SWP_NOACTIVATE,
         SWP_NOMOVE,
@@ -424,6 +418,12 @@ mod services {
         SWP_NOSIZE,
         SWP_NOZORDER,
     };
+
+    use super::*;
+    use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
+    use crate::win32k::blit::{blit, Blit, Source};
+    use crate::win32k::queue::{with_manager, with_session};
+    use crate::win32k::window::Session;
     use crate::win32k::winsta::gui_thread;
 
     /// BitBlt's plain copy (wingdi.h's SRCCOPY).
@@ -688,6 +688,7 @@ mod tests {
         SIMPLEREGION,
     };
     use rtl::user::{WS_CHILD, WS_POPUP, WS_VISIBLE};
+    use rtl::window::{SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER};
 
     use super::*;
     use crate::win32k::queue::rig::*;
@@ -715,13 +716,6 @@ mod tests {
     }
 
     fn take_frame(m: &mut WindowManager, handle: Hwnd) {
-        use crate::win32k::window::{
-            SWP_FRAMECHANGED,
-            SWP_NOACTIVATE,
-            SWP_NOMOVE,
-            SWP_NOSIZE,
-            SWP_NOZORDER,
-        };
         Windows::set_window_pos_handle(
             &mut QueueSession::new(&mut m.windows, &mut m.classes),
             handle,

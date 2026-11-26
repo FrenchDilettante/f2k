@@ -25,7 +25,16 @@
 
 use rtl::gdi::TRANSPARENT;
 use rtl::user::*;
-use rtl::window::{WindowLinks, GWL_EXSTYLE, QUERY_WINDOW_EXTRA};
+use rtl::window::{
+    WindowLinks,
+    GWL_EXSTYLE,
+    QUERY_WINDOW_EXTRA,
+    SWP_FRAMECHANGED,
+    SWP_NOACTIVATE,
+    SWP_NOMOVE,
+    SWP_NOSIZE,
+    SWP_NOZORDER,
+};
 
 use crate::dialog::DLGC_STATIC;
 use crate::draw::{self, BF_LEFT, BF_RECT, BF_TOP};
@@ -90,13 +99,6 @@ const COLOR_3DDKSHADOW: u32 = 21;
 /// GetSystemMetrics' icon size.
 const SM_CXICON: i32 = 11;
 const SM_CYICON: i32 = 12;
-
-/// SetWindowPos's flags for a size alone.
-const SWP_NOMOVE: u32 = 0x0002;
-const SWP_NOZORDER: u32 = 0x0004;
-const SWP_NOACTIVATE: u32 = 0x0010;
-const SWP_FRAMECHANGED: u32 = 0x0020;
-const SWP_NOSIZE: u32 = 0x0001;
 
 fn read(window: usize, offset: i32) -> u32 {
     let mut value = 0u32;

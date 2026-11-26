@@ -869,18 +869,12 @@ mod services {
         NO_PARAM_CREATE_POPUP_MENU,
         NO_PARAM_DESTROY_CARET,
     };
+    use rtl::window::{SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER};
 
     use super::*;
     use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
     use crate::win32k::queue::{with_manager, with_session};
-    use crate::win32k::window::{
-        Session,
-        SWP_FRAMECHANGED,
-        SWP_NOACTIVATE,
-        SWP_NOMOVE,
-        SWP_NOSIZE,
-        SWP_NOZORDER,
-    };
+    use crate::win32k::window::Session;
     use crate::win32k::winsta::gui_thread;
 
     /// NtUserCallNoParam(Routine, Result): CreateMenu, CreatePopupMenu (the new menu's handle),

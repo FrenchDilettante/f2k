@@ -69,6 +69,58 @@ pub const GWL_STYLE: i32 = -16;
 pub const GWL_EXSTYLE: i32 = -20;
 pub const GWL_USERDATA: i32 = -21;
 
+/// The GetClassLong and SetClassLong indexes of a class's own fields (winuser.h's GCL_*, GCLP_* and
+/// GCW_ATOM); an index of 0 or more is an offset into the class's extra bytes.
+pub const GCL_MENUNAME: i32 = -8;
+pub const GCLP_MENUNAME: i32 = -8;
+pub const GCL_HBRBACKGROUND: i32 = -10;
+pub const GCL_HCURSOR: i32 = -12;
+pub const GCLP_HCURSOR: i32 = -12;
+pub const GCL_HICON: i32 = -14;
+pub const GCLP_HICON: i32 = -14;
+pub const GCL_HMODULE: i32 = -16;
+pub const GCL_CBWNDEXTRA: i32 = -18;
+pub const GCL_CBCLSEXTRA: i32 = -20;
+pub const GCL_WNDPROC: i32 = -24;
+pub const GCLP_WNDPROC: i32 = -24;
+pub const GCL_STYLE: i32 = -26;
+pub const GCW_ATOM: i32 = -32;
+pub const GCL_HICONSM: i32 = -34;
+pub const GCLP_HICONSM: i32 = -34;
+
+/// ShowWindow's commands (winuser.h's SW_*).
+pub const SW_HIDE: i32 = 0;
+pub const SW_SHOWNORMAL: i32 = 1;
+pub const SW_SHOWMINIMIZED: i32 = 2;
+pub const SW_SHOWMAXIMIZED: i32 = 3;
+pub const SW_SHOWNOACTIVATE: i32 = 4;
+pub const SW_SHOW: i32 = 5;
+pub const SW_MINIMIZE: i32 = 6;
+pub const SW_SHOWMINNOACTIVE: i32 = 7;
+pub const SW_SHOWNA: i32 = 8;
+pub const SW_RESTORE: i32 = 9;
+pub const SW_SHOWDEFAULT: i32 = 10;
+pub const SW_FORCEMINIMIZE: i32 = 11;
+/// The highest show command.
+pub const SW_MAX: i32 = SW_FORCEMINIMIZE;
+
+/// SetWindowPos's flags (winuser.h's SWP_*).
+pub const SWP_NOSIZE: u32 = 0x0001;
+pub const SWP_NOMOVE: u32 = 0x0002;
+pub const SWP_NOZORDER: u32 = 0x0004;
+pub const SWP_NOREDRAW: u32 = 0x0008;
+pub const SWP_NOACTIVATE: u32 = 0x0010;
+pub const SWP_FRAMECHANGED: u32 = 0x0020;
+pub const SWP_SHOWWINDOW: u32 = 0x0040;
+pub const SWP_HIDEWINDOW: u32 = 0x0080;
+pub const SWP_NOSENDCHANGING: u32 = 0x0400;
+/// WM_WINDOWPOSCHANGED's report that the client area kept its size (Windows 2000's private bit):
+/// the default window procedure sends no WM_SIZE.
+pub const SWP_NOCLIENTSIZE: u32 = 0x0800;
+/// WM_WINDOWPOSCHANGED's report that the client area kept its place (Windows 2000's private bit):
+/// the default window procedure sends no WM_MOVE.
+pub const SWP_NOCLIENTMOVE: u32 = 0x1000;
+
 /// [`WindowData`]'s flags: the window procedure takes the narrow forms of the messages
 /// (IsWindowUnicode's FALSE); the window belongs to a process other than the caller's.
 pub const WINDOW_ANSI_PROC: u32 = 0x1;

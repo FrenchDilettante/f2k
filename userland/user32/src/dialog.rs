@@ -32,7 +32,7 @@ use rtl::cstr::ascii_units;
 use rtl::edge::{In, OutBuf};
 use rtl::gdi::{LogFontW, Rect, DEFAULT_CHARSET, FW_NORMAL, SYSTEM_FONT};
 use rtl::user::*;
-use rtl::window::{WindowData, FNID_DIALOG, QUERY_WINDOW_EXTRA, WINDOW_DIALOG};
+use rtl::window::{WindowData, FNID_DIALOG, QUERY_WINDOW_EXTRA, SW_SHOWNORMAL, WINDOW_DIALOG};
 
 use crate::imports::{self, Creation, ResourceName};
 use crate::procedure::{self, Procedure};
@@ -96,9 +96,6 @@ const VK_LEFT: u32 = 0x25;
 const VK_UP: u32 = 0x26;
 const VK_RIGHT: u32 = 0x27;
 const VK_DOWN: u32 = 0x28;
-
-/// ShowWindow's command for a dialog shown.
-const SW_SHOWNORMAL: i32 = 1;
 
 // The errors of the dialog calls (winerror.h).
 use rtl::winerror::{

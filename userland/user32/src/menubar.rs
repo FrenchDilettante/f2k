@@ -83,6 +83,7 @@ use rtl::user::{
     WS_EX_TOOLWINDOW,
     WS_EX_WINDOWEDGE,
 };
+use rtl::window::{SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW};
 
 use crate::draw::{
     self,
@@ -162,10 +163,6 @@ const POPUP_STYLE: u32 = 0x8000_0000;
 const POPUP_EX_STYLE: u32 = WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE | WS_EX_TOOLWINDOW | 0x0000_0008;
 
 /// SetWindowPos's flags the popups are shown with, and HWND_TOPMOST.
-const SWP_NOSIZE: u32 = 0x0001;
-const SWP_NOMOVE: u32 = 0x0002;
-const SWP_NOACTIVATE: u32 = 0x0010;
-const SWP_SHOWWINDOW: u32 = 0x0040;
 const HWND_TOPMOST: usize = usize::MAX;
 
 /// The levels a loop opens at most: the bar's popup and three nested ones.

@@ -139,6 +139,32 @@ use rtl::user::{
     WS_VISIBLE,
 };
 pub use rtl::window::{WindowData, WindowInfo, WindowPos};
+use rtl::window::{
+    SWP_FRAMECHANGED,
+    SWP_HIDEWINDOW,
+    SWP_NOACTIVATE,
+    SWP_NOCLIENTMOVE,
+    SWP_NOCLIENTSIZE,
+    SWP_NOMOVE,
+    SWP_NOREDRAW,
+    SWP_NOSENDCHANGING,
+    SWP_NOSIZE,
+    SWP_NOZORDER,
+    SWP_SHOWWINDOW,
+    SW_FORCEMINIMIZE,
+    SW_HIDE,
+    SW_MAX,
+    SW_MINIMIZE,
+    SW_RESTORE,
+    SW_SHOW,
+    SW_SHOWDEFAULT,
+    SW_SHOWMAXIMIZED,
+    SW_SHOWMINIMIZED,
+    SW_SHOWMINNOACTIVE,
+    SW_SHOWNA,
+    SW_SHOWNOACTIVATE,
+    SW_SHOWNORMAL,
+};
 use rtl::winerror::{
     ERROR_ACCESS_DENIED,
     ERROR_CANNOT_FIND_WND_CLASS,
@@ -179,38 +205,6 @@ pub const CW_USEDEFAULT: i32 = 0x8000_0000u32 as i32;
 /// The second default marker the create path honors alongside CW_USEDEFAULT.
 const CW_USEDEFAULT_ALT: i32 = 0x8000;
 
-/// The show commands (winuser.h's SW_*).
-pub const SW_HIDE: i32 = 0;
-pub const SW_SHOWNORMAL: i32 = 1;
-pub const SW_SHOWMINIMIZED: i32 = 2;
-pub const SW_SHOWMAXIMIZED: i32 = 3;
-pub const SW_SHOWNOACTIVATE: i32 = 4;
-pub const SW_SHOW: i32 = 5;
-pub const SW_MINIMIZE: i32 = 6;
-pub const SW_SHOWMINNOACTIVE: i32 = 7;
-pub const SW_SHOWNA: i32 = 8;
-pub const SW_RESTORE: i32 = 9;
-pub const SW_SHOWDEFAULT: i32 = 10;
-pub const SW_FORCEMINIMIZE: i32 = 11;
-/// The highest show command.
-pub const SW_MAX: i32 = SW_FORCEMINIMIZE;
-
-/// The SetWindowPos flags (winuser.h's SWP_*).
-pub const SWP_NOSIZE: u32 = 0x0001;
-pub const SWP_NOMOVE: u32 = 0x0002;
-pub const SWP_NOZORDER: u32 = 0x0004;
-pub const SWP_NOREDRAW: u32 = 0x0008;
-pub const SWP_NOACTIVATE: u32 = 0x0010;
-pub const SWP_FRAMECHANGED: u32 = 0x0020;
-pub const SWP_SHOWWINDOW: u32 = 0x0040;
-pub const SWP_HIDEWINDOW: u32 = 0x0080;
-pub const SWP_NOSENDCHANGING: u32 = 0x0400;
-/// WM_WINDOWPOSCHANGED's report that the client area kept its size (Windows 2000's private bit):
-/// the default window procedure sends no WM_SIZE.
-pub const SWP_NOCLIENTSIZE: u32 = 0x0800;
-/// WM_WINDOWPOSCHANGED's report that the client area kept its place (Windows 2000's private bit):
-/// the default window procedure sends no WM_MOVE.
-pub const SWP_NOCLIENTMOVE: u32 = 0x1000;
 /// The undocumented bit Windows 2000's WM_WINDOWPOSCHANGED carries after ShowWindow's show
 /// (guigeo `sizemsg` captured 0x10001847); ShowWindow passes it, WM_WINDOWPOSCHANGING does not
 /// carry it (inferred: the capture logs only WM_WINDOWPOSCHANGED).

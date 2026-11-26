@@ -34,6 +34,7 @@ use rtl::status::{
     STATUS_PENDING,
 };
 use rtl::sync::{Locked, OnceWord};
+use rtl::window::SW_SHOWNORMAL;
 
 use crate::base::{
     console_flags,
@@ -1422,8 +1423,6 @@ pub const CONSOLE_NEW: usize = usize::MAX - 1;
 /// the screen buffer's size, its attribute.
 const STARTF_USESHOWWINDOW: u32 = 0x1;
 const STARTF_USESTDHANDLES: u32 = 0x100;
-/// ShowWindow's default command, a console's window shown.
-const SW_SHOWNORMAL: u32 = 1;
 
 /// The process's CtrlRoutine, as the console server takes it.
 fn ctrl_routine_address() -> usize {
@@ -1477,7 +1476,8 @@ fn allocate() -> u32 {
     let show_window = if flags & STARTF_USESHOWWINDOW != 0 {
         parameters.show_window_flags
     } else {
-        SW_SHOWNORMAL
+        // ShowWindow's default command, a console's window shown.
+        SW_SHOWNORMAL as u32
     };
     let status = call_server(&mut api::AllocConsole {
         routine: ctrl_routine_address(),

@@ -59,20 +59,9 @@ use rtl::user::{
     WS_MINIMIZE,
     WS_VISIBLE,
 };
+use rtl::window::{SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
 
-use super::window::{
-    Activate,
-    InsertAfter,
-    Message,
-    Payload,
-    Session,
-    WParam,
-    WindowId,
-    Windows,
-    SWP_NOACTIVATE,
-    SWP_NOMOVE,
-    SWP_NOSIZE,
-};
+use super::window::{Activate, InsertAfter, Message, Payload, Session, WParam, WindowId, Windows};
 use crate::sched::thread::ThreadId;
 
 // --- The state's reads ---------------------------------------------------------------------------
@@ -742,12 +731,13 @@ pub use services::{
 #[cfg(test)]
 mod tests {
     use rtl::user::{PM_QS_SENDMESSAGE, WS_CAPTION, WS_POPUP};
+    use rtl::window::{SW_HIDE, SW_SHOW, SW_SHOWNOACTIVATE};
 
     use super::*;
     use crate::sync::ShortLock;
     use crate::win32k::queue::rig::*;
     use crate::win32k::queue::{end_sent, head_of, Filter, QueueSession, Taken};
-    use crate::win32k::window::{Hold, Hwnd, Locked, WindowManager, SW_SHOW, SW_SHOWNOACTIVATE};
+    use crate::win32k::window::{Hold, Hwnd, Locked, WindowManager};
 
     /// The messages the focus fixture's procedure records.
     const RECORDED: [u32; 7] = [
@@ -1077,7 +1067,7 @@ mod tests {
         WindowManager::show_window(
             &mut QueueSession::new(&mut r.m.windows, &mut r.m.classes),
             top2,
-            crate::win32k::window::SW_HIDE,
+            SW_HIDE,
         )
         .unwrap();
         r.settle();
@@ -1100,7 +1090,6 @@ mod tests {
     /// destroyed gives it back to the owner.
     #[test]
     fn the_last_active_popup() {
-        use crate::win32k::window::SW_HIDE;
         let (m, atom) = manager();
         let t = thread(m, 1, 0x100);
         let style = WS_POPUP | WS_CAPTION;
