@@ -69,6 +69,14 @@ use rtl::menu::{
 use rtl::nonclient::MENU;
 use rtl::user::{
     Msg,
+    VK_DOWN,
+    VK_ESCAPE,
+    VK_F10,
+    VK_LEFT,
+    VK_MENU,
+    VK_RETURN,
+    VK_RIGHT,
+    VK_UP,
     WM_CHAR,
     WM_COMMAND,
     WM_ENTERIDLE,
@@ -129,16 +137,6 @@ const MF_HILITE: u32 = 0x0080;
 const MNC_CLOSE: u32 = 1;
 const MNC_EXECUTE: u32 = 2;
 const MNC_SELECT: u32 = 3;
-
-/// The keys the loop handles (winuser.h's VK_*).
-const VK_RETURN: u32 = 0x0D;
-const VK_MENU: u32 = 0x12;
-const VK_ESCAPE: u32 = 0x1B;
-const VK_LEFT: u32 = 0x25;
-const VK_UP: u32 = 0x26;
-const VK_RIGHT: u32 = 0x27;
-const VK_DOWN: u32 = 0x28;
-const VK_F10: u32 = 0x79;
 
 /// The menu class's atom: the documented #32768.
 pub const MENU_CLASS_ATOM: u16 = 0x8000;

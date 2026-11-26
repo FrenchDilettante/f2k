@@ -87,16 +87,6 @@ pub const DS_CENTER: u32 = 0x0800;
 pub const DS_CENTERMOUSE: u32 = 0x1000;
 pub const DS_CONTEXTHELP: u32 = 0x2000;
 
-/// The virtual keys the keyboard interface handles.
-const VK_TAB: u32 = 0x09;
-const VK_RETURN: u32 = 0x0D;
-const VK_SHIFT: i32 = 0x10;
-const VK_ESCAPE: u32 = 0x1B;
-const VK_LEFT: u32 = 0x25;
-const VK_UP: u32 = 0x26;
-const VK_RIGHT: u32 = 0x27;
-const VK_DOWN: u32 = 0x28;
-
 // The errors of the dialog calls (winerror.h).
 use rtl::winerror::{
     ERROR_CONTROL_ID_NOT_FOUND,
@@ -2051,7 +2041,7 @@ fn key_down(dialog: usize, msg: &Msg) -> bool {
     let focus = focus::get_focus();
     match msg.wparam {
         VK_TAB if code & DLGC_WANTTAB == 0 => {
-            let back = crate::keyboard::get_key_state(VK_SHIFT) < 0;
+            let back = crate::keyboard::get_key_state(VK_SHIFT as i32) < 0;
             let next = next_tab_item(dialog, focus, back);
             if next != 0 {
                 set_dialog_focus(dialog, next);

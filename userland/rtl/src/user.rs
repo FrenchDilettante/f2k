@@ -19,6 +19,7 @@
 //! [`HWND_PARAM_LOCK_*`]: HWND_PARAM_LOCK_ENABLE_WINDOW
 //! [`THREAD_STATE_*`]: THREAD_STATE_FOCUS_WINDOW
 
+use crate::console::layout;
 use crate::gdi::Rect;
 use crate::pod::Pod;
 
@@ -204,6 +205,28 @@ pub fn sync_only(message: u32) -> bool {
             | WM_NCCALCSIZE
     )
 }
+
+// --- The virtual keys (winuser.h's VK_*) ---------------------------------------------------------
+
+/// The virtual keys as the key messages' wParam carries them: the keyboard layouts' values
+/// ([`crate::console::layout`]'s byte-sized VK_*), widened.
+pub const VK_TAB: u32 = layout::VK_TAB as u32;
+pub const VK_RETURN: u32 = layout::VK_RETURN as u32;
+pub const VK_SHIFT: u32 = layout::VK_SHIFT as u32;
+pub const VK_CONTROL: u32 = layout::VK_CONTROL as u32;
+pub const VK_MENU: u32 = layout::VK_MENU as u32;
+pub const VK_ESCAPE: u32 = layout::VK_ESCAPE as u32;
+pub const VK_SPACE: u32 = layout::VK_SPACE as u32;
+pub const VK_END: u32 = layout::VK_END as u32;
+pub const VK_HOME: u32 = layout::VK_HOME as u32;
+pub const VK_LEFT: u32 = layout::VK_LEFT as u32;
+pub const VK_UP: u32 = layout::VK_UP as u32;
+pub const VK_RIGHT: u32 = layout::VK_RIGHT as u32;
+pub const VK_DOWN: u32 = layout::VK_DOWN as u32;
+pub const VK_INSERT: u32 = layout::VK_INSERT as u32;
+pub const VK_DELETE: u32 = layout::VK_DELETE as u32;
+pub const VK_F4: u32 = layout::VK_F4 as u32;
+pub const VK_F10: u32 = layout::VK_F10 as u32;
 
 // --- The window and class styles (winuser.h's WS_*, WS_EX_*, CS_*) ------------------------------
 

@@ -1201,11 +1201,6 @@ fn control_colors(dc: usize, message: u32) -> usize {
 /// state; F2K's default procedure keeps it per process, from the key messages it is handed.
 static MENU_KEY_ALONE: AtomicU32 = AtomicU32::new(0);
 
-/// The keys the default procedure acts on (winuser.h's VK_*).
-const VK_MENU: u32 = 0x12;
-const VK_SPACE: u32 = 0x20;
-const VK_F4: u32 = 0x73;
-const VK_F10: u32 = 0x79;
 /// A key message's lParam bits: Alt down (the context code), the key down before (a repeat).
 const KEY_CONTEXT: i32 = 1 << 29;
 const KEY_PREVIOUS: i32 = 1 << 30;

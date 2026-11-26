@@ -193,9 +193,6 @@ const STATE: usize = 0;
 const FONT: usize = 1;
 const FIELDS: usize = 2;
 
-/// The keys a button takes.
-const VK_SPACE: u32 = 0x20;
-
 /// The address of the button's state block, its extra bytes' dword (0 for none yet).
 fn block(window: usize) -> usize {
     let mut value = 0u32;

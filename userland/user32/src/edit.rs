@@ -94,6 +94,19 @@ use rtl::pod::Pod;
 use rtl::user::{
     CreateStructW,
     Msg,
+    VK_CONTROL,
+    VK_DELETE,
+    VK_DOWN,
+    VK_END,
+    VK_ESCAPE,
+    VK_HOME,
+    VK_INSERT,
+    VK_LEFT,
+    VK_RETURN,
+    VK_RIGHT,
+    VK_SHIFT,
+    VK_TAB,
+    VK_UP,
     WM_CHAR,
     WM_CLEAR,
     WM_COMMAND,
@@ -224,21 +237,6 @@ const CR: u16 = 0x0D;
 const LF: u16 = 0x0A;
 const TAB: u16 = 0x09;
 const SPACE: u16 = 0x20;
-
-/// The keys an edit acts on (winuser.h's VK_*).
-const VK_TAB: u32 = 0x09;
-const VK_RETURN: u32 = 0x0D;
-const VK_SHIFT: i32 = 0x10;
-const VK_CONTROL: i32 = 0x11;
-const VK_ESCAPE: u32 = 0x1B;
-const VK_END: u32 = 0x23;
-const VK_HOME: u32 = 0x24;
-const VK_LEFT: u32 = 0x25;
-const VK_UP: u32 = 0x26;
-const VK_RIGHT: u32 = 0x27;
-const VK_DOWN: u32 = 0x28;
-const VK_INSERT: u32 = 0x2D;
-const VK_DELETE: u32 = 0x2E;
 
 /// The clipboard's Unicode text format, and the global memory it is handed in.
 const CF_UNICODETEXT: u32 = 13;
@@ -1328,7 +1326,7 @@ fn key(window: usize, vk: u32) -> bool {
     let Some(mut s) = load(window) else {
         return false;
     };
-    let (shift, control) = (down(VK_SHIFT), down(VK_CONTROL));
+    let (shift, control) = (down(VK_SHIFT as i32), down(VK_CONTROL as i32));
     let line = line_of(&s, s.caret);
     let to = match vk {
         VK_LEFT | VK_RIGHT if !shift && s.sel_min != s.sel_max && !control => {
