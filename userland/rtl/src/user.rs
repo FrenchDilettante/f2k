@@ -1,5 +1,7 @@
-//! USER's shared shapes: the message constants user32's message calls and win32k's queue agree on
-//! (the messages the queue makes or reads, PeekMessage's flags, the queue-status bits), the
+//! USER's shared shapes: the one home of winuser.h's constants the kernel's win32k, rtl and the
+//! DLLs name (the messages, PeekMessage's flags, the queue-status bits, the virtual keys as wParam
+//! carries them, the window and class styles, the buttons' and statics' messages and styles,
+//! WM_SYSCOMMAND's commands, the clipboard formats, GetUserObjectInformation's indexes), the
 //! structures Windows 2000's winuser.h lays out on x86 (MSG, PAINTSTRUCT, CREATESTRUCTW,
 //! SendInput's INPUT, GUITHREADINFO), and F2K's
 //! own shapes of the services behind them: the receipt win32k's GetMessage and PeekMessage services

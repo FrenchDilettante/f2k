@@ -1,9 +1,10 @@
 //! The window manager's shared shapes: what win32k's window services and user32's window calls
 //! agree on. WINDOWINFO and WINDOWPOS as Windows 2000's winuser.h lays them out on x86
-//! ([`WindowInfo`], [`WindowPos`]), the GetWindowLong/SetWindowLong indexes (winuser.h's GWL_*),
-//! and the answers NtUserQueryWindow gives (F2K's own indexes: Windows 2000's user32 reads a
-//! window's state from the window manager's records, mapped into every GUI process, where F2K's
-//! asks the kernel).
+//! ([`WindowInfo`], [`WindowPos`]), the GetWindowLong/SetWindowLong and GetClassLong indexes
+//! (winuser.h's GWL_*, GCL_*), ShowWindow's commands (SW_*) and SetWindowPos's flags (SWP_*), the
+//! flags of F2K's class registration, and the answers NtUserQueryWindow gives (F2K's own indexes:
+//! Windows 2000's user32 reads a window's state from the window manager's records, mapped into
+//! every GUI process, where F2K's asks the kernel).
 
 use core::mem::{offset_of, size_of};
 
