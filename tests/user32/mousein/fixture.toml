@@ -7,13 +7,11 @@ description = "mousein - mouse input injected with SendInput into the program's 
 kind = "sectioned"
 gate = true
 
-# F2K has no mouse yet (deferred: the mouse driver, the cursor and capture come with it): every
-# section but hittest, which sends WM_NCHITTEST itself, is on the work list.
-[pending]
-move = "no mouse yet: SendInput's mouse events, the cursor and WM_MOUSEMOVE not yet implemented"
-click = "no mouse yet: SendInput's mouse events, the cursor, WindowFromPoint and the button messages not yet implemented"
-capture = "no mouse yet: SetCapture, GetCapture, ReleaseCapture, WM_CAPTURECHANGED and SendInput's mouse events not yet implemented"
-button = "no mouse yet: SendInput's mouse events and the Button control's click not yet implemented"
+# Every section runs: F2K's mouse is SendInput's (no mouse driver yet). The blocks run in one boot,
+# in the capture's order, and depend on it: a SendInput move posts a WM_MOUSEMOVE only when the
+# input path last left the cursor elsewhere (Windows 2000's ptCursorLast, which SetCursorPos does
+# not move), so the click section's move posts none (the move section's left the cursor there) and
+# the capture section's press posts one first. Run alone, click receives a WM_MOUSEMOVE more.
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

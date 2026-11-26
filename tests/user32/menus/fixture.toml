@@ -19,9 +19,6 @@ gate = true
 boot_under = "WINNT\\system32\\fish.exe"
 
 [pending]
-keyloop = "F2K's menu loop takes no mouse capture, so the window receives no WM_CAPTURECHANGED as the loop ends"
-keyesc = "F2K's menu loop takes no mouse capture, so the window receives no WM_CAPTURECHANGED as the loop ends; and Esc on the bar, once the popup is closed, goes to the window as WM_MENUCHAR where Windows 2000 ends the loop"
-keychar = "F2K's menu loop takes no mouse capture, so the window receives no WM_CAPTURECHANGED as the loop ends; Alt then F selects File twice (two WM_MENUSELECT); Enter on a grayed item goes to the window as WM_MENUCHAR where Windows 2000 ends the loop, and so does Esc on the bar"
 capicon = "its title line now scans the caption's rows above the bottom separator; F2K's icons hold no image: user32's CreateIconIndirect is a stub and LoadIcon keeps no bits, and the caption draws no icon (neither the class's small icon, nor the big one scaled, nor a default one; no GCL_HICONSM synthesized from hIcon)"
 
 [masks]
