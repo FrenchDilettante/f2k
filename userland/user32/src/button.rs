@@ -19,10 +19,12 @@
 //! - a radio button the focus reaches unchecked, other than by a click, is clicked (the dialog
 //!   capture's Tab into an auto radio group sends its BN_CLICKED);
 //! - BM_SETSTYLE sets the style's low word; BM_SETSTATE the pushed bit;
-//! - WM_LBUTTONDOWN takes the focus and pushes it, WM_LBUTTONUP lets it go and clicks it (wherever
-//!   the release lands: only a mouse move off the button lets it go unclicked); WM_LBUTTONDBLCLK
-//!   sends BN_DBLCLK for a radio button, an owner-drawn one or a BS_NOTIFY one, and is another
-//!   press for the others;
+//! - WM_LBUTTONDOWN takes the mouse capture and the focus and pushes it; under the capture
+//!   WM_MOUSEMOVE lets it go off the button and pushes it again back over it; WM_LBUTTONUP lets it
+//!   go, releases the capture and clicks it when it was still pushed (the mousein capture's button
+//!   section: a press and a release over it send BN_CLICKED); a capture taken away mid-press lets
+//!   it go unclicked (WM_CAPTURECHANGED); WM_LBUTTONDBLCLK sends BN_DBLCLK for a radio button, an
+//!   owner-drawn one or a BS_NOTIFY one, and is another press for the others;
 //! - BS_NOTIFY sends BN_SETFOCUS and BN_KILLFOCUS as the focus comes and goes;
 //! - an owner-drawn button's focus and pushed state are drawn at once, WM_DRAWITEM with ODA_FOCUS
 //!   and ODA_SELECT; the focus leaving redraws it whole too;
@@ -155,6 +157,8 @@ pub const BST_PUSHED: u32 = 0x0004;
 pub const BST_FOCUS: u32 = 0x0008;
 /// The button is being clicked (BM_CLICK, Space, the mouse): its WM_SETFOCUS clicks nothing.
 const CLICKING: u32 = 0x0100;
+/// A mouse press took the capture: the button follows the mouse until the release.
+const CAPTURED: u32 = 0x0200;
 
 /// A button's extra bytes: its state block's address (0 before the first change).
 pub const BUTTON_EXTRA: i32 = 4;
@@ -255,11 +259,39 @@ fn draw_now(window: usize, action: u32) {
     crate::dc::release_dc(window, dc);
 }
 
-/// A mouse press: the focus taken, the button pushed.
+/// A mouse press: the capture and the focus taken, the button pushed.
 fn press(window: usize) {
-    change(window, CLICKING, 0);
+    change(window, CLICKING | CAPTURED, 0);
+    crate::mouse::set_capture(window);
     focus::set_focus(window);
     change(window, BST_PUSHED, 0);
+}
+
+/// A mouse move under the press's capture: the button pushed while the mouse is over it, let go
+/// while it is off it (lParam the point, in the button's client coordinates).
+fn follow(window: usize, lparam: i32) {
+    let x = i32::from(lparam as u16 as i16);
+    let y = i32::from((lparam >> 16) as u16 as i16);
+    let over = window::client_rect(window).is_some_and(|client| client.contains(x, y));
+    if over {
+        change(window, BST_PUSHED, 0);
+    } else {
+        change(window, 0, BST_PUSHED);
+    }
+}
+
+/// The release of a mouse press: the button let go, the capture released, and the button clicked
+/// when it was still pushed (the mouse over it), as Windows 2000's xxxBNReleaseCapture does.
+fn release(window: usize) {
+    let pushed = read(window, STATE) & BST_PUSHED != 0;
+    let captured = read(window, STATE) & CAPTURED != 0;
+    change(window, 0, BST_PUSHED | CLICKING | CAPTURED);
+    if captured {
+        crate::mouse::release_capture();
+    }
+    if pushed {
+        activate(window);
+    }
 }
 
 /// The check state set (redrawn when it changes).
@@ -457,12 +489,16 @@ fn button(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> 
             0
         }
         WM_LBUTTONUP => {
-            if read(window, STATE) & BST_PUSHED != 0 {
-                change(window, 0, BST_PUSHED | CLICKING);
-                activate(window);
-            } else {
-                change(window, 0, CLICKING);
-            }
+            release(window);
+            0
+        }
+        WM_MOUSEMOVE if read(window, STATE) & CAPTURED != 0 => {
+            follow(window, lparam);
+            0
+        }
+        WM_CAPTURECHANGED if read(window, STATE) & CAPTURED != 0 => {
+            // The capture taken away mid-press: the button let go, unclicked.
+            change(window, 0, BST_PUSHED | CLICKING | CAPTURED);
             0
         }
         WM_KEYDOWN if wparam == VK_SPACE => {
