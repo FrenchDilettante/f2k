@@ -511,7 +511,8 @@ mod services {
             let id = window_of(&m.windows, window)?;
             Ok::<_, NtStatus>(paint_area(&m.windows, id))
         })?;
-        let hdc = crate::win32k::dc::paint_dc(call, area.client, area.clip)?;
+        let update = crate::win32k::region::OwnedRegion::rect(area.paint);
+        let hdc = crate::win32k::dc::paint_dc(call, area.client, &update)?;
         with_manager(call.passive(), |m| {
             if let Some(id) = m.windows.window_from_handle(window.raw()) {
                 begin_validate(&mut m.windows, id);

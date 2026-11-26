@@ -30,7 +30,7 @@
 use rtl::dib::{rop3, sample, span, BLACKONWHITE, WHITEONBLACK};
 use rtl::gdi::{rop3 as rop_code, rop_uses_destination, Rect};
 
-use super::raster::{Pattern, Surface};
+use super::raster::{Clip, Pattern, Surface};
 
 /// Where a blit's source pixels come from.
 pub enum Source<'a> {
@@ -47,7 +47,7 @@ pub enum Source<'a> {
 /// region, the raster operation, the stretch mode, the destination DC's text and background
 /// colors and the source DC's background color (`0xRRGGBB`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Blit {
+pub struct Blit<'a> {
     pub x: i32,
     pub y: i32,
     pub width: i32,
@@ -56,7 +56,7 @@ pub struct Blit {
     pub source_y: i32,
     pub source_width: i32,
     pub source_height: i32,
-    pub clip: Rect,
+    pub clip: Clip<'a>,
     pub rop: u32,
     pub mode: u32,
     pub text: u32,
@@ -89,7 +89,7 @@ struct Convert {
 }
 
 impl Convert {
-    fn new(destination: &dyn Surface, source: &dyn Surface, blit: &Blit) -> Self {
+    fn new(destination: &dyn Surface, source: &dyn Surface, blit: &Blit<'_>) -> Self {
         Convert {
             text: destination.pixel(blit.text),
             background: destination.pixel(blit.background),
@@ -118,7 +118,7 @@ pub fn blit(
     destination: &mut dyn Surface,
     mut source: Source,
     pattern: Option<&Pattern>,
-    blit: &Blit,
+    blit: &Blit<'_>,
 ) {
     let (left, width, flip_x) = normalize(blit.x, blit.width);
     let (top, height, flip_y) = normalize(blit.y, blit.height);
@@ -133,7 +133,10 @@ pub fn blit(
         right: left.saturating_add(width),
         bottom: top.saturating_add(height),
     };
-    let area = target.intersect(blit.clip).intersect(destination.bounds());
+    let area = target
+        .intersect(blit.clip.bounds())
+        .intersect(destination.bounds());
+    let clip = blit.clip;
     if area.is_empty() {
         return;
     }
@@ -152,10 +155,12 @@ pub fn blit(
             return;
         }
         for y in area.top..area.bottom {
-            for x in area.left..area.right {
-                let paint = paint_at(destination, solid, pattern, x, y);
-                let old = if reads { destination.load(x, y) } else { 0 };
-                destination.store(x, y, rop3(code, paint, 0, old));
+            for (from, to) in clip.spans(y, area) {
+                for x in from..to {
+                    let paint = paint_at(destination, solid, pattern, x, y);
+                    let old = if reads { destination.load(x, y) } else { 0 };
+                    destination.store(x, y, rop3(code, paint, 0, old));
+                }
             }
         }
         return;
@@ -189,7 +194,6 @@ pub fn blit(
         let backwards = matches!(source, Source::Same)
             && (top > source_top || (top == source_top && left > source_left));
         let rows = area.top..area.bottom;
-        let columns = area.left..area.right;
         let each = |destination: &mut dyn Surface, y: i32, x: i32, source: &mut Source| {
             let (sx, sy) = (source_left + column(x), source_top + row(y));
             let converted = match source {
@@ -218,16 +222,26 @@ pub fn blit(
             let old = if reads { destination.load(x, y) } else { 0 };
             destination.store(x, y, rop3(code, paint, converted, old));
         };
+        // The clipping region's stretches of a row, walked the same way: a band's stretches are
+        // its rows', so every pixel of a row is read before the rows after it are written.
         if backwards {
             for y in rows.rev() {
-                for x in columns.clone().rev() {
-                    each(destination, y, x, &mut source);
+                let spans = clip.band(y);
+                for (from, to) in spans.iter().rev().filter_map(|rect| {
+                    let (from, to) = (rect.left.max(area.left), rect.right.min(area.right));
+                    (from < to).then_some((from, to))
+                }) {
+                    for x in (from..to).rev() {
+                        each(destination, y, x, &mut source);
+                    }
                 }
             }
         } else {
             for y in rows {
-                for x in columns.clone() {
-                    each(destination, y, x, &mut source);
+                for (from, to) in clip.spans(y, area) {
+                    for x in from..to {
+                        each(destination, y, x, &mut source);
+                    }
                 }
             }
         }
@@ -240,7 +254,7 @@ pub fn blit(
         _ => None,
     };
     for y in area.top..area.bottom {
-        for x in area.left..area.right {
+        for x in clip.spans(y, area).flat_map(|(from, to)| from..to) {
             let (i, j) = (column(x), row(y));
             let converted = match &mut source {
                 Source::Other(surface) => {
@@ -441,16 +455,18 @@ mod tests {
         }
     }
 
-    fn all(width: i32, height: i32) -> Rect {
-        Rect {
-            left: 0,
-            top: 0,
-            right: width,
-            bottom: height,
-        }
-    }
+    const EVERYWHERE: Rect = Rect::new(0, 0, 1000, 1000);
+    const FIRST_THREE: Rect = Rect::new(0, 0, 3, 1);
 
-    fn bit_blt(x: i32, y: i32, width: i32, height: i32, sx: i32, sy: i32, rop: u32) -> Blit {
+    fn bit_blt(
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+        sx: i32,
+        sy: i32,
+        rop: u32,
+    ) -> Blit<'static> {
         Blit {
             x,
             y,
@@ -460,7 +476,7 @@ mod tests {
             source_y: sy,
             source_width: width,
             source_height: height,
-            clip: all(1000, 1000),
+            clip: Clip::rect(&EVERYWHERE),
             rop,
             mode: BLACKONWHITE,
             text: 0,
@@ -634,7 +650,7 @@ mod tests {
         (x, y, width, height): (i32, i32, i32, i32),
         (sx, sy, sw, sh): (i32, i32, i32, i32),
         mode: u32,
-    ) -> Blit {
+    ) -> Blit<'static> {
         Blit {
             source_x: sx,
             source_y: sy,
@@ -725,7 +741,7 @@ mod tests {
     fn no_source_paints_the_pattern() {
         let mut destination = Pixels::new(4, 1, 32, &[1, 2, 3, 4]);
         let mut b = bit_blt(0, 0, 4, 1, 0, 0, PATCOPY);
-        b.clip = all(3, 1);
+        b.clip = Clip::rect(&FIRST_THREE);
         blit(
             &mut destination,
             Source::None,
@@ -743,5 +759,33 @@ mod tests {
             &bit_blt(0, 0, 2, 1, 0, 0, PATCOPY),
         );
         assert_eq!(eight.pixels, [1, 1]);
+    }
+
+    /// Within one surface, a blit clipped to a band of two stretches reads every source pixel
+    /// before it is overwritten, whichever stretch it lies in: a row moved one right and down
+    /// lands as the unclipped move would, inside the stretches alone.
+    #[test]
+    fn an_overlapping_blit_through_a_band_of_two_stretches() {
+        let before: Vec<u32> = (1..=16).collect();
+        let clip = [Rect::new(1, 1, 2, 4), Rect::new(3, 1, 4, 4)];
+        let mut clipped = Pixels::new(4, 4, 32, &before);
+        let mut b = bit_blt(1, 1, 3, 3, 0, 0, SRCCOPY);
+        b.clip = Clip::new(&clip, Rect::new(1, 1, 4, 4));
+        blit(&mut clipped, Source::Same, None, &b);
+        let mut whole = Pixels::new(4, 4, 32, &before);
+        blit(
+            &mut whole,
+            Source::Same,
+            None,
+            &bit_blt(1, 1, 3, 3, 0, 0, SRCCOPY),
+        );
+        for y in 0..4 {
+            for x in 0..4 {
+                let at = (y * 4 + x) as usize;
+                let inside = clip.iter().any(|rect| rect.contains(x, y));
+                let expected = if inside { whole.pixels[at] } else { before[at] };
+                assert_eq!(clipped.pixels[at], expected, "({x}, {y})");
+            }
+        }
     }
 }

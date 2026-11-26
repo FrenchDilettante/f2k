@@ -1285,6 +1285,62 @@ impl = { syscall = "crate::win32k::region::fill_rgn" }
 internal = true
 
 [[export]]
+name = "NtGdiExtSelectClipRgn"
+group = "regions"
+args = ["handle Dc", "handle Region", "u32 Mode", "ptr<u32> Complexity"]
+impl = { syscall = "crate::win32k::dc::ext_select_clip_rgn" }
+internal = true
+
+[[export]]
+name = "NtGdiIntersectClipRect"
+group = "regions"
+args = ["handle Dc", "i32 Left", "i32 Top", "i32 Right", "i32 Bottom", "ptr<u32> Complexity"]
+impl = { syscall = "crate::win32k::dc::intersect_clip_rect" }
+internal = true
+
+[[export]]
+name = "NtGdiExcludeClipRect"
+group = "regions"
+args = ["handle Dc", "i32 Left", "i32 Top", "i32 Right", "i32 Bottom", "ptr<u32> Complexity"]
+impl = { syscall = "crate::win32k::dc::exclude_clip_rect" }
+internal = true
+
+[[export]]
+name = "NtGdiOffsetClipRgn"
+group = "regions"
+args = ["handle Dc", "i32 X", "i32 Y", "ptr<u32> Complexity"]
+impl = { syscall = "crate::win32k::dc::offset_clip_rgn" }
+internal = true
+
+[[export]]
+name = "NtGdiGetAppClipBox"
+group = "regions"
+args = ["handle Dc", "ptr Box", "ptr<u32> Complexity"]
+impl = { syscall = "crate::win32k::dc::get_app_clip_box" }
+internal = true
+
+[[export]]
+name = "NtGdiGetRandomRgn"
+group = "regions"
+args = ["handle Dc", "handle Region", "u32 Which", "ptr<u32> Result"]
+impl = { syscall = "crate::win32k::dc::get_random_rgn" }
+internal = true
+
+[[export]]
+name = "NtGdiPtVisible"
+group = "regions"
+args = ["handle Dc", "i32 X", "i32 Y", "ptr<u32> Visible"]
+impl = { syscall = "crate::win32k::dc::pt_visible" }
+internal = true
+
+[[export]]
+name = "NtGdiRectVisible"
+group = "regions"
+args = ["handle Dc", "ptr Rect", "ptr<u32> Visible"]
+impl = { syscall = "crate::win32k::dc::rect_visible" }
+internal = true
+
+[[export]]
 name = "NtGdiFlush"
 group = "dc"
 args = []

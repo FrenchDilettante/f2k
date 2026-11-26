@@ -1823,6 +1823,11 @@ impl Directory {
                 crate::win32k::region::release_storage(&region);
                 None
             }
+            ObjectType::Dc => {
+                // A DC's clipping regions' blocks go with it.
+                self.dc(id).expect("deleting a live DC").release_regions();
+                None
+            }
             ObjectType::Event
             | ObjectType::Semaphore
             | ObjectType::Thread
@@ -1831,7 +1836,6 @@ impl Directory {
             | ObjectType::WindowStation
             | ObjectType::Desktop
             | ObjectType::Key
-            | ObjectType::Dc
             | ObjectType::Brush
             | ObjectType::Bitmap
             | ObjectType::Font

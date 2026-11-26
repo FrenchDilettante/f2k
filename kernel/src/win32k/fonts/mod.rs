@@ -1021,7 +1021,7 @@ mod target {
 
     /// The DC `handle` names, its state as it is now.
     pub fn dc_state(call: &mut NtCall, handle: Handle) -> Result<Dc, NtStatus> {
-        super::super::dc::dc_of(call, handle).map(|(_reference, dc)| dc)
+        super::super::dc::dc_of(call, handle).map(|(_reference, dc)| *dc)
     }
 
     /// The LOGFONT of the font object `handle` names in the calling process.

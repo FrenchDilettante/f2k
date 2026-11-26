@@ -1,7 +1,8 @@
 //! The rasterizer: text in the built-in font ([`super::font`]) or in a TrueType font's glyph
 //! bitmaps ([`TextOut::draw_bits`], placed by [`super::fonts`]), and single pixels, drawn into a
 //! [`Surface`] (the framebuffer, through its [`PixelMemory`] seam, or a memory DC's bitmap:
-//! [`super::bitmap`]), every pixel clipped to a clipping region. The DC services ([`super::dc`])
+//! [`super::bitmap`]), every pixel clipped to a clipping region ([`Clip`]: a DC's final region, y-x
+//! banded rectangles, [`super::region`]'s form). The DC services ([`super::dc`])
 //! hand it a DC's state; the host tests drive it against a fake pixel memory and assert exact
 //! pixels.
 //!
@@ -138,12 +139,102 @@ pub fn colorref(rgb: u32) -> u32 {
     screen_rgb(rgb)
 }
 
+/// A clipping region as the rasterizer reads it: y-x banded rectangles (see [`super::region`]),
+/// sorted by their top and then their left, those of a band sharing their top and bottom, the
+/// bands not overlapping. A DC's final region, or one rectangle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Clip<'a> {
+    rects: &'a [Rect],
+    bounds: Rect,
+}
+
+impl<'a> Clip<'a> {
+    /// The banded rectangles `rects`, their box `bounds`.
+    pub fn new(rects: &'a [Rect], bounds: Rect) -> Self {
+        Clip { rects, bounds }
+    }
+
+    /// The region of the one rectangle `rect` (nothing when it is empty).
+    pub fn rect(rect: &'a Rect) -> Self {
+        if rect.is_empty() {
+            return Clip::new(&[], Rect::EMPTY);
+        }
+        Clip::new(core::slice::from_ref(rect), *rect)
+    }
+
+    /// Its rectangles (the host tests').
+    #[cfg(test)]
+    pub fn rects_for_tests(&self) -> &'a [Rect] {
+        self.rects
+    }
+
+    /// Its box.
+    pub fn bounds(&self) -> Rect {
+        self.bounds
+    }
+
+    /// The rectangles of the band that holds row `y` (none when no band does), left to right.
+    pub fn band(&self, y: i32) -> &'a [Rect] {
+        if y < self.bounds.top || y >= self.bounds.bottom {
+            return &[];
+        }
+        // The bands' bottoms grow down the list: the first rectangle whose bottom is past `y`.
+        let start = self.rects.partition_point(|rect| rect.bottom <= y);
+        let Some(first) = self.rects.get(start).filter(|rect| rect.top <= y) else {
+            return &[];
+        };
+        let end = start
+            + self.rects[start..]
+                .iter()
+                .take_while(|rect| rect.top == first.top)
+                .count();
+        &self.rects[start..end]
+    }
+
+    /// Whether the pixel (`x`, `y`) is inside.
+    pub fn contains(&self, x: i32, y: i32) -> bool {
+        self.bounds.contains(x, y) && self.band(y).iter().any(|rect| rect.contains(x, y))
+    }
+
+    /// Whether any pixel of `rect` is inside.
+    pub fn touches(&self, rect: Rect) -> bool {
+        !rect.intersect(self.bounds).is_empty()
+            && self
+                .rects
+                .iter()
+                .any(|part| !part.intersect(rect).is_empty())
+    }
+
+    /// The stretches of row `y` inside both the region and `area`, left to right, as columns from
+    /// one to before the other.
+    pub fn spans(&self, y: i32, area: Rect) -> impl Iterator<Item = (i32, i32)> + 'a {
+        let band = if area.top <= y && y < area.bottom {
+            self.band(y)
+        } else {
+            &[]
+        };
+        band.iter().filter_map(move |rect| {
+            let (left, right) = (rect.left.max(area.left), rect.right.min(area.right));
+            (left < right).then_some((left, right))
+        })
+    }
+
+    /// Each part of `area` inside the region: its rectangles cut to `area`, in band order.
+    pub fn parts(&self, area: Rect) -> impl Iterator<Item = Rect> + 'a {
+        self.rects.iter().filter_map(move |rect| {
+            let part = rect.intersect(area);
+            (!part.is_empty()).then_some(part)
+        })
+    }
+}
+
 /// One ExtTextOutW's drawing: where it may draw, where, and in which colors.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct TextOut {
-    /// What every pixel is clipped to: the DC's clipping region, and the rectangle under
-    /// ETO_CLIPPED.
-    clip: Rect,
+pub struct TextOut<'a> {
+    /// What every pixel is clipped to: the DC's clipping region, and within it `limit` (the
+    /// rectangle under ETO_CLIPPED, the region's box otherwise).
+    clip: Clip<'a>,
+    limit: Rect,
     /// The rectangle ETO_OPAQUE fills with the background color first, clipped; none without it.
     fill: Option<Rect>,
     /// The row of the cells' top.
@@ -155,13 +246,13 @@ pub struct TextOut {
     background: Option<u32>,
 }
 
-impl TextOut {
+impl<'a> TextOut<'a> {
     /// The drawing ExtTextOut's `options` and `rect` ask, inside the DC's clipping region `clip`,
     /// in its `text_color` and `bk_color` (COLORREFs), the cells' background filled when `opaque`
     /// (the background mode OPAQUE), the cells' top at `y`. ETO_OPAQUE and ETO_CLIPPED take effect
     /// only with a rectangle.
     pub fn new(
-        clip: Rect,
+        clip: Clip<'a>,
         text_color: u32,
         bk_color: u32,
         opaque: bool,
@@ -171,10 +262,11 @@ impl TextOut {
     ) -> Self {
         let clipped = rect.filter(|_| options & ETO_CLIPPED != 0);
         TextOut {
-            clip: clipped.map_or(clip, |rect| clip.intersect(rect)),
+            clip,
+            limit: clipped.map_or(clip.bounds(), |rect| clip.bounds().intersect(rect)),
             fill: rect
                 .filter(|_| options & ETO_OPAQUE != 0)
-                .map(|rect| clip.intersect(rect)),
+                .map(|rect| clip.bounds().intersect(rect)),
             y,
             text: screen_rgb(text_color),
             fill_color: screen_rgb(bk_color),
@@ -186,12 +278,19 @@ impl TextOut {
     /// mode.
     pub fn fill_background<S: Surface + ?Sized>(&self, screen: &mut S) {
         if let Some(rect) = self.fill {
-            for y in rect.top..rect.bottom {
-                for x in rect.left..rect.right {
-                    screen.put_pixel(x as usize, y as usize, self.fill_color);
+            for part in self.clip.parts(rect) {
+                for y in part.top..part.bottom {
+                    for x in part.left..part.right {
+                        screen.put_pixel(x as usize, y as usize, self.fill_color);
+                    }
                 }
             }
         }
+    }
+
+    /// Whether the pixel (`x`, `y`) may be drawn.
+    fn inside(&self, x: i32, y: i32) -> bool {
+        self.limit.contains(x, y) && self.clip.contains(x, y)
     }
 
     /// Draw `units` from the pen's column `pen`, each character's cell `advances[i]` after the
@@ -231,7 +330,7 @@ impl TextOut {
         };
         for y in self.y..self.y.saturating_add(height) {
             for x in left..right {
-                if self.clip.contains(x, y) {
+                if self.inside(x, y) {
                     screen.put_pixel(x as usize, y as usize, background);
                 }
             }
@@ -261,7 +360,7 @@ impl TextOut {
                     continue;
                 }
                 let px = x.saturating_add(column as i32);
-                if self.clip.contains(px, py) {
+                if self.inside(px, py) {
                     screen.put_pixel(px as usize, py as usize, self.text);
                 }
             }
@@ -274,7 +373,7 @@ impl TextOut {
             let y = self.y.saturating_add(row as i32);
             for column in 0..font::WIDTH {
                 let x = x.saturating_add(column);
-                if !self.clip.contains(x, y) {
+                if !self.inside(x, y) {
                     continue;
                 }
                 let color = if bits & (0x80 >> column) != 0 {
@@ -391,12 +490,12 @@ impl Pattern {
 /// destination is read only when the operation reads it.
 pub fn pat_blt<S: Surface + ?Sized>(
     screen: &mut S,
-    clip: Rect,
+    clip: Clip,
     rect: Rect,
     rop: u32,
     pattern: Option<&Pattern>,
 ) {
-    let area = clip.intersect(rect).intersect(screen.bounds());
+    let area = rect.intersect(screen.bounds());
     let reads = rop_uses_destination(rop);
     let code = rop3(rop);
     let solid = match pattern {
@@ -404,16 +503,18 @@ pub fn pat_blt<S: Surface + ?Sized>(
         None => Some(0),
         _ => None,
     };
-    for y in area.top..area.bottom {
-        for x in area.left..area.right {
-            let paint = match (solid, pattern) {
-                (Some(pixel), _) => pixel,
-                (None, Some(pattern)) => screen.pixel(pattern.at(x, y)),
-                (None, None) => 0,
-            };
-            let destination = if reads { screen.load(x, y) } else { 0 };
-            let pixel = rtl::dib::rop3(code, paint, 0, destination);
-            screen.store(x, y, pixel);
+    for part in clip.parts(area) {
+        for y in part.top..part.bottom {
+            for x in part.left..part.right {
+                let paint = match (solid, pattern) {
+                    (Some(pixel), _) => pixel,
+                    (None, Some(pattern)) => screen.pixel(pattern.at(x, y)),
+                    (None, None) => 0,
+                };
+                let destination = if reads { screen.load(x, y) } else { 0 };
+                let pixel = rtl::dib::rop3(code, paint, 0, destination);
+                screen.store(x, y, pixel);
+            }
         }
     }
 }
@@ -423,7 +524,7 @@ pub fn pat_blt<S: Surface + ?Sized>(
 /// outside the clipping region (the screen untouched).
 pub fn set_pixel_on<S: Surface + ?Sized>(
     screen: Option<&mut S>,
-    clip: &Rect,
+    clip: Clip,
     x: i32,
     y: i32,
     color: u32,
@@ -442,7 +543,7 @@ pub fn set_pixel_on<S: Surface + ?Sized>(
 /// region.
 pub fn get_pixel_on<S: Surface + ?Sized>(
     screen: Option<&mut S>,
-    clip: &Rect,
+    clip: Clip,
     x: i32,
     y: i32,
 ) -> u32 {
@@ -541,8 +642,16 @@ mod tests {
     }
 
     /// ExtTextOut's drawing in a DC's default colors: black on white, OPAQUE.
-    fn black_on_white(clip: Rect, y: i32, options: u32, rect: Option<Rect>) -> TextOut {
-        TextOut::new(clip, 0x00_0000, 0xFF_FFFF, true, y, options, rect)
+    fn black_on_white(clip: &Rect, y: i32, options: u32, rect: Option<Rect>) -> TextOut<'_> {
+        TextOut::new(
+            Clip::rect(clip),
+            0x00_0000,
+            0xFF_FFFF,
+            true,
+            y,
+            options,
+            rect,
+        )
     }
 
     /// COLORREFs (0x00BBGGRR) become the framebuffer's 0xRRGGBB and back.
@@ -565,7 +674,7 @@ mod tests {
     fn text_draws_exact_pixels() {
         let mut screen = desktop(40, 30);
         let clip = Rect::new(0, 0, 40, 30);
-        let text = black_on_white(clip, 5, 0, None);
+        let text = black_on_white(&clip, 5, 0, None);
         assert_eq!(text.draw(&mut screen, 5, &units("Hi"), None), 21);
         let clip = Rect::new(0, 0, 40, 30);
         assert_eq!(
@@ -591,7 +700,7 @@ mod tests {
     fn transparent_text_leaves_the_background() {
         let mut screen = desktop(40, 30);
         let clip = Rect::new(0, 0, 40, 30);
-        TextOut::new(clip, 0x00_00FF, 0xFF_FFFF, false, 5, 0, None).draw(
+        TextOut::new(Clip::rect(&clip), 0x00_00FF, 0xFF_FFFF, false, 5, 0, None).draw(
             &mut screen,
             5,
             &units("Hi"),
@@ -614,7 +723,7 @@ mod tests {
         for (x, y) in [(-4, 2), (2, -6), (18, 2), (2, 10), (-6, -6), (20, 16)] {
             let mut screen = desktop(24, 20);
             let clip = Rect::new(0, 0, 24, 20);
-            black_on_white(clip, y, 0, None).draw(&mut screen, x, &units("AB"), None);
+            black_on_white(&clip, y, 0, None).draw(&mut screen, x, &units("AB"), None);
             assert_eq!(
                 drawn(&mut screen),
                 expected("AB", x, y, 0x00_0000, Some(0xFF_FFFF), screen_clip),
@@ -624,7 +733,7 @@ mod tests {
         // A DC whose clipping region is smaller than the screen: nothing past it.
         let mut screen = desktop(24, 20);
         let clip = Rect::new(3, 4, 10, 12);
-        black_on_white(clip, 0, 0, None).draw(&mut screen, 0, &units("AB"), None);
+        black_on_white(&clip, 0, 0, None).draw(&mut screen, 0, &units("AB"), None);
         assert_eq!(
             drawn(&mut screen),
             expected("AB", 0, 0, 0x00_0000, Some(0xFF_FFFF), clip)
@@ -633,7 +742,7 @@ mod tests {
         let mut screen = desktop(24, 20);
         let clip = Rect::new(0, 0, 24, 20);
         for (x, y) in [(i32::MIN, 0), (0, i32::MAX - 3), (100, 100), (-100, -100)] {
-            black_on_white(clip, y, 0, None).draw(&mut screen, x, &units("AB"), None);
+            black_on_white(&clip, y, 0, None).draw(&mut screen, x, &units("AB"), None);
         }
         assert!(drawn(&mut screen).is_empty());
     }
@@ -646,7 +755,7 @@ mod tests {
         let clip = Rect::new(0, 0, 40, 30);
         let area = Rect::new(0, 2, 30, 22);
         let text = TextOut::new(
-            clip,
+            Clip::rect(&clip),
             0x00_0000,
             0x00FF_0000,
             false,
@@ -676,7 +785,7 @@ mod tests {
         let mut screen = desktop(40, 30);
         let clip = Rect::new(0, 0, 40, 30);
         let narrow = Rect::new(2, 6, 12, 14);
-        let text = black_on_white(clip, 4, ETO_CLIPPED, Some(narrow));
+        let text = black_on_white(&clip, 4, ETO_CLIPPED, Some(narrow));
         text.fill_background(&mut screen);
         text.draw(&mut screen, 1, &units("abc"), None);
         assert_eq!(
@@ -685,7 +794,7 @@ mod tests {
         );
 
         let mut screen = desktop(40, 30);
-        let text = black_on_white(clip, 4, ETO_OPAQUE | ETO_CLIPPED, None);
+        let text = black_on_white(&clip, 4, ETO_OPAQUE | ETO_CLIPPED, None);
         text.fill_background(&mut screen);
         assert!(drawn(&mut screen).is_empty(), "no rectangle, no fill");
     }
@@ -696,7 +805,7 @@ mod tests {
     fn wide_strings_and_advances() {
         let mut screen = desktop(64, 20);
         let clip = Rect::new(0, 0, 64, 20);
-        let text = black_on_white(clip, 0, 0, None);
+        let text = black_on_white(&clip, 0, 0, None);
         let wide = [0x00E9u16, 0x2588, 0x4E00];
         assert_eq!(text.draw(&mut screen, 0, &wide, None), 24);
         assert_eq!(
@@ -737,33 +846,45 @@ mod tests {
         let mut screen = desktop(640, 480);
         let clip = Rect::new(0, 0, 640, 480);
         assert_eq!(
-            set_pixel_on(Some(&mut screen), &clip, 100, 100, 0x0003_0201),
+            set_pixel_on(Some(&mut screen), Clip::rect(&clip), 100, 100, 0x0003_0201),
             0x0003_0201
         );
         assert_eq!(at(&mut screen, 100, 100), 0x0001_0203, "stored as 0xRRGGBB");
         assert_eq!(
-            get_pixel_on(Some(&mut screen), &clip, 100, 100),
+            get_pixel_on(Some(&mut screen), Clip::rect(&clip), 100, 100),
             0x0003_0201
         );
         assert_eq!(
-            get_pixel_on(Some(&mut screen), &clip, 0, 0),
+            get_pixel_on(Some(&mut screen), Clip::rect(&clip), 0, 0),
             colorref(DESKTOP)
         );
         for (x, y) in [(-1, 0), (0, -1), (640, 0), (0, 480)] {
-            assert_eq!(set_pixel_on(Some(&mut screen), &clip, x, y, 0), CLR_INVALID);
-            assert_eq!(get_pixel_on(Some(&mut screen), &clip, x, y), CLR_INVALID);
+            assert_eq!(
+                set_pixel_on(Some(&mut screen), Clip::rect(&clip), x, y, 0),
+                CLR_INVALID
+            );
+            assert_eq!(
+                get_pixel_on(Some(&mut screen), Clip::rect(&clip), x, y),
+                CLR_INVALID
+            );
         }
         assert_eq!(drawn(&mut screen), [(100, 100, 0x0001_0203)]);
         assert_eq!(
-            set_pixel_on(Some(&mut screen), &Rect::new(0, 0, 0, 0), 5, 5, 0),
+            set_pixel_on(
+                Some(&mut screen),
+                Clip::rect(&Rect::new(0, 0, 0, 0)),
+                5,
+                5,
+                0
+            ),
             CLR_INVALID
         );
         assert_eq!(
-            set_pixel_on::<Framebuffer<Memory>>(None, &clip, 5, 5, 0),
+            set_pixel_on::<Framebuffer<Memory>>(None, Clip::rect(&clip), 5, 5, 0),
             CLR_INVALID
         );
         assert_eq!(
-            get_pixel_on::<Framebuffer<Memory>>(None, &clip, 5, 5),
+            get_pixel_on::<Framebuffer<Memory>>(None, Clip::rect(&clip), 5, 5),
             CLR_INVALID
         );
     }
@@ -802,21 +923,21 @@ mod tests {
         let all = Rect::new(0, 0, 8, 6);
         pat_blt(
             &mut screen,
-            all,
+            Clip::rect(&all),
             Rect::new(1, 1, 5, 3),
             rtl::gdi::PATCOPY,
             Some(&Pattern::Solid(RED)),
         );
         pat_blt(
             &mut screen,
-            all,
+            Clip::rect(&all),
             Rect::new(6, 0, 8, 2),
             rtl::gdi::BLACKNESS,
             None,
         );
         pat_blt(
             &mut screen,
-            all,
+            Clip::rect(&all),
             Rect::new(6, 4, 7, 6),
             rtl::gdi::WHITENESS,
             None,
@@ -841,7 +962,7 @@ mod tests {
         let clip = Rect::new(2, 1, 6, 5);
         pat_blt(
             &mut screen,
-            clip,
+            Clip::rect(&clip),
             Rect::new(-10, -10, 100, 100),
             rtl::gdi::PATCOPY,
             Some(&solid),
@@ -858,21 +979,21 @@ mod tests {
         let all = Rect::new(0, 0, 8, 6);
         pat_blt(
             &mut screen,
-            all,
+            Clip::rect(&all),
             Rect::new(5, 5, 2, 2),
             rtl::gdi::PATCOPY,
             Some(&solid),
         );
         pat_blt(
             &mut screen,
-            all,
+            Clip::rect(&all),
             Rect::new(3, 3, 3, 6),
             rtl::gdi::PATCOPY,
             Some(&solid),
         );
         pat_blt(
             &mut screen,
-            all,
+            Clip::rect(&all),
             Rect::new(i32::MIN, 0, i32::MIN + 2, 2),
             rtl::gdi::PATCOPY,
             Some(&solid),
@@ -888,7 +1009,7 @@ mod tests {
         let all = Rect::new(0, 0, 4, 2);
         pat_blt(
             &mut screen,
-            all,
+            Clip::rect(&all),
             Rect::new(0, 0, 2, 1),
             rtl::gdi::DSTINVERT,
             None,
@@ -897,7 +1018,7 @@ mod tests {
         assert_eq!(at(&mut screen, 2, 0), DESKTOP);
         pat_blt(
             &mut screen,
-            all,
+            Clip::rect(&all),
             Rect::new(0, 0, 2, 1),
             rtl::gdi::DSTINVERT,
             None,
@@ -906,7 +1027,7 @@ mod tests {
         let red = Pattern::Solid(RED);
         pat_blt(
             &mut screen,
-            all,
+            Clip::rect(&all),
             Rect::new(1, 0, 3, 2),
             rtl::gdi::PATINVERT,
             Some(&red),
@@ -914,7 +1035,7 @@ mod tests {
         assert_eq!(at(&mut screen, 1, 1), DESKTOP ^ RED);
         pat_blt(
             &mut screen,
-            all,
+            Clip::rect(&all),
             Rect::new(1, 0, 3, 2),
             rtl::gdi::PATINVERT,
             Some(&red),
@@ -940,7 +1061,13 @@ mod tests {
         assert_eq!(checker.at(-7, -8), WHITE, "and 8 pixels back");
         let mut screen = desktop(6, 3);
         let all = Rect::new(0, 0, 6, 3);
-        pat_blt(&mut screen, all, all, rtl::gdi::PATINVERT, Some(&checker));
+        pat_blt(
+            &mut screen,
+            Clip::rect(&all),
+            all,
+            rtl::gdi::PATINVERT,
+            Some(&checker),
+        );
         let inverted = !DESKTOP & 0x00FF_FFFF;
         let legend = [(DESKTOP, '.'), (inverted, 'X')];
         assert_eq!(
@@ -958,8 +1085,99 @@ mod tests {
         };
         let mut screen = desktop(10, 1);
         let all = Rect::new(0, 0, 10, 1);
-        pat_blt(&mut screen, all, all, rtl::gdi::PATCOPY, Some(&stripes));
+        pat_blt(
+            &mut screen,
+            Clip::rect(&all),
+            all,
+            rtl::gdi::PATCOPY,
+            Some(&stripes),
+        );
         let legend = [(RED, 'R'), (BLACK, 'K')];
         assert_eq!(picture(&mut screen, all, &legend), ["RRRRKKKKRR"]);
+    }
+
+    /// The regions capture's ExcludeClipRect hole, as banded rectangles.
+    const HOLED: [Rect; 4] = [
+        Rect::new(4, 2, 10, 3),
+        Rect::new(4, 3, 6, 5),
+        Rect::new(8, 3, 10, 5),
+        Rect::new(4, 5, 10, 6),
+    ];
+
+    /// A clipping region's bands: the band of a row, its points, and the stretches of a row
+    /// within an area.
+    #[test]
+    fn a_clip_reads_its_bands() {
+        let clip = Clip::new(&HOLED, Rect::new(4, 2, 10, 6));
+        assert_eq!(clip.band(1), []);
+        assert_eq!(clip.band(2), [HOLED[0]]);
+        assert_eq!(clip.band(4), [HOLED[1], HOLED[2]]);
+        assert_eq!(clip.band(6), []);
+        assert!(clip.contains(5, 3) && clip.contains(9, 4));
+        assert!(!clip.contains(6, 3) && !clip.contains(10, 2));
+        let spans: Vec<_> = clip.spans(3, Rect::new(5, 0, 9, 9)).collect();
+        assert_eq!(spans, [(5, 6), (8, 9)]);
+        assert_eq!(
+            clip.spans(3, Rect::new(0, 4, 16, 9)).count(),
+            0,
+            "a row outside"
+        );
+        assert!(clip.touches(Rect::new(5, 3, 7, 4)));
+        assert!(!clip.touches(Rect::new(6, 3, 8, 5)));
+        assert_eq!(Clip::rect(&Rect::EMPTY).band(0), []);
+    }
+
+    /// The regions capture's clipped PatBlt: BLACKNESS over the whole canvas paints the clipping
+    /// region and nothing else; text is cut by the hole too.
+    #[test]
+    fn drawing_is_clipped_to_a_complex_region() {
+        let mut screen = desktop(16, 8);
+        let clip = Clip::new(&HOLED, Rect::new(4, 2, 10, 6));
+        pat_blt(
+            &mut screen,
+            clip,
+            Rect::new(0, 0, 16, 8),
+            rtl::gdi::BLACKNESS,
+            None,
+        );
+        let legend = [(DESKTOP, '.'), (BLACK, '#')];
+        assert_eq!(
+            picture(&mut screen, Rect::new(0, 0, 16, 7), &legend),
+            [
+                "................",
+                "................",
+                "....######......",
+                "....##..##......",
+                "....##..##......",
+                "....######......",
+                "................",
+            ]
+        );
+        assert_eq!(set_pixel_on(Some(&mut screen), clip, 6, 3, 0), CLR_INVALID);
+        assert_eq!(get_pixel_on(Some(&mut screen), clip, 6, 3), CLR_INVALID);
+        assert_eq!(get_pixel_on(Some(&mut screen), clip, 5, 3), 0);
+
+        let mut screen = desktop(16, 20);
+        let text = TextOut::new(
+            clip,
+            0xFF_FFFF,
+            0x00_00FF,
+            true,
+            0,
+            ETO_OPAQUE,
+            Some(Rect::new(0, 0, 16, 20)),
+        );
+        text.fill_background(&mut screen);
+        text.draw(&mut screen, 0, &units("MM"), None);
+        for y in 0..20 {
+            for x in 0..16 {
+                let inside = clip.contains(x, y);
+                assert_eq!(
+                    at(&mut screen, x as usize, y as usize) != DESKTOP,
+                    inside,
+                    "({x}, {y})"
+                );
+            }
+        }
     }
 }

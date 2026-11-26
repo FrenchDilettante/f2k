@@ -4,9 +4,8 @@
 //!
 //! A DC is an object of the object manager ([`crate::ob`]'s Dc type), its body a [`Dc`]: its
 //! target, the screen or (a memory DC) its selected bitmap; its origin, where its logical (0, 0)
-//! lands on the screen; its clipping
-//! region, in screen coordinates, within the screen's extent when it was made (the framebuffer the
-//! graphics mode set, empty before it is); its text and background colors and background mode; the
+//! lands on the screen; its regions (see the clipping notes); its text and background colors and
+//! background mode; the
 //! objects it has selected. Its creator's process holds it through an entry of the GDI handle
 //! table ([`super::gdi`]), as Windows 2000 keeps a DC in GDI's own handle table, so its handle
 //! names it in that process alone, and a DC goes with its process's other GDI objects at its end.
@@ -20,9 +19,9 @@
 //!   GetDCEx of a window ([`get_dc`], [`get_dc_ex`]) a DC of its client area, GetWindowDC
 //!   ([`get_window_dc`]) and GetDCEx with DCX_WINDOW of its window rectangle, and BeginPaint
 //!   ([`paint_dc`]) one of its client area clipped to the update region: the DC's origin is the
-//!   area's top left, its clipping region the area (on the screen). A window's DC is not clipped by
-//!   the windows above it or by its children, whatever WS_CLIPCHILDREN says: there are no visible
-//!   regions yet;
+//!   area's top left, its visible region the area on the screen (cut to the update region for
+//!   BeginPaint's). A window's visible region is not cut by the windows above it or by its
+//!   children, whatever WS_CLIPCHILDREN says: F2K does not yet work out windows' visible regions;
 //! - the coordinates a drawing service takes are logical, the window origin taken off and the DC's
 //!   origin added (the mapping mode is MM_TEXT, its viewport origin zero; the window origin is
 //!   SetWindowOrgEx's, an attribute);
@@ -44,10 +43,28 @@
 //! - SetPixel and GetPixel through the framebuffer, clipped alike;
 //! - memory DCs (CreateCompatibleDC's, [`create_compatible_dc`]): a DC that draws on the bitmap it
 //!   holds, the default 1 by 1 monochrome one at first ([`super::bitmap`]), its origin (0, 0) and
-//!   its clipping region the bitmap's extent; text, pixels and fills go to the bitmap's pixels as
-//!   to the screen's, through the surface the DC draws on ([`super::bitmap::with_surface`]);
+//!   its visible region the bitmap's extent; text, pixels and fills go to the bitmap's pixels as to
+//!   the screen's, through the surface the DC draws on ([`super::bitmap::with_surface`]);
 //! - the stretch mode and the brush origin, as attributes (SetStretchBltMode takes any value, as
 //!   Windows 2000's does).
+//!
+//! # Clipping
+//!
+//! A DC clips as Windows 2000's does, through regions ([`super::region`]'s y-x banded rectangles,
+//! each the DC's own block): its visible region (the surface's coordinates: the screen's extent,
+//! a window's area on the screen, BeginPaint's cut to the update region, a memory DC's bitmap's
+//! extent), its meta region and its clipping region (device coordinates, from the DC's origin;
+//! none of either at first, and F2K serves no SetMetaRgn), and the final region they make, the
+//! visible region within the other two, which the rasterizer clips every pixel of every drawing to
+//! ([`super::raster::Clip`]). A service draws with a copy of the final region ([`DcState`]), never
+//! with the DC's own blocks, which another thread's clipping call may give back meanwhile; the
+//! DC's deletion gives its blocks back.
+//!
+//! The clipping calls work on the clipping region, a call that finds none starting from the DC's
+//! extent (a mode over no clipping region is the mode over the whole DC: RGN_OR makes it the
+//! extent, RGN_DIFF the extent less the region); their logical rectangles go to device
+//! coordinates through the window origin (MM_TEXT). Each answers the final region's complexity, as
+//! the regions capture shows, but IntersectClipRect, which answers COMPLEXREGION whatever is left.
 //!
 //! The services (F2K's argument lists, see [`crate::win32k`]; a DC handle that names no DC is
 //! STATUS_INVALID_HANDLE):
@@ -77,7 +94,18 @@
 //!   Count, ptr Size): the font's TEXTMETRICW, a string's SIZE;
 //! - NtGdiSetPixel(handle Dc, i32 X, i32 Y, u32 Color, ptr<u32> Set) and NtGdiGetPixel(handle Dc,
 //!   i32 X, i32 Y, ptr<u32> Color): the color set, or read; CLR_INVALID for a pixel outside the
-//!   clipping region.
+//!   final region;
+//! - NtGdiExtSelectClipRgn(handle Dc, handle Region, u32 Mode, ptr<u32> Complexity),
+//!   NtGdiIntersectClipRect and NtGdiExcludeClipRect(handle Dc, i32 Left, i32 Top, i32 Right, i32
+//!   Bottom, ptr<u32> Complexity), NtGdiOffsetClipRgn(handle Dc, i32 X, i32 Y, ptr<u32>
+//!   Complexity): the clipping region changed (see the clipping notes), the final region's
+//!   complexity answered; STATUS_NO_MEMORY when the pool has no room (the clipping as it was);
+//! - NtGdiGetAppClipBox(handle Dc, ptr Box, ptr<u32> Complexity): the final region's box in logical
+//!   coordinates; NtGdiGetRandomRgn(handle Dc, handle Region, u32 Which, ptr<u32> Result): with
+//!   CLIPRGN, the region made a copy of the clipping region (1), or 0 without one;
+//! - NtGdiPtVisible(handle Dc, i32 X, i32 Y, ptr<u32> Visible) and NtGdiRectVisible(handle Dc, ptr
+//!   Rect, ptr<u32> Visible): whether the logical point, or any of the rectangle, is inside the
+//!   final region.
 
 use rtl::gdi::*;
 use rtl::pod::Pod;
@@ -87,7 +115,8 @@ use super::bitmap::with_surface;
 use super::brush::Fill;
 use super::font;
 use super::fonts::table::Realization;
-use super::raster::{advanced, get_pixel_on, set_pixel_on, Surface, TextOut};
+use super::raster::{advanced, get_pixel_on, set_pixel_on, Clip, Surface, TextOut};
+use super::region::{ordered, OwnedRegion, Region};
 use crate::hw::vbe::Framebuffer;
 use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use crate::status::*;
@@ -101,9 +130,21 @@ pub struct Dc {
     /// Where the logical (0, 0) lands on the screen: the screen's own, or a window's area's top
     /// left. It is the brush origin too.
     pub origin: (i32, i32),
-    /// The clipping region, in screen coordinates: the screen's extent when the DC was made (a
-    /// window's area within it), empty before the graphics mode is set.
-    pub clip: Rect,
+    /// The DC's extent from its origin: the screen's, a window's area's, or a memory DC's
+    /// bitmap's. With no clipping region, the region the clipping calls start from.
+    pub extent: (i32, i32),
+    /// The visible region, in the surface's coordinates (see the clipping notes): its extent on
+    /// the screen (or the bitmap), BeginPaint's cut to the update region. Its own block.
+    vis: Region,
+    /// The meta region and the clipping region (SetMetaRgn's and SelectClipRgn's), in device
+    /// coordinates (from the DC's origin), each its own block; none without one. F2K serves no
+    /// SetMetaRgn: the meta region is always none.
+    meta: Option<Region>,
+    clip_rgn: Option<Region>,
+    /// The final region every drawing is clipped to, in the surface's coordinates: the visible
+    /// region within the meta and clipping regions; none when there is neither, the visible
+    /// region itself. Its own block.
+    rao: Option<Region>,
     /// The text color, the background color (COLORREFs, as set) and the background mode.
     pub text_color: u32,
     pub bk_color: u32,
@@ -139,12 +180,11 @@ impl Dc {
     pub const fn none() -> Self {
         Dc {
             origin: (0, 0),
-            clip: Rect {
-                left: 0,
-                top: 0,
-                right: 0,
-                bottom: 0,
-            },
+            extent: (0, 0),
+            vis: Region::none(),
+            meta: None,
+            clip_rgn: None,
+            rao: None,
             text_color: 0,
             bk_color: 0,
             bk_mode: 0,
@@ -169,12 +209,11 @@ impl Dc {
         let stock = |index| stock_handle(index).expect("a stock object");
         Dc {
             origin: (0, 0),
-            clip: Rect {
-                left: 0,
-                top: 0,
-                right: width,
-                bottom: height,
-            },
+            extent: (width, height),
+            vis: Region::rect(ordered(0, 0, width, height)),
+            meta: None,
+            clip_rgn: None,
+            rao: None,
             text_color: DEFAULT_TEXT_COLOR,
             bk_color: DEFAULT_BK_COLOR,
             bk_mode: DEFAULT_BK_MODE,
@@ -212,12 +251,8 @@ impl Dc {
         height: i32,
     ) -> u32 {
         self.bitmap_object = object;
-        self.clip = Rect {
-            left: 0,
-            top: 0,
-            right: width,
-            bottom: height,
-        };
+        self.extent = (width, height);
+        self.set_vis(OwnedRegion::rect(Rect::new(0, 0, width, height)));
         core::mem::replace(&mut self.bitmap, handle)
     }
 
@@ -243,7 +278,9 @@ impl Dc {
     pub fn window(width: i32, height: i32, area: Rect) -> Self {
         let mut dc = Dc::screen(width, height);
         dc.origin = (area.left, area.top);
-        dc.clip = dc.clip.intersect(area);
+        dc.extent = (area.width(), area.height());
+        let visible = Rect::new(0, 0, width, height).intersect(area);
+        dc.set_vis(OwnedRegion::rect(visible));
         dc
     }
 
@@ -348,6 +385,281 @@ impl Dc {
     pub fn select_font_object(&mut self, handle: u32, id: crate::ob::ObjectId) -> u32 {
         self.font_object = Some(id);
         core::mem::replace(&mut self.font, handle)
+    }
+}
+
+// --- Clipping ------------------------------------------------------------------------------------
+
+/// What a clipping call answers when the pool has no room for the region it makes (the DC's
+/// clipping as it was).
+pub const NO_ROOM: NtStatus = STATUS_NO_MEMORY;
+
+impl Dc {
+    /// The DC's extent as a region's rectangle, in device coordinates.
+    fn device_extent(&self) -> Rect {
+        Rect::new(0, 0, self.extent.0, self.extent.1)
+    }
+
+    /// The final region's body: the composed one, or the visible region.
+    fn final_body(&self) -> &Region {
+        self.rao.as_ref().unwrap_or(&self.vis)
+    }
+
+    /// The rectangles of one of the DC's own regions.
+    fn rects_of(region: &Region) -> &[Rect] {
+        // SAFETY: a DC's regions are its own blocks, read through the body that owns them (the
+        // directory's, in its hold, or a test's): a DC handed out of the directory carries none
+        // ([`DcState`]).
+        unsafe { region.rects() }
+    }
+
+    /// The final region every drawing is clipped to (the surface's coordinates).
+    pub fn final_region(&self) -> Clip<'_> {
+        let body = self.final_body();
+        Clip::new(Dc::rects_of(body), body.bounds)
+    }
+
+    /// A copy of the final region, its holder's own; none when the pool has no room.
+    pub fn final_copy(&self) -> Option<OwnedRegion> {
+        OwnedRegion::of_rects(Dc::rects_of(self.final_body()))
+    }
+
+    /// The clipping region's copy (device coordinates); none without one, or when the pool has
+    /// no room (`Err`).
+    pub fn clip_copy(&self) -> Result<Option<OwnedRegion>, NtStatus> {
+        self.clip_rgn
+            .as_ref()
+            .map(|region| OwnedRegion::of_rects(Dc::rects_of(region)).ok_or(NO_ROOM))
+            .transpose()
+    }
+
+    /// Give back the DC's regions' blocks, the DC left with empty ones: its deletion.
+    pub fn release_regions(&mut self) {
+        for region in [
+            Some(core::mem::replace(&mut self.vis, Region::none())),
+            self.meta.take(),
+            self.clip_rgn.take(),
+            self.rao.take(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            super::region::release_storage(&region);
+        }
+    }
+
+    /// Make `vis` the visible region (the old one's block given back) and compose the final
+    /// region again.
+    pub fn set_vis(&mut self, vis: OwnedRegion) -> bool {
+        let old = core::mem::replace(&mut self.vis, vis.into_inner());
+        super::region::release_storage(&old);
+        self.compose()
+    }
+
+    /// Make `clip` the clipping region (device coordinates; none: no clipping region), the old
+    /// one's block given back, and compose the final region again; the final region's complexity,
+    /// or [`NO_ROOM`] (the clipping as it was).
+    fn set_clip(&mut self, clip: Option<OwnedRegion>) -> Result<i32, NtStatus> {
+        let old = core::mem::replace(&mut self.clip_rgn, clip.map(OwnedRegion::into_inner));
+        if !self.compose() {
+            let new = core::mem::replace(&mut self.clip_rgn, old);
+            if let Some(new) = new {
+                super::region::release_storage(&new);
+            }
+            self.compose();
+            return Err(NO_ROOM);
+        }
+        if let Some(old) = old {
+            super::region::release_storage(&old);
+        }
+        Ok(self.final_body().complexity())
+    }
+
+    /// The final region composed again: the visible region within the meta region and the
+    /// clipping region (each moved from device coordinates to the surface's); false when the pool
+    /// has no room, the final region then empty, so nothing is drawn outside the clipping asked.
+    fn compose(&mut self) -> bool {
+        if let Some(old) = self.rao.take() {
+            super::region::release_storage(&old);
+        }
+        let mut answer: Option<OwnedRegion> = None;
+        for limit in [self.meta.as_ref(), self.clip_rgn.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            let base = match &answer {
+                Some(region) => region.rects(),
+                None => Dc::rects_of(&self.vis),
+            };
+            let moved = OwnedRegion::moved(Dc::rects_of(limit), self.origin.0, self.origin.1);
+            let Some(next) =
+                moved.and_then(|moved| OwnedRegion::combined(base, moved.rects(), |a, b| a && b))
+            else {
+                self.rao = Some(Region::none());
+                return false;
+            };
+            answer = Some(next);
+        }
+        self.rao = answer.map(OwnedRegion::into_inner);
+        true
+    }
+
+    /// The device point of the logical point (`x`, `y`) (MM_TEXT: the window origin taken off).
+    fn device_point(&self, x: i32, y: i32) -> (i32, i32) {
+        (
+            x.saturating_sub(self.window_org.0),
+            y.saturating_sub(self.window_org.1),
+        )
+    }
+
+    /// The device rectangle of the logical rectangle `rect`, its edges put in order.
+    fn device_rect(&self, rect: Rect) -> Rect {
+        let (left, top) = self.device_point(rect.left, rect.top);
+        let (right, bottom) = self.device_point(rect.right, rect.bottom);
+        Rect::new(
+            left.min(right),
+            top.min(bottom),
+            left.max(right),
+            top.max(bottom),
+        )
+    }
+
+    /// ExtSelectClipRgn: the clipping region made what `mode` makes of it (with none, of the DC's
+    /// extent) and `region` (device coordinates); RGN_COPY makes it a copy of `region`, or none
+    /// for no region. The final region's complexity; STATUS_INVALID_PARAMETER for another mode or
+    /// for no region in another mode (the clipping as it was).
+    pub fn select_clip(&mut self, region: Option<&[Rect]>, mode: u32) -> Result<i32, NtStatus> {
+        let keep = super::region::keeps(mode).ok_or(STATUS_INVALID_PARAMETER)?;
+        let new = match region {
+            None if mode == RGN_COPY => None,
+            None => return Err(STATUS_INVALID_PARAMETER),
+            Some(rects) if mode == RGN_COPY => Some(OwnedRegion::of_rects(rects).ok_or(NO_ROOM)?),
+            Some(rects) => Some(self.combined_clip(rects, keep)?),
+        };
+        self.set_clip(new)
+    }
+
+    /// The clipping region (the DC's extent for none) combined with `rects` by `keep`.
+    fn combined_clip(
+        &self,
+        rects: &[Rect],
+        keep: fn(bool, bool) -> bool,
+    ) -> Result<OwnedRegion, NtStatus> {
+        let extent = self.device_extent();
+        let current = match &self.clip_rgn {
+            Some(region) => Dc::rects_of(region),
+            None if extent.is_empty() => &[],
+            None => core::slice::from_ref(&extent),
+        };
+        OwnedRegion::combined(current, rects, keep).ok_or(NO_ROOM)
+    }
+
+    /// IntersectClipRect: the clipping region (the DC's extent for none) cut to the logical
+    /// rectangle `rect`. Windows 2000 answers COMPLEXREGION for what is left whatever its shape
+    /// (the regions capture's IntersectClipRect of a rectangle within a rectangle), NULLREGION
+    /// when nothing is.
+    pub fn intersect_clip(&mut self, rect: Rect) -> Result<i32, NtStatus> {
+        let rect = self.device_rect(rect);
+        let cut: &[Rect] = if rect.is_empty() {
+            &[]
+        } else {
+            core::slice::from_ref(&rect)
+        };
+        let new = self.combined_clip(cut, |a, b| a && b)?;
+        let complexity = self.set_clip(Some(new))?;
+        Ok(if complexity == NULLREGION {
+            NULLREGION
+        } else {
+            COMPLEXREGION
+        })
+    }
+
+    /// ExcludeClipRect: the logical rectangle `rect` taken out of the clipping region (the DC's
+    /// extent for none); the final region's complexity.
+    pub fn exclude_clip(&mut self, rect: Rect) -> Result<i32, NtStatus> {
+        let rect = self.device_rect(rect);
+        let cut: &[Rect] = if rect.is_empty() {
+            &[]
+        } else {
+            core::slice::from_ref(&rect)
+        };
+        let new = self.combined_clip(cut, |a, b| a && !b)?;
+        self.set_clip(Some(new))
+    }
+
+    /// OffsetClipRgn: the clipping region moved by (`dx`, `dy`) (logical units, MM_TEXT's
+    /// device ones); without one, nothing moves. The final region's complexity.
+    pub fn offset_clip(&mut self, dx: i32, dy: i32) -> Result<i32, NtStatus> {
+        let Some(clip) = &self.clip_rgn else {
+            return Ok(self.final_body().complexity());
+        };
+        let moved = OwnedRegion::moved(Dc::rects_of(clip), dx, dy).ok_or(NO_ROOM)?;
+        self.set_clip(Some(moved))
+    }
+
+    /// GetClipBox: the final region's complexity and box, in logical coordinates (the empty
+    /// rectangle for an empty region).
+    pub fn clip_box(&self) -> (i32, Rect) {
+        let body = self.final_body();
+        if body.count() == 0 {
+            return (NULLREGION, Rect::EMPTY);
+        }
+        let (left, top) = self.logical_origin();
+        (
+            body.complexity(),
+            body.bounds.saturating_offset_back(left, top),
+        )
+    }
+
+    /// PtVisible: whether the logical point is inside the final region.
+    pub fn point_visible(&self, x: i32, y: i32) -> bool {
+        let (x, y) = self.screen_point(x, y);
+        self.final_region().contains(x, y)
+    }
+
+    /// RectVisible: whether any pixel of the logical rectangle (its edges put in order) is inside
+    /// the final region.
+    pub fn rect_visible(&self, rect: Rect) -> bool {
+        let rect = self
+            .device_rect(rect)
+            .saturating_offset(self.origin.0, self.origin.1);
+        self.final_region().touches(rect)
+    }
+}
+
+/// A DC's state as a service draws with it, out of the directory: the DC's attributes, and a copy
+/// of its final region, the holder's own (the DC's own regions are not in it: their blocks are
+/// the directory's body's, which another thread's call may give back).
+#[derive(Debug)]
+pub struct DcState {
+    dc: Dc,
+    clip: OwnedRegion,
+}
+
+impl DcState {
+    /// The state of the DC `dc` (read in the hold of the directory that holds it); none when the
+    /// pool has no room for its final region's copy.
+    pub fn of(dc: &Dc) -> Option<DcState> {
+        let clip = dc.final_copy()?;
+        let mut copy = *dc;
+        copy.vis = Region::none();
+        copy.meta = None;
+        copy.clip_rgn = None;
+        copy.rao = None;
+        Some(DcState { dc: copy, clip })
+    }
+
+    /// The final region every drawing is clipped to (the surface's coordinates).
+    pub fn clip(&self) -> Clip<'_> {
+        self.clip.clip()
+    }
+}
+
+impl core::ops::Deref for DcState {
+    type Target = Dc;
+
+    fn deref(&self) -> &Dc {
+        &self.dc
     }
 }
 
@@ -538,7 +850,7 @@ pub fn ext_text_out_w(
     };
     let (x, y) = dc.screen_point(x, y);
     let text = TextOut::new(
-        dc.clip,
+        dc.clip(),
         dc.text_color,
         dc.bk_color,
         dc.bk_mode == OPAQUE,
@@ -661,7 +973,7 @@ pub fn set_pixel(
     let (_reference, dc) = dc_of(call, dc)?;
     let (x, y) = dc.screen_point(x, y);
     let set = with_surface(&dc, |surface| {
-        set_pixel_on(Some(surface), &dc.clip, x, y, color)
+        set_pixel_on(Some(surface), dc.clip(), x, y, color)
     })
     .unwrap_or(CLR_INVALID);
     out.write(set)?;
@@ -672,9 +984,135 @@ pub fn set_pixel(
 pub fn get_pixel(call: &mut NtCall, dc: Handle, x: i32, y: i32, out: UserPtr<u32>) -> NtResult {
     let (_reference, dc) = dc_of(call, dc)?;
     let (x, y) = dc.screen_point(x, y);
-    let color = with_surface(&dc, |surface| get_pixel_on(Some(surface), &dc.clip, x, y))
+    let color = with_surface(&dc, |surface| get_pixel_on(Some(surface), dc.clip(), x, y))
         .unwrap_or(CLR_INVALID);
     out.write(color)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtGdiExtSelectClipRgn(Dc, Region, Mode, Complexity): see [`Dc::select_clip`]; the region (a
+/// null handle: none) is read as it is now, a copy kept (the caller may delete it).
+pub fn ext_select_clip_rgn(
+    call: &mut NtCall,
+    dc: Handle,
+    region: Handle,
+    mode: u32,
+    out: UserPtr<u32>,
+) -> NtResult {
+    dc_of(call, dc)?;
+    let source = if region.raw() == 0 {
+        None
+    } else {
+        Some(super::region::copy_of(call, region)?)
+    };
+    let rects = source.as_ref().map(OwnedRegion::rects);
+    let complexity = update_dc(call, dc, |dc| dc.select_clip(rects, mode))??;
+    out.write(complexity as u32)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtGdiIntersectClipRect(Dc, Left, Top, Right, Bottom, Complexity): see
+/// [`Dc::intersect_clip`].
+pub fn intersect_clip_rect(
+    call: &mut NtCall,
+    dc: Handle,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    out: UserPtr<u32>,
+) -> NtResult {
+    let rect = Rect::new(left, top, right, bottom);
+    let complexity = update_dc(call, dc, |dc| dc.intersect_clip(rect))??;
+    out.write(complexity as u32)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtGdiExcludeClipRect(Dc, Left, Top, Right, Bottom, Complexity): see [`Dc::exclude_clip`].
+pub fn exclude_clip_rect(
+    call: &mut NtCall,
+    dc: Handle,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+    out: UserPtr<u32>,
+) -> NtResult {
+    let rect = Rect::new(left, top, right, bottom);
+    let complexity = update_dc(call, dc, |dc| dc.exclude_clip(rect))??;
+    out.write(complexity as u32)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtGdiOffsetClipRgn(Dc, X, Y, Complexity): see [`Dc::offset_clip`].
+pub fn offset_clip_rgn(
+    call: &mut NtCall,
+    dc: Handle,
+    x: i32,
+    y: i32,
+    out: UserPtr<u32>,
+) -> NtResult {
+    let complexity = update_dc(call, dc, |dc| dc.offset_clip(x, y))??;
+    out.write(complexity as u32)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtGdiGetAppClipBox(Dc, Box, Complexity): see [`Dc::clip_box`].
+pub fn get_app_clip_box(
+    call: &mut NtCall,
+    dc: Handle,
+    rect: UserAddr,
+    out: UserPtr<u32>,
+) -> NtResult {
+    let (complexity, bounds) = update_dc(call, dc, |dc| dc.clip_box())?;
+    rect.cast::<Rect>().write(bounds)?;
+    out.write(complexity as u32)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// GetRandomRgn's CLIPRGN: the clipping region.
+pub const CLIPRGN: u32 = 1;
+
+/// NtGdiGetRandomRgn(Dc, Region, Which, Result): with [`CLIPRGN`], the region made a copy of the
+/// clipping region (device coordinates) and 1 answered, or 0 without one (the region untouched);
+/// STATUS_INVALID_PARAMETER for another region kind.
+pub fn get_random_rgn(
+    call: &mut NtCall,
+    dc: Handle,
+    region: Handle,
+    which: u32,
+    out: UserPtr<u32>,
+) -> NtResult {
+    if which != CLIPRGN {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    let clip = update_dc(call, dc, |dc| dc.clip_copy())??;
+    let answer = match clip {
+        Some(clip) => {
+            super::region::assign(call, region, &clip)?;
+            1
+        }
+        None => {
+            super::region::copy_of(call, region)?;
+            0
+        }
+    };
+    out.write(answer)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtGdiPtVisible(Dc, X, Y, Visible): see [`Dc::point_visible`].
+pub fn pt_visible(call: &mut NtCall, dc: Handle, x: i32, y: i32, out: UserPtr<u32>) -> NtResult {
+    let visible = update_dc(call, dc, |dc| dc.point_visible(x, y))?;
+    out.write(visible as u32)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtGdiRectVisible(Dc, Rect, Visible): see [`Dc::rect_visible`].
+pub fn rect_visible(call: &mut NtCall, dc: Handle, rect: UserAddr, out: UserPtr<u32>) -> NtResult {
+    let rect = rect.cast::<Rect>().read()?;
+    let visible = update_dc(call, dc, |dc| dc.rect_visible(rect))?;
+    out.write(visible as u32)?;
     Ok(STATUS_SUCCESS)
 }
 
@@ -771,15 +1209,38 @@ fn hand_out(call: &mut NtCall, dc: Dc, out: UserPtr<u32>) -> NtResult {
     Ok(STATUS_SUCCESS)
 }
 
-/// BeginPaint's DC: a DC of the window's client area `client` clipped to `clip` (both screen
-/// coordinates: `clip` the part of the client area its update region covers), its handle the
-/// calling process's; STATUS_INSUFFICIENT_RESOURCES when the DCs' pool or the GDI table is full.
+/// BeginPaint's DC: a DC of the window's client area `client` (screen coordinates), its visible
+/// region cut to `update` (the update region, client coordinates), its handle the calling
+/// process's; STATUS_INSUFFICIENT_RESOURCES when the DCs' pool or the GDI table is full,
+/// STATUS_NO_MEMORY when the pool has no room for the region.
 #[cfg(target_arch = "x86")]
-pub(super) fn paint_dc(call: &mut NtCall, client: Rect, clip: Rect) -> Result<u32, NtStatus> {
+pub(super) fn paint_dc(
+    call: &mut NtCall,
+    client: Rect,
+    update: &OwnedRegion,
+) -> Result<u32, NtStatus> {
     let (width, height) = screen_extent();
     let mut dc = Dc::window(width, height, client);
-    dc.clip = dc.clip.intersect(clip);
+    let painted = paint_vis(&dc, update).ok_or(STATUS_NO_MEMORY);
+    let painted = match painted {
+        Ok(painted) => painted,
+        Err(status) => {
+            dc.release_regions();
+            return Err(status);
+        }
+    };
+    if !dc.set_vis(painted) {
+        dc.release_regions();
+        return Err(STATUS_NO_MEMORY);
+    }
     publish_dc(call, dc)
+}
+
+/// BeginPaint's visible region: the window DC's `dc` cut to the update region `update` (client
+/// coordinates, moved to the screen's by the DC's origin); none when the pool has no room.
+pub fn paint_vis(dc: &Dc, update: &OwnedRegion) -> Option<OwnedRegion> {
+    let moved = OwnedRegion::moved(update.rects(), dc.origin.0, dc.origin.1)?;
+    OwnedRegion::combined(Dc::rects_of(&dc.vis), moved.rects(), |a, b| a && b)
 }
 
 /// EndPaint's release of BeginPaint's DC: its handle closed; STATUS_INVALID_HANDLE when the handle
@@ -792,9 +1253,11 @@ pub(super) fn release_paint_dc(call: &mut NtCall, handle: u32) -> Result<(), NtS
 /// A DC of state `dc` made, its GDI handle the calling process's ([`super::gdi`]);
 /// STATUS_INSUFFICIENT_RESOURCES when the DCs' pool or the GDI table is full.
 #[cfg(target_arch = "x86")]
-fn publish_dc(_call: &mut NtCall, dc: Dc) -> Result<u32, NtStatus> {
-    let id = crate::ob::locked(|directory| directory.create_dc(dc))
-        .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+fn publish_dc(_call: &mut NtCall, mut dc: Dc) -> Result<u32, NtStatus> {
+    let Some(id) = crate::ob::locked(|directory| directory.create_dc(dc)) else {
+        dc.release_regions();
+        return Err(STATUS_INSUFFICIENT_RESOURCES);
+    };
     super::gdi::insert(id).ok_or(STATUS_INSUFFICIENT_RESOURCES)
 }
 
@@ -830,16 +1293,18 @@ fn names_object(_call: &mut NtCall, handle: Handle) -> bool {
 }
 
 /// The DC `handle` names in the calling process, referenced for as long as the caller keeps the
-/// reference, and its state as it is now.
+/// reference, and its state as it is now ([`DcState`]); STATUS_NO_MEMORY when the pool has no
+/// room for its final region's copy.
 #[cfg(target_arch = "x86")]
 pub(super) fn dc_of(
     _call: &mut NtCall,
     handle: Handle,
-) -> Result<(crate::ob::ObRef, Dc), NtStatus> {
+) -> Result<(crate::ob::ObRef, DcState), NtStatus> {
     let reference =
         super::gdi::reference(handle.raw(), super::gdi::DC_KIND).ok_or(STATUS_INVALID_HANDLE)?;
-    let dc = crate::ob::locked(|directory| directory.dc(reference.id()).copied())
-        .ok_or(STATUS_INVALID_HANDLE)?;
+    let dc = crate::ob::locked(|directory| directory.dc(reference.id()).map(|dc| DcState::of(dc)))
+        .ok_or(STATUS_INVALID_HANDLE)?
+        .ok_or(STATUS_NO_MEMORY)?;
     Ok((reference, dc))
 }
 
@@ -912,7 +1377,7 @@ fn names_object(_: &mut NtCall, handle: Handle) -> bool {
 }
 
 #[cfg(not(target_arch = "x86"))]
-pub(super) fn dc_of(_: &mut NtCall, _: Handle) -> Result<((), Dc), NtStatus> {
+pub(super) fn dc_of(_: &mut NtCall, _: Handle) -> Result<((), DcState), NtStatus> {
     Err(STATUS_INVALID_HANDLE)
 }
 
@@ -952,7 +1417,7 @@ mod tests {
     #[test]
     fn a_screen_dc_starts_at_the_defaults() {
         let dc = Dc::screen(640, 480);
-        assert_eq!(dc.clip, Rect::new(0, 0, 640, 480));
+        assert_eq!(dc.final_region().bounds(), Rect::new(0, 0, 640, 480));
         assert_eq!(
             (dc.text_color, dc.bk_color, dc.bk_mode),
             (0x00_0000, 0xFF_FFFF, OPAQUE)
@@ -966,7 +1431,7 @@ mod tests {
         assert_eq!(dc.object(OBJ_FONT), Some(dc.font));
         assert_eq!(dc.object(OBJ_DC), None);
         assert_eq!(
-            Dc::screen(0, 0).clip,
+            Dc::screen(0, 0).final_region().bounds(),
             Rect::new(0, 0, 0, 0),
             "before the mode is set"
         );
@@ -1034,9 +1499,9 @@ mod tests {
         let mut dc = Dc::memory();
         assert!(dc.memory);
         assert_eq!(dc.object(rtl::dib::OBJ_BITMAP), Some(DEFAULT_BITMAP));
-        assert_eq!(dc.clip, Rect::new(0, 0, 1, 1));
+        assert_eq!(dc.final_region().bounds(), Rect::new(0, 0, 1, 1));
         assert_eq!(dc.select_bitmap(0x7_0010, None, 16, 8), DEFAULT_BITMAP);
-        assert_eq!(dc.clip, Rect::new(0, 0, 16, 8));
+        assert_eq!(dc.final_region().bounds(), Rect::new(0, 0, 16, 8));
         assert_eq!(dc.select_bitmap(DEFAULT_BITMAP, None, 1, 1), 0x7_0010);
     }
 
@@ -1046,7 +1511,11 @@ mod tests {
     fn a_window_dc_draws_at_its_origin_clipped() {
         let dc = Dc::window(640, 480, Rect::new(600, 30, 700, 80));
         assert_eq!(dc.origin, (600, 30));
-        assert_eq!(dc.clip, Rect::new(600, 30, 640, 80), "cut to the screen");
+        assert_eq!(
+            dc.final_region().bounds(),
+            Rect::new(600, 30, 640, 80),
+            "cut to the screen"
+        );
         assert_eq!(dc.screen_point(0, 0), (600, 30));
         assert_eq!(dc.screen_point(-5, 7), (595, 37));
         assert_eq!(
@@ -1062,7 +1531,9 @@ mod tests {
         assert_eq!(screen.origin, (0, 0));
         assert_eq!(screen.screen_point(3, 4), (3, 4));
         assert_eq!(
-            Dc::window(640, 480, Rect::new(-10, -10, -1, -1)).clip,
+            Dc::window(640, 480, Rect::new(-10, -10, -1, -1))
+                .final_region()
+                .bounds(),
             Rect::new(0, 0, 0, 0),
             "off the screen: empty"
         );
@@ -1128,5 +1599,187 @@ mod tests {
             "a process object's handle"
         );
         assert_eq!(dc, before);
+    }
+
+    /// A 16x12 memory DC, as the regions capture's canvas.
+    fn canvas() -> Dc {
+        let mut dc = Dc::memory();
+        dc.select_bitmap(0x7_0010, None, 16, 12);
+        dc
+    }
+
+    /// The final region's rectangles.
+    fn final_rects(dc: &Dc) -> std::vec::Vec<Rect> {
+        dc.final_region().rects_for_tests().to_vec()
+    }
+
+    /// The clipping region's rectangles (device coordinates), none without one.
+    fn clip_rects(dc: &Dc) -> Option<std::vec::Vec<Rect>> {
+        dc.clip_copy()
+            .unwrap()
+            .map(|region| region.rects().to_vec())
+    }
+
+    /// The regions capture's `clip` section: SelectClipRgn of a rectangle, IntersectClipRect
+    /// (COMPLEXREGION whatever is left), ExcludeClipRect's hole, PtVisible and RectVisible,
+    /// OffsetClipRgn, and SelectClipRgn(NULL) back to the canvas.
+    #[test]
+    fn the_capture_clip_section() {
+        let mut dc = canvas();
+        assert_eq!(clip_rects(&dc), None);
+        assert_eq!(dc.clip_box(), (SIMPLEREGION, Rect::new(0, 0, 16, 12)));
+        assert!(dc.point_visible(15, 11));
+        assert!(!dc.point_visible(16, 0));
+        assert!(!dc.point_visible(-1, 0));
+        assert!(dc.rect_visible(Rect::new(14, 10, 20, 20)));
+        assert!(!dc.rect_visible(Rect::new(16, 0, 20, 4)));
+
+        let a = [Rect::new(2, 2, 10, 8)];
+        assert_eq!(dc.select_clip(Some(&a), RGN_COPY), Ok(SIMPLEREGION));
+        assert_eq!(dc.clip_box(), (SIMPLEREGION, Rect::new(2, 2, 10, 8)));
+        assert_eq!(clip_rects(&dc), Some(a.to_vec()));
+
+        assert_eq!(dc.intersect_clip(Rect::new(4, 0, 16, 6)), Ok(COMPLEXREGION));
+        assert_eq!(dc.clip_box(), (SIMPLEREGION, Rect::new(4, 2, 10, 6)));
+
+        assert_eq!(dc.exclude_clip(Rect::new(6, 3, 8, 5)), Ok(COMPLEXREGION));
+        assert_eq!(dc.clip_box(), (COMPLEXREGION, Rect::new(4, 2, 10, 6)));
+        let holed = [
+            Rect::new(4, 2, 10, 3),
+            Rect::new(4, 3, 6, 5),
+            Rect::new(8, 3, 10, 5),
+            Rect::new(4, 5, 10, 6),
+        ];
+        assert_eq!(clip_rects(&dc), Some(holed.to_vec()));
+        assert_eq!(final_rects(&dc), holed.to_vec());
+        assert!(!dc.point_visible(6, 3));
+        assert!(dc.point_visible(5, 3));
+        assert!(dc.point_visible(9, 5));
+        assert!(!dc.rect_visible(Rect::new(6, 3, 8, 5)));
+        assert!(dc.rect_visible(Rect::new(5, 3, 7, 4)));
+        assert!(!dc.rect_visible(Rect::new(0, 0, 4, 12)));
+
+        assert_eq!(dc.offset_clip(2, 3), Ok(COMPLEXREGION));
+        assert_eq!(dc.clip_box(), (COMPLEXREGION, Rect::new(6, 5, 12, 9)));
+
+        assert_eq!(dc.select_clip(None, RGN_COPY), Ok(SIMPLEREGION));
+        assert_eq!(clip_rects(&dc), None);
+        assert_eq!(dc.clip_box(), (SIMPLEREGION, Rect::new(0, 0, 16, 12)));
+        assert_eq!(dc.offset_clip(1, 1), Ok(SIMPLEREGION));
+        assert_eq!(clip_rects(&dc), None, "nothing to move");
+        dc.release_regions();
+    }
+
+    /// The regions capture's `extclip` section: each mode over a clipping region; NULL in a mode
+    /// that is not RGN_COPY fails, the clipping as it was; with no clipping region a mode works on
+    /// the canvas; the window origin moves IntersectClipRect's rectangle, not GetClipRgn's.
+    #[test]
+    fn the_capture_extclip_section() {
+        let mut dc = canvas();
+        let (a, b) = ([Rect::new(2, 2, 10, 8)], [Rect::new(6, 5, 14, 11)]);
+        let modes = [
+            (RGN_AND, SIMPLEREGION, Rect::new(6, 5, 10, 8)),
+            (RGN_OR, COMPLEXREGION, Rect::new(2, 2, 14, 11)),
+            (RGN_XOR, COMPLEXREGION, Rect::new(2, 2, 14, 11)),
+            (RGN_DIFF, COMPLEXREGION, Rect::new(2, 2, 10, 8)),
+            (RGN_COPY, SIMPLEREGION, Rect::new(6, 5, 14, 11)),
+        ];
+        for (mode, complexity, bounds) in modes {
+            dc.select_clip(Some(&a), RGN_COPY).unwrap();
+            assert_eq!(
+                dc.select_clip(Some(&b), mode),
+                Ok(complexity),
+                "mode {mode}"
+            );
+            assert_eq!(dc.clip_box(), (complexity, bounds), "mode {mode}");
+        }
+        dc.select_clip(Some(&a), RGN_COPY).unwrap();
+        assert_eq!(dc.select_clip(None, RGN_AND), Err(STATUS_INVALID_PARAMETER));
+        assert_eq!(dc.clip_box(), (SIMPLEREGION, Rect::new(2, 2, 10, 8)));
+
+        let none = |dc: &mut Dc, mode| {
+            dc.select_clip(None, RGN_COPY).unwrap();
+            dc.select_clip(Some(&b), mode).unwrap();
+            dc.clip_box()
+        };
+        assert_eq!(
+            none(&mut dc, RGN_AND),
+            (SIMPLEREGION, Rect::new(6, 5, 14, 11))
+        );
+        assert_eq!(
+            none(&mut dc, RGN_OR),
+            (SIMPLEREGION, Rect::new(0, 0, 16, 12))
+        );
+        assert_eq!(
+            none(&mut dc, RGN_DIFF),
+            (COMPLEXREGION, Rect::new(0, 0, 16, 12))
+        );
+        assert_eq!(
+            final_rects(&dc),
+            [
+                Rect::new(0, 0, 16, 5),
+                Rect::new(0, 5, 6, 11),
+                Rect::new(14, 5, 16, 11),
+                Rect::new(0, 11, 16, 12),
+            ]
+        );
+
+        dc.select_clip(None, RGN_COPY).unwrap();
+        assert_eq!(dc.exclude_clip(Rect::new(4, 4, 8, 8)), Ok(COMPLEXREGION));
+        assert_eq!(dc.clip_box(), (COMPLEXREGION, Rect::new(0, 0, 16, 12)));
+
+        dc.select_clip(None, RGN_COPY).unwrap();
+        dc.set_attribute(DC_WINDOW_ORG_X, 2);
+        dc.set_attribute(DC_WINDOW_ORG_Y, 1);
+        assert_eq!(dc.intersect_clip(Rect::new(2, 1, 6, 4)), Ok(COMPLEXREGION));
+        assert_eq!(dc.clip_box(), (SIMPLEREGION, Rect::new(2, 1, 6, 4)));
+        assert_eq!(clip_rects(&dc), Some(std::vec![Rect::new(0, 0, 4, 3)]));
+        assert_eq!(final_rects(&dc), [Rect::new(0, 0, 4, 3)]);
+        dc.release_regions();
+    }
+
+    /// A window DC's clipping region is in device coordinates, from its origin: the final region
+    /// is it moved onto the screen, within the visible region.
+    #[test]
+    fn a_window_dcs_clipping_region_is_from_its_origin() {
+        let mut dc = Dc::window(640, 480, Rect::new(600, 30, 700, 80));
+        assert_eq!(dc.extent, (100, 50));
+        assert_eq!(
+            dc.select_clip(Some(&[Rect::new(30, 10, 60, 20)]), RGN_COPY),
+            Ok(SIMPLEREGION)
+        );
+        assert_eq!(
+            final_rects(&dc),
+            [Rect::new(630, 40, 640, 50)],
+            "cut to the screen"
+        );
+        assert_eq!(dc.clip_box(), (SIMPLEREGION, Rect::new(30, 10, 40, 20)));
+        assert!(dc.point_visible(35, 15));
+        assert!(!dc.point_visible(45, 15), "off the screen");
+        dc.release_regions();
+    }
+
+    /// BeginPaint's visible region: the window's area cut to the update region (client
+    /// coordinates), its pieces kept apart.
+    #[test]
+    fn a_paint_dcs_visible_region_is_the_update_region() {
+        let mut dc = Dc::window(640, 480, Rect::new(10, 20, 110, 70));
+        let update =
+            OwnedRegion::of_rects(&[Rect::new(0, 0, 10, 10), Rect::new(50, 0, 60, 10)]).unwrap();
+        let vis = paint_vis(&dc, &update).unwrap();
+        assert!(dc.set_vis(vis));
+        assert_eq!(
+            final_rects(&dc),
+            [Rect::new(10, 20, 20, 30), Rect::new(60, 20, 70, 30)]
+        );
+        assert_eq!(dc.clip_box(), (COMPLEXREGION, Rect::new(0, 0, 60, 10)));
+        let state = DcState::of(&dc).unwrap();
+        assert_eq!(state.clip().bounds(), Rect::new(10, 20, 70, 30));
+        assert_eq!(
+            state.final_region().bounds(),
+            Rect::EMPTY,
+            "the copy carries no region"
+        );
+        dc.release_regions();
     }
 }

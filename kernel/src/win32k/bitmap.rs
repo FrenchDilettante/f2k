@@ -358,7 +358,7 @@ pub fn stretch_blt(
     } else {
         None
     };
-    let source = source_dc.as_ref().map(|(_, dc)| dc);
+    let source = source_dc.as_ref().map(|(_, dc)| &**dc);
     let pattern = destination.brush_fill.pattern(
         destination.text_color,
         destination.bk_color,
@@ -379,7 +379,7 @@ pub fn stretch_blt(
         source_y,
         source_width,
         source_height,
-        clip: destination.clip,
+        clip: destination.clip(),
         rop,
         mode: destination.stretch_mode,
         text: screen_rgb(destination.text_color),

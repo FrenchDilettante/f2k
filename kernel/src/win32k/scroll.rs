@@ -438,7 +438,7 @@ mod services {
             source_y: at.top - dy,
             source_width: at.width(),
             source_height: at.height(),
-            clip: client,
+            clip: crate::win32k::raster::Clip::rect(&client),
             rop: SRCCOPY,
             mode: 0,
             text: 0,
