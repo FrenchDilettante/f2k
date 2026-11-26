@@ -468,8 +468,10 @@ impl SectionObject {
 /// cut, overwritten, written or deleted ([`Directory::purge_segment`]), when the table needs its
 /// record for another image ([`Directory::make_room_for_segment`], the least recently cached
 /// first), and at shutdown; it outlives quiescence, its file object and record the cache's, not
-/// leaks ([`Directory::image_cache_settled`]). A segment whose file changed while it was active
-/// is detached: no longer its file's, its last reference deletes it.
+/// leaks ([`Directory::image_cache_settled`]). An active segment's file cannot be opened for
+/// writing (`nt::section::flush_image_for_write`); a segment whose file changed all the same (a
+/// write through a handle opened before the image was mapped) while it was active is
+/// detached: no longer its file's, its last reference deletes it.
 #[derive(Clone, Copy)]
 pub struct ImageSegment {
     /// Its frames, page by page, made as views first need them.

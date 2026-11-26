@@ -40,7 +40,10 @@
 //! about to be cut, overwritten, deleted or replaced ([`purge_cached_image`], NT's
 //! MmFlushImageSection) or written ([`forget_image`]), when its record is needed for another image,
 //! and at shutdown; it outlives quiescence, so a boot's later processes map it again without a
-//! read ([`settle_image_cache`]). A view is the
+//! read ([`settle_image_cache`]). While the image is in use, an open of its file for writing or to
+//! delete on close is refused ([`flush_image_for_write`]: STATUS_SHARING_VIOLATION, as FastFat's
+//! create answers), so only a handle opened for writing before the image was mapped can still
+//! write the file under it: that write detaches the segment. A view is the
 //! whole image at its preferred base — an image is never relocated, so a base another region holds
 //! is STATUS_CONFLICTING_ADDRESSES — a MEM_IMAGE reservation whose pages carry their sections'
 //! protections, as the loader maps a program's (a writable section's pages copy-on-write: the
@@ -723,9 +726,24 @@ mod target {
         flush_image(record, false);
     }
 
+    /// The file `record` is about to be opened for writing (Windows 2000's
+    /// MmFlushImageSection(MmFlushForWrite), which FastFat asks before an open for FILE_WRITE_DATA
+    /// or delete-on-close): false while its image segment is active (an image section or a view
+    /// holds it), the open to be refused; a cached one is purged first.
+    pub fn flush_image_for_write(record: crate::fs::file::FileRecordId) -> bool {
+        purge_cached_image(record);
+        let Some(segment) = crate::fs::file::with_records(|records| records.get(record).image)
+        else {
+            return true;
+        };
+        ob::locked(|directory| directory.segment(segment).is_none())
+    }
+
     /// The file `record` is written: its image segment is no longer its image. A cached one is
-    /// purged; an active one detached, so the file's next image section reads the file again, and
-    /// the segment is deleted, not cached, with its last reference.
+    /// purged; an active one — only when the write's handle was opened before the image was
+    /// mapped: an open for writing is refused while it is in use (see
+    /// [`flush_image_for_write`]) — detached, so the file's next image section reads the file
+    /// again, and the segment is deleted, not cached, with its last reference.
     pub fn forget_image(record: crate::fs::file::FileRecordId) {
         flush_image(record, true);
     }

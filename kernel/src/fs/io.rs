@@ -65,6 +65,7 @@ mod target {
     use crate::status::{
         NtStatus,
         STATUS_ACCESS_DENIED,
+        STATUS_CANNOT_DELETE,
         STATUS_DELETE_PENDING,
         STATUS_INSUFFICIENT_RESOURCES,
         STATUS_IO_DEVICE_ERROR,
@@ -154,11 +155,23 @@ mod target {
     /// [`crate::fs::file::FileRecords::open_implying`]). STATUS_SHARING_VIOLATION when an open in
     /// place excludes it, STATUS_DELETE_PENDING while its delete is pending,
     /// STATUS_INSUFFICIENT_RESOURCES when the handle table, the records or the objects are full.
+    /// An open for writing (FILE_WRITE_DATA) or to delete on close of a file whose image is in use
+    /// is refused first (see [`image_in_use`]).
     pub fn open(file: File, open: &Open, implied: u32) -> Result<u32, NtStatus> {
         use crate::fs::file::rights::share_access;
         let process = crate::user::args::calling_process();
         if process.handles_full() {
             return Err(STATUS_INSUFFICIENT_RESOURCES);
+        }
+        if open.granted & crate::fs::file::rights::FILE_WRITE_DATA != 0 || open.delete_on_close {
+            let record = with_records(|records| records.find(&file));
+            if record.is_some_and(image_in_use) {
+                return Err(if open.delete_on_close {
+                    STATUS_CANNOT_DELETE
+                } else {
+                    STATUS_SHARING_VIOLATION
+                });
+            }
         }
         let access = share_access(open.granted);
         let implied = share_access(implied);
@@ -202,6 +215,15 @@ mod target {
         crate::ob::publish(process, id, open.granted, open.inherit)
             .map(core::num::NonZeroU32::get)
             .ok_or(STATUS_INSUFFICIENT_RESOURCES)
+    }
+
+    /// Whether the open file `record`'s image is in use (an image section or a view holds its
+    /// segment), as FastFat asks MmFlushImageSection(MmFlushForWrite) before an open for writing
+    /// or to delete on close: such an open is refused (STATUS_SHARING_VIOLATION, or
+    /// STATUS_CANNOT_DELETE for delete-on-close), so a running program's or a loaded DLL's file is
+    /// never written under it. An image only cached is purged, and the open goes ahead.
+    pub fn image_in_use(record: FileRecordId) -> bool {
+        !crate::nt::section::flush_image_for_write(record)
     }
 
     /// Whether the open file `record` is mapped (a section holds it): it cannot be cut short nor
