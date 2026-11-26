@@ -13,7 +13,8 @@
 //! `redirected` keeps the standard handles' writes off the screen (`csr::REDIRECTED`), and
 //! `end-session=<flags>` and `session-wait=<ms>` drive the session's end in its tests
 //! (`crate::session`; the latter seeds the registry's WaitToKillAppTimeout; their values through
-//! [`kernel_option_value`]).
+//! [`kernel_option_value`]), and `subsys=<names>` picks the subsystems the boot starts beyond its
+//! base profile (`crate::boot::subsys`; all of them without it).
 //!
 //! The string is copied out first thing in the boot: it lives in loader memory the frame allocator
 //! is about to reclaim, inside the identity window that is torn down soon after.

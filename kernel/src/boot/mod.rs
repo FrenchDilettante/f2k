@@ -36,20 +36,67 @@ static HANDOFF: [core::sync::atomic::AtomicU32; 2] = [
     core::sync::atomic::AtomicU32::new(0),
 ];
 
-/// Start every subsystem of the table, phase by phase, each phase's diagnostic boot at its end:
-/// the boot up to its first process. `magic` and `multiboot_info` are the Multiboot loader's EAX
-/// and EBX.
+/// Start the boot's subsystems, phase by phase, each phase's diagnostic boot at its end: the boot
+/// up to its first process. Every Boot row starts; the others when the selection holds them
+/// ([`selection`]: all of them unless the kernel command line says `subsys=`). The started set is
+/// reported on COM1 at the end. `magic` and `multiboot_info` are the Multiboot loader's EAX and
+/// EBX.
 #[cfg(target_arch = "x86")]
 pub fn start_subsystems(magic: u32, multiboot_info: u32) {
     use core::sync::atomic::Ordering;
     HANDOFF[0].store(magic, Ordering::Relaxed);
     HANDOFF[1].store(multiboot_info, Ordering::Relaxed);
+    // The selection is read once the command line is captured (the memory row's work): every row
+    // up to it is a Boot row, which starts whatever the selection (a host test holds the table to
+    // that).
+    let mut selected = None;
     for phase in subsys::Phase::ALL {
         for descriptor in subsys::SUBSYSTEMS.iter().filter(|d| d.phase == phase) {
+            if descriptor.start != subsys::StartType::Boot
+                && *selected.get_or_insert_with(selection) & descriptor.id.bit() == 0
+            {
+                continue;
+            }
             subsys::STATE.start(&subsys::SUBSYSTEMS, descriptor.id, &mut init);
         }
         diagnostics::after(phase);
     }
+    report_subsystems(subsys::STATE.started_set());
+}
+
+/// The subsystems the boot starts: with `subsys=a,b` on the kernel command line, the base profile
+/// (every Boot row), the rows it names, the rows the diagnostic build needs
+/// ([`diagnostics::NEEDS`]), and everything those depend on; without it, the whole table.
+///
+/// # Panics
+///
+/// `subsys=` names something no row or alias is: the boot stops on the spot rather than run a
+/// different set than asked for.
+#[cfg(target_arch = "x86")]
+fn selection() -> u32 {
+    let line = cmdline::kernel_command_line();
+    let Some(value) = cmdline::kernel_option_value(line, b"subsys") else {
+        return subsys::listed(&subsys::SUBSYSTEMS);
+    };
+    let named = subsys::parse(&subsys::SUBSYSTEMS, value).unwrap_or_else(|word| {
+        panic!(
+            "subsys=: no subsystem is named {:?}",
+            core::str::from_utf8(word).unwrap_or("(not UTF-8)")
+        )
+    });
+    subsys::selection(&subsys::SUBSYSTEMS, named | diagnostics::NEEDS)
+}
+
+/// Report the started subsystems on COM1, one line: their names in the boot's order, and how many
+/// of the table's they are.
+#[cfg(target_arch = "x86")]
+fn report_subsystems(set: u32) {
+    crate::serial_println!(
+        "F2K: subsystems: {} ({} of {})",
+        subsys::Names(&subsys::SUBSYSTEMS, set),
+        set.count_ones(),
+        subsys::Subsystem::COUNT
+    );
 }
 
 /// Start one subsystem: the descriptor's init. [`subsys::State::start`] calls it once, its

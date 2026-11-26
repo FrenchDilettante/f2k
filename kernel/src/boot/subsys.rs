@@ -12,7 +12,12 @@
 //!
 //! The start types mirror Windows 2000's driver and service start types (the registry's `Start`
 //! value: SERVICE_BOOT_START 0, SERVICE_SYSTEM_START 1, SERVICE_AUTO_START 2, SERVICE_DEMAND_START
-//! 3). Today they only document the subsystem's class: every subsystem starts at every boot.
+//! 3). Every Boot row starts at every boot (the base profile); the others start when the kernel
+//! command line's `subsys=` names them or a row that depends on them ([`parse`], [`selection`]),
+//! and all of them without a `subsys=`. A call into a subsystem the boot did not start fails
+//! loudly, never quietly differently: a kernel-internal reach panics ([`require`]); a program's
+//! win32k service is refused with STATUS_INVALID_SYSTEM_SERVICE and a COM1 line
+//! (`user::syscall`).
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -76,9 +81,9 @@ impl Subsystem {
 // A set of subsystems is a `u32`.
 const _: () = assert!(Subsystem::COUNT <= 32);
 
-/// When a subsystem starts, after Windows 2000's driver and service start types. Every subsystem
-/// starts at every boot today; the types are the classes the boot-time selection (`subsys=`) and
-/// the lazy start will act on.
+/// When a subsystem starts, after Windows 2000's driver and service start types: a Boot row at
+/// every boot, the others when the boot-time selection (`subsys=`) asks for them, or all of them
+/// without one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartType {
     /// SERVICE_BOOT_START (0): the kernel's core, in every boot (the base profile).
@@ -163,7 +168,6 @@ pub struct Descriptor {
     /// Its name, as the kernel command line and the boot's report name it.
     pub name: &'static str,
     /// Its start type.
-    #[cfg_attr(not(test), allow(dead_code))] // The boot-time selection's.
     pub start: StartType,
     /// The boot phase it starts in.
     pub phase: Phase,
@@ -484,7 +488,6 @@ pub fn descriptor(table: &[Descriptor], id: Subsystem) -> Option<&Descriptor> {
 
 /// The subsystems `selected` needs: the set and every subsystem it depends on, transitively (the
 /// set a boot-time selection starts). Over a checked table.
-#[cfg_attr(not(test), allow(dead_code))] // The boot-time selection's.
 pub fn closure(table: &[Descriptor], selected: u32) -> u32 {
     let mut set = selected;
     // A checked table lists every dependency before its dependents: one backward pass closes it.
@@ -528,7 +531,6 @@ impl State {
     }
 
     /// The started subsystems' set.
-    #[cfg_attr(not(test), allow(dead_code))] // The boot's report of what it used.
     pub fn started_set(&self) -> u32 {
         self.started.load(Ordering::Acquire)
     }
@@ -567,6 +569,94 @@ pub static STATE: State = State::new();
 /// Whether the kernel has started `id`.
 pub fn started(id: Subsystem) -> bool {
     STATE.started(id)
+}
+
+/// The base profile: the Boot rows of `table`, which every boot starts.
+pub fn boot_rows(table: &[Descriptor]) -> u32 {
+    table
+        .iter()
+        .filter(|descriptor| descriptor.start == StartType::Boot)
+        .fold(0, |set, descriptor| set | descriptor.id.bit())
+}
+
+/// The names `subsys=` takes beside the rows' own: `gui`, win32k's whole (its window station and
+/// its fonts, the two its services need: `user::syscall`'s gate).
+pub const ALIASES: [(&str, u32); 1] = [("gui", Subsystem::WinSta.bit() | Subsystem::Fonts.bit())];
+
+/// The subsystems a `subsys=` value names: its comma-separated words, each a row's `name` in
+/// `table` or an [`ALIASES`] name (an empty word, as in `subsys=` alone, names nothing). The first
+/// word that names nothing is the error.
+pub fn parse<'a>(table: &[Descriptor], value: &'a [u8]) -> Result<u32, &'a [u8]> {
+    let mut set = 0;
+    for word in value
+        .split(|&byte| byte == b',')
+        .filter(|word| !word.is_empty())
+    {
+        let row = table
+            .iter()
+            .find(|descriptor| descriptor.name.as_bytes() == word)
+            .map(|descriptor| descriptor.id.bit());
+        let alias = || {
+            ALIASES
+                .iter()
+                .find(|(name, _)| name.as_bytes() == word)
+                .map(|&(_, set)| set)
+        };
+        set |= row.or_else(alias).ok_or(word)?;
+    }
+    Ok(set)
+}
+
+/// The set a boot starts for the `named` subsystems: every Boot row, the named, and everything
+/// they depend on ([`closure`]).
+pub fn selection(table: &[Descriptor], named: u32) -> u32 {
+    closure(table, boot_rows(table) | named)
+}
+
+/// The names of `set`'s subsystems, in the table's order.
+pub fn names(table: &[Descriptor], set: u32) -> impl Iterator<Item = &'static str> + '_ {
+    table
+        .iter()
+        .filter(move |descriptor| set & descriptor.id.bit() != 0)
+        .map(|descriptor| descriptor.name)
+}
+
+/// A set's names, comma-separated, in the table's order (the boot's report).
+pub struct Names<'a>(pub &'a [Descriptor], pub u32);
+
+impl core::fmt::Display for Names<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for (i, name) in names(self.0, self.1).enumerate() {
+            if i > 0 {
+                f.write_str(",")?;
+            }
+            f.write_str(name)?;
+        }
+        Ok(())
+    }
+}
+
+/// Check that the boot started `id` before `site` reaches into it: a kernel-internal reach into a
+/// subsystem the boot left out (the command line's `subsys=`) is a kernel bug, never a quiet
+/// difference, so it stops the kernel as Windows 2000's bug checks do.
+///
+/// # Panics
+///
+/// `id` has not started.
+#[track_caller]
+pub fn require(id: Subsystem, site: &str) {
+    if !started(id) {
+        not_started(id, site);
+    }
+}
+
+#[cold]
+#[track_caller]
+fn not_started(id: Subsystem, site: &str) -> ! {
+    let name = descriptor(&SUBSYSTEMS, id).map_or("?", |descriptor| descriptor.name);
+    panic!(
+        "SUBSYSTEM_NOT_STARTED: {site} needs subsystem {name}, which this boot's subsys= left out"
+    )
 }
 
 #[cfg(test)]
@@ -741,6 +831,109 @@ mod tests {
         let order: Vec<Subsystem> = start_order(&SUBSYSTEMS, u32::MAX).collect();
         assert_eq!(started, order);
         assert_eq!(state.started_set(), listed(&SUBSYSTEMS));
+    }
+
+    #[test]
+    fn the_base_profile_is_closed_and_starts_before_the_command_line() {
+        let base = boot_rows(&SUBSYSTEMS);
+        // A Boot row needs only Boot rows: the base profile is a set of its own.
+        assert_eq!(closure(&SUBSYSTEMS, base), base);
+        assert_eq!(
+            names(&SUBSYSTEMS, base).collect::<Vec<_>>(),
+            [
+                "com1",
+                "cpu",
+                "memory",
+                "console",
+                "registry",
+                "quantum",
+                "io",
+                "interrupts",
+                "scheduler",
+                "ramdisk",
+                "block",
+                "bootvol",
+                "pagingfile",
+                "ntdll",
+            ]
+        );
+        // The command line is read in the memory phase: every row up to it is a Boot row, so the
+        // selection is known before the first row it can leave out.
+        for descriptor in SUBSYSTEMS.iter().filter(|d| d.phase <= Phase::Memory) {
+            assert_eq!(descriptor.start, StartType::Boot, "{}", descriptor.name);
+        }
+    }
+
+    #[test]
+    fn a_subsys_value_names_rows_and_aliases() {
+        assert_eq!(parse(&SUBSYSTEMS, b""), Ok(0));
+        assert_eq!(parse(&SUBSYSTEMS, b","), Ok(0));
+        assert_eq!(parse(&SUBSYSTEMS, b"ide"), Ok(S::Ide.bit()));
+        assert_eq!(
+            parse(&SUBSYSTEMS, b"keyboard,,fonts,"),
+            Ok(S::Keyboard.bit() | S::Fonts.bit())
+        );
+        assert_eq!(
+            parse(&SUBSYSTEMS, b"gui"),
+            Ok(S::WinSta.bit() | S::Fonts.bit())
+        );
+        // Names are the rows' own, exactly: no case folding, no prefix.
+        assert_eq!(parse(&SUBSYSTEMS, b"pci,IDE"), Err(&b"IDE"[..]));
+        assert_eq!(parse(&SUBSYSTEMS, b"win"), Err(&b"win"[..]));
+        assert_eq!(parse(&SUBSYSTEMS, b"ide pci"), Err(&b"ide pci"[..]));
+        // Every row's name parses to the row.
+        for descriptor in &SUBSYSTEMS {
+            assert_eq!(
+                parse(&SUBSYSTEMS, descriptor.name.as_bytes()),
+                Ok(descriptor.id.bit())
+            );
+        }
+    }
+
+    #[test]
+    fn a_selection_adds_the_base_profile_and_the_dependencies() {
+        let base = boot_rows(&SUBSYSTEMS);
+        assert_eq!(selection(&SUBSYSTEMS, 0), base);
+        assert_eq!(selection(&SUBSYSTEMS, S::Com1.bit()), base);
+        // ide pulls in pci, not devtree or the keyboard.
+        assert_eq!(
+            selection(&SUBSYSTEMS, S::Ide.bit()),
+            base | S::Ide.bit() | S::Pci.bit()
+        );
+        assert_eq!(
+            selection(&SUBSYSTEMS, S::DevTree.bit()),
+            base | S::DevTree.bit() | S::Pci.bit()
+        );
+        // The owner's choices: fonts need only the boot volume, not the window station.
+        assert_eq!(
+            selection(&SUBSYSTEMS, S::Fonts.bit()),
+            base | S::Fonts.bit()
+        );
+        assert_eq!(
+            selection(&SUBSYSTEMS, S::WinSta.bit()),
+            base | S::WinSta.bit()
+        );
+        // Everything named: the whole table, as a boot without subsys= starts.
+        assert_eq!(
+            selection(&SUBSYSTEMS, listed(&SUBSYSTEMS)),
+            listed(&SUBSYSTEMS)
+        );
+        let all = parse(&SUBSYSTEMS, b"winsta,pci,devtree,ide,keyboard,fonts").unwrap();
+        assert_eq!(selection(&SUBSYSTEMS, all), listed(&SUBSYSTEMS));
+    }
+
+    #[test]
+    fn a_set_is_reported_by_its_names() {
+        let set = S::Com1.bit() | S::Ide.bit() | S::Cpu.bit();
+        assert_eq!(Names(&SUBSYSTEMS, set).to_string(), "com1,cpu,ide");
+        assert_eq!(Names(&SUBSYSTEMS, 0).to_string(), "");
+    }
+
+    #[test]
+    #[should_panic(expected = "SUBSYSTEM_NOT_STARTED: a test needs subsystem pci")]
+    fn a_reach_into_a_subsystem_not_started_panics() {
+        // The host tests start nothing in the kernel's flags.
+        require(S::Pci, "a test");
     }
 
     #[test]

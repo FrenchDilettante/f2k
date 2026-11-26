@@ -2,6 +2,31 @@
 //! and is nothing otherwise. The fault tests never return (their faults halt); the smoke runs fall
 //! through to the normal boot, proving it coexists with what they exercised.
 
+use super::subsys::Subsystem;
+
+/// The subsystems the build's diagnostic boots need, beside the base profile: a boot that selects
+/// its subsystems (`subsys=`) starts these too, so a diagnostic never runs against a subsystem the
+/// selection left out (none in a build without a diagnostic feature).
+pub const NEEDS: u32 = {
+    let mut set = 0;
+    // The IDE disk's diagnostic, and the exit during one of its reads.
+    if cfg!(any(feature = "disk-smoke", feature = "fault-test-exitio")) {
+        set |= Subsystem::Ide.bit();
+    }
+    // A disk interrupt held behind the keyboard's.
+    if cfg!(feature = "nest-smoke") {
+        set |= Subsystem::Ide.bit() | Subsystem::Keyboard.bit();
+    }
+    if cfg!(feature = "kbd-smoke") {
+        set |= Subsystem::Keyboard.bit();
+    }
+    // The callbacks run from winsta's first win32k service.
+    if cfg!(feature = "callback-smoke") {
+        set |= Subsystem::WinSta.bit() | Subsystem::Fonts.bit();
+    }
+    set
+};
+
 /// The diagnostic boot at the end of the boot's `phase`, once its subsystems are started: the CPU
 /// faults' after the processor's, the interrupts' after the interrupts' and the scheduler's, the
 /// devices' after the devices'.
