@@ -98,13 +98,13 @@ pub fn service(frame: &mut TrapFrame, args: &[u32], passive: &mut At<Passive>) {
 /// The running thread is back at its own level: no callback outstanding, its stack top its slot's.
 fn at_own_level() -> bool {
     use crate::level::{raised, Dispatch};
-    let (top, slot) = raised::<Dispatch, _>(|dispatch| {
+    let (top, gate) = raised::<Dispatch, _>(|dispatch| {
         let record = crate::sched::DISPATCHER
             .get(dispatch)
             .thread(crate::sched::current_thread());
-        (record.initial_stack, record.gate_slot)
+        (record.initial_stack, record.gate_stack)
     });
-    outstanding() == 0 && top == crate::mem::paging::gate_slot_top(slot as u32)
+    outstanding() == 0 && top == gate.top()
 }
 
 /// The TEB's PEB pointer and the PEB's KernelCallbackTable.

@@ -327,9 +327,11 @@ fn copy_user_args(pointer: u32, length: u32, out: &mut [u32; MAX_ARG_BYTES / 4])
     });
 }
 
-/// Dispatcher, called by the gate stub with the frame it built.
+/// Dispatcher, called by the gate stub with the frame it built: 0 once the service ran, or, for a
+/// thread that moved to its large stack before it ([`convert_to_gui_stack`]), where the stub moves
+/// the frame and the saved segments to, on that stack, to dispatch the call again from there.
 #[cfg(target_arch = "x86")]
-extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
+extern "C" fn syscall_dispatch(frame: &mut TrapFrame) -> u32 {
     // Contract: the gate is raised from ring 3 only; the kernel never int 0x2Es. A ring-0 entry
     // would mean the frame has no ring-3 tail and the machine is already off the rails.
     assert_eq!(frame.cs & 3, 3, "syscall gate raised from ring 0");
@@ -348,6 +350,15 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
     let mut passive = unsafe { At::<Passive>::enter() };
     debug_assert_eq!(crate::pcr::pcr().current(), crate::interrupt::irql::PASSIVE);
 
+    // A win32k service makes the thread a GUI thread, which first trades its stack for a large one
+    // (Windows 2000's KiSystemService calls PsConvertToGuiThread, then dispatches again).
+    if service_table(frame.eax) == WIN32K_TABLE {
+        let image = convert_to_gui_stack(frame);
+        if image != 0 {
+            return image;
+        }
+    }
+
     if let Err(status) = serve(frame, &mut passive) {
         frame.eax = status.0;
     }
@@ -361,6 +372,63 @@ extern "C" fn syscall_dispatch(frame: &mut TrapFrame) {
     // thread's exit APC, at the head of its queue, ends it here, the service's frames unwound.
     // Nothing after this writes the frame.
     super::apc::deliver(frame);
+    0
+}
+
+/// PsConvertToGuiThread's stack half, at a win32k service's entry: a thread on its ordinary stack,
+/// at its own level (no callback outstanding: none is issued to a thread before it is a GUI
+/// thread), takes a large one ([`crate::mem::kstacks::create_large`]), its record's stack, stack
+/// top and the processor's `esp0` moved to it, and its ordinary stack parked, for the stub to
+/// release once it has left it ([`gate_stack_left`]). The answer is where the entry image (the
+/// saved segments, then `frame`) goes on the large stack; 0 to stay (a large stack already, or none
+/// to be had: the thread's callbacks then have the ordinary stack's room).
+#[cfg(target_arch = "x86")]
+fn convert_to_gui_stack(frame: &TrapFrame) -> u32 {
+    use crate::level::{raised, Dispatch};
+    use crate::sched::DISPATCHER;
+    let (ordinary, callbacks, top) = raised::<Dispatch, _>(|dispatch| {
+        let record = DISPATCHER
+            .get(dispatch)
+            .thread(crate::sched::current_thread());
+        (
+            record.gate_stack,
+            record.callback_stack,
+            record.initial_stack,
+        )
+    });
+    let at_own_level = callbacks == 0
+        && frame as *const TrapFrame as u32 == super::callback::trap_frame_below(top)
+        && top == ordinary.top();
+    if ordinary.is_large() || !at_own_level {
+        return 0;
+    }
+    let Some(large) = crate::mem::kstacks::create_large() else {
+        return 0;
+    };
+    raised::<Dispatch, _>(|dispatch| {
+        let record = DISPATCHER
+            .get(dispatch)
+            .thread_mut(crate::sched::current_thread());
+        record.gate_stack = large;
+        record.initial_stack = large.top();
+        crate::pcr::pcr()
+            .tables
+            .set_ring0_stack(large.top(), dispatch);
+    });
+    // Interrupts stay masked to the move (the gate masked them): nothing runs on this processor
+    // before the stub leaves the stack, and nothing releases a parked stack but the stub's call.
+    crate::mem::kstacks::park(ordinary);
+    super::callback::trap_frame_below(large.top()) - SAVED_SEGMENTS
+}
+
+/// The bytes of the data segments the stub saves under the frame.
+#[cfg(target_arch = "x86")]
+const SAVED_SEGMENTS: u32 = 16;
+
+/// The stub's call once it moved to the large stack: the ordinary stack it left is released.
+#[cfg(target_arch = "x86")]
+extern "C" fn gate_stack_left() {
+    crate::mem::kstacks::release_parked();
 }
 
 /// The service the frame names, called with its arguments: it writes its result into the frame.
@@ -436,10 +504,24 @@ core::arch::global_asm!(
     "    mov ax, {kernel_data}",
     "    mov ds, ax",
     "    mov es, ax",
+    ".Lf2k_gate_dispatch:",
     "    lea eax, [esp + 16]", // frame pointer: the pushad block, above the saved segments
     "    push eax",
     "    call {dispatch}",
     "    add esp, 4", // drop the frame pointer
+    // A thread that became a GUI thread moves to its large stack: the dispatcher answered where
+    // the image (the saved segments and the frame) goes there. It is copied, the stack pointer
+    // moved onto it, the stack left released, and the call dispatched again.
+    "    test eax, eax",
+    "    jz .Lf2k_gate_return",
+    "    mov esi, esp",
+    "    mov edi, eax",
+    "    mov ecx, {image_words}",
+    "    rep movsd",
+    "    mov esp, eax",
+    "    call {left}",
+    "    jmp .Lf2k_gate_dispatch",
+    ".Lf2k_gate_return:",
     // Restoring FS reloads the TEB descriptor, whose base the context switch rewrote for the
     // thread now running: a thread resumed here sees its own TEB, not the last-entered one's.
     "    pop eax",
@@ -456,6 +538,8 @@ core::arch::global_asm!(
     vector = const SYSCALL_VECTOR as u32,
     kernel_data = const crate::cpu::gdt::KERNEL_DATA_SELECTOR,
     dispatch = sym syscall_dispatch,
+    left = sym gate_stack_left,
+    image_words = const super::callback::ENTRY_IMAGE_SIZE / 4,
 );
 
 // The stub address is needed by `idt::init` to register the gate.

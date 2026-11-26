@@ -1004,7 +1004,7 @@ impl Process {
         // The main thread's gate stack, taken before its record (as a created thread's is): a
         // release undoes it when the record is not to be had, and nothing is attached before both
         // are held.
-        let Some((slot, frames)) = crate::mem::kstacks::create() else {
+        let Some(stack) = crate::mem::kstacks::create() else {
             process.abandon();
             return Err(STATUS_INSUFFICIENT_RESOURCES);
         };
@@ -1022,7 +1022,7 @@ impl Process {
             Some(directory.renew_thread(id))
         });
         let Some(thread) = made else {
-            crate::mem::kstacks::release((slot, frames));
+            crate::mem::kstacks::release(stack);
             process.abandon();
             return Err(STATUS_INSUFFICIENT_RESOURCES);
         };
@@ -1031,9 +1031,8 @@ impl Process {
         crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
             let dispatcher = crate::sched::DISPATCHER.get(dispatch);
             let record = dispatcher.thread_mut(thread);
-            record.gate_slot = slot;
-            record.gate_frames = frames;
-            record.initial_stack = paging::gate_slot_top(slot as u32);
+            record.gate_stack = stack;
+            record.initial_stack = stack.top();
             record.ordinal = ordinals::MAIN;
             record.teb_va = crate::user::thread_teb_va(ordinals::MAIN as u32);
             record.thread_id = thread_id;
@@ -1824,8 +1823,8 @@ mod tests {
         /// The reap's release: the parked gate stack (the system's kernel stacks give its frames
         /// back).
         fn reap(&mut self, stacks: &mut KernelStacks) {
-            if let Some((_, frames)) = stacks.take_parked() {
-                self.released.extend_from_slice(&frames);
+            if let Some(parked) = stacks.take_parked() {
+                self.released.extend_from_slice(parked.mapped());
             }
         }
 
@@ -1868,6 +1867,18 @@ mod tests {
         0x00F7_1000,
         0x00F8_1000,
     ];
+
+    /// An ordinary gate stack at `slot` with `frames`.
+    fn gate(slot: u16, frames: [u32; crate::mem::paging::GATE_STACK_PAGES]) -> GateStack {
+        let mut all = [0; crate::mem::paging::LARGE_STACK_PAGES];
+        all[..frames.len()].copy_from_slice(&frames);
+        GateStack {
+            slot,
+            slots: 1,
+            pages: frames.len() as u8,
+            frames: all,
+        }
+    }
 
     /// The kernel stack region's first table: the boot's, shared by every directory.
     const SHARED_STACK_TABLE: u32 = 0x00C0_0000;
@@ -1920,10 +1931,8 @@ mod tests {
         let mut main = crate::sched::testkit::thread(process.sched_ptr());
         let mut child = crate::sched::testkit::thread(process.sched_ptr());
         let mut slots = GateSlots::empty();
-        main.gate_slot = slots.allocate().unwrap();
-        main.gate_frames = MAIN_STACK;
-        child.gate_slot = slots.allocate().unwrap();
-        child.gate_frames = CHILD_STACK;
+        main.gate_stack = gate(slots.allocate().unwrap(), MAIN_STACK);
+        child.gate_stack = gate(slots.allocate().unwrap(), CHILD_STACK);
         (mem, process, main, child)
     }
 
@@ -1937,7 +1946,7 @@ mod tests {
         let mut dispatcher = crate::sched::testkit::installed();
         dispatcher.enter(thread.id());
         dispatcher.terminate();
-        stacks.park((thread.gate_slot, thread.gate_frames))
+        stacks.park(thread.gate_stack)
     }
 
     /// Teardown after every thread has exited releases exactly the process's own frames, each
@@ -1954,7 +1963,7 @@ mod tests {
         // The child exits first, then the main thread — whose exit hands back the child's stack
         // for release from its own.
         assert_eq!(exit(&mut stacks, child), None);
-        assert_eq!(exit(&mut stacks, main), Some((1, CHILD_STACK)));
+        assert_eq!(exit(&mut stacks, main), Some(gate(1, CHILD_STACK)));
         assert_eq!(process.stack_count(), 0);
 
         mem.tear_down(&mut stacks, process);
@@ -2016,14 +2025,13 @@ mod tests {
         let (mut mem, process, main, child) = planted_process(dir);
         let mut stacks = KernelStacks::empty();
         assert_eq!(exit(&mut stacks, child), None);
-        assert_eq!(exit(&mut stacks, main), Some((1, CHILD_STACK)));
+        assert_eq!(exit(&mut stacks, main), Some(gate(1, CHILD_STACK)));
 
         // A thread of another process (slot 2) exits before the teardown runs.
         let other_process = Box::leak(Box::new(record_at(0x0095_0000)));
         let mut other = crate::sched::testkit::thread(other_process.sched_ptr());
-        other.gate_slot = 2;
-        other.gate_frames = [0x00D0_0000; crate::mem::paging::GATE_STACK_PAGES];
-        assert_eq!(exit(&mut stacks, other), Some((0, MAIN_STACK)));
+        other.gate_stack = gate(2, [0x00D0_0000; crate::mem::paging::GATE_STACK_PAGES]);
+        assert_eq!(exit(&mut stacks, other), Some(gate(0, MAIN_STACK)));
 
         mem.tear_down(&mut stacks, process);
         assert_eq!(mem.count(0x00D0_0000), crate::mem::paging::GATE_STACK_PAGES);

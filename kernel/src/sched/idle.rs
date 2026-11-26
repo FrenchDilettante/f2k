@@ -202,8 +202,7 @@ mod target {
         routine: extern "C" fn(u32, u32) -> !,
         priority: i8,
     ) {
-        let (slot, frames) =
-            crate::mem::kstacks::create().expect("a system thread's stack is the boot's");
+        let stack = crate::mem::kstacks::create().expect("a system thread's stack is the boot's");
         let thread_id = crate::process::new_client_id();
         let params = crate::sched::startup::StartParams {
             system_routine: routine as usize as u32,
@@ -218,9 +217,8 @@ mod target {
             SYSTEM_PROCESS.attach(dispatcher, thread);
             let record = dispatcher.thread_mut(thread);
             record.thread_id = thread_id;
-            record.gate_slot = slot;
-            record.gate_frames = frames;
-            record.initial_stack = crate::mem::paging::gate_slot_top(slot as u32);
+            record.gate_stack = stack;
+            record.initial_stack = stack.top();
             record.teb_va = 0;
             record.base_priority = priority;
             record.priority = priority;

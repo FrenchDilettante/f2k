@@ -145,14 +145,14 @@ pub fn create(
     // space. Both are taken first — a release undoes them when the other, the record or the ordinal
     // is not to be had — so memory running out fails the create rather than the kernel.
     let teb_frame = paging::try_allocate_frame_phys().ok_or(crate::status::STATUS_NO_MEMORY)?;
-    let Some((slot, frames)) = crate::mem::kstacks::create() else {
+    let Some(gate) = crate::mem::kstacks::create() else {
         paging::release_frame_phys(teb_frame);
         return Err(crate::status::STATUS_NO_MEMORY);
     };
     let (object, thread, ordinal) = match free_thread(process, stack.allocation_base) {
         Ok(made) => made,
         Err(status) => {
-            crate::mem::kstacks::release((slot, frames));
+            crate::mem::kstacks::release(gate);
             paging::release_frame_phys(teb_frame);
             return Err(status);
         }
@@ -176,9 +176,8 @@ pub fn create(
         let dispatcher = DISPATCHER.get(dispatch);
         let record = dispatcher.thread_mut(thread);
         record.ordinal = ordinal;
-        record.gate_slot = slot;
-        record.gate_frames = frames;
-        record.initial_stack = paging::gate_slot_top(slot as u32);
+        record.gate_stack = gate;
+        record.initial_stack = gate.top();
         record.teb_va = teb_va;
         record.thread_id = thread_id;
         record.win32_start_address = user.eax;
@@ -459,7 +458,7 @@ fn end_thread(end: ThreadEnd) -> ! {
     raised::<Dispatch, _>(|dispatch| {
         let dispatcher = DISPATCHER.get(dispatch);
         let record = dispatcher.thread(current);
-        crate::mem::kstacks::park((record.gate_slot, record.gate_frames));
+        crate::mem::kstacks::park(record.gate_stack);
         // A process's last thread hands the processor to the idle thread, whatever else is ready:
         // the idle thread reaps the process before it switches to the next thread, so the process's
         // record and address space never wait for the processor to fall idle on its own (with

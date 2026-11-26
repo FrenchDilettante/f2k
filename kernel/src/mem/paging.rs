@@ -418,6 +418,18 @@ pub const GATE_STACK_WINDOW: u32 = layout::KERNEL_STACKS.start;
 /// Gate stack pages, one frame each (32 KiB): room for the file system's walks under the debug
 /// build's frames.
 pub const GATE_STACK_PAGES: usize = 8;
+/// A GUI thread's large stack: the slots of the run it spans (consecutive, the guard page of each
+/// but the lowest free for the stack to grow into), and the pages it may grow to: 104 KiB, the
+/// run's whole but its lowest guard page. Windows 2000's KERNEL_LARGE_STACK_SIZE is 60 KiB; F2K's
+/// frames are larger than its win32k's, and 60 KiB holds 12 creations nested in each other's
+/// WM_CREATE where the plan (and nestshow) asks for 20. It starts with [`GATE_STACK_PAGES`] mapped
+/// at its top.
+pub const LARGE_STACK_SLOTS: u32 = 3;
+pub const LARGE_STACK_PAGES: usize = 26;
+const _: () = assert!(
+    LARGE_STACK_PAGES > GATE_STACK_PAGES
+        && LARGE_STACK_PAGES as u32 * PAGE_SIZE < LARGE_STACK_SLOTS * GATE_SLOT_STRIDE
+);
 /// Slot 0's top, pinned by the layout tests (the switch installs every thread's top from its
 /// record, so nothing else reads it).
 #[cfg(test)]
@@ -529,7 +541,7 @@ mod self_map {
 /// Make the kernel stack region's page tables, once, at boot, after [`init_table_access`] and
 /// before the first process directory: zeroed frames installed in the boot directory, which every
 /// process directory inherits with the rest of the kernel half. The tables are then shared: a gate
-/// stack mapped in them ([`map_gate_slot`]) is mapped in every address space. They are never
+/// stack mapped in them ([`map_gate_pages`]) is mapped in every address space. They are never
 /// released.
 #[cfg(target_arch = "x86")]
 pub fn init_kernel_stack_tables() {
@@ -1028,8 +1040,8 @@ pub fn map_kernel_page(vaddr: u32, frame_phys: PhysAddr) {
 /// new table's frame comes from them).
 ///
 /// Past the boot (before any thread runs), the kernel windows change only here and in
-/// [`unmap_kernel_page`], at every thread create and exit, from [`map_gate_slot`] and
-/// [`unmap_gate_slot`], and at every nonpaged pool block's allocation and release, from
+/// [`unmap_kernel_page`], at every thread create and exit, from [`map_gate_pages`] and
+/// [`unmap_gate_pages`], and at every nonpaged pool block's allocation and release, from
 /// [`map_pool_page`] and [`unmap_pool_page`], each under the memory manager's database borrow,
 /// which masks interrupts: on one processor nothing else touches the entry between the check and
 /// the store. Only the boot creates a table (the frozen-half assertion).
@@ -1179,8 +1191,8 @@ fn reload_cr3() {
 
 /// Remove the kernel-half mapping at `vaddr` from the current directory and flush it from the TLB,
 /// returning the frame it named. The frame itself is the caller's to release. The callers,
-/// [`unmap_gate_slot`] and [`unmap_pool_page`], run under the memory manager's database borrow with
-/// interrupts masked, so nothing else touches the entry meanwhile.
+/// [`unmap_gate_pages`] and [`unmap_pool_page`], run under the memory manager's database borrow
+/// with interrupts masked, so nothing else touches the entry meanwhile.
 ///
 /// # Panics
 ///
@@ -1210,60 +1222,65 @@ pub fn unmap_kernel_page(vaddr: u32) -> PhysAddr {
     pte.frame()
 }
 
-/// Unmap gate-stack slot `index`'s pages from the shared tables, so from every address space: the
-/// inverse of [`map_gate_slot`]. Each page's TLB entry is flushed here; one cached under another
-/// directory goes with the CR3 load that switches back to it (one processor, and no F2K mapping is
-/// global). Returns the frames that were mapped, for the owner to release. Never call it on the
-/// slot the processor is running on.
+/// Unmap the `count` gate-stack pages under `top` (a slot's top, or a large stack's) from the
+/// shared tables, so from every address space: the inverse of [`map_gate_pages`]. Each page's TLB
+/// entry is flushed here; one cached under another directory goes with the CR3 load that switches
+/// back to it (one processor, and no F2K mapping is global). Returns the frames that were mapped,
+/// the top page's first, for the owner to release. Never call it on the stack the processor is
+/// running on.
 ///
 /// # Panics
 ///
-/// The index is past the region's capacity, or a slot page is not mapped.
+/// The pages lie outside the region, or one is not mapped.
 #[cfg(target_arch = "x86")]
-pub fn unmap_gate_slot(index: u32) -> [PhysAddr; GATE_STACK_PAGES] {
+pub fn unmap_gate_pages(top: u32, count: usize) -> [PhysAddr; LARGE_STACK_PAGES] {
     assert!(
-        (index as usize) < GATE_SLOT_CAPACITY,
-        "gate-slot index past the region's capacity"
+        count <= LARGE_STACK_PAGES
+            && layout::KERNEL_STACKS.holds(top - (count as u32) * PAGE_SIZE)
+            && top as u64 <= layout::KERNEL_STACKS.end(),
+        "gate-stack pages outside the region"
     );
-    let base = gate_slot_base(index);
-    let mut frames = [PhysAddr::ZERO; GATE_STACK_PAGES];
-    for (i, slot) in frames.iter_mut().enumerate() {
-        *slot = unmap_kernel_page(base + ((i + 1) as u32) * PAGE_SIZE);
+    let mut frames = [PhysAddr::ZERO; LARGE_STACK_PAGES];
+    for (i, slot) in frames.iter_mut().enumerate().take(count) {
+        *slot = unmap_kernel_page(top - ((i + 1) as u32) * PAGE_SIZE);
     }
     frames
 }
 
-/// Map a fresh gate-stack slot `index` into the shared tables, so into every address space at once:
-/// one frame per page from `frames`, zeroed through `scratch`, supervisor-only, above the slot's
-/// unmapped guard page. Returns the frames for the owner thread to release at its exit.
+/// Map gate-stack pages `from..to` under `top` (page `i` the one at `top - (i + 1)` pages) into the
+/// shared tables, so into every address space at once: one frame per page from `frames`, zeroed
+/// through `scratch`, supervisor-only, each recorded in `into[i]` for the owner thread to release
+/// at its exit. A fresh stack maps from 0; a large one grows by mapping on.
 ///
 /// # Panics
 ///
-/// The index is past the region's capacity, or the region's tables are not made yet
+/// The pages lie outside the region, or the region's tables are not made yet
 /// ([`init_kernel_stack_tables`]).
 #[cfg(target_arch = "x86")]
-pub fn map_gate_slot(
+pub fn map_gate_pages(
     frames: &mut FrameDb,
     scratch: &mut ScratchWindow,
-    index: u32,
-) -> [PhysAddr; GATE_STACK_PAGES] {
+    top: u32,
+    from: usize,
+    to: usize,
+    into: &mut [u32; LARGE_STACK_PAGES],
+) {
     assert!(
-        (index as usize) < GATE_SLOT_CAPACITY,
-        "gate-slot index past the region's capacity"
+        to <= LARGE_STACK_PAGES
+            && layout::KERNEL_STACKS.holds(top - (to as u32) * PAGE_SIZE)
+            && top as u64 <= layout::KERNEL_STACKS.end(),
+        "gate-stack pages outside the region"
     );
     assert!(
         kernel_stack_tables_installed(),
         "a gate stack mapped before the kernel stack tables are made"
     );
-    let base = gate_slot_base(index);
-    let mut stack = [PhysAddr::ZERO; GATE_STACK_PAGES];
-    for (i, slot) in stack.iter_mut().enumerate() {
+    for (i, slot) in into.iter_mut().enumerate().take(to).skip(from) {
         let frame = allocate_in(frames);
         scratch.init_frame(frame, 0, &[]);
-        map_kernel_page_in(frames, scratch, base + ((i + 1) as u32) * PAGE_SIZE, frame);
-        *slot = frame;
+        map_kernel_page_in(frames, scratch, top - ((i + 1) as u32) * PAGE_SIZE, frame);
+        *slot = frame.get();
     }
-    stack
 }
 
 /// A frame for a nonpaged pool page, from `frames`; none when the frame database has none left
@@ -1387,13 +1404,12 @@ fn kernel_stack_tables_installed() -> bool {
         .all(|window| self_map::pde(window).present())
 }
 
-/// Whether gate-stack slot `index` is mapped in the current directory as [`map_gate_slot`] leaves
-/// it: every stack page present, the guard page below them not.
+/// Whether the `count` gate-stack pages under `top` are mapped in the current directory, as
+/// [`map_gate_pages`] leaves them.
 #[cfg(target_arch = "x86")]
-pub fn gate_slot_mapped(index: u32) -> bool {
-    let base = gate_slot_base(index);
+pub fn gate_stack_mapped(top: u32, count: usize) -> bool {
     let present = |vaddr: u32| self_map::pte(vaddr).is_some_and(Pte::present);
-    !present(base) && (1..=GATE_STACK_PAGES as u32).all(|page| present(base + page * PAGE_SIZE))
+    (1..=count as u32).all(|page| present(top - page * PAGE_SIZE))
 }
 
 /// Read word `index` of `frame_phys` through the scratch window: the one-page alias of any frame,

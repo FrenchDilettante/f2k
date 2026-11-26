@@ -205,12 +205,11 @@ pub struct Thread {
     pub(crate) ordinal: u16,
     /// The thread's exit status: [`STILL_ACTIVE`] while it lives, then the status it ended with.
     pub(crate) exit_status: u32,
-    /// The thread's gate-stack slot index in the kernel stack region (numbered system-wide), or
-    /// the empty slot's value before allocation.
-    pub(crate) gate_slot: u16,
-    /// The slot's frames, recorded for exactly-once release (the guard page below them is never
-    /// mapped, so it is never recorded).
-    pub(crate) gate_frames: [u32; crate::mem::paging::GATE_STACK_PAGES],
+    /// The thread's gate stack: its slots in the kernel stack region (numbered system-wide; the
+    /// empty slot's value before allocation) and its frames, recorded for exactly-once release
+    /// (the pages below them are never mapped, so never recorded). A GUI thread's is a large one
+    /// ([`crate::mem::kstacks`]).
+    pub(crate) gate_stack: crate::mem::kstacks::GateStack,
     /// The innermost user-mode callback's frame on the kernel stack (Windows 2000's
     /// KTHREAD CallbackStack), zero when none is outstanding (see [`crate::user::callback`]).
     pub(crate) callback_stack: u32,
@@ -436,8 +435,7 @@ impl Thread {
             win32_start_address: 0,
             ordinal: 0,
             exit_status: STILL_ACTIVE,
-            gate_slot: NO_GATE_SLOT,
-            gate_frames: [0; crate::mem::paging::GATE_STACK_PAGES],
+            gate_stack: crate::mem::kstacks::GateStack::NONE,
             callback_stack: 0,
             fpu: FxSaveArea::initial(),
             id,
@@ -658,7 +656,7 @@ impl Thread {
 
     /// The thread's gate-stack slot index, or [`NO_GATE_SLOT`] before allocation.
     pub fn gate_slot(&self) -> u16 {
-        self.gate_slot
+        self.gate_stack.slot
     }
 
     /// The outstanding decay debt.

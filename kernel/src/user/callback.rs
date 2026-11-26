@@ -26,8 +26,10 @@
 //! leaves them until the thread ends; later versions pop them this way). A thread that ends inside
 //! a callback, at whatever depth, gives up the levels under it with its kernel stack.
 //!
-//! A callback needs [`CALLBACK_ROOM`] of kernel stack below the issuer, or it is refused with
-//! STATUS_STACK_OVERFLOW (Windows 2000's answer when its kernel stack cannot grow further).
+//! A callback needs [`CALLBACK_ROOM`] of kernel stack below the issuer: a GUI thread's large stack
+//! grows to give it ([`crate::mem::kstacks::grow`]); when it cannot (an ordinary stack, or a large
+//! one at its 104 KiB) the callback is refused with STATUS_STACK_OVERFLOW (Windows 2000's answer
+//! when its kernel stack cannot grow further).
 //!
 //! The thread's stack words change at the dispatch level, the TSS's `esp0` with them, as the
 //! context switch installs them: they are the running thread's, on its own processor.
@@ -264,7 +266,7 @@ mod target {
         input: &[&[u8]],
         room: u32,
     ) -> Reply {
-        let (words, slot, teb) = raised::<Dispatch, _>(|dispatch| {
+        let (words, gate, teb) = raised::<Dispatch, _>(|dispatch| {
             let record = DISPATCHER
                 .get(dispatch)
                 .thread(crate::sched::current_thread());
@@ -273,7 +275,7 @@ mod target {
                     initial_stack: record.initial_stack,
                     callback_stack: record.callback_stack,
                 },
-                record.gate_slot,
+                record.gate_stack,
                 record.teb_va,
             )
         });
@@ -299,9 +301,22 @@ mod target {
             "a callback runs on its own process's address space"
         );
 
-        let limit = crate::mem::paging::gate_slot_base(slot as u32) + crate::mem::paging::PAGE_SIZE;
-        if !has_room(kernel_esp(), limit) {
-            return Reply::refused(STATUS_STACK_OVERFLOW);
+        // A GUI thread's large stack grows to make the room (Windows 2000's MmGrowKernelStack);
+        // an ordinary one, or one grown all it may, refuses the callback.
+        let esp = kernel_esp();
+        if !has_room(esp, gate.limit()) {
+            let mut grown = gate;
+            if !grown.is_large()
+                || !crate::mem::kstacks::grow(&mut grown, esp.saturating_sub(CALLBACK_ROOM))
+            {
+                return Reply::refused(STATUS_STACK_OVERFLOW);
+            }
+            raised::<Dispatch, _>(|dispatch| {
+                DISPATCHER
+                    .get(dispatch)
+                    .thread_mut(crate::sched::current_thread())
+                    .gate_stack = grown;
+            });
         }
         let length: usize = input.iter().map(|part| part.len()).sum();
         let Some(length) = u32::try_from(length)
