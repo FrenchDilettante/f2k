@@ -179,15 +179,17 @@ impl Identity {
 }
 
 /// A process record's identity, written by the pool as it takes the record for a new process and
-/// copied out by every read. The write needs no lock: the record is the new process's alone then —
-/// its object was free until the pool took it, so nothing names the process yet — and on the one
-/// processor nothing reads an identity in the middle of the write (no switch comes inside a plain
-/// copy, and no interrupt handler reads a process's identity).
+/// copied out by every read. Nothing names the process during the write — its object was free
+/// until the pool took it — but the pool's walks read every record whose object lives, by index,
+/// and the object is live before the write: a walk can reach the record while it is written. So
+/// both copies run with interrupts masked: the clock cannot end a quantum inside either, and no
+/// other thread's copy lands between a copy's words.
 struct IdentityCell(UnsafeCell<Identity>);
 
-// SAFETY: one processor, and the identity is reached only by the copies below: the write, whose
-// caller vouches that nothing reads the identity meanwhile, and the reads, which keep no reference
-// into the cell.
+// SAFETY: one processor, and the identity is reached only by the copies below, each made whole
+// with interrupts masked and keeping no reference into the cell: no thread switch and no interrupt
+// comes inside one, so no two of them overlap. On a multiprocessor masking excludes only the local
+// processor: the copies would need a lock (or a sequence count) of their own.
 unsafe impl Sync for IdentityCell {}
 
 impl IdentityCell {
@@ -195,22 +197,25 @@ impl IdentityCell {
         IdentityCell(UnsafeCell::new(identity))
     }
 
-    /// The identity, copied out.
+    /// The identity, copied out, masked (see [`IdentityCell`]).
     fn get(&self) -> Identity {
-        // SAFETY: a copy; the one write is `renew`'s, which nothing reads beside (see there), and
-        // no reference into the cell outlives a read.
+        let _masked = crate::pcr::pcr().mask_guard();
+        // SAFETY: a copy made whole with interrupts masked, so no write lands inside it (see the
+        // `Sync` impl); no reference into the cell outlives it.
         unsafe { *self.0.get() }
     }
 
-    /// Write a new process's identity.
+    /// Write a new process's identity, masked (see [`IdentityCell`]).
     ///
     /// # Safety
     ///
-    /// Nothing reads the identity during the write: the record is taken for a new process whose
-    /// object nothing names yet (see [`IdentityCell`]).
+    /// The record is taken for a new process whose object nothing names yet, so no other write
+    /// comes; the walks' reads are kept out of the write by the mask.
     #[cfg(target_arch = "x86")]
     unsafe fn renew(&self, identity: Identity) {
-        // SAFETY: the caller's contract; no reference into the cell is live.
+        let _masked = crate::pcr::pcr().mask_guard();
+        // SAFETY: the caller's contract, and interrupts are masked, so no read lands inside the
+        // write; no reference into the cell is live.
         unsafe { *self.0.get() = identity };
     }
 }
@@ -434,7 +439,7 @@ impl Process {
             dir_phys,
         };
         // SAFETY: the record is taken for a new process whose object the directory has just made:
-        // nothing names it yet, so nothing reads its identity during the write.
+        // nothing names it yet, so nothing else writes its identity.
         unsafe { self.identity.renew(identity) };
         crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
             let sched = self.sched.get_mut(crate::sched::DISPATCHER.get(dispatch));
