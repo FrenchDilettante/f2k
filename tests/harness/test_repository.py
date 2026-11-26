@@ -401,6 +401,38 @@ def test_check_all_runs_the_test_systems():
     assert at == sorted(at), "the steps run fastest first"
 
 
+def test_userland_replaces_each_program_whole(tmp_path: Path):
+    """`make userland`'s copy of each <name>.dll to its <name>.exe (run here alone, over a build
+    directory of our own) leaves an unchanged program's file alone and replaces a changed one by a
+    new file, never rewriting it in place: a test copying the program onto its disk while another
+    worker builds a kernel variant (`disk_with_programs` holds no build lock) must read the old
+    file or the new one whole. A `cp` over it truncated it first, and a script fixture booted a
+    \\WINNT\\system32\\cmd.exe copied empty: its pipe's `cmd /c` stage could not be run (error
+    193)."""
+    plan = subprocess.run(["make", "-n", "userland", f"BUILD_DIR={tmp_path}"],
+                          cwd=f2kboot.REPO_ROOT, capture_output=True, text=True, check=True).stdout
+    # The loop's command, its continued lines with it.
+    copy = re.findall(r"^for exe in .*?\bdone$", plan, re.M | re.S)
+    assert len(copy) == 1, plan
+    release = tmp_path / "userland" / "i686-f2k-pe" / "release"
+    release.mkdir(parents=True)
+    programs = (makefile_programs("SYSTEM_PROGRAMS") + makefile_programs("CMD_PROGRAM")
+                + makefile_programs("TEST_PROGRAMS"))
+    for name in programs:
+        (release / f"{name}.dll").write_bytes(f"{name} v1".encode())
+    subprocess.run(["sh", "-c", copy[0]], check=True)
+    first = {name: (release / f"{name}.exe").stat().st_ino for name in programs}
+    assert all((release / f"{name}.exe").read_bytes() == f"{name} v1".encode() for name in programs)
+    changed = programs[0]
+    (release / f"{changed}.dll").write_bytes(b"v2")
+    subprocess.run(["sh", "-c", copy[0]], check=True)
+    assert (release / f"{changed}.exe").read_bytes() == b"v2"
+    assert (release / f"{changed}.exe").stat().st_ino != first[changed], "rewritten in place"
+    for name in programs[1:]:
+        assert (release / f"{name}.exe").stat().st_ino == first[name], f"{name}.exe replaced"
+    assert not list(release.glob("*.tmp")), "a temporary file left behind"
+
+
 # --- Kernel memory safety ------------------------------------------------------------------------
 
 # The kernel's raw memory forms: volatile reads and writes, and slices built from raw parts. Once a

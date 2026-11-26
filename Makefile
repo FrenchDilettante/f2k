@@ -179,7 +179,13 @@ all: disk
 userland:
 	@echo "Building the system DLLs and programs..."
 	cd $(USERLAND_DIR) && cargo build --release
-	for exe in $(SYSTEM_EXES) $(CMD_EXE) $(TEST_EXES); do cp $${exe%.exe}.dll $$exe || exit 1; done
+	# Each .exe is replaced whole, by a rename, and only when its .dll changed: a test copying one
+	# onto its disk while another worker's build runs this (tests/f2kboot.py's disk_with_programs
+	# holds no build lock) reads the old file or the new one, never one cp has just truncated.
+	for exe in $(SYSTEM_EXES) $(CMD_EXE) $(TEST_EXES); do \
+		cmp -s $${exe%.exe}.dll $$exe && continue; \
+		cp $${exe%.exe}.dll $$exe.tmp && mv -f $$exe.tmp $$exe || exit 1; \
+	done
 
 # The kernel's link first, then the boot loader, whose build emits the kernel's image from it. The
 # loader's build is handed the link's checksum (F2K_KERNEL_LINK_CHECKSUM): cargo going back to a
