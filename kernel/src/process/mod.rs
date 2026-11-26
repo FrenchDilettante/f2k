@@ -1239,28 +1239,48 @@ fn free_directory(dir_phys: PhysAddr) {
 /// no-access or guard page still names its frame) — and their page tables. The shared kernel half
 /// (the kernel stack region's tables among it, the gate stacks being the threads') is never
 /// touched, and the directory frame is the caller's, last.
+///
+/// The directory and each table are read [`WALK_CHUNK`] entries at a time
+/// (`read_entries(table, first, out)` fills `out` with the entries from `first` on): on the
+/// target, one pointing of the scratch window each, where an entry at a time took one per entry,
+/// more than five thousand for the smallest process.
 pub fn release_address_space(
     dir_phys: PhysAddr,
-    read_entry: impl Fn(PhysAddr, usize) -> u32,
+    read_entries: impl Fn(PhysAddr, usize, &mut [u32]),
     mut release: impl FnMut(PhysAddr),
 ) {
     use crate::mem::paging::{KERNEL_HALF_START, PT_ENTRIES};
     use crate::mem::pte::Pte;
-    for window in 0..KERNEL_HALF_START {
-        let pde = Pte::from_raw(read_entry(dir_phys, window));
-        if !pde.present() {
-            continue;
-        }
-        let table = pde.frame();
-        for index in 0..PT_ENTRIES {
-            let pte = read_entry(table, index);
-            if crate::mem::vm::names_frame(pte) {
-                release(Pte::from_raw(pte).frame());
+    let mut pdes = [0u32; WALK_CHUNK];
+    let mut ptes = [0u32; WALK_CHUNK];
+    for first_window in (0..KERNEL_HALF_START).step_by(WALK_CHUNK) {
+        let windows = &mut pdes[..WALK_CHUNK.min(KERNEL_HALF_START - first_window)];
+        read_entries(dir_phys, first_window, windows);
+        for &pde in windows.iter() {
+            let pde = Pte::from_raw(pde);
+            if !pde.present() {
+                continue;
             }
+            let table = pde.frame();
+            for first in (0..PT_ENTRIES).step_by(WALK_CHUNK) {
+                read_entries(table, first, &mut ptes);
+                for &pte in ptes.iter() {
+                    if crate::mem::vm::names_frame(pte) {
+                        release(Pte::from_raw(pte).frame());
+                    }
+                }
+            }
+            release(table);
         }
-        release(table);
     }
 }
+
+/// How many directory or table entries the teardown walk reads at once
+/// ([`release_address_space`]): a buffer the reaping thread's stack holds, a divisor of the
+/// table's entries.
+const WALK_CHUNK: usize = 128;
+
+const _: () = assert!(crate::mem::paging::PT_ENTRIES % WALK_CHUNK == 0);
 
 /// Release every frame a finished process owns: the address space, and the directory frame last of
 /// all. Its threads' gate stacks are not among them: every thread has ended by now, its stack
@@ -1272,7 +1292,7 @@ pub fn release_address_space(
 /// A thread is still attached: teardown follows the last thread's end, never precedes it.
 pub fn release_process(
     process: &Process,
-    read_entry: impl Fn(PhysAddr, usize) -> u32,
+    read_entries: impl Fn(PhysAddr, usize, &mut [u32]),
     mut release: impl FnMut(PhysAddr),
 ) {
     assert_eq!(
@@ -1283,7 +1303,7 @@ pub fn release_process(
     let dir_phys = process.dir_phys();
 
     // User data frames and their tables from the walk, then the directory itself.
-    release_address_space(dir_phys, read_entry, &mut release);
+    release_address_space(dir_phys, read_entries, &mut release);
     release(dir_phys);
 }
 
@@ -1394,7 +1414,7 @@ fn release_address_space_of(process: &Process) {
     for mapping in gone.iter().flatten() {
         crate::ob::release_mapping(*mapping);
     }
-    release_process(process, paging::read_table_entry, |frame_phys| {
+    release_process(process, paging::read_table_entries, |frame_phys| {
         // A frame goes back with its last holder: the system DLLs' pages and the shared data
         // page are the kernel's, every process one more holder of them.
         crate::mem::bootmem::with_frame_db(|db| {
@@ -1809,8 +1829,8 @@ mod tests {
             self.frames.insert(frame, page);
         }
 
-        fn read(&self, frame: u32, index: usize) -> u32 {
-            self.frames[&frame][index]
+        fn read(&self, frame: u32, first: usize, out: &mut [u32]) {
+            out.copy_from_slice(&self.frames[&frame][first..][..out.len()]);
         }
 
         /// Run the teardown's releases over the fake memory, in the target's order for a process
@@ -1834,7 +1854,7 @@ mod tests {
             let mut released = core::mem::take(&mut self.released);
             release_process(
                 process,
-                |frame, index| self.read(frame.get(), index),
+                |frame, first, out| self.read(frame.get(), first, out),
                 |frame_phys| released.push(frame_phys.get()),
             );
             self.released = released;

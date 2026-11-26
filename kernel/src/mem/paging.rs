@@ -792,6 +792,19 @@ impl ScratchWindow {
         assert!(index < PT_ENTRIES, "word index past the end of the frame");
         self.map_words(frame_phys)[index]
     }
+
+    /// The words of the frame at `frame_phys` from `first` on, as many as `out` holds.
+    ///
+    /// # Panics
+    ///
+    /// The words run past the frame's end.
+    pub fn read_words(&mut self, frame_phys: PhysAddr, first: usize, out: &mut [u32]) {
+        assert!(
+            first + out.len() <= PT_ENTRIES,
+            "words past the end of the frame"
+        );
+        out.copy_from_slice(&self.map_words(frame_phys)[first..][..out.len()]);
+    }
 }
 
 /// Whether the processor's interrupt flag is clear (EFLAGS, read through the stack).
@@ -1424,16 +1437,16 @@ pub fn read_frame_word(frame_phys: PhysAddr, index: usize) -> u32 {
     with_database(|database| database.scratch.read_word(frame_phys, index))
 }
 
-/// Entry `index` of the directory or page table at `table`, through the scratch window: the
-/// teardown walk's read of a dead process's tables, which are mapped nowhere. An entry is a word
-/// ([`ENTRY_BYTES`]).
+/// The entries of the directory or page table at `table` from `first` on, as many as `out` holds,
+/// through the scratch window, pointed at the table once: the teardown walk's read of a dead
+/// process's tables, which are mapped nowhere. An entry is a word ([`ENTRY_BYTES`]).
 ///
 /// # Panics
 ///
-/// `index` past the table's end.
+/// The entries run past the table's end.
 #[cfg(target_arch = "x86")]
-pub fn read_table_entry(table: PhysAddr, index: usize) -> u32 {
-    read_frame_word(table, index)
+pub fn read_table_entries(table: PhysAddr, first: usize, out: &mut [u32]) {
+    with_database(|database| database.scratch.read_words(table, first, out))
 }
 
 #[cfg(test)]
