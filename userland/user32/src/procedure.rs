@@ -10,8 +10,12 @@
 //! made through NtUserGetCPD). F2K's are user32's own, a table in each process: the addresses they
 //! name are the process's own, and only its user32 calls them. Their values have Windows 2000's
 //! shape, the high word 0xFFFF, which no procedure's address has (the user half of the address
-//! space ends below it). A handle lives as long as its process; the table holds
-//! [`HANDLES`] procedures of each form, and a procedure past them is answered as its address.
+//! space ends below it). A handle lives as long as its process, one for each procedure of each
+//! form handed out (Windows 2000 makes one per window or class that asks, and frees it with them;
+//! F2K's handle names the procedure alone, so a process has as many as it has procedures). The
+//! table grows on the process heap ([`crate::records`]); the handle's low word holds its index,
+//! so a form names at most [`HANDLES`] procedures, and a procedure past them (or one the heap has
+//! no room for) is answered as its address.
 //!
 //! user32's own procedures have both forms, an entry point each (DefWindowProcA and DefWindowProcW,
 //! DefDlgProcA and DefDlgProcW, the controls' procedures): a window whose procedure is one of them
@@ -50,8 +54,6 @@
 //! way in and out, [`char_to_wide`] and [`char_to_narrow`]); a message another thread sent reaches
 //! the procedure as it was sent.
 
-use core::sync::atomic::{AtomicU32, Ordering};
-
 use rtl::edge::{In, InStr, InWStr, OutBuf};
 use rtl::user::{
     CreateStructW,
@@ -70,6 +72,7 @@ use crate::dialog::WM_CHARTOITEM;
 use crate::edit::{EM_GETLINE, EM_REPLACESEL, EM_SETPASSWORDCHAR};
 use crate::imports;
 use crate::menubar::WM_MENUCHAR;
+use crate::records::Table;
 
 /// The messages whose lParam is a string (or none) of the caller's form, as WM_SETTEXT's: a
 /// setting's section, a device's name (winuser.h).
@@ -87,20 +90,22 @@ pub struct Procedure {
 
 // --- The call-procedure handles ------------------------------------------------------------------
 
-/// How many procedures of each form the handles name.
-pub const HANDLES: usize = 128;
+/// How many procedures of each form the handles can name: the index the low word holds below the
+/// narrow form's bit.
+pub const HANDLES: usize = NARROW_HANDLE as usize;
 
 /// A handle's high word, and the bit of its low word that marks a narrow procedure's handle (the
 /// rest of the low word is the table's index).
 const HANDLE_TAG: u32 = 0xFFFF_0000;
 const NARROW_HANDLE: u32 = 0x8000;
 
-/// The procedures the handles name, by form: an address, 0 for a free entry. An entry, once
-/// claimed, names its procedure for the process's life.
-static WIDE: [AtomicU32; HANDLES] = [const { AtomicU32::new(0) }; HANDLES];
-static NARROW: [AtomicU32; HANDLES] = [const { AtomicU32::new(0) }; HANDLES];
+/// The procedures the handles name, by form: each record a procedure's address, at the index its
+/// handle holds. A record, once set, is never taken: it names its procedure for the process's
+/// life, and keeps its place (shared by the process's threads under user32's lock).
+static WIDE: Table<1> = Table::new();
+static NARROW: Table<1> = Table::new();
 
-fn table(ansi: bool) -> &'static [AtomicU32; HANDLES] {
+fn table(ansi: bool) -> &'static Table<1> {
     if ansi {
         &NARROW
     } else {
@@ -108,23 +113,16 @@ fn table(ansi: bool) -> &'static [AtomicU32; HANDLES] {
     }
 }
 
-/// The handle naming `proc`: its entry, or a free one claimed for it; none when the table is full.
+/// The handle naming `proc`: its record's, or a new record's; none when the form names as many
+/// procedures as its handles can, or the heap has no room for another.
 fn handle_of(proc: Procedure) -> Option<u32> {
-    let tag = |index: usize| HANDLE_TAG | if proc.ansi { NARROW_HANDLE } else { 0 } | index as u32;
-    for (index, entry) in table(proc.ansi).iter().enumerate() {
-        let held = entry.load(Ordering::Acquire);
-        if held == proc.address {
-            return Some(tag(index));
-        }
-        if held == 0 {
-            match entry.compare_exchange(0, proc.address, Ordering::AcqRel, Ordering::Acquire) {
-                Ok(_) => return Some(tag(index)),
-                Err(other) if other == proc.address => return Some(tag(index)),
-                Err(_) => {}
-            }
-        }
-    }
-    None
+    let address = proc.address as usize;
+    let index = table(proc.ansi).with(|procedures| {
+        procedures.index_of(address).or_else(|| {
+            (procedures.len() < HANDLES && procedures.set([address])).then(|| procedures.len() - 1)
+        })
+    })?;
+    Some(HANDLE_TAG | if proc.ansi { NARROW_HANDLE } else { 0 } | index as u32)
 }
 
 /// One of user32's own procedures, by the entry points of its two forms.
@@ -193,11 +191,11 @@ pub fn resolve(value: u32, caller_ansi: bool) -> Procedure {
     if value & 0xFFFF_0000 == HANDLE_TAG {
         let ansi = value & NARROW_HANDLE != 0;
         let index = (value & (NARROW_HANDLE - 1)) as usize;
-        if let Some(entry) = table(ansi).get(index) {
-            let address = entry.load(Ordering::Acquire);
-            if address != 0 {
-                return Procedure { address, ansi };
-            }
+        if let Some([address]) = table(ansi).with(|procedures| procedures.record_at(index)) {
+            return Procedure {
+                address: address as u32,
+                ansi,
+            };
         }
     }
     Procedure {
@@ -624,6 +622,31 @@ pub extern "system" fn call_window_proc_w(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The handles name as many procedures as a process has, far past the 128 of each form a
+    /// fixed table held: each its own handle, the same each time, resolving to its procedure.
+    #[test]
+    fn handles_name_any_number_of_procedures() {
+        let procedures: std::vec::Vec<Procedure> = (0..600u32)
+            .map(|index| Procedure {
+                address: 0x0050_0000 + 16 * index,
+                ansi: index % 2 == 0,
+            })
+            .collect();
+        let handles: std::vec::Vec<u32> = procedures
+            .iter()
+            .map(|&proc| value_for(proc, !proc.ansi))
+            .collect();
+        assert!(handles.iter().all(|&handle| handle >> 16 == 0xFFFF));
+        for (&proc, &handle) in procedures.iter().zip(&handles) {
+            assert_eq!(value_for(proc, !proc.ansi), handle);
+            assert_eq!(resolve(handle, !proc.ansi), proc);
+        }
+        let mut distinct = handles.clone();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(distinct.len(), handles.len());
+    }
 
     /// A procedure of the caller's form is its address; one of the other form a handle, the same
     /// each time, which resolves to it in its own form; a value that is no handle resolves to an
