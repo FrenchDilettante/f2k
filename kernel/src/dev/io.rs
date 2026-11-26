@@ -108,6 +108,8 @@
 
 use core::mem::size_of;
 
+use rtl::cstr::ascii_into;
+
 use super::ntddk::{
     IoStackLocation,
     Irp,
@@ -198,14 +200,6 @@ fn starts_with(units: &[u16], prefix: &str) -> bool {
             .all(|(&unit, byte)| unit < 0x80 && (unit as u8).eq_ignore_ascii_case(&byte))
 }
 
-/// The ASCII text as units, into `out`: its length.
-fn ascii(text: &str, out: &mut [u16]) -> usize {
-    for (slot, byte) in out.iter_mut().zip(text.bytes()) {
-        *slot = u16::from(byte);
-    }
-    text.len()
-}
-
 /// The directories the I/O manager's names live in: the root's, `\Device`, `\Driver`, `\??` and
 /// `\FileSystem`.
 const DIRECTORIES: [&str; 5] = ["", "\\Device", "\\Driver", "\\??", "\\FileSystem"];
@@ -229,7 +223,7 @@ pub fn normalize(units: &[u16]) -> Result<ObName, NtStatus> {
         && matches!(units.get(DOS_DEVICES.len()), None | Some(&SEPARATOR))
     {
         let mut prefix = [0u16; 3];
-        ascii("\\??", &mut prefix);
+        ascii_into(&mut prefix, b"\\??");
         ObName::joined(&[&prefix, &units[DOS_DEVICES.len()..]])
     } else {
         ObName::of(units)
@@ -2141,7 +2135,7 @@ mod target {
         let path = &path[..length];
         let mut written = 0;
         let mut root = [0u16; 8];
-        let n = ascii("REGISTRY", &mut root);
+        let n = ascii_into(&mut root, b"REGISTRY");
         push_object_component(0, &root[..n], out, &mut written)?;
         let mut so_far = 0;
         for (index, component) in path.split(|&unit| unit == SEPARATOR).enumerate() {
@@ -2164,7 +2158,7 @@ mod target {
     /// length; none when the key has no such string.
     fn string_value(key: Key, name: &str, out: &mut [u16]) -> Option<usize> {
         let mut units = [0u16; 32];
-        let n = ascii(name, &mut units);
+        let n = ascii_into(&mut units, name.as_bytes());
         with_registry(|registry| {
             let value = registry.query_value(key, &units[..n]).ok()?;
             if !matches!(value.kind, 1 | 2) {
@@ -2211,7 +2205,7 @@ mod target {
     /// The `\Driver\<name>` name.
     fn driver_name(own: &ObName) -> Option<ObName> {
         let mut prefix = [0u16; 8];
-        let n = ascii("\\Driver\\", &mut prefix);
+        let n = ascii_into(&mut prefix, b"\\Driver\\");
         ObName::joined(&[&prefix[..n], own.units()])
     }
 
@@ -2312,7 +2306,7 @@ mod target {
         registry: &[u16],
     ) -> Option<u32> {
         let mut hardware = [0u16; 48];
-        let hardware_length = ascii(HARDWARE_DATABASE, &mut hardware);
+        let hardware_length = ascii_into(&mut hardware, HARDWARE_DATABASE.as_bytes());
         let hardware = &hardware[..hardware_length];
         let base_name = image_path
             .rsplit(|&unit| unit == SEPARATOR)
