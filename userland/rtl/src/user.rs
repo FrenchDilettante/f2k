@@ -278,10 +278,13 @@ pub const COPY_DATA_HEAD: usize = 6;
 ///
 /// For a sent message, `proc` is the window procedure to call with `msg`'s window, message and
 /// parameters; when the message carries a structure, `msg.lparam` points at the receipt's own copy
-/// of it: `rect` (WM_NCCALCSIZE), `window_pos` (WM_WINDOWPOSCHANGING, WM_WINDOWPOSCHANGED) or
-/// `style` (WM_STYLECHANGING, WM_STYLECHANGED), the window manager's messages to another thread's
-/// window (its own thread's are callbacks, [`crate::callback`]). The answer goes back with
-/// [`ONE_PARAM_END_SENT_MESSAGE`] once the procedure returns.
+/// of it: `rect` (WM_NCCALCSIZE, wParam FALSE), `calc` (WM_NCCALCSIZE, wParam TRUE, its lppos
+/// pointing at `window_pos`), `window_pos` (WM_WINDOWPOSCHANGING, WM_WINDOWPOSCHANGED), `style`
+/// (WM_STYLECHANGING, WM_STYLECHANGED) or `min_max` (WM_GETMINMAXINFO), the window manager's
+/// messages to another thread's window (its own thread's are callbacks, [`crate::callback`]). The
+/// answer goes back with [`ONE_PARAM_END_SENT_MESSAGE`] once the procedure returns; the window
+/// manager reads an in-out structure back from the receipt then (the procedure's edits reach the
+/// waiting sender), so the receipt stays where it is until that call.
 ///
 /// A sent message that carries a text, as long as it is, says how long in `text` ([`NO_TEXT`] for
 /// none): WM_SETTEXT's text from another process; WM_GETTEXT from another process carries an empty
@@ -301,6 +304,8 @@ pub struct Receipt {
     /// for none.
     pub text: u32,
     pub style: StyleStruct,
+    pub calc: crate::window::NcCalcSizeParams,
+    pub min_max: MinMaxInfo,
 }
 
 // SAFETY: integers and structures of them, without padding.

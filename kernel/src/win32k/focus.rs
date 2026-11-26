@@ -24,10 +24,12 @@
 //! window's top-level window first when it is not the active one.
 //!
 //! The messages go through the session: a window of the calling thread's own is called back, its
-//! procedure running inside the decision ([`super::queue`]), and another thread's window gets them
-//! queued. So what the default procedure does with WM_ACTIVATE (the focus to the window, through
-//! [`call_hwnd_lock`]'s routine, a nested decision) happens inside the activation, as on Windows
-//! 2000; the answers themselves (WM_NCACTIVATE's veto) are not looked at yet.
+//! procedure running inside the decision ([`super::queue`]); another thread's window has them sent
+//! to its thread, the decision waiting for the answer, except the activation's, which Windows 2000
+//! hands that thread as an event: [`activate_this`] has them queued for it, not waited for
+//! ([`Session::queue_for`]). So what the default procedure does with WM_ACTIVATE (the focus to the
+//! window, through [`call_hwnd_lock`]'s routine, a nested decision) happens inside the activation,
+//! as on Windows 2000; the answers themselves (WM_NCACTIVATE's veto) are not looked at yet.
 //!
 //! The services, user32's calls (F2K's argument lists, see [`crate::win32k`]; Windows 2000's
 //! numbers):
@@ -311,7 +313,17 @@ fn activate_app(s: &mut dyn Session, thread: ThreadId, first: WindowId, active: 
 
 /// Make `new` the thread's active window (none: the thread has none), as Windows 2000's
 /// activation of a window does (see the module notes for the messages). False when `new` is gone.
+/// The messages to another thread's windows are queued for it, not waited for
+/// ([`Session::queue_for`]): Windows 2000 hands another thread's activation to that thread.
 pub fn activate_this(s: &mut dyn Session, thread: ThreadId, new: Option<WindowId>) -> bool {
+    let outer = s.queue_for(Some(thread));
+    let activated = activate_this_queued(s, thread, new);
+    s.queue_for(outer);
+    activated
+}
+
+/// [`activate_this`]'s work.
+fn activate_this_queued(s: &mut dyn Session, thread: ThreadId, new: Option<WindowId>) -> bool {
     let windows = s.windows();
     if new.is_some_and(|w| !windows.is_live(w)) {
         return false;

@@ -688,6 +688,15 @@ pub trait Session {
         default_send(self, target, message)
     }
 
+    /// From now on, the messages to the windows of `thread` (none: no thread) are queued for it
+    /// and not waited for, unless they go to the deciding thread's own windows: what the
+    /// activation of another thread's windows sends, which Windows 2000 hands that thread as an
+    /// event to carry out itself rather than sending it from the deciding thread. The thread this
+    /// replaces, for the caller to put back. The default keeps none.
+    fn queue_for(&mut self, _thread: Option<ThreadId>) -> Option<ThreadId> {
+        None
+    }
+
     /// The WM_SIZE send (wparam is the SIZE_* command, lparam the client area's width and height,
     /// as guigeo `sizemsg` captured).
     fn send_size(&mut self, target: WindowId, command: u32) {

@@ -33,12 +33,20 @@
 //! structure the procedure was handed comes back through the callback's output block, bounded by
 //! the structure's size ([`read_back`]): WM_NCCALCSIZE's client rectangle, WM_WINDOWPOSCHANGING's
 //! new place, WM_STYLECHANGING's new style, WM_GETMINMAXINFO's sizes. A message to another
-//! thread's window is queued for that thread as a sent message (WM_GETMINMAXINFO is not: the
-//! defaults stand), and the decision goes on with the default procedure's answer (1 to
-//! WM_NCCREATE, 0 to the rest): the thread's next read hands it out first, before anything posted,
-//! with the procedure to call and a copy of the structure the message points at
-//! ([`rtl::user::Receipt`]); user32 calls the procedure and hands the answer back ([`end_sent`]),
-//! which nobody waits for.
+//! thread's window is queued for that thread as a sent message with the window manager's copy of
+//! the structure, and the decision waits for the answer with the lock let go
+//! ([`send_for_decision`], [`decision_reply`]), as Windows 2000's `xxxInterSendMsgEx` waits: the
+//! thread's next read (or its own wait) hands the message out first, before anything posted, with
+//! the procedure to call and the copy in its receipt ([`rtl::user::Receipt`]); user32 calls the
+//! procedure and hands the answer back ([`end_sent`]), the window manager reading the in-out
+//! structure back from the receipt then ([`end_structure`]). While it waits, the deciding thread
+//! delivers the messages sent to its own thread by callback ([`take_for_callback`],
+//! [`end_received`]), so two threads whose decisions send to each other do not wait on each other;
+//! a receiving thread that ends first fails the send (answered 0, the structure as sent). The
+//! activation of another thread's windows is not waited for: Windows 2000 hands it to that thread
+//! as an event, F2K queues its messages for that thread ([`defer`], [`Session::queue_for`]), as it
+//! does a decision of a thread with no queue (the console server's), the decision going on with
+//! the default procedure's answer.
 //!
 //! SendMessage to another thread's window is queued the same way, its sender waiting for the answer
 //! ([`send`], [`await_reply`]) and, as Windows 2000's sender does, handling the messages sent to
@@ -236,9 +244,10 @@ impl Codec for SentToken {
 
 /// The sent messages a chunk of their pool holds: a page's worth.
 const SENT_PER: usize = slots::per_page::<Sent>();
-// A 96-byte record in a 104-byte slot: 39 to a page on target.
+// A 148-byte record (an NCCALCSIZE_PARAMS and its WINDOWPOS the longest structure it carries) in a
+// 156-byte slot: 26 to a page on target.
 #[cfg(target_arch = "x86")]
-const _: () = assert!(SENT_PER == 39 && Slots::<Sent, SentToken, SENT_PER>::CHUNK_PAGES == 1);
+const _: () = assert!(SENT_PER == 26 && Slots::<Sent, SentToken, SENT_PER>::CHUNK_PAGES == 1);
 
 /// The sent messages: a slot pool that grows a page at a time and keeps its peak (the slot-pool
 /// plan's rule), linked into their receivers' lists by [`SentId`]. A link names a live record
@@ -429,18 +438,53 @@ enum State {
     Dropped,
 }
 
-/// The structure a sent message's lParam points at, carried with it.
+/// The structure a sent message's lParam points at, carried with it: the window manager's copy,
+/// which the receiver's procedure is handed and, for an in-out one, which comes back to the
+/// sender as the procedure left it ([`read_back`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Carried {
     None,
-    /// WM_NCCALCSIZE's rectangle.
+    /// WM_NCCALCSIZE's rectangle (wParam FALSE).
     Rect(rtl::gdi::Rect),
+    /// WM_NCCALCSIZE's NCCALCSIZE_PARAMS and the move's WINDOWPOS (wParam TRUE).
+    CalcSize(window::CalcSize),
     /// WM_WINDOWPOSCHANGING's and WM_WINDOWPOSCHANGED's WINDOWPOS.
     WindowPos(window::WindowPos),
     /// WM_STYLECHANGING's and WM_STYLECHANGED's STYLESTRUCT.
     Style(StyleStruct),
+    /// WM_GETMINMAXINFO's MINMAXINFO.
+    MinMax(window::MinMaxInfo),
     /// WM_SETTEXT's text, or WM_GETTEXT's answer, sent to another process's window.
     Text(CarriedText),
+}
+
+impl Carried {
+    /// What a decision's message carries to another thread: its payload's structure; none for a
+    /// creation's, which only the creating thread's own window is sent.
+    fn of(payload: &Payload) -> Option<Carried> {
+        Some(match *payload {
+            Payload::None => Carried::None,
+            Payload::Rect(r) => Carried::Rect(r),
+            Payload::CalcSize(calc) => Carried::CalcSize(calc),
+            Payload::WindowPos(pos) => Carried::WindowPos(pos),
+            Payload::Style(style) => Carried::Style(style),
+            Payload::MinMax(mmi) => Carried::MinMax(mmi),
+            Payload::Create(_) => return None,
+        })
+    }
+
+    /// The payload a callback carries it as; none for a text, which no callback carries.
+    fn payload(&self) -> Option<Payload> {
+        Some(match *self {
+            Carried::None => Payload::None,
+            Carried::Rect(r) => Payload::Rect(r),
+            Carried::CalcSize(calc) => Payload::CalcSize(calc),
+            Carried::WindowPos(pos) => Payload::WindowPos(pos),
+            Carried::Style(style) => Payload::Style(style),
+            Carried::MinMax(mmi) => Payload::MinMax(mmi),
+            Carried::Text(_) => return None,
+        })
+    }
 }
 
 /// A text a message to another process's window carries, as long as it is: WM_SETTEXT's, read
@@ -477,6 +521,10 @@ struct Sent {
     wparam: WParam,
     lparam: LParam,
     carried: Carried,
+    /// Where the receiver's copy of the carried structure is (its receipt's, in its memory), once
+    /// a read handed the message out: read back at the delivery's end ([`end_structure`]); 0
+    /// before, and for a message that carries none.
+    back: u32,
     state: State,
     result: LResult,
     /// The next one on the receiver's list or receiving stack.
@@ -497,6 +545,7 @@ impl Sent {
         wparam: 0,
         lparam: 0,
         carried: Carried::None,
+        back: 0,
         state: State::Queued,
         result: 0,
         next: None,
@@ -1474,6 +1523,8 @@ pub fn receipt_head(
             receipt.wrapping_add(offset_of!(Receipt, window_pos) as u32) as LParam
         }
         Carried::Style(_) => receipt.wrapping_add(offset_of!(Receipt, style) as u32) as LParam,
+        Carried::CalcSize(_) => receipt.wrapping_add(offset_of!(Receipt, calc) as u32) as LParam,
+        Carried::MinMax(_) => receipt.wrapping_add(offset_of!(Receipt, min_max) as u32) as LParam,
         // The receiver points it at a buffer of its own ([`received_text`]).
         Carried::Text(_) => 0,
     };
@@ -1576,11 +1627,106 @@ pub fn receipt_style(windows: &Windows, id: SentId) -> Option<StyleStruct> {
 }
 
 /// The WINDOWPOS the sent message `id` carries, when it carries one (WM_WINDOWPOSCHANGING,
-/// WM_WINDOWPOSCHANGED).
+/// WM_WINDOWPOSCHANGED; WM_NCCALCSIZE's TRUE form, whose lppos points at it).
 pub fn receipt_window_pos(windows: &Windows, id: SentId) -> Option<window::WindowPos> {
     match windows.queues.sent_at(id)?.carried {
         Carried::WindowPos(pos) => Some(pos),
+        Carried::CalcSize(calc) => Some(calc.pos),
         _ => None,
+    }
+}
+
+/// WM_NCCALCSIZE's NCCALCSIZE_PARAMS (wParam TRUE) the sent message `id` carries, its lppos
+/// pointing at the receipt at `receipt`'s WINDOWPOS.
+pub fn receipt_calc(
+    windows: &Windows,
+    id: SentId,
+    receipt: u32,
+) -> Option<rtl::window::NcCalcSizeParams> {
+    match windows.queues.sent_at(id)?.carried {
+        Carried::CalcSize(calc) => Some(rtl::window::NcCalcSizeParams {
+            rects: calc.rects,
+            pos: receipt.wrapping_add(offset_of!(Receipt, window_pos) as u32),
+        }),
+        _ => None,
+    }
+}
+
+/// WM_GETMINMAXINFO's MINMAXINFO the sent message `id` carries.
+pub fn receipt_min_max(windows: &Windows, id: SentId) -> Option<rtl::user::MinMaxInfo> {
+    match windows.queues.sent_at(id)?.carried {
+        Carried::MinMax(mmi) => Some(mmi.raw()),
+        _ => None,
+    }
+}
+
+/// The sent message `id`, handed out to `caller` in the receipt its lParam `lparam` points into
+/// ([`receipt_head`]): an in-out structure is read back from there at the delivery's end
+/// ([`end_structure`]).
+pub fn note_receipt(windows: &mut Windows, caller: ThreadId, id: SentId, lparam: LParam) {
+    let queues = &mut windows.queues;
+    let Some(sent) = queues.sent_at(id) else {
+        return;
+    };
+    if sent.receiver.map(|r| r.index) == Some(caller.0) && in_out(sent).is_some() {
+        queues.sent.at_mut(id).back = lparam as u32;
+    }
+}
+
+/// The callback slot and the size of the in-out structure the sent message `sent` carries: none
+/// for a message whose structure does not come back (WM_WINDOWPOSCHANGED, WM_STYLECHANGED), or
+/// that carries none.
+fn in_out(sent: &Sent) -> Option<(u32, usize)> {
+    let payload = sent.carried.payload()?;
+    let api = slot(sent.message, &payload);
+    let size = rtl::callback::out_size(api, sent.wparam);
+    (size != 0).then_some((api, size))
+}
+
+/// Where the caller's innermost sent message's in-out structure is in the caller's memory (its
+/// receipt's copy, [`note_receipt`]), and how long it is: read back at the delivery's end, for
+/// [`end_structure`]. None when the message carries none, or the caller is delivering none.
+pub fn structure_back(windows: &Windows, caller: ThreadId) -> Option<(u32, usize)> {
+    let queues = &windows.queues;
+    let index = queues.queues[queues.queue_of(caller)?.index as usize].receiving?;
+    let sent = queues.sent.at(index);
+    let (_, size) = in_out(sent)?;
+    (sent.back != 0 && sent.state == State::Received).then_some((sent.back, size))
+}
+
+/// The caller's innermost sent message's in-out structure, as its procedure left it in the
+/// receipt (`out`, [`structure_back`]'s bytes, read at the delivery's end): kept with the message,
+/// for its sender, through [`read_back`]'s checks (a short block changes nothing).
+pub fn end_structure(windows: &mut Windows, caller: ThreadId, out: &CallbackOut) {
+    let queues = &mut windows.queues;
+    let Some(queue) = queues.queue_of(caller) else {
+        return;
+    };
+    let Some(index) = queues.queues[queue.index as usize].receiving else {
+        return;
+    };
+    let sent = queues.sent.at_mut(index);
+    keep_out(sent, out);
+}
+
+/// The in-out structure `out` a callback or a receipt handed back for the sent message `sent`,
+/// kept with it ([`read_back`]).
+fn keep_out(sent: &mut Sent, out: &CallbackOut) {
+    let Some((api, _)) = in_out(sent) else {
+        return;
+    };
+    let Some(payload) = sent.carried.payload() else {
+        return;
+    };
+    let mut message = Message {
+        message: sent.message,
+        wparam: sent.wparam,
+        lparam: sent.lparam,
+        payload,
+    };
+    read_back(api, &mut message, out);
+    if let Some(carried) = Carried::of(&message.payload) {
+        sent.carried = carried;
     }
 }
 
@@ -2025,10 +2171,13 @@ pub fn dispatch_target(windows: &Windows, msg: &Msg) -> Result<u32, NtStatus> {
 }
 
 /// Queue `message` for the window `target`'s thread as a message the window manager sent (no
-/// thread waits for its answer): see the module notes. Nothing for a window whose procedure is the
-/// window manager's, or a thread with no queue; nothing either when the pool cannot grow (the
-/// message is lost), nor for a creation message, which goes to the creating thread's own window,
-/// by callback ([`QueueSession`]).
+/// thread waits for its answer): a decision of a thread with no queue (the console server's), or
+/// the activation of another thread's windows, which Windows 2000 hands that thread to do
+/// ([`Session::queue_for`]). Nothing for a window whose procedure is the window manager's, or a
+/// thread with no queue; nothing either when the pool cannot grow (the message is lost), nor for
+/// a creation message, which goes to the creating thread's own window, by callback
+/// ([`QueueSession`]), nor for WM_GETMINMAXINFO, whose defaults stand when nobody waits for the
+/// answer.
 pub fn defer(windows: &mut Windows, target: WindowId, message: &Message) {
     let Some(proc) = windows.client_proc(target) else {
         return;
@@ -2038,21 +2187,9 @@ pub fn defer(windows: &mut Windows, target: WindowId, message: &Message) {
     let Some(receiver) = windows.queues.queue_of(thread) else {
         return;
     };
-    // A resize's WM_NCCALCSIZE goes as the rectangle form (wParam FALSE): a receipt carries one
-    // structure, and nobody reads the answer back yet.
-    let mut wparam = message.wparam;
-    let carried = match message.payload {
-        Payload::None => Carried::None,
-        Payload::Rect(r) => Carried::Rect(r),
-        Payload::CalcSize(calc) => {
-            wparam = 0;
-            Carried::Rect(calc.rects[0])
-        }
-        Payload::WindowPos(w) => Carried::WindowPos(w),
-        Payload::Style(style) => Carried::Style(style),
-        // A receipt carries no MINMAXINFO, and nobody reads the answer back yet: the defaults
-        // stand.
-        Payload::Create(_) | Payload::MinMax(_) => return,
+    let carried = match Carried::of(&message.payload) {
+        None | Some(Carried::MinMax(_)) => return,
+        Some(carried) => carried,
     };
     let queues = &mut windows.queues;
     let Some(id) = queues.allocate_sent(Sent {
@@ -2061,7 +2198,7 @@ pub fn defer(windows: &mut Windows, target: WindowId, message: &Message) {
         hwnd,
         proc,
         message: message.message,
-        wparam,
+        wparam: message.wparam,
         lparam: message.lparam,
         carried,
         ..Sent::EMPTY
@@ -2071,13 +2208,205 @@ pub fn defer(windows: &mut Windows, target: WindowId, message: &Message) {
     queues.push_sent(receiver, id);
 }
 
+/// A decision's `message` to the window `target` of another thread than `caller`'s (whose
+/// procedure is `proc`), queued for its thread with the window manager's copy of the structure
+/// it carries, `caller` waiting for the answer ([`decision_reply`]), as Windows 2000's
+/// `xxxInterSendMsgEx` queues it. None when the message is not one to wait for (a creation's),
+/// either thread has no queue, or the pool cannot grow: the decision goes on with the default
+/// procedure's answer then.
+pub fn send_for_decision(
+    windows: &mut Windows,
+    caller: ThreadId,
+    target: WindowId,
+    proc: u32,
+    message: &Message,
+) -> Option<SentId> {
+    let thread = windows.window_thread(target);
+    if thread == caller {
+        return None;
+    }
+    let carried = Carried::of(&message.payload)?;
+    let hwnd = windows.handle_of(target);
+    let queues = &mut windows.queues;
+    let receiver = queues.queue_of(thread)?;
+    let sender = queues.queue_of(caller)?;
+    let id = queues.allocate_sent(Sent {
+        receiver: Some(receiver),
+        sender: Some(sender),
+        window: Some(target),
+        hwnd,
+        proc,
+        message: message.message,
+        wparam: message.wparam,
+        lparam: message.lparam,
+        carried,
+        ..Sent::EMPTY
+    })?;
+    queues.push_sent(receiver, id);
+    Some(id)
+}
+
+/// What a decision waiting on its send to another thread's window found ([`decision_reply`]).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Replied {
+    /// The receiver's answer, and the message's payload as its procedure left it (the record
+    /// went back to the pool).
+    Answer(LResult, Payload),
+    /// The receiving thread ended first: no answer (the record went back to the pool).
+    Failed,
+    /// A message sent to the waiting thread meanwhile, handed out for it to deliver by callback
+    /// ([`end_received`]), as Windows 2000's sender handles the messages sent to it while it
+    /// waits.
+    Received(SentId),
+    /// Nothing yet: the decision waits on its queue, the lock let go.
+    Wait,
+}
+
+/// The decision's wait on its send `id` (from [`send_for_decision`]), one look: the answer and
+/// the structure; otherwise the next message sent to `caller` to deliver meanwhile
+/// ([`take_for_callback`]).
+pub fn decision_reply(windows: &mut Windows, caller: ThreadId, id: SentId) -> Replied {
+    let carried = windows.queues.sent_at(id).map(|sent| sent.carried);
+    match await_reply(windows, caller, id) {
+        Awaited::Answer(answer) => Replied::Answer(
+            answer,
+            carried.and_then(|c| c.payload()).unwrap_or(Payload::None),
+        ),
+        Awaited::Failed => Replied::Failed,
+        Awaited::Received | Awaited::Wait => match take_for_callback(windows, caller) {
+            Some(sent) => Replied::Received(sent),
+            None => Replied::Wait,
+        },
+    }
+}
+
+/// The next message sent to `caller` that a callback can carry, handed out (on its receiving
+/// stack, as a read hands one out): the first in the order they were sent that carries no text (a
+/// text another process's message carries waits for the thread's next read, which hands it to
+/// user32 with its own buffer). A message another thread or the server sent to a window gone
+/// meanwhile is answered 0 (dropped, for the server) and skipped, as a read skips it.
+pub fn take_for_callback(windows: &mut Windows, caller: ThreadId) -> Option<SentId> {
+    let id = windows.queues.queue_of(caller)?;
+    let mut at = windows.queues.queues[id.index as usize].sent.head;
+    while let Some(index) = at {
+        let sent = *windows.queues.sent.at(index);
+        at = sent.next;
+        let window_gone = sent.window.is_none_or(|w| !windows.is_live(w));
+        let queues = &mut windows.queues;
+        if (sent.sender.is_some() || sent.server || sent.notify) && window_gone {
+            queues.unlink_sent(id, index);
+            queues.drop_unanswered(index);
+            continue;
+        }
+        if matches!(sent.carried, Carried::Text(_)) {
+            continue;
+        }
+        queues.unlink_sent(id, index);
+        let receiving = queues.queues[id.index as usize].receiving;
+        let record = queues.sent.at_mut(index);
+        record.state = State::Received;
+        record.next = receiving;
+        queues.queues[id.index as usize].receiving = Some(index);
+        return Some(index);
+    }
+    None
+}
+
+/// The callback a message handed out by [`take_for_callback`] is: its procedure, and the
+/// message with the structure it carries.
+pub fn received_callback(
+    windows: &Windows,
+    classes: &class::Registry,
+    id: SentId,
+) -> Option<(CallbackInput, Message)> {
+    let sent = windows.queues.sent_at(id)?;
+    let message = Message {
+        message: sent.message,
+        wparam: sent.wparam,
+        lparam: sent.lparam,
+        payload: sent.carried.payload()?,
+    };
+    let input = callback_input_for(windows, classes, sent.hwnd, sent.proc, &message);
+    Some((input, message))
+}
+
+/// The end of the callback that delivered the message `id` to `caller` ([`take_for_callback`]):
+/// its procedure's answer `result` and the in-out structure `out` it handed back go to its sender,
+/// as [`end_sent`] hands a receipt's on. Messages handed out above it and never ended (a callback
+/// an exception cut short) are answered 0 first.
+pub fn end_received(
+    windows: &mut Windows,
+    caller: ThreadId,
+    id: SentId,
+    result: LResult,
+    out: &CallbackOut,
+) {
+    let queues = &mut windows.queues;
+    let Some(queue) = queues.queue_of(caller) else {
+        return;
+    };
+    let mut on_stack = queues.queues[queue.index as usize].receiving;
+    while on_stack.is_some_and(|at| at != id) {
+        on_stack = on_stack.and_then(|at| queues.sent.at(at).next);
+    }
+    if on_stack.is_none() {
+        return;
+    }
+    loop {
+        let queues = &mut windows.queues;
+        let Some(top) = queues.queues[queue.index as usize].receiving else {
+            return;
+        };
+        queues.queues[queue.index as usize].receiving = queues.sent.at(top).next;
+        let Sent {
+            message,
+            window,
+            state,
+            ..
+        } = *queues.sent.at(top);
+        let answer = if top == id {
+            keep_out(queues.sent.at_mut(top), out);
+            result
+        } else {
+            0
+        };
+        if state == State::Received {
+            queues.answer(top, answer);
+        } else {
+            queues.leave_stack(top);
+        }
+        if let (WM_NCDESTROY, Some(window)) = (message, window) {
+            super::caret::ncdestroy_delivered(windows, caller, window);
+        }
+        if top == id {
+            return;
+        }
+    }
+}
+
+/// The `__fn*` slot a message the window manager sends goes through, by its payload's kind (see
+/// [`callback_input`]).
+fn slot(message: u32, payload: &Payload) -> u32 {
+    match payload {
+        Payload::None if message == WM_NCDESTROY => FN_NCDESTROY,
+        Payload::None => FN_DWORD,
+        Payload::Rect(_) | Payload::CalcSize(_) => FN_INOUTNCCALCSIZE,
+        Payload::WindowPos(_) if message == WM_WINDOWPOSCHANGING => FN_INOUTLPWINDOWPOS,
+        Payload::WindowPos(_) => FN_INLPWINDOWPOS,
+        Payload::Style(_) => FN_INOUTSTYLECHANGE,
+        Payload::MinMax(_) => FN_INOUTLPPOINT5,
+        Payload::Create(_) => FN_INLPCREATESTRUCT,
+    }
+}
+
 /// The callback a message the window manager sends to `target` (whose procedure is `proc`) is
-/// (rtl::callback's notes): the `__fn*` slot its payload's kind names, the input block's head, and
-/// the structure the block carries after it (its first `length` bytes). A creation message's
-/// window name follows the structure in the block ([`Windows::create_text`]); its CREATESTRUCTW's
-/// lpszClass is the class's atom, as a receipt's was. WM_NCCALCSIZE's NCCALCSIZE_PARAMS is
-/// followed by its WINDOWPOS (its lppos 0: user32 points it at the copy); WM_WINDOWPOSCHANGING
-/// goes to the in-out WINDOWPOS slot, WM_WINDOWPOSCHANGED to the input-only one.
+/// (rtl::callback's notes): the `__fn*` slot its payload's kind names ([`slot`]), the input
+/// block's head, and the structure the block carries after it (its first `length` bytes). A
+/// creation message's window name follows the structure in the block
+/// ([`Windows::create_text`]); its CREATESTRUCTW's lpszClass is the class's atom, as a receipt's
+/// was. WM_NCCALCSIZE's NCCALCSIZE_PARAMS is followed by its WINDOWPOS (its lppos 0: user32 points
+/// it at the copy); WM_WINDOWPOSCHANGING goes to the in-out WINDOWPOS slot, WM_WINDOWPOSCHANGED to
+/// the input-only one.
 pub fn callback_input(
     windows: &Windows,
     classes: &class::Registry,
@@ -2085,11 +2414,23 @@ pub fn callback_input(
     proc: u32,
     message: &Message,
 ) -> CallbackInput {
+    callback_input_for(windows, classes, windows.handle_of(target), proc, message)
+}
+
+/// [`callback_input`] for the window `hwnd`, by its handle: a message another thread sent, whose
+/// window may be gone by its delivery.
+fn callback_input_for(
+    windows: &Windows,
+    classes: &class::Registry,
+    hwnd: Hwnd,
+    proc: u32,
+    message: &Message,
+) -> CallbackInput {
     let mut input = CallbackInput {
-        api: FN_DWORD,
+        api: slot(message.message, &message.payload),
         head: CallbackMsg {
             proc,
-            hwnd: windows.handle_of(target),
+            hwnd,
             message: message.message,
             wparam: message.wparam,
             lparam: message.lparam,
@@ -2097,41 +2438,29 @@ pub fn callback_input(
         carried: [0; CARRIED],
         length: 0,
     };
-    let (api, bytes): (u32, &[u8]) = match &message.payload {
-        Payload::None if message.message == WM_NCDESTROY => (FN_NCDESTROY, &[]),
-        Payload::None => (FN_DWORD, &[]),
-        Payload::Rect(r) => (FN_INOUTNCCALCSIZE, r.as_bytes()),
+    let mut put = |bytes: &[u8]| {
+        input.carried[input.length..input.length + bytes.len()].copy_from_slice(bytes);
+        input.length += bytes.len();
+    };
+    match &message.payload {
+        Payload::None => {}
+        Payload::Rect(r) => put(r.as_bytes()),
         Payload::CalcSize(calc) => {
             let params = rtl::window::NcCalcSizeParams {
                 rects: calc.rects,
                 pos: 0,
             };
-            let length = size_of::<rtl::window::NcCalcSizeParams>();
-            input.carried[..length].copy_from_slice(params.as_bytes());
-            input.carried[length..length + size_of::<WindowPos>()]
-                .copy_from_slice(calc.pos.as_bytes());
-            input.api = FN_INOUTNCCALCSIZE;
-            input.length = length + size_of::<WindowPos>();
-            return input;
+            put(params.as_bytes());
+            put(calc.pos.as_bytes());
         }
-        Payload::WindowPos(p) if message.message == WM_WINDOWPOSCHANGING => {
-            (FN_INOUTLPWINDOWPOS, p.as_bytes())
-        }
-        Payload::WindowPos(p) => (FN_INLPWINDOWPOS, p.as_bytes()),
-        Payload::Style(style) => (FN_INOUTSTYLECHANGE, style.as_bytes()),
-        Payload::MinMax(mmi) => {
-            let raw = mmi.raw();
-            let length = size_of::<rtl::user::MinMaxInfo>();
-            input.carried[..length].copy_from_slice(raw.as_bytes());
-            input.api = FN_INOUTLPPOINT5;
-            input.length = length;
-            return input;
-        }
+        Payload::WindowPos(p) => put(p.as_bytes()),
+        Payload::Style(style) => put(style.as_bytes()),
+        Payload::MinMax(mmi) => put(mmi.raw().as_bytes()),
         Payload::Create(p) => {
             let class = match p.class_name {
                 ClassArg::Atom(atom) => atom,
                 ClassArg::Name | ClassArg::AnsiName => windows
-                    .class_window(input.head.hwnd)
+                    .class_window(hwnd)
                     .map_or(0, |w| classes.atom(w.class)),
             };
             let create = CreateStructW {
@@ -2148,16 +2477,9 @@ pub fn callback_input(
                 class: u32::from(class),
                 ex_style: p.ex_style,
             };
-            let length = size_of::<CreateStructW>();
-            input.carried[..length].copy_from_slice(create.as_bytes());
-            input.api = FN_INLPCREATESTRUCT;
-            input.length = length;
-            return input;
+            put(create.as_bytes());
         }
-    };
-    input.api = api;
-    input.carried[..bytes.len()].copy_from_slice(bytes);
-    input.length = bytes.len();
+    }
     input
 }
 
@@ -2246,20 +2568,40 @@ pub fn window_gone(windows: &mut Windows, window: WindowId) {
 /// The session the services run the window manager's decisions in. A message to a window of the
 /// deciding thread's own, with a client-side procedure, is a callback to it: the lock let go
 /// meanwhile ([`Hold::unlocked`]), the procedure's answer the send's, as Windows 2000's `xxx`
-/// routines call back (rtl::callback's notes); a message to another thread's window is queued for
-/// that thread ([`defer`]) and answered as the default procedure answers. A window whose procedure
-/// is the window manager's is answered as the default procedure answers. A window's end takes its
-/// posted messages, timers and update region with it; the activation and the destroy's focus
-/// check are [`super::focus`]'s. The other window-manager calls are [`Session`]'s defaults. The
-/// services hold it by the window manager's lock ([`with_session`]); the host tests by the
-/// registries, which cannot be let go of: their sends are all queued.
-pub struct QueueSession<H: Hold>(pub H);
+/// routines call back (rtl::callback's notes). A message to another thread's window is queued
+/// for that thread, the decision waiting for the answer and the structure with the lock let go,
+/// delivering by callback the messages sent to its own thread meanwhile ([`send_and_wait`]), as
+/// Windows 2000's `xxxInterSendMsgEx` waits; the activation of another thread's windows is
+/// queued for that thread and not waited for ([`Session::queue_for`]), as Windows 2000 hands it
+/// to the thread as an event. A decision of a thread with no queue queues its messages too
+/// ([`defer`]), answered as the default procedure answers. A window whose procedure is the window
+/// manager's is answered as the default procedure answers. A window's end takes its posted
+/// messages, timers and update region with it; the activation and the destroy's focus check are
+/// [`super::focus`]'s. The other window-manager calls are [`Session`]'s defaults. The services
+/// hold it by the window manager's lock ([`with_session`]); the host tests by the registries,
+/// which cannot be let go of: their sends are all queued.
+pub struct QueueSession<H: Hold> {
+    pub hold: H,
+    /// The thread whose windows' messages are queued for it, not waited for
+    /// ([`Session::queue_for`]).
+    queued_for: Option<ThreadId>,
+}
+
+impl<H: Hold> QueueSession<H> {
+    /// A session over `hold`.
+    pub fn over(hold: H) -> Self {
+        QueueSession {
+            hold,
+            queued_for: None,
+        }
+    }
+}
 
 #[cfg(test)]
 impl<'a> QueueSession<window::Split<'a>> {
     /// A session over the two registries.
     pub fn new(windows: &'a mut Windows, classes: &'a mut class::Registry) -> Self {
-        QueueSession((windows, classes))
+        QueueSession::over((windows, classes))
     }
 }
 
@@ -2267,13 +2609,13 @@ impl QueueSession<Locked<'_>> {
     /// The whole window manager, borrowed until the next send: the state beside the registries
     /// (the clipboard, the accelerator tables, the properties).
     pub fn manager(&mut self) -> &mut WindowManager {
-        &mut self.0
+        &mut self.hold
     }
 }
 
 impl<H: Hold> Session for QueueSession<H> {
     fn parts(&mut self) -> (&mut Windows, &mut class::Registry) {
-        self.0.parts()
+        self.hold.parts()
     }
 
     fn send(&mut self, target: WindowId, message: &mut Message) -> LResult {
@@ -2281,11 +2623,22 @@ impl<H: Hold> Session for QueueSession<H> {
         let Some(proc) = windows.client_proc(target) else {
             return window::default_send(self, target, message);
         };
-        if let Some(answer) = call_back(&mut self.0, target, proc, message) {
+        if let Some(answer) = call_back(&mut self.hold, target, proc, message) {
             return answer;
+        }
+        let thread = self.windows().window_thread(target);
+        let queued = self.queued_for == Some(thread);
+        if !queued {
+            if let Some(answer) = send_and_wait(&mut self.hold, target, proc, message) {
+                return answer;
+            }
         }
         defer(self.windows(), target, message);
         window::default_send(self, target, message)
+    }
+
+    fn queue_for(&mut self, thread: Option<ThreadId>) -> Option<ThreadId> {
+        core::mem::replace(&mut self.queued_for, thread)
     }
 
     fn activate(&mut self, target: WindowId, command: window::Activate) -> bool {
@@ -2305,13 +2658,63 @@ impl<H: Hold> Session for QueueSession<H> {
     }
 }
 
+/// The running thread's client id; none for a thread that is not a program's (the boot, a system
+/// thread).
+#[cfg(target_arch = "x86")]
+fn running_client_id() -> Option<u32> {
+    crate::sched::try_current_thread()?;
+    Some(crate::level::raised::<crate::level::Dispatch, _>(
+        |dispatch| {
+            crate::sched::DISPATCHER
+                .get(dispatch)
+                .thread(crate::sched::current_thread())
+                .thread_id()
+        },
+    ))
+}
+
+/// Call back to user mode through the slot `api` with the input block `parts` (KeUserModeCallback,
+/// the lock let go): the routine's LRESULT and, for an in-out slot, the structure after it, no
+/// more than `wanted` bytes and only when the routine handed back that much (the length is the
+/// routine's word, the copy probed and fault-tolerant). 0 and no structure when the callback
+/// failed (the kernel stack has no room for it, the user stack cannot take its block, the routine
+/// took an exception or answered no LRESULT).
+#[cfg(target_arch = "x86")]
+fn call_user(
+    passive: &mut crate::level::At<crate::level::Passive>,
+    api: u32,
+    parts: &[&[u8]],
+    wanted: usize,
+) -> (LResult, CallbackOut) {
+    let mut out = CallbackOut {
+        bytes: [0; OUT_MAX],
+        length: 0,
+    };
+    let reply = crate::user::callback::call_user_mode(passive, api, parts);
+    if reply.status != STATUS_SUCCESS || (reply.length as usize) < size_of::<LResult>() {
+        return (0, out);
+    }
+    let output = crate::user::args::UserAddr(reply.output);
+    let Ok(answer) = output.cast::<LResult>().read() else {
+        return (0, out);
+    };
+    let handed = (reply.length as usize - size_of::<LResult>()).min(wanted);
+    if handed == wanted
+        && output
+            .offset(size_of::<LResult>() as u32)
+            .read(&mut out.bytes[..handed])
+            .is_ok()
+    {
+        out.length = handed;
+    }
+    (answer, out)
+}
+
 /// The callback `message` to `target` is, when `target` is a window of the running thread's and
-/// `hold` can let the lock go: the procedure `proc`'s answer, or 0 when the callback failed (the
-/// kernel stack has no room for it, the user stack cannot take its block, the routine took an
-/// exception or answered no LRESULT). The structure the message carries comes back as the
-/// procedure left it, for the in-out slots ([`read_back`]: the user's output block copied while
-/// the lock is let go, no more than the structure's size). None when the message is not one to
-/// call back.
+/// `hold` can let the lock go: the procedure `proc`'s answer, or 0 when the callback failed
+/// ([`call_user`]). The structure the message carries comes back as the procedure left it, for
+/// the in-out slots ([`read_back`]: the user's output block copied while the lock is let go, no
+/// more than the structure's size). None when the message is not one to call back.
 #[cfg(target_arch = "x86")]
 fn call_back<H: Hold>(
     hold: &mut H,
@@ -2322,13 +2725,7 @@ fn call_back<H: Hold>(
     use crate::win32k::text::Staged;
     // The running thread, by its client id: a window's thread record is the window registry's,
     // whose queue keeps the id.
-    crate::sched::try_current_thread()?;
-    let running = crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
-        crate::sched::DISPATCHER
-            .get(dispatch)
-            .thread(crate::sched::current_thread())
-            .thread_id()
-    });
+    let running = running_client_id()?;
     let (windows, classes) = hold.parts();
     if client_id_of(windows, windows.window_thread(target)) != Some(running) {
         return None;
@@ -2354,40 +2751,91 @@ fn call_back<H: Hold>(
         terminator,
     ];
     let wanted = rtl::callback::out_size(input.api, message.wparam);
-    let (answer, out) = hold.unlocked(|passive| {
-        let mut out = CallbackOut {
-            bytes: [0; OUT_MAX],
-            length: 0,
-        };
-        let reply = crate::user::callback::call_user_mode(passive, input.api, &parts);
-        if reply.status != STATUS_SUCCESS || (reply.length as usize) < size_of::<LResult>() {
-            return (0, out);
-        }
-        let output = crate::user::args::UserAddr(reply.output);
-        let Ok(answer) = output.cast::<LResult>().read() else {
-            return (0, out);
-        };
-        // The structure after the answer: no more than the slot's, and only when the routine
-        // handed back that much (the length is the routine's word, the copy probed and
-        // fault-tolerant).
-        let handed = (reply.length as usize - size_of::<LResult>()).min(wanted);
-        if handed == wanted
-            && output
-                .offset(size_of::<LResult>() as u32)
-                .read(&mut out.bytes[..handed])
-                .is_ok()
-        {
-            out.length = handed;
-        }
-        (answer, out)
-    })?;
+    let (answer, out) = hold.unlocked(|passive| call_user(passive, input.api, &parts, wanted))?;
     read_back(input.api, message, &out);
     Some(answer)
+}
+
+/// The send of `message` to `target`, a window of another thread's (whose procedure is `proc`),
+/// from a decision of the running thread, when it has a queue and `hold` can let the lock go: the
+/// message queued for the window's thread with the window manager's copy of its structure
+/// ([`send_for_decision`]), and the decision waiting on its queue, the lock let go, until the
+/// receiver's procedure answers at its thread's next read (or inside its own wait), as Windows
+/// 2000's `xxxInterSendMsgEx` waits. The answer, and the structure as the procedure left it. The
+/// messages sent to the waiting thread meanwhile are delivered by callback as they come
+/// ([`take_for_callback`]), so that two threads whose decisions send to each other do not wait on
+/// each other for good. A receiving thread that ends first answers 0, the structure as it was
+/// sent. A wait has no end: a receiver that never reads holds the decision, as on Windows 2000;
+/// the thread may still be terminated inside it. None when the message is not one to wait for.
+#[cfg(target_arch = "x86")]
+fn send_and_wait<H: Hold>(
+    hold: &mut H,
+    target: WindowId,
+    proc: u32,
+    message: &mut Message,
+) -> Option<LResult> {
+    let running = running_client_id()?;
+    let (windows, _) = hold.parts();
+    let (caller, _) = queue_by_client_id(windows, running)?;
+    let id = send_for_decision(windows, caller, target, proc, message)?;
+    loop {
+        let (windows, _) = hold.parts();
+        match decision_reply(windows, caller, id) {
+            Replied::Answer(answer, payload) => {
+                message.payload = payload;
+                return Some(answer);
+            }
+            Replied::Failed => return Some(0),
+            Replied::Received(sent) => receive_by_callback(hold, caller, sent),
+            Replied::Wait => {
+                if hold.unlocked(|_| wait_on_queue(caller, None)).is_none() {
+                    // Not reached: a hold that cannot let go has no running program's thread.
+                    let (windows, _) = hold.parts();
+                    abandon_send(windows, caller, id);
+                    return Some(0);
+                }
+            }
+        }
+    }
+}
+
+/// Deliver the message `id` handed out to `caller` ([`take_for_callback`]) by a callback to its
+/// procedure, the lock let go, and hand its answer and structure to its sender
+/// ([`end_received`]).
+#[cfg(target_arch = "x86")]
+fn receive_by_callback<H: Hold>(hold: &mut H, caller: ThreadId, id: SentId) {
+    let (windows, classes) = hold.parts();
+    let mut out = CallbackOut {
+        bytes: [0; OUT_MAX],
+        length: 0,
+    };
+    let mut answer = 0;
+    if let Some((input, message)) = received_callback(windows, classes, id) {
+        let parts = [input.head.as_bytes(), &input.carried[..input.length]];
+        let wanted = rtl::callback::out_size(input.api, message.wparam);
+        if let Some((a, o)) = hold.unlocked(|passive| call_user(passive, input.api, &parts, wanted))
+        {
+            (answer, out) = (a, o);
+        }
+    }
+    let (windows, _) = hold.parts();
+    end_received(windows, caller, id, answer, &out);
 }
 
 /// The host has no user mode to call back: every send is queued.
 #[cfg(not(target_arch = "x86"))]
 fn call_back<H: Hold>(
+    _hold: &mut H,
+    _target: WindowId,
+    _proc: u32,
+    _message: &mut Message,
+) -> Option<LResult> {
+    None
+}
+
+/// The host's decisions do not wait: every send is queued.
+#[cfg(not(target_arch = "x86"))]
+fn send_and_wait<H: Hold>(
     _hold: &mut H,
     _target: WindowId,
     _proc: u32,
@@ -2510,7 +2958,7 @@ mod target {
         f: impl FnOnce(&mut QueueSession<Locked<'_>>) -> R,
     ) -> R {
         let (result, signals) = {
-            let mut session = QueueSession(crate::win32k::window::lock(passive));
+            let mut session = QueueSession::over(crate::win32k::window::lock(passive));
             let result = f(&mut session);
             (result, Signals::take(session.manager()))
         };
@@ -2813,17 +3261,35 @@ mod services {
             Taken::Sent(id) => id,
         };
         let base = receipt.raw();
-        let (first, rect, style, pos, text) = with_manager(call.passive(), |m| {
-            let w = &m.windows;
+        let (first, rect, style, pos, text, calc, min_max) = with_manager(call.passive(), |m| {
+            let w = &mut m.windows;
+            let first = receipt_head(w, caller, id, base, time);
+            if let Some(first) = first {
+                note_receipt(w, caller, id, first.msg.lparam);
+            }
             (
-                receipt_head(w, caller, id, base, time),
+                first,
                 receipt_rect(w, id),
                 receipt_style(w, id),
                 receipt_window_pos(w, id),
                 receipt_text(w, id),
+                receipt_calc(w, id, base),
+                receipt_min_max(w, id),
             )
         });
         let first = first.ok_or(STATUS_INVALID_PARAMETER)?;
+        if let Some(calc) = calc {
+            receipt
+                .offset(offset_of!(Receipt, calc) as u32)
+                .cast::<rtl::window::NcCalcSizeParams>()
+                .write(calc)?;
+        }
+        if let Some(min_max) = min_max {
+            receipt
+                .offset(offset_of!(Receipt, min_max) as u32)
+                .cast::<rtl::user::MinMaxInfo>()
+                .write(min_max)?;
+        }
         head.write(first)?;
         // The text's length: user32 asks for the text itself ([`receive_text`]).
         receipt
@@ -3193,12 +3659,31 @@ mod services {
         // WM_GETTEXT's answer to another process, read back from the receiver's buffer before the
         // end (its procedure's answer is the units it copied).
         let mut text_reply = None;
+        // An in-out structure's edits (another thread's decision waits for them), read back from
+        // the receipt the read handed out; a receipt the caller's memory no longer holds changes
+        // nothing.
+        let mut structure = None;
         if routine == ONE_PARAM_END_SENT_MESSAGE {
-            if let Some((at, room)) =
-                with_manager(call.passive(), |m| text_reply_buffer(&m.windows, caller))
-            {
+            let (text, back) = with_manager(call.passive(), |m| {
+                (
+                    text_reply_buffer(&m.windows, caller),
+                    structure_back(&m.windows, caller),
+                )
+            });
+            if let Some((at, room)) = text {
                 let count = (param as usize).min(room);
                 text_reply = Some(Staged::read_counted(UserAddr(at), count)?);
+            }
+            if let Some((at, size)) = back {
+                let mut out = CallbackOut {
+                    bytes: [0; OUT_MAX],
+                    length: 0,
+                };
+                let size = size.min(OUT_MAX);
+                if UserAddr(at).read(&mut out.bytes[..size]).is_ok() {
+                    out.length = size;
+                    structure = Some(out);
+                }
             }
         }
         let answer = with_manager(call.passive(), |m| match routine {
@@ -3210,6 +3695,9 @@ mod services {
             ONE_PARAM_END_SENT_MESSAGE => {
                 if let Some(reply) = &text_reply {
                     keep_text_reply(&mut m.windows, caller, reply.units());
+                }
+                if let Some(out) = &structure {
+                    end_structure(&mut m.windows, caller, out);
                 }
                 Ok(end_sent(&mut m.windows, caller, param as LResult) as u32)
             }
@@ -5154,5 +5642,353 @@ mod tests {
             "the inner one still reaches B"
         );
         assert_eq!(live_sends(m), base);
+    }
+
+    /// A decision's message to another thread's window with an in-out structure.
+    fn decision_message(message: u32, wparam: WParam, payload: Payload) -> Message {
+        Message {
+            message,
+            wparam,
+            lparam: 0,
+            payload,
+        }
+    }
+
+    /// A decision's send to another thread's window waits for the answer (gui-D slice 5): the
+    /// message is queued for the window's thread with the window manager's copy of its WINDOWPOS,
+    /// the receipt's lParam points at the receipt's copy, and what the procedure left there when
+    /// its delivery ended comes back to the decision with the answer.
+    #[test]
+    fn a_decisions_send_to_another_threads_window_waits_for_the_structure() {
+        let (m, atom) = manager();
+        let a = thread(m, 1, 0x100);
+        let b = thread(m, 2, 0x200);
+        let hb = popup(m, atom, b);
+        deliver(m, b);
+        let base = live_sends(m);
+        let wb = m.windows.window_from_handle(hb).unwrap();
+        let pos = WindowPos {
+            hwnd: hb,
+            x: 10,
+            y: 20,
+            cx: 300,
+            cy: 200,
+            ..WindowPos::default()
+        };
+        let message = decision_message(WM_WINDOWPOSCHANGING, 0, Payload::WindowPos(pos));
+        let id = send_for_decision(&mut m.windows, a, wb, PROC, &message).unwrap();
+        assert_eq!(decision_reply(&mut m.windows, a, id), Replied::Wait);
+        assert_eq!(
+            send_for_decision(&mut m.windows, b, wb, PROC, &message),
+            None,
+            "the window's own thread calls back instead"
+        );
+
+        let receipt = 0x0010_0000;
+        let Taken::Sent(got) = read(m, b, &all(), 0) else {
+            panic!("B reads the decision's message");
+        };
+        let head = receipt_head(&m.windows, b, got, receipt, 0).unwrap();
+        let at = receipt + offset_of!(Receipt, window_pos) as u32;
+        assert_eq!(head.msg.lparam as u32, at);
+        assert_eq!(receipt_window_pos(&m.windows, got), Some(pos));
+        assert_eq!(structure_back(&m.windows, b), None, "not noted yet");
+        note_receipt(&mut m.windows, b, got, head.msg.lparam);
+        assert_eq!(
+            structure_back(&m.windows, b),
+            Some((at, size_of::<WindowPos>()))
+        );
+        assert!(in_send(&m.windows, b), "another thread sent it");
+
+        let edited = WindowPos {
+            cx: 123,
+            flags: window::SWP_NOMOVE,
+            ..pos
+        };
+        end_structure(&mut m.windows, b, &out(edited.as_bytes()));
+        assert!(end_sent(&mut m.windows, b, 7));
+        assert_eq!(
+            decision_reply(&mut m.windows, a, id),
+            Replied::Answer(7, Payload::WindowPos(edited))
+        );
+        assert_eq!(live_sends(m), base, "the record went back to the pool");
+    }
+
+    /// The other in-out structures reach the receipt and come back: WM_NCCALCSIZE's
+    /// NCCALCSIZE_PARAMS (its lppos at the receipt's WINDOWPOS; the three rectangles back) and
+    /// WM_GETMINMAXINFO's MINMAXINFO; WM_WINDOWPOSCHANGED's WINDOWPOS is input only, and a short
+    /// read-back changes nothing.
+    #[test]
+    fn the_receipts_structures_come_back_to_the_waiting_decision() {
+        let (m, atom) = manager();
+        let a = thread(m, 1, 0x100);
+        let b = thread(m, 2, 0x200);
+        let hb = popup(m, atom, b);
+        deliver(m, b);
+        let wb = m.windows.window_from_handle(hb).unwrap();
+        let receipt = 0x0010_0000;
+        let rect = rtl::gdi::Rect::new(0, 0, 200, 100);
+        let client = rtl::gdi::Rect::new(10, 10, 190, 90);
+        let pos = WindowPos {
+            hwnd: hb,
+            cx: 200,
+            cy: 100,
+            ..WindowPos::default()
+        };
+        let calc = window::CalcSize {
+            rects: [rect; 3],
+            pos,
+        };
+        let mmi = window::MinMaxInfo {
+            min_track: (100, 50),
+            ..window::MinMaxInfo::unbounded()
+        };
+        let edited_mmi = window::MinMaxInfo {
+            min_track: (400, 300),
+            ..mmi
+        };
+        let edited_calc = rtl::window::NcCalcSizeParams {
+            rects: [client, rect, rect],
+            pos: 0,
+        };
+        let cases = [
+            (
+                decision_message(WM_NCCALCSIZE, 1, Payload::CalcSize(calc)),
+                offset_of!(Receipt, calc),
+                edited_calc.as_bytes().to_vec(),
+                Payload::CalcSize(window::CalcSize {
+                    rects: [client, rect, rect],
+                    pos,
+                }),
+            ),
+            (
+                decision_message(rtl::user::WM_GETMINMAXINFO, 0, Payload::MinMax(mmi)),
+                offset_of!(Receipt, min_max),
+                edited_mmi.raw().as_bytes().to_vec(),
+                Payload::MinMax(edited_mmi),
+            ),
+            (
+                decision_message(rtl::user::WM_GETMINMAXINFO, 0, Payload::MinMax(mmi)),
+                offset_of!(Receipt, min_max),
+                edited_mmi.raw().as_bytes()[..8].to_vec(),
+                Payload::MinMax(mmi),
+            ),
+        ];
+        for (message, offset, back, expected) in cases {
+            let id = send_for_decision(&mut m.windows, a, wb, PROC, &message).unwrap();
+            let Taken::Sent(got) = read(m, b, &all(), 0) else {
+                panic!("B reads it");
+            };
+            let head = receipt_head(&m.windows, b, got, receipt, 0).unwrap();
+            assert_eq!(head.msg.lparam as u32, receipt + offset as u32);
+            if let Payload::CalcSize(_) = message.payload {
+                let params = receipt_calc(&m.windows, got, receipt).unwrap();
+                assert_eq!(params.rects, [rect; 3]);
+                assert_eq!(params.pos, receipt + offset_of!(Receipt, window_pos) as u32);
+                assert_eq!(receipt_window_pos(&m.windows, got), Some(pos));
+            } else {
+                assert_eq!(receipt_min_max(&m.windows, got), Some(mmi.raw()));
+            }
+            note_receipt(&mut m.windows, b, got, head.msg.lparam);
+            end_structure(&mut m.windows, b, &out(&back));
+            assert!(end_sent(&mut m.windows, b, 0));
+            assert_eq!(
+                decision_reply(&mut m.windows, a, id),
+                Replied::Answer(0, expected)
+            );
+        }
+
+        let changed = decision_message(window::WM_WINDOWPOSCHANGED, 0, Payload::WindowPos(pos));
+        send_for_decision(&mut m.windows, a, wb, PROC, &changed).unwrap();
+        let Taken::Sent(got) = read(m, b, &all(), 0) else {
+            panic!("B reads it");
+        };
+        let head = receipt_head(&m.windows, b, got, receipt, 0).unwrap();
+        note_receipt(&mut m.windows, b, got, head.msg.lparam);
+        assert_eq!(structure_back(&m.windows, b), None, "input only");
+        assert!(end_sent(&mut m.windows, b, 0));
+    }
+
+    /// A decision waiting on another thread is handed the messages sent to its own thread
+    /// meanwhile, to deliver by callback, in the order they were sent: another decision's (the
+    /// receiver's, sending back), whose structure and answer go to that decision; a text another
+    /// process's message carries waits for the thread's next read. So two threads whose decisions
+    /// send to each other do not wait on each other.
+    #[test]
+    fn two_decisions_sending_to_each_other_do_not_deadlock() {
+        let (m, atom) = manager();
+        let a = thread(m, 1, 0x100);
+        let b = thread(m, 2, 0x200);
+        let ha = popup(m, atom, a);
+        let hb = popup(m, atom, b);
+        deliver(m, a);
+        deliver(m, b);
+        let base = live_sends(m);
+        let wa = m.windows.window_from_handle(ha).unwrap();
+        let wb = m.windows.window_from_handle(hb).unwrap();
+
+        let to_b = send_for_decision(
+            &mut m.windows,
+            a,
+            wb,
+            PROC,
+            &decision_message(WM_USER, 1, Payload::None),
+        )
+        .unwrap();
+        // B, meanwhile: a SendMessage carrying a text, then a decision's WM_STYLECHANGING.
+        let text: Vec<u16> = "Hi".encode_utf16().collect();
+        let Ok(Sending::Waiting(texted)) =
+            send_carrying(&mut m.windows, b, ha, WM_SETTEXT, 0, 0, Some(&text))
+        else {
+            panic!("queued for A");
+        };
+        let style = StyleStruct {
+            style_old: 1,
+            style_new: 2,
+        };
+        let to_a = send_for_decision(
+            &mut m.windows,
+            b,
+            wa,
+            PROC,
+            &decision_message(WM_STYLECHANGING, 0, Payload::Style(style)),
+        )
+        .unwrap();
+        // B's wait is handed A's message: its callback runs (and has not ended yet).
+        let Replied::Received(from_a) = decision_reply(&mut m.windows, b, to_a) else {
+            panic!("B is handed A's message");
+        };
+        assert_eq!(from_a, to_b);
+
+        // A's wait finds B's decision's message (the text waits for a read).
+        let Replied::Received(got) = decision_reply(&mut m.windows, a, to_b) else {
+            panic!("A is handed B's message");
+        };
+        assert_eq!(got, to_a);
+        let (input, message) = received_callback(&m.windows, &m.classes, got).unwrap();
+        assert_eq!(input.api, FN_INOUTSTYLECHANGE);
+        assert_eq!((input.head.hwnd, input.head.proc), (ha, PROC));
+        assert_eq!(&input.carried[..input.length], style.as_bytes());
+        assert_eq!(message.payload, Payload::Style(style));
+        assert!(in_send(&m.windows, a));
+        let edited = StyleStruct {
+            style_new: 6,
+            ..style
+        };
+        end_received(&mut m.windows, a, got, 3, &out(edited.as_bytes()));
+        assert_eq!(decision_reply(&mut m.windows, a, to_b), Replied::Wait);
+
+        // B's callback ends: each decision has its answer.
+        end_received(&mut m.windows, b, from_a, 4, &out(&[]));
+        assert_eq!(
+            decision_reply(&mut m.windows, b, to_a),
+            Replied::Answer(3, Payload::Style(edited))
+        );
+        assert_eq!(
+            decision_reply(&mut m.windows, a, to_b),
+            Replied::Answer(4, Payload::None)
+        );
+        let Taken::Sent(got) = read(m, a, &all(), 0) else {
+            panic!("the text");
+        };
+        assert_eq!(got, texted);
+        assert!(end_sent(&mut m.windows, a, 1));
+        assert_eq!(await_reply(&mut m.windows, b, texted), Awaited::Answer(1));
+        assert_eq!(live_sends(m), base);
+    }
+
+    /// A callback's delivery that ends with messages handed out above it never ended (an
+    /// exception cut a nested read's delivery short) answers them 0 first; a message to a window
+    /// gone meanwhile is answered 0, not handed out.
+    #[test]
+    fn a_callbacks_end_answers_what_was_left_above_it() {
+        let (m, atom) = manager();
+        let a = thread(m, 1, 0x100);
+        let b = thread(m, 2, 0x200);
+        let ha = popup(m, atom, a);
+        let hb = popup(m, atom, b);
+        let gone = popup(m, atom, a);
+        deliver(m, a);
+        deliver(m, b);
+        let base = live_sends(m);
+        let wa = m.windows.window_from_handle(ha).unwrap();
+        let wb = m.windows.window_from_handle(hb).unwrap();
+        let wgone = m.windows.window_from_handle(gone).unwrap();
+        let plain = decision_message(WM_USER, 0, Payload::None);
+        let to_b = send_for_decision(&mut m.windows, a, wb, PROC, &plain).unwrap();
+        let dropped = send_for_decision(&mut m.windows, b, wgone, PROC, &plain).unwrap();
+        let first = send_for_decision(&mut m.windows, b, wa, PROC, &plain).unwrap();
+        let Ok(Sending::Waiting(second)) = send(&mut m.windows, b, ha, WM_USER + 1, 0, 0) else {
+            panic!("queued");
+        };
+        {
+            let WindowManager {
+                windows, classes, ..
+            } = &mut *m;
+            Windows::destroy_window_handle(&mut QueueSession::new(windows, classes), a, gone)
+                .unwrap();
+        }
+        assert!(!m.windows.is_live(wgone));
+        assert_eq!(
+            decision_reply(&mut m.windows, a, to_b),
+            Replied::Received(first)
+        );
+        assert_eq!(
+            decision_reply(&mut m.windows, b, dropped),
+            Replied::Answer(0, Payload::None),
+            "its window went: answered 0"
+        );
+        // Inside the callback, a read hands out the next one, whose delivery never ends.
+        let only_sent = Filter::new(0, 0, 0, PM_QS_SENDMESSAGE);
+        assert_eq!(read(m, a, &only_sent, 0), Taken::Sent(second));
+        end_received(&mut m.windows, a, first, 8, &out(&[]));
+        assert_eq!(collect_reply(&mut m.windows, b, second), Some(0));
+        assert_eq!(
+            decision_reply(&mut m.windows, b, first),
+            Replied::Answer(8, Payload::None)
+        );
+        assert!(!end_sent(&mut m.windows, a, 0), "nothing left on the stack");
+        deliver(m, a);
+        assert!(matches!(read(m, b, &all(), 0), Taken::Sent(_)));
+        assert!(end_sent(&mut m.windows, b, 0));
+        assert!(matches!(
+            decision_reply(&mut m.windows, a, to_b),
+            Replied::Answer(0, _)
+        ));
+        assert_eq!(live_sends(m), base);
+    }
+
+    /// A decision waiting on a thread that ends fails (Windows 2000's xxxInterSendMsgEx answers 0
+    /// when its receiver dies); a decision's thread that ends while it waits leaves its send to
+    /// nobody.
+    #[test]
+    fn a_decisions_send_fails_when_its_receiver_ends() {
+        let (m, atom) = manager();
+        let a = thread(m, 1, 0x100);
+        let b = thread(m, 2, 0x200);
+        let hb = popup(m, atom, b);
+        deliver(m, b);
+        let base = live_sends(m);
+        let wb = m.windows.window_from_handle(hb).unwrap();
+        let plain = decision_message(WM_USER, 0, Payload::None);
+        let queued = send_for_decision(&mut m.windows, a, wb, PROC, &plain).unwrap();
+        detach(&mut m.windows, b);
+        assert_eq!(decision_reply(&mut m.windows, a, queued), Replied::Failed);
+        assert_eq!(live_sends(m), base);
+        assert_eq!(
+            send_for_decision(&mut m.windows, a, wb, PROC, &plain),
+            None,
+            "no queue to send to"
+        );
+
+        let c = thread(m, 3, 0x300);
+        let hc = popup(m, atom, c);
+        deliver(m, c);
+        let wc = m.windows.window_from_handle(hc).unwrap();
+        send_for_decision(&mut m.windows, a, wc, PROC, &plain).unwrap();
+        detach(&mut m.windows, a);
+        assert!(matches!(read(m, c, &all(), 0), Taken::Sent(_)));
+        assert!(end_sent(&mut m.windows, c, 0));
+        assert_eq!(live_sends(m), base, "answered to nobody");
     }
 }
