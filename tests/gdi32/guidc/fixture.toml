@@ -9,9 +9,6 @@ gate = true
 boot_under = "WINNT\\system32\\fish.exe"
 system_fonts = true
 
-[pending]
-dc = "Windows 2000's GetDCEx(h, NULL, DCX_WINDOW) answers NULL here (and ReleaseDC of it 0); win32k's GetDCEx answers a screen DC"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them.

@@ -2086,12 +2086,19 @@ pub unsafe extern "system" fn NtUserGetDC(_window: usize, dc: *mut u32) -> u32 {
     STATUS_SUCCESS
 }
 
+/// The stand-ins' windows keep no DC of their own (no CS_OWNDC, no CS_CLASSDC): flags with neither
+/// DCX_CACHE nor DCX_USESTYLE get no DC, as win32k's GetDCEx answers.
 pub unsafe extern "system" fn NtUserGetDCEx(
     window: usize,
     _region: usize,
-    _flags: u32,
+    flags: u32,
     dc: *mut u32,
 ) -> u32 {
+    if window != 0 && flags & (0x0000_0002 | 0x0001_0000) == 0 {
+        // SAFETY: the caller's out-pointer.
+        unsafe { dc.write(0) };
+        return STATUS_SUCCESS;
+    }
     // SAFETY: the caller's out-pointer.
     unsafe { NtUserGetDC(window, dc) }
 }

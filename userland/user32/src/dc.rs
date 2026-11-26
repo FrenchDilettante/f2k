@@ -24,7 +24,8 @@ static HANDED_DCS: Table<2> = Table::new();
 
 /// The family's core: a DC of `window` (zero: the screen) from `service`, kept with its window;
 /// NULL with 1400 for a handle naming no window, ERROR_NOT_ENOUGH_MEMORY when the heap has no room
-/// to keep it (the DC closed again).
+/// to keep it (the DC closed again). A service that answers no DC (GetDCEx's flags with no DC for
+/// the window) answers NULL, the last error untouched.
 fn handed(window: usize, service: impl FnOnce() -> Result<u32, NtStatus>) -> usize {
     if window != 0 && !is_window_alive(window) {
         return failed(ERROR_INVALID_WINDOW_HANDLE).unwrap_or(0);
@@ -32,6 +33,9 @@ fn handed(window: usize, service: impl FnOnce() -> Result<u32, NtStatus>) -> usi
     let Some(dc) = answered(service()) else {
         return 0;
     };
+    if dc == 0 {
+        return 0;
+    }
     let dc = dc as usize;
     if !HANDED_DCS.with(|handed| handed.set([dc, window])) {
         let _ = imports::delete_dc(dc);
@@ -46,7 +50,9 @@ pub extern "system" fn get_dc(window: usize) -> usize {
     handed(window, || imports::get_dc(window))
 }
 
-/// GetDCEx: a DC of the window with GetDCEx's clipping region and DCX_ flags.
+/// GetDCEx: a DC of the window with GetDCEx's clipping region and DCX_ flags; NULL, the last error
+/// untouched, for flags with neither DCX_CACHE nor DCX_USESTYLE on a window whose class keeps no DC
+/// of its own (win32k's answer, as Windows 2000's).
 #[unsafe(export_name = "f2k_export_GetDCEx")]
 pub extern "system" fn get_dc_ex(window: usize, region: usize, flags: u32) -> usize {
     let args = [window as u64, region as u64, u64::from(flags)];
@@ -122,6 +128,8 @@ mod tests {
     use crate::imports::host::{wm, DESKTOP_WINDOW, LAST_ERROR};
 
     const UNSET: u32 = 0xF2F2_F2F2;
+    const DCX_WINDOW: u32 = 0x0000_0001;
+    const DCX_CACHE: u32 = 0x0000_0002;
 
     /// The family's DCs name their windows, release once, and close their handles; ReleaseDC of
     /// NULL answers 0 with the last error untouched.
@@ -138,7 +146,7 @@ mod tests {
         let screen = get_dc(0);
         assert_eq!(window_from_dc(screen), 0);
         let whole = get_window_dc(window);
-        let ex = get_dc_ex(window, 0, 1);
+        let ex = get_dc_ex(window, 0, DCX_WINDOW | DCX_CACHE);
         assert_eq!(window_from_dc(ex), window);
         for handed in [dc, screen, whole, ex] {
             assert_eq!(release_dc(window, handed), 1);
@@ -148,6 +156,21 @@ mod tests {
         assert_eq!(release_dc(window, 0), 0);
         assert_eq!(LAST_ERROR.with(|error| error.get()), UNSET);
         assert!(wm(|wm| wm.dcs.is_empty()), "every handle closed");
+    }
+
+    /// GetDCEx with neither DCX_CACHE nor DCX_USESTYLE of a window whose class keeps no DC answers
+    /// NULL with the last error untouched, and ReleaseDC of that NULL 0, as the guidc capture
+    /// shows.
+    ///
+    /// Pins: user32.GetDCEx, user32.ReleaseDC
+    #[test]
+    fn get_dc_ex_without_the_cache_answers_null() {
+        let window = DESKTOP_WINDOW as usize;
+        LAST_ERROR.with(|error| error.set(UNSET));
+        assert_eq!(get_dc_ex(window, 0, DCX_WINDOW), 0);
+        assert_eq!(release_dc(window, 0), 0);
+        assert_eq!(LAST_ERROR.with(|error| error.get()), UNSET);
+        assert!(wm(|wm| wm.dcs.is_empty()), "no handle made");
     }
 
     /// A process holds as many DCs at once as it asks for, far past the 64 a fixed list kept, each

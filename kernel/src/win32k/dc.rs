@@ -81,6 +81,7 @@
 
 use rtl::gdi::*;
 use rtl::pod::Pod;
+use rtl::user::{CS_CLASSDC, CS_OWNDC};
 
 use super::bitmap::with_surface;
 use super::brush::Fill;
@@ -373,14 +374,31 @@ pub fn create_compatible_dc(call: &mut NtCall, dc: Handle, out: UserPtr<u32>) ->
 
 /// GetDCEx's flag for a DC of the window rectangle rather than the client area.
 pub const DCX_WINDOW: u32 = 0x0000_0001;
+/// GetDCEx's flag for a DC out of the DC cache.
+pub const DCX_CACHE: u32 = 0x0000_0002;
+/// GetDCEx's flag for the DC its window's class style picks (GetDC's and GetWindowDC's own).
+pub const DCX_USESTYLE: u32 = 0x0001_0000;
+
+/// Whether GetDCEx with `flags` has a DC to answer for a window whose class style is
+/// `class_style`. Windows 2000's _GetDCEx takes a DC out of its cache for DCX_CACHE, and for
+/// DCX_USESTYLE (which GetDC and GetWindowDC pass) when the class keeps no DC of its own; with
+/// neither it answers the window's own or class DC (CS_OWNDC, CS_CLASSDC), and NULL for a window
+/// whose class keeps none, with no error. So the guidc capture's GetDCEx(h, NULL, DCX_WINDOW)
+/// answers NULL where GetWindowDC answers a DC, and WM_NCPAINT's documented GetDCEx(hwnd, hrgn,
+/// DCX_WINDOW | DCX_INTERSECTRGN) needs DCX_CACHE added to work.
+pub fn answers_dc(flags: u32, class_style: u32) -> bool {
+    flags & (DCX_CACHE | DCX_USESTYLE) != 0 || class_style & (CS_OWNDC | CS_CLASSDC) != 0
+}
 
 /// NtUserGetDC(Window, Dc): a DC of the window's client area (the screen's for no window).
 pub fn get_dc(call: &mut NtCall, window: Handle, out: UserPtr<u32>) -> NtResult {
     window_dc(call, window, false, out)
 }
 
-/// NtUserGetDCEx(Window, Region, Flags, Dc): GetDC's DC, or GetWindowDC's with DCX_WINDOW (the
-/// region and the other flags are not looked at: there are no visible regions to clip to yet).
+/// NtUserGetDCEx(Window, Region, Flags, Dc): GetDC's DC, or GetWindowDC's with DCX_WINDOW; 0 (and
+/// success: Windows 2000 sets no error) for a window that has no DC for `flags` (see
+/// [`answers_dc`]). The region and the clipping flags are not looked at: there are no visible
+/// regions to clip to yet.
 pub fn get_dc_ex(
     call: &mut NtCall,
     window: Handle,
@@ -388,6 +406,10 @@ pub fn get_dc_ex(
     flags: u32,
     out: UserPtr<u32>,
 ) -> NtResult {
+    if window.raw() != 0 && !answers_dc(flags, class_style(call, window)?) {
+        out.write(0)?;
+        return Ok(STATUS_SUCCESS);
+    }
     window_dc(call, window, flags & DCX_WINDOW != 0, out)
 }
 
@@ -722,6 +744,21 @@ fn window_dc(call: &mut NtCall, window: Handle, whole: bool, out: UserPtr<u32>) 
     hand_out(call, Dc::window(width, height, area), out)
 }
 
+/// The class style of the window `window` names; STATUS_INVALID_HANDLE for a handle that names
+/// none.
+#[cfg(target_arch = "x86")]
+fn class_style(call: &mut NtCall, window: Handle) -> Result<u32, NtStatus> {
+    crate::win32k::queue::with_manager(call.passive(), |m| {
+        m.windows.window_from_handle(window.raw())?;
+        Some(
+            m.windows
+                .class_window(window.raw())
+                .map_or(0, |w| m.classes.class_data(w.class).style),
+        )
+    })
+    .ok_or(STATUS_INVALID_HANDLE)
+}
+
 /// A DC of state `dc` made, its handle into `out`; the DC closed again when `out` cannot be
 /// written.
 #[cfg(target_arch = "x86")]
@@ -855,6 +892,11 @@ fn window_dc(_: &mut NtCall, _: Handle, _: bool, _: UserPtr<u32>) -> NtResult {
 }
 
 #[cfg(not(target_arch = "x86"))]
+fn class_style(_: &mut NtCall, _: Handle) -> Result<u32, NtStatus> {
+    Err(STATUS_NOT_IMPLEMENTED)
+}
+
+#[cfg(not(target_arch = "x86"))]
 fn hand_out(_: &mut NtCall, _: Dc, _: UserPtr<u32>) -> NtResult {
     Err(STATUS_NOT_IMPLEMENTED)
 }
@@ -889,6 +931,24 @@ mod tests {
 
     /// A screen DC starts as the platform's: black on white, OPAQUE, the white brush, the black
     /// pen and the system font selected, clipped to the screen.
+    /// GetDCEx takes a DC from the cache for DCX_CACHE or DCX_USESTYLE; with neither, only a
+    /// window whose class keeps its own DC has one: the guidc capture's GetDCEx(h, NULL,
+    /// DCX_WINDOW) of a CS_HREDRAW | CS_VREDRAW class answers NULL.
+    #[test]
+    fn get_dc_ex_without_the_cache_needs_a_dc_of_the_class() {
+        let redraw = 0x0001 | 0x0002;
+        assert!(!answers_dc(DCX_WINDOW, redraw));
+        assert!(!answers_dc(0, 0));
+        assert!(answers_dc(DCX_WINDOW | DCX_CACHE, redraw));
+        assert!(
+            answers_dc(DCX_WINDOW | DCX_USESTYLE, redraw),
+            "GetWindowDC's"
+        );
+        assert!(answers_dc(DCX_USESTYLE, 0), "GetDC's");
+        assert!(answers_dc(DCX_WINDOW, CS_OWNDC));
+        assert!(answers_dc(0, CS_CLASSDC));
+    }
+
     #[test]
     fn a_screen_dc_starts_at_the_defaults() {
         let dc = Dc::screen(640, 480);
