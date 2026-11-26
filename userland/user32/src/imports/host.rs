@@ -3099,6 +3099,7 @@ pub unsafe extern "system" fn NtUserScrollWindowEx(
     dy: i32,
     scroll: usize,
     clip: usize,
+    _region: usize,
     _flags: u32,
     update: *mut Rect,
     result: *mut u32,

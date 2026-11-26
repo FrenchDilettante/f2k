@@ -1252,6 +1252,8 @@ mod objects {
     }
 }
 
+pub use objects::set_parts;
+
 // --- The batch -----------------------------------------------------------------------------------
 
 /// Run the calling thread's GDI batch (see the module notes): each region deletion it queued, in

@@ -40,8 +40,9 @@
 //! them), which reads them through NtUserQueryWindow ([`rtl::window::QUERY_WINDOW_SCROLL_BARS`]),
 //! as Windows 2000's user32 reads pwnd->pSBInfo from the desktop's heap mapped into its process.
 //! The ScrollBar control's bar is user32's own (its window's extra bytes): SB_CTL never reaches
-//! these services. ScrollWindowEx's region (hrgnUpdate) is not filled here: F2K's GDI has no
-//! region objects yet.
+//! these services. ScrollWindowEx's region (hrgnUpdate) is made the uncovered region
+//! ([`crate::win32k::region::set_parts`]), in client coordinates, once the scroll is done (a
+//! handle that names no region is passed over).
 //!
 //! The services (F2K's argument lists, see [`crate::win32k`]; Windows 2000's numbers):
 //!
@@ -50,9 +51,9 @@
 //! - NtUserShowScrollBar (0x1217)(handle Window, i32 Bar, bool Show);
 //! - NtUserEnableScrollBar (0x1165)(handle Window, u32 Bar, u32 Arrows, ptr<u32> Result): whether
 //!   the arrows changed into `Result`;
-//! - NtUserScrollWindowEx (0x11DF)(handle Window, i32 Dx, i32 Dy, ptr Scroll, ptr Clip, u32 Flags,
-//!   ptr Update, ptr<u32> Result): the uncovered box into `Update` (when not null), its complexity
-//!   into `Result`.
+//! - NtUserScrollWindowEx (0x11DF)(handle Window, i32 Dx, i32 Dy, ptr Scroll, ptr Clip, handle
+//!   Region, u32 Flags, ptr Update, ptr<u32> Result): the uncovered region into `Region` (when not
+//!   0), its box into `Update` (when not null), its complexity into `Result`.
 
 use rtl::gdi::Rect;
 use rtl::scroll::{
@@ -545,8 +546,9 @@ mod services {
         crate::win32k::dc::with_screen(|screen| blit(screen, Source::Same, None, &job));
     }
 
-    /// NtUserScrollWindowEx(Window, Dx, Dy, Scroll, Clip, Flags, Update, Result): see
-    /// [`scroll_window`]; the bits moved, then the children, then the uncovered region invalidated.
+    /// NtUserScrollWindowEx(Window, Dx, Dy, Scroll, Clip, Region, Flags, Update, Result): see
+    /// [`scroll_window`]; the bits moved, then the children, then the uncovered region invalidated
+    /// and handed to `Region`.
     #[allow(clippy::too_many_arguments)]
     pub fn scroll_window_ex(
         call: &mut NtCall,
@@ -555,6 +557,7 @@ mod services {
         dy: i32,
         scroll: UserAddr,
         clip: UserAddr,
+        region: Handle,
         flags: u32,
         update: UserAddr,
         result: UserPtr<u32>,
@@ -562,7 +565,7 @@ mod services {
         gui_thread(call)?;
         let scroll = read_rect(scroll)?;
         let clip = read_rect(clip)?;
-        let (complexity, bounds) = with_session(call.passive(), |s| {
+        let (complexity, bounds, parts, count) = with_session(call.passive(), |s| {
             let m = s.manager();
             let handle = window.raw();
             // The bits move first, while the update region is still the one they had.
@@ -592,11 +595,14 @@ mod services {
             let m = s.manager();
             let answer = super::scroll_window(&mut m.windows, handle, dx, dy, scroll, clip, flags)?;
             Ok::<_, Failure>(match answer {
-                Some((area, _)) => (area.complexity, area.bounds),
-                None => (NULLREGION, Rect::EMPTY),
+                Some((area, _)) => (area.complexity, area.bounds, area.parts, area.count),
+                None => (NULLREGION, Rect::EMPTY, [Rect::EMPTY; 4], 0),
             })
         })
         .map_err(Failure::status)?;
+        if region.raw() != 0 {
+            let _ = crate::win32k::region::set_parts(call, region, &parts[..count]);
+        }
         if !update.is_null() {
             update.cast::<Rect>().write(bounds)?;
         }
@@ -663,6 +669,7 @@ mod services {
         _: i32,
         _: UserAddr,
         _: UserAddr,
+        _: Handle,
         _: u32,
         _: UserAddr,
         _: UserPtr<u32>,

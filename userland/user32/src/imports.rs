@@ -642,6 +642,7 @@ mod raw {
             dy: i32,
             scroll: usize,
             clip: usize,
+            region: usize,
             flags: u32,
             update: *mut Rect,
             result: *mut u32,
@@ -2070,14 +2071,16 @@ pub fn enable_scroll_bar(window: usize, bar: i32, arrows: u32) -> Result<bool, N
 }
 
 /// NtUserScrollWindowEx: `window`'s client area scrolled by `dx` and `dy` (the rectangles at
-/// `scroll` and `clip` read by the kernel, zero for none); the uncovered region's complexity and
-/// its box.
+/// `scroll` and `clip` read by the kernel, zero for none), the uncovered region into `region`
+/// (zero: none); the uncovered region's complexity and its box.
+#[allow(clippy::too_many_arguments)]
 pub fn scroll_window_ex(
     window: usize,
     dx: i32,
     dy: i32,
     scroll: usize,
     clip: usize,
+    region: usize,
     flags: u32,
 ) -> Result<(i32, Rect), NtStatus> {
     let (mut result, mut update) = (0u32, Rect::EMPTY);
@@ -2090,6 +2093,7 @@ pub fn scroll_window_ex(
             dy,
             scroll,
             clip,
+            region,
             flags,
             &mut update,
             &mut result,

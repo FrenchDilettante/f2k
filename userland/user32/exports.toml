@@ -3569,8 +3569,8 @@ internal = true
 name = "NtUserScrollWindowEx"
 group = "scroll"
 args = [
-    "handle Window", "i32 Dx", "i32 Dy", "ptr Scroll", "ptr Clip", "u32 Flags", "ptr Update",
-    "ptr<u32> Result",
+    "handle Window", "i32 Dx", "i32 Dy", "ptr Scroll", "ptr Clip", "handle Region", "u32 Flags",
+    "ptr Update", "ptr<u32> Result",
 ]
 impl = { syscall = "crate::win32k::scroll::scroll_window_ex" }
 internal = true

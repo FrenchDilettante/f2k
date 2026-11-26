@@ -59,7 +59,7 @@ use rtl::window::{QUERY_WINDOW_EXTRA, QUERY_WINDOW_SCROLL_BARS, SW_HIDE, SW_SHOW
 use rtl::winerror::ERROR_INVALID_SCROLLBAR_RANGE;
 
 use crate::draw::{self, BF_MIDDLE, BF_RECT, EDGE_RAISED};
-use crate::{answered, failed, imports, message, paint, spec, window, ERROR_INVALID_PARAMETER};
+use crate::{answered, failed, imports, message, paint, window, ERROR_INVALID_PARAMETER};
 
 /// A ScrollBar control's extra bytes: its disabled arrows, then its bar (min, max, page, pos).
 pub const SCROLLBAR_EXTRA: i32 = 20;
@@ -72,7 +72,7 @@ const POS: i32 = 16;
 /// The ScrollBar class's atom in this process, once registered (0 before).
 pub static SCROLLBAR_ATOM: AtomicU32 = AtomicU32::new(0);
 
-/// The cases logged in this process: the control's input, ScrollWindowEx's region.
+/// The cases logged in this process: the control's input.
 static LOGGED: rtl::stub::Logged<4> = rtl::stub::Logged::new();
 
 /// The control's procedure, as its log lines name it.
@@ -366,8 +366,8 @@ pub fn enable_control(window: usize, arrows: u32) -> u32 {
 }
 
 /// ScrollWindowEx: `window`'s client area scrolled by `dx` and `dy` (see the kernel's scroll
-/// notes), the uncovered box into the caller's RECT; the uncovered region's complexity, ERROR with
-/// 1400 for a handle naming no window.
+/// notes), the uncovered region into `region` (none for 0) and its box into the caller's RECT;
+/// the uncovered region's complexity, ERROR with 1400 for a handle naming no window.
 ///
 /// # Safety
 ///
@@ -384,36 +384,21 @@ pub unsafe extern "system" fn scroll_window_ex(
     update: *mut Rect,
     flags: u32,
 ) -> i32 {
-    let answer = imports::scroll_window_ex(window, dx, dy, scroll as usize, clip as usize, flags);
+    let answer = imports::scroll_window_ex(
+        window,
+        dx,
+        dy,
+        scroll as usize,
+        clip as usize,
+        region,
+        flags,
+    );
     let Some((complexity, bounds)) = answered(answer) else {
         return ERROR;
     };
     // SAFETY: the caller's RECT.
     if let Some(mut update) = unsafe { Out::optional(update) } {
         update.set(bounds);
-    }
-    if region != 0 {
-        let args = [
-            window as u64,
-            dx as u64,
-            dy as u64,
-            scroll as u64,
-            clip as u64,
-            region as u64,
-            update as u64,
-            u64::from(flags),
-        ];
-        // SAFETY: the arguments as ScrollWindowEx's kinds read them: handles, numbers and
-        // pointers, none read as strings.
-        unsafe {
-            crate::stub::unhandled_once(
-                &LOGGED,
-                0,
-                &spec::ScrollWindowEx,
-                "hrgnUpdate is not yet filled: there are no region objects",
-                &args,
-            )
-        };
     }
     complexity
 }
