@@ -78,6 +78,10 @@ pub enum Reuse {
     /// The one freed first: for kernel-internal ids, so a stale id aliases a new object only
     /// after every free slot has gone round its uniqueness range.
     Fifo,
+    /// The lowest freed index: the order of the fixed arrays the window manager's pools were
+    /// (a window's, class's or cursor's place among the live ones, which some walks follow,
+    /// stays as it was). Freeing walks the free list to keep it sorted.
+    Lowest,
 }
 
 /// The uniqueness an id or handle asks for.
@@ -811,6 +815,26 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
                 }
             }
             Reuse::Fifo => self.push_tail(index),
+            Reuse::Lowest => self.push_sorted(index),
+        }
+    }
+
+    /// Free `index` into its lane's list, which is kept in ascending order.
+    fn push_sorted(&mut self, index: u32) {
+        let lane = index as usize % C::LANES;
+        let mut before = NONE;
+        let mut after = self.free[lane].head;
+        while after != NONE && after < index {
+            before = after;
+            after = self.next(after);
+        }
+        self.set_next(index, after);
+        match before {
+            NONE => self.free[lane].head = index,
+            before => self.set_next(before, index),
+        }
+        if after == NONE {
+            self.free[lane].tail = index;
         }
     }
 
@@ -1457,6 +1481,30 @@ impl<K> Codec for KernelId<K> {
     }
 }
 
+/// Kernel-internal ids ([`Id`]) reused lowest index first ([`Reuse::Lowest`]): the window
+/// manager's windows, classes, cursors and update regions, whose fixed arrays took the lowest free
+/// record, an order some of their walks (an exposed area's repaint, the WM_PAINT search) follow.
+pub struct LowestFirst<K>(PhantomData<fn() -> K>);
+
+impl<K> Codec for LowestFirst<K> {
+    type Id = Id<K>;
+
+    const LANES: usize = 1;
+    /// The u16 index: 65,535 per kind, far more than memory backs.
+    const MAX_INDEX: u32 = 0xFFFE;
+    const MAX_UNIQ: u16 = 0xFFFE;
+    const RESERVED_LOW: u32 = 0;
+    const REUSE: Reuse = Reuse::Lowest;
+
+    fn encode(index: u32, uniq: u16) -> Id<K> {
+        Id::new(index as u16, uniq)
+    }
+
+    fn decode(id: Id<K>) -> Option<(u32, Match)> {
+        Some((id.index as u32, Match::Exact(id.uniq)))
+    }
+}
+
 /// A process's NT handles: the index shifted left two, the low two bits (the tag bits) ignored;
 /// the value carries no uniqueness, so a closed handle names whatever takes its slot next, as on
 /// Windows 2000.
@@ -1866,6 +1914,33 @@ mod tests {
         let fifo: Vec<_> = (0..4).map(|_| fifo.allocate(0).unwrap().0.index).collect();
         assert_eq!(lifo, [0, 3, 1, 4]);
         assert_eq!(fifo, [1, 3, 0, 4]);
+    }
+
+    /// Lowest takes the lowest freed slot first, whatever the order of the frees, then the fresh
+    /// ones: the fixed arrays' "lowest free record".
+    #[test]
+    fn lowest_reuse_takes_the_lowest_free_slot() {
+        let pages = HostPages::new();
+        let mut pool = boxed(Slots::<Rec, LowestFirst<()>, 4, Inline<8>>::new());
+        let ids: Vec<_> = (0..10)
+            .map(|_| pool.allocate_or_grow(0, &pages).unwrap().0)
+            .collect();
+        for i in [7, 2, 9, 0, 5] {
+            assert!(pool.free(ids[i]));
+        }
+        let taken: Vec<_> = (0..7)
+            .map(|_| pool.allocate_or_grow(0, &pages).unwrap().0.index)
+            .collect();
+        assert_eq!(taken, [0, 2, 5, 7, 9, 10, 11]);
+        // Frees between takes are sorted in too.
+        assert!(pool.free(ids[3]));
+        assert!(pool.free(ids[1]));
+        assert_eq!(pool.allocate(0).unwrap().0.index, 1);
+        assert!(pool.free(ids[6]));
+        assert_eq!(pool.allocate(0).unwrap().0.index, 3);
+        assert_eq!(pool.allocate(0).unwrap().0.index, 6);
+        let (fresh, _) = pool.allocate_or_grow(0, &pages).unwrap();
+        assert_eq!((fresh.index, fresh.uniq), (12, 1), "a fresh slot");
     }
 
     /// A freed id names nothing; the next id in its slot has the count one more; an id with a
