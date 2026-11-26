@@ -1296,7 +1296,15 @@ impl<H: FrameHooks> FrameDb<H> {
     /// each list head is its color-chain head, and every color chain is the color-matching
     /// subsequence of its list.
     ///
-    /// Allocation-free: walks chains with bounded steps instead of collecting them.
+    /// Allocation-free, and one walk per list (per [`AUDIT_COLOR_GROUP`] colors, for the colored
+    /// ones), whatever the number of colors: the teardown audit runs it after every process, over
+    /// every free frame. The backward links are checked link by link on the forward walk (each
+    /// frame names the one before it as its predecessor, the first frame none), which makes the
+    /// backward walk from the tail the forward one reversed, so it is not walked again. Each color
+    /// chain is checked on the same walk: a listed frame is the head of its color's chain when it
+    /// is the first of that color on the list, otherwise the color chain's successor of the last
+    /// one; the last of each color ends its chain, at the chain's tail. A color chain's mismatch is
+    /// reported after the global counters, as the separate color walks did.
     pub fn audit(&self) -> Result<(), AuditError> {
         let states = [
             FrameState::Zeroed,
@@ -1307,58 +1315,37 @@ impl<H: FrameHooks> FrameDb<H> {
             FrameState::Bad,
         ];
 
+        // The first color-chain violation, reported once the lists' and the counters' checks hold.
+        let mut color_error: Option<AuditError> = None;
         for &state in &states {
-            let list = self.list(state);
-
-            // Forward walk: range, termination, per-frame state, and backward-link agreement.
-            let mut count = 0u32;
-            let mut first: Option<Pfn> = None;
-            let mut last: Option<Pfn> = None;
-            let mut cur = list.head;
-            while let Some(f) = cur {
-                if f == Pfn::ZERO || f.index() >= self.frames.len() {
-                    return Err(AuditError::FrameOutOfRange { frame: f });
-                }
-                if self.entry(f).state != state {
-                    return Err(AuditError::StateMismatch { frame: f });
-                }
-                count += 1;
-                if count > self.frames.len() as u32 {
-                    return Err(AuditError::ChainDoesNotTerminate { state });
-                }
-                if let Some(n) = self.entry(f).next.get() {
-                    if self.entry(n).prev.get() != Some(f) {
-                        return Err(AuditError::PrevLinkMismatch { state });
+            let colored = matches!(state, FrameState::Zeroed | FrameState::Free);
+            if colored && color_error.is_none() {
+                // The list head must be its own chain head.
+                if let Some(h) = self.list(state).head {
+                    let head_color = self.color_of(h);
+                    if self.buckets.inner[Self::color_table(state)][head_color].head != Some(h) {
+                        color_error = Some(AuditError::BucketHeadMismatch { state });
                     }
                 }
-                first.get_or_insert(f);
-                last = Some(f);
-                cur = self.entry(f).next.get();
             }
-            if count != list.total {
-                return Err(AuditError::TotalMismatch { state });
-            }
-            if list.head.is_some() != list.tail.is_some() || list.tail != last {
-                return Err(AuditError::HeadTailMismatch { state });
-            }
-            if let (Some(first), Some(last)) = (first, last) {
-                if self.entry(first).prev.get().is_some() || self.entry(last).next.get().is_some() {
-                    return Err(AuditError::HeadTailMismatch { state });
+            // The first walk checks the list itself and its first group of colors; a database of
+            // more colors than a group walks the list again for each further group.
+            let groups = if colored {
+                self.colors.div_ceil(AUDIT_COLOR_GROUP)
+            } else {
+                1
+            };
+            for group in 0..groups {
+                let colors = if colored {
+                    let first = group * AUDIT_COLOR_GROUP;
+                    first..self.colors.min(first + AUDIT_COLOR_GROUP)
+                } else {
+                    0..0
+                };
+                let found = self.audit_list(state, colors)?;
+                if color_error.is_none() {
+                    color_error = found;
                 }
-            }
-
-            // Backward walk must mirror the forward walk.
-            let mut backward = 0u32;
-            let mut cur = list.tail;
-            while let Some(f) = cur {
-                backward += 1;
-                if backward > self.frames.len() as u32 {
-                    return Err(AuditError::ChainDoesNotTerminate { state });
-                }
-                cur = self.entry(f).prev.get();
-            }
-            if backward != count {
-                return Err(AuditError::PrevLinkMismatch { state });
             }
         }
 
@@ -1368,65 +1355,94 @@ impl<H: FrameHooks> FrameDb<H> {
         }
         self.assert_tallies();
 
-        // Color chains: each must be the color-matching subsequence of its list, and the list head
-        // must be its own chain head.
-        for state in [FrameState::Zeroed, FrameState::Free] {
-            let head = self.list(state).head;
-            if let Some(h) = head {
-                let head_color = self.color_of(h);
-                if self.buckets.inner[Self::color_table(state)][head_color].head != Some(h) {
-                    return Err(AuditError::BucketHeadMismatch { state });
-                }
-            }
-            for color in 0..self.colors {
-                let bucket = &self.buckets.inner[Self::color_table(state)][color];
-                let chain_budget = 2 * self.frames.len() as u32 + 2;
+        color_error.map_or(Ok(()), Err)
+    }
 
-                // Walk the color-filtered list and the color chain in lockstep.
-                let mut list_cur = self.list(state).head;
-                let mut bucket_cur = bucket.head;
-                let mut last_matched: Option<Pfn> = None;
-                let mut steps = 0u32;
-                loop {
-                    // Advance the list cursor to the next frame of this color.
-                    while let Some(f) = list_cur {
-                        if self.color_of(f) == color {
-                            break;
-                        }
-                        steps += 1;
-                        if steps > chain_budget {
-                            return Err(AuditError::ChainDoesNotTerminate { state });
-                        }
-                        list_cur = self.entry(f).next.get();
-                    }
-                    match (list_cur, bucket_cur) {
-                        (None, None) => break,
-                        (Some(list_frame), Some(bucket_frame)) => {
-                            if list_frame != bucket_frame {
-                                return Err(AuditError::ColorChainMismatch { state });
-                            }
-                            last_matched = Some(list_frame);
-                            steps += 1;
-                            if steps > chain_budget {
-                                return Err(AuditError::ChainDoesNotTerminate { state });
-                            }
-                            list_cur = self.entry(list_frame).next.get();
-                            bucket_cur = self.entry(bucket_frame).next_color.get();
-                        }
-                        (Some(_), None) | (None, Some(_)) => {
-                            return Err(AuditError::ColorChainMismatch { state });
-                        }
-                    }
-                }
-                if bucket.tail != last_matched {
-                    return Err(AuditError::ColorChainMismatch { state });
-                }
+    /// One forward walk of `state`'s list: its structure (see [`FrameDb::audit`]), an `Err`, and
+    /// the chains of the colors in `colors` against it, the first mismatch found (none when they
+    /// hold), which the caller reports after the global counters.
+    ///
+    /// Each frame's entry is read once: its predecessor link must name the frame the walk came
+    /// from (none for the head), and for a frame of a checked color, the chain must have led to it
+    /// (the color's chain head for the first frame of its color, the previous one's chain link
+    /// after).
+    fn audit_list(
+        &self,
+        state: FrameState,
+        colors: core::ops::Range<usize>,
+    ) -> Result<Option<AuditError>, AuditError> {
+        let list = self.list(state);
+        let table = if colors.is_empty() {
+            0
+        } else {
+            Self::color_table(state)
+        };
+        // Per color of the group: the frame its chain leads to next (its head, before the walk
+        // has seen a frame of the color), and the last frame of the color the walk has seen.
+        let mut expected: [Option<Pfn>; AUDIT_COLOR_GROUP] = [None; AUDIT_COLOR_GROUP];
+        let mut last_of_color: [Option<Pfn>; AUDIT_COLOR_GROUP] = [None; AUDIT_COLOR_GROUP];
+        for color in colors.clone() {
+            expected[color - colors.start] = self.buckets.inner[table][color].head;
+        }
+        let mut color_error = None;
+
+        let mut count = 0u32;
+        let mut previous: Option<Pfn> = None;
+        let mut cur = list.head;
+        while let Some(f) = cur {
+            if f == Pfn::ZERO || f.index() >= self.frames.len() {
+                return Err(AuditError::FrameOutOfRange { frame: f });
             }
+            let entry = &self.frames[f.index()];
+            if entry.state != state {
+                return Err(AuditError::StateMismatch { frame: f });
+            }
+            count += 1;
+            if count > self.frames.len() as u32 {
+                return Err(AuditError::ChainDoesNotTerminate { state });
+            }
+            if entry.prev.get() != previous {
+                return Err(match previous {
+                    None => AuditError::HeadTailMismatch { state },
+                    Some(_) => AuditError::PrevLinkMismatch { state },
+                });
+            }
+            let color = self.color_of(f);
+            if colors.contains(&color) {
+                let slot = color - colors.start;
+                if expected[slot] != Some(f) {
+                    color_error.get_or_insert(AuditError::ColorChainMismatch { state });
+                }
+                expected[slot] = entry.next_color.get();
+                last_of_color[slot] = Some(f);
+            }
+            previous = Some(f);
+            cur = entry.next.get();
+        }
+        if count != list.total {
+            return Err(AuditError::TotalMismatch { state });
+        }
+        if list.head.is_some() != list.tail.is_some() || list.tail != previous {
+            return Err(AuditError::HeadTailMismatch { state });
         }
 
-        Ok(())
+        // Each color's chain ends with its last frame on the list, at the chain's tail (an empty
+        // chain for a color the list has none of).
+        for color in colors.clone() {
+            let slot = color - colors.start;
+            if expected[slot].is_some()
+                || self.buckets.inner[table][color].tail != last_of_color[slot]
+            {
+                color_error.get_or_insert(AuditError::ColorChainMismatch { state });
+            }
+        }
+        Ok(color_error)
     }
 }
+
+/// How many colors one walk of a colored list checks the chains of ([`FrameDb::audit`]): the
+/// default database's colors in one walk, with a small fixed array on the stack.
+const AUDIT_COLOR_GROUP: usize = 64;
 
 #[cfg(test)]
 mod tests {
@@ -2148,6 +2164,105 @@ mod tests {
         );
         db.entry_mut(Pfn::new(9)).state = Free;
         assert_eq!(db.audit(), Ok(()));
+    }
+
+    #[test]
+    fn audit_detects_broken_links() {
+        let mut db = new_db();
+        release_all(&mut db, Standby, &[5, 9, 13]);
+        assert_eq!(db.audit(), Ok(()));
+        // A successor that does not name its predecessor.
+        db.entry_mut(Pfn::new(13)).prev = Link::from(Some(Pfn::new(5)));
+        assert_eq!(
+            db.audit(),
+            Err(AuditError::PrevLinkMismatch { state: Standby })
+        );
+        db.entry_mut(Pfn::new(13)).prev = Link::from(Some(Pfn::new(9)));
+        // A head with a predecessor.
+        db.entry_mut(Pfn::new(5)).prev = Link::from(Some(Pfn::new(13)));
+        assert_eq!(
+            db.audit(),
+            Err(AuditError::HeadTailMismatch { state: Standby })
+        );
+        db.entry_mut(Pfn::new(5)).prev = Link::NONE;
+        // A tail that is not the chain's end.
+        db.standby.tail = Some(Pfn::new(9));
+        assert_eq!(
+            db.audit(),
+            Err(AuditError::HeadTailMismatch { state: Standby })
+        );
+        db.standby.tail = Some(Pfn::new(13));
+        // A cycle.
+        db.entry_mut(Pfn::new(13)).next = Link::from(Some(Pfn::new(5)));
+        assert!(db.audit().is_err());
+        db.entry_mut(Pfn::new(13)).next = Link::NONE;
+        assert_eq!(db.audit(), Ok(()));
+    }
+
+    #[test]
+    fn audit_detects_broken_color_chains() {
+        let mut db = new_db();
+        // Colors 1 and 2 of 4: 5, 9, 13 share color 1.
+        release_all(&mut db, Free, &[5, 6, 9, 13]);
+        assert_eq!(db.audit(), Ok(()));
+        let chains = FrameDb::<RecordingHooks>::color_table(Free);
+        // A chain that skips a frame of its color.
+        db.entry_mut(Pfn::new(5)).next_color = Link::from(Some(Pfn::new(13)));
+        assert_eq!(
+            db.audit(),
+            Err(AuditError::ColorChainMismatch { state: Free })
+        );
+        db.entry_mut(Pfn::new(5)).next_color = Link::from(Some(Pfn::new(9)));
+        // A chain that runs on past its color's last frame.
+        db.entry_mut(Pfn::new(13)).next_color = Link::from(Some(Pfn::new(6)));
+        assert_eq!(
+            db.audit(),
+            Err(AuditError::ColorChainMismatch { state: Free })
+        );
+        db.entry_mut(Pfn::new(13)).next_color = Link::NONE;
+        // A chain tail that is not its color's last frame.
+        db.buckets.inner[chains][1].tail = Some(Pfn::new(9));
+        assert_eq!(
+            db.audit(),
+            Err(AuditError::ColorChainMismatch { state: Free })
+        );
+        db.buckets.inner[chains][1].tail = Some(Pfn::new(13));
+        // A chain for a color the list has none of.
+        db.buckets.inner[chains][3].head = Some(Pfn::new(6));
+        assert_eq!(
+            db.audit(),
+            Err(AuditError::ColorChainMismatch { state: Free })
+        );
+        db.buckets.inner[chains][3].head = None;
+        // A list head that does not head its chain.
+        db.buckets.inner[chains][1].head = Some(Pfn::new(9));
+        assert_eq!(
+            db.audit(),
+            Err(AuditError::BucketHeadMismatch { state: Free })
+        );
+        db.buckets.inner[chains][1].head = Some(Pfn::new(5));
+        assert_eq!(db.audit(), Ok(()));
+    }
+
+    #[test]
+    fn audit_checks_colors_past_one_walks_group() {
+        // More colors than one walk checks: the chains of the later groups are walked too.
+        let colors = 2 * AUDIT_COLOR_GROUP;
+        let table: &'static mut [FrameEntry] =
+            Box::leak(vec![FrameEntry::new(); 4 * colors].into_boxed_slice());
+        let buckets: &'static mut ColorTables = Box::leak(Box::new(ColorTables::new()));
+        let mut db = FrameDb::new(table, buckets, colors, RecordingHooks::default());
+        let late = (AUDIT_COLOR_GROUP + 3) as u32;
+        for f in [late, late + colors as u32, 1, late + 2 * colors as u32] {
+            db.release(Pfn::new(f), Zeroed);
+        }
+        assert_eq!(db.audit(), Ok(()));
+        let chains = FrameDb::<RecordingHooks>::color_table(Zeroed);
+        db.buckets.inner[chains][late as usize].tail = Some(Pfn::new(late));
+        assert_eq!(
+            db.audit(),
+            Err(AuditError::ColorChainMismatch { state: Zeroed })
+        );
     }
 
     #[test]
