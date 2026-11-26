@@ -1097,7 +1097,7 @@ note = "0 (ERROR) as well for a region that is not one"
 name = "ExcludeClipRect"
 group = "regions"
 args = ["handle hdc", "i32 nLeftRect", "i32 nTopRect", "i32 nRightRect", "i32 nBottomRect"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ExcludeClipRect" }
 ordinal = 157
 fails = "0"
 note = "the clipping region's complexity, 0 (ERROR) failing"
@@ -1106,7 +1106,7 @@ note = "the clipping region's complexity, 0 (ERROR) failing"
 name = "ExtSelectClipRgn"
 group = "regions"
 args = ["handle hdc", "handle hrgn", "i32 fnMode"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ExtSelectClipRgn" }
 ordinal = 162
 fails = "0"
 note = "the clipping region's complexity, 0 (ERROR) failing"
@@ -1123,7 +1123,7 @@ fails = "FALSE"
 name = "GetClipBox"
 group = "regions"
 args = ["handle hdc", "ptr lprc"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetClipBox" }
 ordinal = 291
 fails = "0"
 note = "the clipping region's complexity, 0 (ERROR) failing"
@@ -1132,7 +1132,7 @@ note = "the clipping region's complexity, 0 (ERROR) failing"
 name = "GetClipRgn"
 group = "regions"
 args = ["handle hdc", "handle hrgn"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetClipRgn" }
 ordinal = 292
 fails = "-1"
 note = "1 with a clipping region, 0 without one"
@@ -1149,7 +1149,7 @@ fails = "0"
 name = "IntersectClipRect"
 group = "regions"
 args = ["handle hdc", "i32 nLeftRect", "i32 nTopRect", "i32 nRightRect", "i32 nBottomRect"]
-impl = { stub = "not yet implemented" }
+impl = { native = "IntersectClipRect" }
 ordinal = 394
 fails = "0"
 note = "the clipping region's complexity, 0 (ERROR) failing"
@@ -1158,7 +1158,7 @@ note = "the clipping region's complexity, 0 (ERROR) failing"
 name = "OffsetClipRgn"
 group = "regions"
 args = ["handle hdc", "i32 nXOffset", "i32 nYOffset"]
-impl = { stub = "not yet implemented" }
+impl = { native = "OffsetClipRgn" }
 ordinal = 404
 fails = "0"
 note = "the clipping region's complexity, 0 (ERROR) failing"
@@ -1184,7 +1184,7 @@ fails = "FALSE"
 name = "PtVisible"
 group = "regions"
 args = ["handle hdc", "i32 X", "i32 Y"]
-impl = { stub = "not yet implemented" }
+impl = { native = "PtVisible" }
 ordinal = 434
 fails = "-1"
 note = "-1 for a DC that is not one"
@@ -1193,7 +1193,7 @@ note = "-1 for a DC that is not one"
 name = "RectVisible"
 group = "regions"
 args = ["handle hdc", "ptr lprc"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RectVisible" }
 ordinal = 438
 fails = "FALSE"
 
@@ -1201,7 +1201,7 @@ fails = "FALSE"
 name = "SelectClipRgn"
 group = "regions"
 args = ["handle hdc", "handle hrgn"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SelectClipRgn" }
 ordinal = 461
 fails = "0"
 note = "the clipping region's complexity, 0 (ERROR) failing"

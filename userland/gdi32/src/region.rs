@@ -207,3 +207,118 @@ pub extern "system" fn get_region_data(region: usize, count: u32, data: usize) -
 pub extern "system" fn fill_rgn(dc: usize, region: usize, brush: usize) -> u32 {
     imports::fill_rgn(dc, region, brush).map_or(0, u32::from)
 }
+
+// --- A DC's clipping -----------------------------------------------------------------------------
+//
+// SelectClipRgn, ExtSelectClipRgn, IntersectClipRect, ExcludeClipRect, OffsetClipRgn, GetClipBox,
+// GetClipRgn, PtVisible and RectVisible, each over its win32k service: the DC's clipping region,
+// its visible region and the final region every drawing is clipped to are the kernel's
+// (kernel/src/win32k/dc.rs describes them). None of them sets a last error in the regions
+// capture; a DC or a region that is none fails them without one here too.
+
+/// GetRandomRgn's CLIPRGN: the clipping region.
+const CLIPRGN: u32 = 1;
+
+/// SelectClipRgn: the DC's clipping region made a copy of the region (device coordinates; NULL:
+/// none, the DC clipped to its visible region alone); the final region's complexity, ERROR
+/// failing.
+#[unsafe(export_name = "f2k_export_SelectClipRgn")]
+pub extern "system" fn select_clip_rgn(dc: usize, region: usize) -> i32 {
+    ext_select_clip_rgn(dc, region, RGN_COPY as i32)
+}
+
+/// ExtSelectClipRgn: the DC's clipping region made `mode`'s combination of it (with none, of the
+/// DC's extent) and the region (device coordinates); RGN_COPY a copy of the region, or no
+/// clipping region for NULL. The final region's complexity; ERROR for a mode that is none, for
+/// NULL in another mode (the clipping as it was), and for a DC or a region that is none.
+#[unsafe(export_name = "f2k_export_ExtSelectClipRgn")]
+pub extern "system" fn ext_select_clip_rgn(dc: usize, region: usize, mode: i32) -> i32 {
+    if !(RGN_AND as i32..=RGN_COPY as i32).contains(&mode) {
+        return ERROR;
+    }
+    if region == 0 && mode != RGN_COPY as i32 {
+        return ERROR;
+    }
+    imports::ext_select_clip_rgn(dc, region, mode as u32).unwrap_or(ERROR)
+}
+
+/// IntersectClipRect: the DC's clipping region (its extent with none) cut to the logical
+/// rectangle; COMPLEXREGION for what is left whatever its shape, as Windows 2000 answers,
+/// NULLREGION when nothing is, ERROR failing.
+#[unsafe(export_name = "f2k_export_IntersectClipRect")]
+pub extern "system" fn intersect_clip_rect(
+    dc: usize,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+) -> i32 {
+    imports::intersect_clip_rect(dc, Rect::new(left, top, right, bottom)).unwrap_or(ERROR)
+}
+
+/// ExcludeClipRect: the logical rectangle taken out of the DC's clipping region (its extent with
+/// none); the final region's complexity, ERROR failing.
+#[unsafe(export_name = "f2k_export_ExcludeClipRect")]
+pub extern "system" fn exclude_clip_rect(
+    dc: usize,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+) -> i32 {
+    imports::exclude_clip_rect(dc, Rect::new(left, top, right, bottom)).unwrap_or(ERROR)
+}
+
+/// OffsetClipRgn: the DC's clipping region moved (nothing moves without one); the final region's
+/// complexity, ERROR failing.
+#[unsafe(export_name = "f2k_export_OffsetClipRgn")]
+pub extern "system" fn offset_clip_rgn(dc: usize, x: i32, y: i32) -> i32 {
+    imports::offset_clip_rgn(dc, x, y).unwrap_or(ERROR)
+}
+
+/// GetClipBox: the final region's box (logical coordinates) into the RECT; its complexity, ERROR
+/// for a DC that is none (the RECT untouched).
+///
+/// # Safety
+///
+/// `rect`, when not null, is a RECT to write.
+#[unsafe(export_name = "f2k_export_GetClipBox")]
+pub unsafe extern "system" fn get_clip_box(dc: usize, rect: *mut Rect) -> i32 {
+    let Ok((complexity, bounds)) = imports::clip_box(dc) else {
+        return ERROR;
+    };
+    // SAFETY: the caller's RECT.
+    if let Some(mut out) = unsafe { Out::optional(rect) } {
+        out.set(bounds);
+    }
+    complexity
+}
+
+/// GetClipRgn: the region made a copy of the DC's clipping region (device coordinates); 1, 0 when
+/// the DC has none (the region untouched), -1 for a DC or a region that is none.
+#[unsafe(export_name = "f2k_export_GetClipRgn")]
+pub extern "system" fn get_clip_rgn(dc: usize, region: usize) -> i32 {
+    imports::random_rgn(dc, region, CLIPRGN).unwrap_or(-1)
+}
+
+/// PtVisible: whether the logical point is inside the final region; -1 for a DC that is none.
+#[unsafe(export_name = "f2k_export_PtVisible")]
+pub extern "system" fn pt_visible(dc: usize, x: i32, y: i32) -> i32 {
+    imports::pt_visible(dc, x, y).map_or(-1, i32::from)
+}
+
+/// RectVisible: whether any pixel of the logical rectangle (its edges put in order) is inside the
+/// final region; FALSE for no rectangle or a DC that is none.
+///
+/// # Safety
+///
+/// `rect`, when not null, is a RECT.
+#[unsafe(export_name = "f2k_export_RectVisible")]
+pub unsafe extern "system" fn rect_visible(dc: usize, rect: *const Rect) -> u32 {
+    if rect.is_null() {
+        return 0;
+    }
+    // SAFETY: the caller's RECT.
+    let rect = unsafe { rect.read_unaligned() };
+    imports::rect_visible(dc, &rect).map_or(0, u32::from)
+}
