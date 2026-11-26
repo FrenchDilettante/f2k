@@ -8,6 +8,9 @@
 description = "toolhelp - the ToolHelp snapshot (toolhelp.c, with its companion program thkid.c): PROCESSENTRY32, PROCESSENTRY32W and THREADENTRY32, and SYSTEM_PROCESS_INFORMATION and SYSTEM_THREAD_INFORMATION as declared and as NtQuerySystemInformation fills them; the program's own entry (its name, threads, priority class, parent) through Process32First/Next and Process32FirstW/NextW, its threads through Thread32First/Next, after CreateThread, SetThreadPriority and SetPriorityClass; children listed with the program as their parent, ended with their handles open, gone once closed, created suspended, and a grandchild outliving its parent; the idle and System processes; the calls' errors (wrong dwSize, past the end, handles that are no snapshot, module snapshots, NtQuerySystemInformation into a short buffer); the snapshot handle's object type, access and inheritance."
 kind = "sectioned"
 gate = true
+# The System process's threads (the system section's "more than one"): F2K's second is win32k's raw
+# input thread, which starts with the window station.
+needs = ["winsta"]
 
 [masks]
 # The suspended child, terminated with 7 after a snapshot, ends with 7 when its thread had been
