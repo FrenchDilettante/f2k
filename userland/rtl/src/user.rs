@@ -51,6 +51,8 @@ pub const WM_SETTINGCHANGE: u32 = 0x001A;
 pub const WM_DEVMODECHANGE: u32 = 0x001B;
 pub const WM_ACTIVATEAPP: u32 = 0x001C;
 pub const WM_CANCELMODE: u32 = 0x001F;
+pub const WM_SETCURSOR: u32 = 0x0020;
+pub const WM_MOUSEACTIVATE: u32 = 0x0021;
 pub const WM_GETMINMAXINFO: u32 = 0x0024;
 pub const WM_NEXTDLGCTL: u32 = 0x0028;
 pub const WM_DRAWITEM: u32 = 0x002B;
@@ -76,6 +78,10 @@ pub const WM_NCHITTEST: u32 = 0x0084;
 pub const WM_NCPAINT: u32 = 0x0085;
 pub const WM_NCACTIVATE: u32 = 0x0086;
 pub const WM_GETDLGCODE: u32 = 0x0087;
+pub const WM_NCMOUSEMOVE: u32 = 0x00A0;
+pub const WM_NCLBUTTONDOWN: u32 = 0x00A1;
+pub const WM_NCLBUTTONUP: u32 = 0x00A2;
+pub const WM_NCLBUTTONDBLCLK: u32 = 0x00A3;
 pub const WM_KEYFIRST: u32 = 0x0100;
 pub const WM_KEYDOWN: u32 = 0x0100;
 pub const WM_KEYUP: u32 = 0x0101;
@@ -108,13 +114,22 @@ pub const WM_CTLCOLORDLG: u32 = 0x0136;
 pub const WM_CTLCOLORSCROLLBAR: u32 = 0x0137;
 pub const WM_CTLCOLORSTATIC: u32 = 0x0138;
 pub const WM_MOUSEFIRST: u32 = 0x0200;
+pub const WM_MOUSEMOVE: u32 = 0x0200;
 pub const WM_LBUTTONDOWN: u32 = 0x0201;
 pub const WM_LBUTTONUP: u32 = 0x0202;
 pub const WM_LBUTTONDBLCLK: u32 = 0x0203;
+pub const WM_RBUTTONDOWN: u32 = 0x0204;
+pub const WM_RBUTTONUP: u32 = 0x0205;
+pub const WM_RBUTTONDBLCLK: u32 = 0x0206;
+pub const WM_MBUTTONDOWN: u32 = 0x0207;
+pub const WM_MBUTTONUP: u32 = 0x0208;
+pub const WM_MBUTTONDBLCLK: u32 = 0x0209;
+pub const WM_MOUSEWHEEL: u32 = 0x020A;
 pub const WM_MOUSELAST: u32 = 0x020D;
 pub const WM_PARENTNOTIFY: u32 = 0x0210;
 pub const WM_ENTERMENULOOP: u32 = 0x0211;
 pub const WM_EXITMENULOOP: u32 = 0x0212;
+pub const WM_CAPTURECHANGED: u32 = 0x0215;
 pub const WM_IME_CHAR: u32 = 0x0286;
 pub const WM_CUT: u32 = 0x0300;
 pub const WM_COPY: u32 = 0x0301;
@@ -125,6 +140,24 @@ pub const WM_RENDERFORMAT: u32 = 0x0305;
 pub const WM_RENDERALLFORMATS: u32 = 0x0306;
 pub const WM_DESTROYCLIPBOARD: u32 = 0x0307;
 pub const WM_USER: u32 = 0x0400;
+
+/// How far a mouse message's non-client form is below its client form: WM_NCMOUSEMOVE is
+/// WM_MOUSEMOVE's, WM_NCLBUTTONDOWN WM_LBUTTONDOWN's, through WM_NCMBUTTONDBLCLK.
+pub const NC_MOUSE_OFFSET: u32 = WM_MOUSEMOVE - WM_NCMOUSEMOVE;
+
+/// The mouse messages' wParam (winuser.h's MK_*): the buttons and the modifiers down.
+pub const MK_LBUTTON: u32 = 0x0001;
+pub const MK_RBUTTON: u32 = 0x0002;
+pub const MK_SHIFT: u32 = 0x0004;
+pub const MK_CONTROL: u32 = 0x0008;
+pub const MK_MBUTTON: u32 = 0x0010;
+
+/// WM_MOUSEACTIVATE's answers (winuser.h's MA_*): the window activated or not, the click eaten or
+/// not.
+pub const MA_ACTIVATE: u32 = 1;
+pub const MA_ACTIVATEANDEAT: u32 = 2;
+pub const MA_NOACTIVATE: u32 = 3;
+pub const MA_NOACTIVATEANDEAT: u32 = 4;
 
 /// WM_QUERYENDSESSION's and WM_ENDSESSION's lParam for a logoff (winuser.h's ENDSESSION_LOGOFF): 0
 /// for a shutdown.
@@ -214,6 +247,11 @@ pub fn sync_only(message: u32) -> bool {
 /// The virtual keys as the key messages' wParam carries them: the keyboard layouts' values
 /// ([`crate::console::layout`]'s byte-sized VK_*), widened.
 pub const VK_TAB: u32 = layout::VK_TAB as u32;
+/// The mouse's buttons as the key states hold them (winuser.h's VK_LBUTTON, VK_RBUTTON,
+/// VK_MBUTTON): GetKeyState and GetAsyncKeyState answer them as keys.
+pub const VK_LBUTTON: u32 = 0x01;
+pub const VK_RBUTTON: u32 = 0x02;
+pub const VK_MBUTTON: u32 = 0x04;
 pub const VK_RETURN: u32 = layout::VK_RETURN as u32;
 pub const VK_SHIFT: u32 = layout::VK_SHIFT as u32;
 pub const VK_CONTROL: u32 = layout::VK_CONTROL as u32;
@@ -549,6 +587,30 @@ pub const KEYEVENTF_KEYUP: u32 = 0x0002;
 pub const KEYEVENTF_UNICODE: u32 = 0x0004;
 pub const KEYEVENTF_SCANCODE: u32 = 0x0008;
 
+/// MOUSEINPUT's flags: the event moves the mouse, presses or releases a button, turns the wheel
+/// (mouseData its amount), and its move is to an absolute place (0-65535 across the screen) rather
+/// than by an amount.
+pub const MOUSEEVENTF_MOVE: u32 = 0x0001;
+pub const MOUSEEVENTF_LEFTDOWN: u32 = 0x0002;
+pub const MOUSEEVENTF_LEFTUP: u32 = 0x0004;
+pub const MOUSEEVENTF_RIGHTDOWN: u32 = 0x0008;
+pub const MOUSEEVENTF_RIGHTUP: u32 = 0x0010;
+pub const MOUSEEVENTF_MIDDLEDOWN: u32 = 0x0020;
+pub const MOUSEEVENTF_MIDDLEUP: u32 = 0x0040;
+pub const MOUSEEVENTF_WHEEL: u32 = 0x0800;
+pub const MOUSEEVENTF_ABSOLUTE: u32 = 0x8000;
+
+/// MOUSEINPUT: an INPUT's mouse event ([`Input::mouse`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MouseInput {
+    pub dx: i32,
+    pub dy: i32,
+    pub data: u32,
+    pub flags: u32,
+    pub time: u32,
+    pub extra_info: u32,
+}
+
 /// INPUT as SendInput reads it, its union seen as a KEYBDINPUT (28 bytes: the union is
 /// MOUSEINPUT's size, the largest member, so a keyboard event leaves two words over).
 #[repr(C)]
@@ -567,6 +629,21 @@ pub struct Input {
 
 // SAFETY: integers only, with no padding (two u16 then u32s, at their alignment).
 unsafe impl Pod for Input {}
+
+impl Input {
+    /// The union seen as the MOUSEINPUT it is for an INPUT_MOUSE record: dx (wVk and wScan's
+    /// place), dy, mouseData, dwFlags, time, dwExtraInfo.
+    pub fn mouse(&self) -> MouseInput {
+        MouseInput {
+            dx: (u32::from(self.vk) | u32::from(self.scan) << 16) as i32,
+            dy: self.flags as i32,
+            data: self.time,
+            flags: self.extra_info,
+            time: self.rest[0],
+            extra_info: self.rest[1],
+        }
+    }
+}
 
 /// GUITHREADINFO: what GetGUIThreadInfo answers of a thread's input state.
 #[repr(C)]
@@ -599,6 +676,9 @@ pub const NO_PARAM_CREATE_POPUP_MENU: u32 = 1;
 pub const NO_PARAM_CREATE_EMPTY_CURSOR: u32 = 2;
 /// DestroyCaret (the calling thread's caret destroyed; the result 1).
 pub const NO_PARAM_DESTROY_CARET: u32 = 3;
+/// ReleaseCapture (the calling thread's mouse capture taken from its window, which is sent
+/// WM_CAPTURECHANGED; the result 1).
+pub const NO_PARAM_RELEASE_CAPTURE: u32 = 4;
 
 /// NtUserCallTwoParam's routines: SetCaretPos (the two parameters are the place; the result 1).
 /// (1 handed a received message's text over, before callbacks carried it.)
@@ -607,6 +687,8 @@ pub const TWO_PARAM_SET_CARET_POS: u32 = 0;
 /// result as WaitForMultipleObjects answers, WAIT_OBJECT_0 + the count for input of the wake
 /// mask's kinds come to the queue since a read last looked for them.
 pub const TWO_PARAM_MSG_WAIT: u32 = 2;
+/// SetCursorPos (the two parameters are the screen point; the result 1).
+pub const TWO_PARAM_SET_CURSOR_POS: u32 = 3;
 
 /// MsgWaitForMultipleObjects' arguments, as [`TWO_PARAM_MSG_WAIT`] reads them: the handles (fewer
 /// than 64, at `handles`), the timeout in milliseconds (INFINITE, 0xFFFFFFFF, for none), and the
@@ -643,11 +725,19 @@ pub const HWND_PARAM_LOCK_WINDOW_POS_CHANGING: u32 = 2;
 
 /// NtUserGetThreadState's routines: the calling thread's focus window (GetFocus) and its active
 /// window (GetActiveWindow); the time and the cursor position (x in the low word, y in the high
-/// word) of the last message its reads retrieved (GetMessageTime, GetMessagePos).
+/// word) of the last message its reads retrieved (GetMessageTime, GetMessagePos); its capture
+/// window and the cursor's place and shape.
 pub const THREAD_STATE_FOCUS_WINDOW: u32 = 0;
 pub const THREAD_STATE_ACTIVE_WINDOW: u32 = 1;
 pub const THREAD_STATE_MESSAGE_TIME: u32 = 2;
 pub const THREAD_STATE_MESSAGE_POS: u32 = 3;
+/// GetCapture: the calling thread's capture window.
+pub const THREAD_STATE_CAPTURE_WINDOW: u32 = 4;
+/// GetCursorPos: the cursor's screen position, x in the low word, y in the high word (each a
+/// SHORT).
+pub const THREAD_STATE_CURSOR_POS: u32 = 5;
+/// GetCursor: the cursor's shape, as SetCursor set it.
+pub const THREAD_STATE_CURSOR: u32 = 6;
 
 /// NtUserGetUpdateRect's answer bits: the update region is not empty; the caller is to send the
 /// window WM_ERASEBKGND (it asked for the erase, and one was pending).
@@ -684,6 +774,31 @@ mod tests {
         assert_eq!(size_of::<GuiThreadInfo>(), 48);
         assert_eq!(offset_of!(GuiThreadInfo, rc_caret), 32);
         assert_eq!(size_of::<SendTimeout>(), 8);
+    }
+
+    /// An INPUT_MOUSE record's MOUSEINPUT, read through the keyboard's view of the union.
+    #[test]
+    fn the_mouse_input_is_read_through_the_union() {
+        let mut words = [0u32; 7];
+        words[0] = INPUT_MOUSE;
+        words[1] = (-5i32) as u32;
+        words[2] = 40000;
+        words[3] = 120;
+        words[4] = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE;
+        words[5] = 77;
+        words[6] = 9;
+        let input = Input::from_bytes(crate::pod::slice_bytes(&words)).unwrap();
+        assert_eq!(
+            input.mouse(),
+            MouseInput {
+                dx: -5,
+                dy: 40000,
+                data: 120,
+                flags: MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE,
+                time: 77,
+                extra_info: 9,
+            }
+        );
     }
 
     /// The messages whose pointer no asynchronous send carries are below WM_USER; a registered

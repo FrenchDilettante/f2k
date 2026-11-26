@@ -90,6 +90,7 @@ pub const CORNER: i32 = SIZE + FRAME;
 
 /// WM_NCHITTEST's answers (winuser.h's HT*).
 pub const HTERROR: u32 = -2i32 as u32;
+pub const HTTRANSPARENT: u32 = -1i32 as u32;
 pub const HTNOWHERE: u32 = 0;
 pub const HTCLIENT: u32 = 1;
 pub const HTCAPTION: u32 = 2;
