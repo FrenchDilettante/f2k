@@ -121,6 +121,7 @@ pub const WM_COPY: u32 = 0x0301;
 pub const WM_PASTE: u32 = 0x0302;
 pub const WM_CLEAR: u32 = 0x0303;
 pub const WM_UNDO: u32 = 0x0304;
+pub const WM_RENDERFORMAT: u32 = 0x0305;
 pub const WM_RENDERALLFORMATS: u32 = 0x0306;
 pub const WM_DESTROYCLIPBOARD: u32 = 0x0307;
 pub const WM_USER: u32 = 0x0400;

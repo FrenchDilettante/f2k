@@ -299,7 +299,7 @@ The fixtures:
   Every section leaves the machine's clipboard empty and closed at its start and its end, and retries each open for up to a second while another program holds the clipboard.
   No handle prints: a handle prints as non-NULL or not and as the same as another or not, a registered format as "registered".
   The capture expects code pages 1252 and 437 (each converting section prints whether they are), and no other program using the clipboard while it runs (a VirtualBox VM's shared clipboard disabled).
-  Gated; `delayed` stays pending until delayed rendering (`SetClipboardData` with no data, `WM_RENDERFORMAT` and `WM_RENDERALLFORMATS`) is written.
+  Gated, every section passing.
 - `wsprintf` (user32) - user32's own formatting, `wsprintfA`/`W` and `wvsprintfA`/`W`: `%d`, `%i`, `%u`, `%x` and `%X` with the `#`, `-` and `0` flags, widths, precisions and the `l` and `h` prefixes (`ints`); `%s`, `%S`, `%hs`, `%ls`, `%c`, `%C`, `%hc` and `%lc` in both forms, NULL strings, text crossing the forms through the ANSI code page and a NUL character (`strings`); `%%` and what wsprintf does not document, given numbers only: `%f`, `%o`, `%p`, `I64`, a `*` width, the `+` and space flags (`others`); the 1024-character limit, as the return, where the terminator lands and the units around unit 1024 (`limit`); and the `va_list` forms (`vprintf`).
   Every buffer is filled with `#` before a call and prints as its first ret+1 units, so the terminator shows.
   Built with `/MD`.

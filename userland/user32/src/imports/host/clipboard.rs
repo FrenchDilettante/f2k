@@ -3,7 +3,9 @@
 //! The global memory is a table of blocks whose handles are reused last-freed first, as kernel32's
 //! handle table reuses its entries. The clipboard keeps the formats put, in order, under the rules
 //! the kernel's has for opening, closing and owning it ([`super::wm`]'s windows are its windows);
-//! it synthesises nothing (the kernel's own tests cover the text formats' synthesis).
+//! it synthesises nothing and renders nothing (the kernel's own tests cover the text formats'
+//! synthesis and the delayed formats: a format put with no data is kept as delayed, and a get of it
+//! answers nothing).
 
 use std::cell::RefCell;
 use std::vec::Vec;
@@ -31,6 +33,8 @@ pub struct HostClipboard {
     pub open_window: u32,
     pub owner: u32,
     pub formats: Vec<(u32, Vec<u8>)>,
+    /// The formats put with no data (delayed), among `formats` with no bytes.
+    pub delayed: Vec<u32>,
     pub converted: Vec<(u32, Vec<u8>)>,
     pub next: u32,
     /// The registered names, the first at 0xC100.
@@ -155,6 +159,7 @@ pub unsafe extern "system" fn NtUserEmptyClipboard() -> u32 {
         }
         let previous = c.owner;
         c.formats.clear();
+        c.delayed.clear();
         c.owner = c.open_window;
         Ok(previous)
     });
@@ -207,7 +212,14 @@ pub unsafe extern "system" fn NtUserSetClipboardData(format: u32, data: u32) -> 
             if !c.open {
                 return Err(super::CLIPBOARD_NOT_OPEN);
             }
-            let block = block.ok_or(STATUS_INVALID_PARAMETER)?;
+            c.delayed.retain(|&f| f != format);
+            let block = match data {
+                0 => {
+                    c.delayed.push(format);
+                    Vec::new()
+                }
+                _ => block.ok_or(STATUS_INVALID_PARAMETER)?,
+            };
             match c.formats.iter_mut().find(|(f, _)| *f == format) {
                 Some(entry) => entry.1 = block,
                 None => c.formats.push((format, block)),
@@ -229,7 +241,7 @@ pub unsafe extern "system" fn NtUserGetClipboardData(
         let (id, len) = c
             .formats
             .iter()
-            .position(|(f, _)| *f == format)
+            .position(|(f, _)| *f == format && !c.delayed.contains(f))
             .map_or((0, 0), |at| (at as u32 + 1, c.formats[at].1.len() as u32));
         // SAFETY: the caller's out-pointers.
         unsafe {

@@ -6,13 +6,6 @@ description = "clipbrd - the clipboard in user32: OpenClipboard, CloseClipboard 
 kind = "sectioned"
 gate = true
 
-# Delayed rendering is not written: SetClipboardData with no data is a stub's failure, so no
-# WM_RENDERFORMAT is sent, and the owner's WM_RENDERALLFORMATS reaches it only after its
-# destruction (the window manager's messages are delivered once its service returns), too late to
-# open the clipboard with it.
-[pending]
-delayed = "delayed rendering (SetClipboardData with no data, WM_RENDERFORMAT, WM_RENDERALLFORMATS) not yet implemented"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only the exports a section observes, not the helpers it calls around them (the window, the

@@ -14,8 +14,10 @@
 //! a program put comes back under the handle it gave as soon as it asks for it again in its next
 //! open, as the clipbrd capture shows.
 //!
-//! Delayed rendering (SetClipboardData with no data, WM_RENDERFORMAT and WM_RENDERALLFORMATS
-//! rendering it later) is not written: such a put is a stub's failure.
+//! Delayed rendering is win32k's: SetClipboardData with no block puts the format with no data
+//! object (NtUserSetClipboardData of 0), and GetClipboardData of it has win32k send the owner
+//! WM_RENDERFORMAT before it answers, the owner's procedure putting the data meanwhile; the
+//! owner's destruction sends it WM_RENDERALLFORMATS.
 
 use rtl::edge::{InStr, OutBuf};
 use rtl::status::NtStatus;
@@ -119,16 +121,15 @@ pub extern "system" fn get_clipboard_owner() -> usize {
 /// SetClipboardData: the bytes of the global memory block `memory` put on the clipboard as
 /// `format`, the block the system's from then on (freed at this process's next close or empty).
 /// The answer is the block, the last error 0 (as the clipbrd capture shows); NULL with
-/// ERROR_CLIPBOARD_NOT_OPEN when the calling thread does not have the clipboard open. A NULL
-/// block (delayed rendering) is not written: a stub's failure.
+/// ERROR_CLIPBOARD_NOT_OPEN when the calling thread does not have the clipboard open (and is not
+/// the owner's, rendering a delayed format). A NULL block puts the format delayed, its owner to
+/// render it when asked (WM_RENDERFORMAT): the answer is that NULL, the last error untouched, as
+/// the clipbrd capture's delayed section shows.
 #[unsafe(export_name = "f2k_export_SetClipboardData")]
 pub extern "system" fn set_clipboard_data(format: u32, memory: usize) -> usize {
     if memory == 0 {
-        let args = [format as u64, 0];
-        // SAFETY: the arguments as SetClipboardData's kinds read them: two numbers.
-        return unsafe {
-            crate::stub::stubbed(&crate::spec::SetClipboardData, "delayed rendering", &args)
-        } as usize;
+        let _ = answered(imports::set_clipboard_data(format, 0));
+        return 0;
     }
     let converted = match GlobalLocked::new(memory) {
         Some(locked) => imports::convert_mem_handle(locked.address(), locked.size()),
@@ -394,6 +395,28 @@ mod tests {
         assert_eq!(close_clipboard(), 1);
         assert!(live_globals().is_empty(), "every block freed at the close");
         assert!(HELD_BLOCKS.with(|held| held.is_empty()));
+    }
+
+    /// SetClipboardData of no block puts the format delayed: NULL, the last error untouched, the
+    /// format available (its data the owner's to render); a closed clipboard refuses it with
+    /// ERROR_CLIPBOARD_NOT_OPEN.
+    ///
+    /// Pins: user32.SetClipboardData, user32.IsClipboardFormatAvailable
+    #[test]
+    fn no_block_puts_the_format_delayed() {
+        arm();
+        assert_eq!(set_clipboard_data(CF_UNICODETEXT, 0), 0);
+        assert_eq!(last_error(), ERROR_CLIPBOARD_NOT_OPEN);
+        assert_eq!(open_clipboard(0), 1);
+        assert_eq!(empty_clipboard(), 1);
+        arm();
+        assert_eq!(set_clipboard_data(CF_UNICODETEXT, 0), 0);
+        assert_eq!(last_error(), 0xF2F2_F2F2, "the last error untouched");
+        assert_eq!(is_clipboard_format_available(CF_UNICODETEXT), 1);
+        assert_eq!(get_clipboard_data(CF_UNICODETEXT), 0, "nothing rendered it");
+        assert_eq!(last_error(), 0xF2F2_F2F2);
+        assert_eq!(close_clipboard(), 1);
+        assert!(live_globals().is_empty());
     }
 
     /// EnumClipboardFormats lists the formats in order and ends with 0, the last error 0.

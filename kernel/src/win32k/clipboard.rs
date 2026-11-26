@@ -24,9 +24,18 @@
 //!
 //! The owner hears of the clipboard's end: an EmptyClipboard sends it WM_DESTROYCLIPBOARD, and
 //! its own destruction WM_RENDERALLFORMATS (the window manager's `disown_clipboard` seam), after
-//! which the clipboard has no owner and keeps its data, as the clipbrd capture shows. Delayed
-//! rendering (a format put with no data, rendered by its owner's WM_RENDERFORMAT) is not
-//! written: user32 refuses a put with no data.
+//! which the clipboard has no owner and keeps its data, as the clipbrd capture shows.
+//!
+//! Delayed rendering, as Windows 2000's: a SetClipboardData with no data (data object 0) puts the
+//! format with none, a delayed one, which counts as put (a close synthesises the text formats from
+//! it, IsClipboardFormatAvailable answers it). A GetClipboardData that needs its data (its own, or
+//! a synthesised format's source) sends the owner WM_RENDERFORMAT with the format first, the
+//! clipboard rendering meanwhile: the owner's thread may then put data without having the
+//! clipboard open (the procedure does not open it, the documentation says), and a put in a
+//! delayed format's place keeps the synthesised formats, which it is their source for. The format
+//! still delayed after the owner answered, or with no owner to ask, has no data: NULL. The
+//! owner's destruction sends WM_RENDERALLFORMATS while it still owns the clipboard, whose
+//! procedure opens it and puts its formats, as the clipbrd capture's delayed section shows.
 //!
 //! The services, user32's calls (F2K's argument lists, see [`crate::win32k`]):
 //!
@@ -55,6 +64,7 @@ use rtl::user::{
     CF_UNICODETEXT,
     WM_DESTROYCLIPBOARD,
     WM_RENDERALLFORMATS,
+    WM_RENDERFORMAT,
 };
 use rtl::winerror::{
     ERROR_ACCESS_DENIED,
@@ -149,7 +159,8 @@ struct Entry {
     format: u32,
     /// The data object's handle: the clipboard's own number for it.
     id: u32,
-    /// The data; none for a synthesised format not rendered yet.
+    /// The data; none for a synthesised format not rendered yet, or a format put with none (a
+    /// delayed one, its owner's to render).
     data: Option<Block>,
     /// Whether the system made it (at a close) rather than a SetClipboardData.
     synthesized: bool,
@@ -191,6 +202,9 @@ pub enum Found {
     /// from the text format `source`'s data object (none for CF_LOCALE). See
     /// [`Clipboard::render`].
     Render { source: Option<u32>, length: usize },
+    /// The format put with no data that the data asked for needs (the format itself, or the text
+    /// a synthesised one renders from): the owner's to render, through WM_RENDERFORMAT.
+    Delayed(u32),
 }
 
 /// The window station's clipboard (see the module notes).
@@ -207,6 +221,9 @@ pub struct Clipboard {
     converted: [Converted; CONVERTED],
     /// The next data object's number (never 0).
     next_id: u32,
+    /// While the owner renders a delayed format (its WM_RENDERFORMAT): the owner's thread, which
+    /// may put data without having the clipboard open, and the format.
+    rendering: Option<(ThreadId, u32)>,
 }
 
 impl Clipboard {
@@ -234,6 +251,7 @@ impl Clipboard {
                 converted.add(index).write(Converted::EMPTY);
             }
             addr_of_mut!((*clipboard).next_id).write(1);
+            addr_of_mut!((*clipboard).rendering).write(None);
         }
     }
 
@@ -326,9 +344,12 @@ impl Clipboard {
     }
 
     /// SetClipboardData: the data object `data` (as [`Clipboard::park`] numbered it for the
-    /// process `owner`) put under `format`, in the place of the format's data if it had some,
-    /// after the others otherwise. The object is consumed whatever the answer. A text format
-    /// put takes the synthesised ones with it, which the next close makes again from it.
+    /// process `owner`) put under `format`, or the format put delayed for `data` 0, in the place
+    /// of the format's data if it had some, after the others otherwise. The object is consumed
+    /// whatever the answer. The caller has the clipboard open, or is the owner's thread rendering
+    /// a delayed format ([`Clipboard::begin_render`]). A text format put takes the synthesised
+    /// ones with it, which the next close makes again from it, but for data in a delayed
+    /// format's place: its rendering, which they render from.
     pub fn set(
         &mut self,
         caller: ThreadId,
@@ -337,19 +358,29 @@ impl Clipboard {
         data: u32,
     ) -> Result<(), Refusal> {
         let block = self.take_converted(data, owner);
-        self.check_open(caller)?;
-        let block = block.ok_or(Refusal::InvalidParameter)?;
+        let rendering = self.rendering.is_some_and(|(thread, _)| thread == caller);
+        if !rendering {
+            self.check_open(caller)?;
+        }
+        let block = match data {
+            0 => None,
+            _ => Some(block.ok_or(Refusal::InvalidParameter)?),
+        };
         if format == 0 {
             return Err(Refusal::InvalidParameter);
         }
-        if TEXT_FORMATS.contains(&format) {
+        let renders = block.is_some()
+            && self
+                .position(format)
+                .is_some_and(|index| self.entries[index].delayed());
+        if TEXT_FORMATS.contains(&format) && !renders {
             self.drop_synthesized();
         }
         let id = self.new_id();
         let entry = Entry {
             format,
             id,
-            data: Some(block),
+            data: block,
             synthesized: false,
         };
         match self.position(format) {
@@ -362,7 +393,9 @@ impl Clipboard {
                 self.count += 1;
             }
         }
-        self.changed = true;
+        if !rendering {
+            self.changed = true;
+        }
         Ok(())
     }
 
@@ -379,6 +412,9 @@ impl Clipboard {
                 length: bytes(data).len(),
             });
         }
+        if entry.delayed() {
+            return Ok(Found::Delayed(format));
+        }
         if format == CF_LOCALE {
             return Ok(Found::Render {
                 source: None,
@@ -388,6 +424,9 @@ impl Clipboard {
         let Some(source) = self.text_source() else {
             return Ok(Found::Nothing);
         };
+        if source.delayed() {
+            return Ok(Found::Delayed(source.format));
+        }
         let text = text_units(source.format, source.bytes());
         let unit = if format == CF_UNICODETEXT { 2 } else { 1 };
         Ok(Found::Render {
@@ -428,6 +467,22 @@ impl Clipboard {
         let entry = &mut self.entries[index];
         entry.data = Some(block);
         Some((entry.id, length))
+    }
+
+    /// The owner's thread `thread` rendering the delayed `format` (its WM_RENDERFORMAT): see
+    /// [`Clipboard::set`].
+    pub fn begin_render(&mut self, thread: ThreadId, format: u32) {
+        self.rendering = Some((thread, format));
+    }
+
+    /// The rendering over.
+    pub fn end_render(&mut self) {
+        self.rendering = None;
+    }
+
+    /// Whether a delayed format is being rendered (a GetClipboardData then asks for no other).
+    pub fn is_rendering(&self) -> bool {
+        self.rendering.is_some()
     }
 
     /// IsClipboardFormatAvailable: whether the clipboard has `format`, put or synthesised.
@@ -563,12 +618,12 @@ impl Clipboard {
     }
 
     /// The text put that the synthesised text formats render from: CF_UNICODETEXT, else CF_TEXT,
-    /// else CF_OEMTEXT.
+    /// else CF_OEMTEXT (delayed or not).
     fn text_source(&self) -> Option<&Entry> {
         [CF_UNICODETEXT, CF_TEXT, CF_OEMTEXT].iter().find_map(|&f| {
             self.entries[..self.count]
                 .iter()
-                .find(|e| e.format == f && !e.synthesized && e.data.is_some())
+                .find(|e| e.format == f && !e.synthesized)
         })
     }
 
@@ -582,6 +637,11 @@ impl Clipboard {
 impl Entry {
     fn bytes(&self) -> &[u8] {
         self.data.as_ref().map_or(&[], bytes)
+    }
+
+    /// Whether the format was put with no data, its owner's to render.
+    fn delayed(&self) -> bool {
+        self.data.is_none() && !self.synthesized
     }
 }
 
@@ -632,11 +692,16 @@ pub fn disown(s: &mut dyn Session, owner: WindowId) {
 /// `message` sent to `target` as the window manager sends, through the session: a callback to a
 /// window of the deciding thread's, queued for another thread's (`super::queue::QueueSession`).
 pub fn send(s: &mut dyn Session, target: WindowId, message: u32) {
+    send_with(s, target, message, 0);
+}
+
+/// [`send`] with `wparam` (WM_RENDERFORMAT's format).
+pub fn send_with(s: &mut dyn Session, target: WindowId, message: u32, wparam: u32) {
     s.send(
         target,
         &mut Message {
             message,
-            wparam: 0,
+            wparam,
             lparam: 0,
             payload: Payload::None,
         },
@@ -650,7 +715,8 @@ pub fn send(s: &mut dyn Session, target: WindowId, message: u32) {
 mod services {
     use super::*;
     use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
-    use crate::win32k::window::{lock, Failure, WindowManager};
+    use crate::win32k::queue::QueueSession;
+    use crate::win32k::window::{lock, Failure, Locked, WindowManager};
     use crate::win32k::winsta::gui_thread;
 
     /// NtUserOpenClipboard(Window): the clipboard open for the calling thread, with the window (0
@@ -731,8 +797,9 @@ mod services {
     }
 
     /// NtUserGetClipboardData(Format, Data, Length): the format's data object and its length into
-    /// `data` and `length` (0 and 0 for a format the clipboard has none of), a synthesised format
-    /// rendered first, its block taken from the pool outside the lock.
+    /// `data` and `length` (0 and 0 for a format the clipboard has none of), a delayed format its
+    /// owner renders asked for first ([`look_up`]), a synthesised format rendered, its block taken
+    /// from the pool outside the lock.
     pub fn get_clipboard_data(
         call: &mut NtCall,
         format: u32,
@@ -740,12 +807,11 @@ mod services {
         length: UserPtr<u32>,
     ) -> NtResult {
         let caller = gui_thread(call)?.thread;
-        let found = lock(call.passive())
-            .clipboard
-            .get(caller, format)
-            .map_err(Refusal::status)?;
+        let found =
+            crate::win32k::queue::with_session(call.passive(), |s| look_up(s, caller, format))
+                .map_err(Refusal::status)?;
         let (id, bytes) = match found {
-            Found::Nothing => (0, 0),
+            Found::Nothing | Found::Delayed(_) => (0, 0),
             Found::Data { id, length } => (id, length),
             Found::Render { source, length } => {
                 let block = allocate(length).ok_or(STATUS_NO_MEMORY)?;
@@ -758,6 +824,43 @@ mod services {
         data.write(id)?;
         length.write(bytes as u32)?;
         Ok(STATUS_SUCCESS)
+    }
+
+    /// GetClipboardData's look-up of `format` for `caller`: a delayed format the data needs (its
+    /// own, or the text a synthesised one renders from) asked of the owner first
+    /// (WM_RENDERFORMAT, the clipboard rendering meanwhile: see [`Clipboard::begin_render`]), each
+    /// once, then looked up again; what is still delayed then answers [`Found::Delayed`], which
+    /// has no data. Windows 2000's xxxGetClipboardData sends WM_RENDERFORMAT so, and answers NULL
+    /// when the owner rendered nothing.
+    fn look_up(
+        s: &mut QueueSession<Locked<'_>>,
+        caller: ThreadId,
+        format: u32,
+    ) -> Result<Found, Refusal> {
+        let mut asked = [0u32; 2];
+        let mut count = 0;
+        loop {
+            let found = s.manager().clipboard.get(caller, format)?;
+            let Found::Delayed(delayed) = found else {
+                return Ok(found);
+            };
+            if count == asked.len() || asked[..count].contains(&delayed) {
+                return Ok(found);
+            }
+            asked[count] = delayed;
+            count += 1;
+            let m = s.manager();
+            if m.clipboard.is_rendering() {
+                return Ok(found);
+            }
+            let Some(owner) = Clipboard::owner(&m.windows) else {
+                return Ok(found);
+            };
+            let thread = m.windows.window_thread(owner);
+            m.clipboard.begin_render(thread, delayed);
+            send_with(s, owner, WM_RENDERFORMAT, delayed);
+            s.manager().clipboard.end_render();
+        }
     }
 
     /// NtUserCreateLocalMemHandle(Data, Buffer, Length, Needed): the data object's length into
@@ -1035,6 +1138,7 @@ mod tests {
                     .render(format, source, allocate(length).unwrap())?
                     .0
             }
+            Found::Delayed(_) => return None,
         };
         let mut out = std::vec![0; m.clipboard.length_of(id)?];
         m.clipboard.copy_out(id, 0, &mut out)?;
@@ -1245,6 +1349,74 @@ mod tests {
             m.clipboard.set(t, rig::OWNER, CF_TEXT, id),
             Err(Refusal::InvalidParameter)
         );
+    }
+
+    /// A format put with no data is delayed (the delayed section): available, the text formats
+    /// synthesised from it at the close, and a get of it or of a format synthesised from it names
+    /// it as the owner's to render. While the clipboard is still open after the put, nothing is
+    /// synthesised yet: CF_TEXT is not there.
+    #[test]
+    fn a_format_put_with_no_data_is_delayed() {
+        let (m, t, first, _) = setup();
+        m.clipboard.open(t, Some(first)).unwrap();
+        m.clipboard.empty(&mut m.windows, t).unwrap();
+        assert_eq!(m.clipboard.set(t, rig::OWNER, CF_UNICODETEXT, 0), Ok(()));
+        assert!(m.clipboard.available(CF_UNICODETEXT));
+        assert_eq!(m.clipboard.get(t, CF_TEXT), Ok(Found::Nothing));
+        assert_eq!(
+            m.clipboard.get(t, CF_UNICODETEXT),
+            Ok(Found::Delayed(CF_UNICODETEXT))
+        );
+        m.clipboard.close(t).unwrap();
+        for format in [CF_TEXT, CF_OEMTEXT, CF_LOCALE] {
+            assert!(m.clipboard.available(format));
+        }
+        m.clipboard.open(t, Some(first)).unwrap();
+        assert_eq!(
+            m.clipboard.get(t, CF_TEXT),
+            Ok(Found::Delayed(CF_UNICODETEXT)),
+            "rendered from the delayed text"
+        );
+        assert!(matches!(
+            m.clipboard.get(t, CF_LOCALE),
+            Ok(Found::Render { source: None, .. })
+        ));
+        assert_eq!(get(m, t, CF_UNICODETEXT), None);
+    }
+
+    /// While the owner renders (its WM_RENDERFORMAT), its thread puts data without having the
+    /// clipboard open, in the delayed format's place, the synthesised formats kept and rendered
+    /// from it; once the rendering is over, its thread is refused again.
+    #[test]
+    fn the_owner_renders_without_opening() {
+        let (m, t, first, _) = setup();
+        let owner = rig::thread(m, 2, 0x14);
+        m.clipboard.open(t, Some(first)).unwrap();
+        m.clipboard.empty(&mut m.windows, t).unwrap();
+        m.clipboard.set(t, rig::OWNER, CF_UNICODETEXT, 0).unwrap();
+        m.clipboard.close(t).unwrap();
+        m.clipboard.open(t, Some(first)).unwrap();
+        let before = formats(m, t);
+        let text = utf16_bytes_z("rendered");
+        assert_eq!(
+            put(m, owner, CF_UNICODETEXT, &text),
+            Err(Refusal::NotOpen),
+            "no rendering under way"
+        );
+        assert!(!m.clipboard.is_rendering());
+        m.clipboard.begin_render(owner, CF_UNICODETEXT);
+        assert!(m.clipboard.is_rendering());
+        assert_eq!(put(m, owner, CF_UNICODETEXT, &text), Ok(()));
+        m.clipboard.end_render();
+        assert_eq!(
+            formats(m, t),
+            before,
+            "the synthesised formats kept, in order"
+        );
+        assert_eq!(get(m, t, CF_UNICODETEXT), Some(text));
+        assert_eq!(get(m, t, CF_TEXT), Some(b"rendered\0".to_vec()));
+        assert_eq!(put(m, owner, CF_UNICODETEXT, b"x\0"), Err(Refusal::NotOpen));
+        m.clipboard.close(t).unwrap();
     }
 
     /// A process's end closes the clipboard its thread had open and frees its waiting objects.
