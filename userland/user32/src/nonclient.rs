@@ -37,6 +37,7 @@ use rtl::cstr::ascii_into;
 use rtl::edge::Out;
 use rtl::gdi::{LogFontW, Rect, LF_FACESIZE, SYMBOL_CHARSET, TRANSPARENT};
 use rtl::nonclient::{Border, Button, Caption, Frame};
+use rtl::user::{WS_CHILD, WS_MAXIMIZE, WS_MINIMIZE};
 
 use crate::draw::{
     self,
@@ -94,7 +95,7 @@ impl Framed {
     /// The window `handle` names; none for a handle naming no window (the last error untouched).
     pub fn of(handle: usize) -> Option<Framed> {
         let info = window::window_info(handle).ok()?;
-        let menu = if info.style & rtl::nonclient::WS_CHILD != 0 {
+        let menu = if info.style & WS_CHILD != 0 {
             0
         } else {
             menu_quiet(handle)
@@ -392,9 +393,6 @@ fn gradient(dc: usize, rect: Rect, from: u32, to: u32) {
     }
 }
 
-/// WS_MAXIMIZE, the window style a maximized window has (WS_MINIMIZE is rtl's).
-const WS_MAXIMIZE: u32 = 0x0100_0000;
-
 /// A caption button in `rect`, as DrawFrameControl's DFC_CAPTION draws it: a disabled one
 /// DFCS_INACTIVE, the maximize button of a window of `style` WS_MAXIMIZE (the minimize button of a
 /// WS_MINIMIZE one) the restore glyph.
@@ -402,7 +400,7 @@ fn draw_caption_button(dc: usize, button: Button, rect: Rect, enabled: bool, sty
     let restores = |bit: u32| style & bit != 0;
     let part = match button {
         Button::Close => DFCS_CAPTIONCLOSE,
-        Button::Minimize if restores(rtl::nonclient::WS_MINIMIZE) => DFCS_CAPTIONRESTORE,
+        Button::Minimize if restores(WS_MINIMIZE) => DFCS_CAPTIONRESTORE,
         Button::Minimize => DFCS_CAPTIONMIN,
         Button::Maximize if restores(WS_MAXIMIZE) => DFCS_CAPTIONRESTORE,
         Button::Maximize => DFCS_CAPTIONMAX,

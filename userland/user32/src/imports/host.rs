@@ -827,14 +827,14 @@ pub unsafe extern "system" fn NtUserCreateWindowEx(
                 right: x + cx,
                 bottom: y + cy,
             },
-            style: style & !WS_VISIBLE_BIT,
+            style: style & !WS_VISIBLE,
             ex_style: ex_style & !0x8000_0000,
             parent: if parent == 0 {
                 DESKTOP_WINDOW
             } else {
                 parent as u32
             },
-            visible: style & WS_VISIBLE_BIT != 0,
+            visible: style & WS_VISIBLE != 0,
             alive: true,
             update: None,
             ansi,
@@ -898,9 +898,6 @@ fn call_back_create(hwnd: u32, proc: u32, message: u32, create: CreateStructW, n
         wm(|wm| wm.answers.push((message, served.answer)));
     }
 }
-
-/// WS_VISIBLE.
-const WS_VISIBLE_BIT: u32 = 0x1000_0000;
 
 pub unsafe extern "system" fn NtUserDestroyWindow(window: usize) -> u32 {
     let status = wm(|wm| {
@@ -1012,7 +1009,7 @@ pub unsafe extern "system" fn NtUserQueryWindow(
                 size: 60,
                 window: w.rect,
                 client: w.rect,
-                style: w.style | if w.visible { WS_VISIBLE_BIT } else { 0 },
+                style: w.style | if w.visible { WS_VISIBLE } else { 0 },
                 ex_style: w.ex_style,
                 atom_window_type: w.atom,
                 creator_version: 0x0400,
@@ -1694,9 +1691,6 @@ pub unsafe extern "system" fn NtUserCallHwndLock(window: usize, routine: u32) ->
     status
 }
 
-/// WS_DISABLED.
-const WS_DISABLED_BIT: u32 = 0x0800_0000;
-
 /// The window a focus or activation service names: 0 for none, a live window's handle, or
 /// STATUS_INVALID_HANDLE.
 fn named(wm: &mut Wm, window: usize) -> Result<u32, u32> {
@@ -1712,10 +1706,7 @@ pub unsafe extern "system" fn NtUserSetFocus(window: usize, previous: *mut u32) 
             Ok(handle) => handle,
             Err(status) => return status,
         };
-        let disabled = handle != 0
-            && wm
-                .window(window)
-                .is_ok_and(|w| w.style & WS_DISABLED_BIT != 0);
+        let disabled = handle != 0 && wm.window(window).is_ok_and(|w| w.style & WS_DISABLED != 0);
         let answer = if disabled {
             0
         } else {
@@ -1794,7 +1785,7 @@ pub unsafe extern "system" fn NtUserCallHwndParamLock(
             return STATUS_INVALID_PARAMETER;
         }
         let (handle, was) = match wm.window(window) {
-            Ok(w) => (w.handle, w.style & WS_DISABLED_BIT != 0),
+            Ok(w) => (w.handle, w.style & WS_DISABLED != 0),
             Err(status) => return status,
         };
         if param == 0 {
@@ -1805,7 +1796,7 @@ pub unsafe extern "system" fn NtUserCallHwndParamLock(
         }
         if was == (param != 0) {
             if let Ok(w) = wm.window(window) {
-                w.style ^= WS_DISABLED_BIT;
+                w.style ^= WS_DISABLED;
             }
             wm.send(handle, WM_ENABLE, param, 0);
         }
@@ -2993,7 +2984,6 @@ pub unsafe extern "system" fn NtUserTranslateMessage(
 /// The window's own bars: those a service set, or a window's bars as made when its style asks for
 /// a bar.
 fn host_bars(w: &HostWindow) -> Option<rtl::scroll::ScrollBars> {
-    use rtl::nonclient::{WS_HSCROLL, WS_VSCROLL};
     w.scroll.or_else(|| {
         (w.style & (WS_HSCROLL | WS_VSCROLL) != 0).then_some(rtl::scroll::ScrollBars::WINDOW)
     })
@@ -3002,9 +2992,9 @@ fn host_bars(w: &HostWindow) -> Option<rtl::scroll::ScrollBars> {
 /// The style bit of a window's bar.
 fn host_bar_bit(bar: i32) -> u32 {
     if bar == rtl::scroll::SB_HORZ {
-        rtl::nonclient::WS_HSCROLL
+        WS_HSCROLL
     } else {
-        rtl::nonclient::WS_VSCROLL
+        WS_VSCROLL
     }
 }
 
@@ -3044,7 +3034,6 @@ pub unsafe extern "system" fn NtUserSetScrollInfo(
 }
 
 pub unsafe extern "system" fn NtUserShowScrollBar(window: usize, bar: i32, show: u32) -> u32 {
-    use rtl::nonclient::{WS_HSCROLL, WS_VSCROLL};
     use rtl::scroll::*;
     wm(|wm| {
         let w = match wm.window(window) {

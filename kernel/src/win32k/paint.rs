@@ -39,20 +39,10 @@
 use rtl::gdi::Rect;
 #[cfg(doc)]
 use rtl::user::HWND_LOCK_UPDATE_WINDOW;
-use rtl::user::{QS_PAINT, UPDATE_ERASE, UPDATE_NOT_EMPTY, WM_PAINT};
+use rtl::user::{QS_PAINT, UPDATE_ERASE, UPDATE_NOT_EMPTY, WM_PAINT, WS_CLIPCHILDREN, WS_VISIBLE};
 
 use super::queue::Filter;
-use super::window::{
-    Hwnd,
-    Message,
-    Payload,
-    Session,
-    WindowId,
-    Windows,
-    WINDOWS,
-    WS_CLIPCHILDREN,
-    WS_VISIBLE,
-};
+use super::window::{Hwnd, Message, Payload, Session, WindowId, Windows, WINDOWS};
 use crate::sched::thread::ThreadId;
 
 /// One window's update region.
@@ -582,11 +572,13 @@ mod services {
 
 #[cfg(test)]
 mod tests {
+    use rtl::user::{WS_CHILD, WS_CLIPCHILDREN, WS_POPUP};
+
     use super::*;
     use crate::win32k::class;
     use crate::win32k::queue::rig::*;
     use crate::win32k::queue::{QueueSession, Taken};
-    use crate::win32k::window::{WindowManager, WS_CHILD, WS_POPUP};
+    use crate::win32k::window::WindowManager;
 
     /// A shown 320x200 popup at (`x`, `y`): its id and handle, its creation messages delivered.
     fn shown(
@@ -779,17 +771,7 @@ mod tests {
         validate(&mut m.windows, parent, None);
         assert_eq!(update_rect(&mut m.windows, child, false), (Rect::EMPTY, 0));
 
-        let clipping = window_at(
-            m,
-            atom,
-            t,
-            WS_POPUP | crate::win32k::window::WS_CLIPCHILDREN,
-            0,
-            0,
-            0,
-            100,
-            100,
-        );
+        let clipping = window_at(m, atom, t, WS_POPUP | WS_CLIPCHILDREN, 0, 0, 0, 100, 100);
         let inner_h = window_at(m, atom, t, WS_CHILD, clipping, 0, 0, 10, 10);
         deliver(m, t);
         let clipping = m.windows.window_from_handle(clipping).unwrap();

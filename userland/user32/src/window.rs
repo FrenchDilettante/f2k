@@ -39,6 +39,12 @@ use rtl::user::{
     WM_GETTEXTLENGTH,
     WM_NCHITTEST,
     WM_SETTEXT,
+    WS_CHILD,
+    WS_DISABLED,
+    WS_MAXIMIZE,
+    WS_MINIMIZE,
+    WS_POPUP,
+    WS_VISIBLE,
 };
 use rtl::window::*;
 
@@ -59,9 +65,6 @@ use crate::{
 /// The private extended-style bit a narrow caller's creation carries (the window remembers it was
 /// made through the ANSI entry point; the kernel takes it out of the stored style).
 pub const ANSI_CREATOR: u32 = 0x8000_0000;
-
-/// WS_CHILD: a child window, which needs a parent.
-const WS_CHILD: u32 = 0x4000_0000;
 
 /// The Windows version a window's creator expects: 4.0, the subsystem version MSVC 6 links its
 /// programs for.
@@ -573,8 +576,7 @@ fn window_under(parent: usize, x: i32, y: i32) -> Option<usize> {
     let mut child = links(parent).ok()?.child as usize;
     while child != 0 {
         if let Ok(info) = window_info(child) {
-            let shown = info.style & crate::dialog::WS_VISIBLE != 0
-                && info.style & crate::dialog::WS_DISABLED == 0;
+            let shown = info.style & WS_VISIBLE != 0 && info.style & WS_DISABLED == 0;
             if shown && info.window.contains(x, y) && !lets_through(child, x, y) {
                 if info.client.contains(x, y) {
                     if let Some(inner) = window_under(child, x, y) {
@@ -717,9 +719,6 @@ pub unsafe extern "system" fn find_window_a(class: *const u8, title: *const u8) 
 }
 
 // --- The window tree ----------------------------------------------------------------------------
-
-/// WS_POPUP: a pop-up window, whose GetParent is its owner.
-const WS_POPUP: u32 = 0x8000_0000;
 
 /// GetParent: a child window's parent, a pop-up window's owner, NULL for any other window (an
 /// overlapped window, owned or not: the wintree capture's parent block) with the last error
@@ -877,16 +876,14 @@ pub extern "system" fn show_window_async(window: usize, command: i32) -> u32 {
 /// window.
 #[unsafe(export_name = "f2k_export_IsIconic")]
 pub extern "system" fn is_iconic(window: usize) -> u32 {
-    answered(window_info(window)).is_some_and(|info| info.style & rtl::nonclient::WS_MINIMIZE != 0)
-        as u32
+    answered(window_info(window)).is_some_and(|info| info.style & WS_MINIMIZE != 0) as u32
 }
 
 /// IsZoomed: whether the window is maximized (WS_MAXIMIZE); FALSE with 1400 for a handle naming no
 /// window.
 #[unsafe(export_name = "f2k_export_IsZoomed")]
 pub extern "system" fn is_zoomed(window: usize) -> u32 {
-    answered(window_info(window)).is_some_and(|info| info.style & rtl::nonclient::WS_MAXIMIZE != 0)
-        as u32
+    answered(window_info(window)).is_some_and(|info| info.style & WS_MAXIMIZE != 0) as u32
 }
 
 /// GetWindowPlacement: the window's show state and places into the caller's WINDOWPLACEMENT, its
@@ -1503,7 +1500,7 @@ pub extern "system" fn set_window_text_a(window: usize, text: usize) -> u32 {
 #[cfg(test)]
 mod tests {
     use rtl::testing::wide;
-    use rtl::user::{WM_CREATE, WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WM_USER};
+    use rtl::user::{WM_CREATE, WM_DESTROY, WM_NCCREATE, WM_NCDESTROY, WM_USER, WS_MINIMIZE};
 
     use super::*;
     use crate::class::{register_class_a, WndClass};
@@ -2203,7 +2200,7 @@ mod tests {
         register();
         let window = make();
         assert_eq!((is_iconic(window), is_zoomed(window)), (0, 0));
-        wm(|wm| wm.windows.last_mut().unwrap().style |= rtl::nonclient::WS_MINIMIZE);
+        wm(|wm| wm.windows.last_mut().unwrap().style |= WS_MINIMIZE);
         assert_eq!((is_iconic(window), is_zoomed(window)), (1, 0));
         arm();
         assert_eq!(is_zoomed(0x7FFF_FFFC), 0);

@@ -2,7 +2,7 @@
 //! (each case's expected records are the capture's), the keyboard's bytes, the key states, and the
 //! window a key message is bound to as it is read.
 
-use rtl::user::{INPUT_KEYBOARD, WM_KEYFIRST, WM_KEYLAST, WM_USER};
+use rtl::user::{INPUT_KEYBOARD, WM_KEYFIRST, WM_KEYLAST, WM_USER, WS_CHILD, WS_VISIBLE};
 
 use super::*;
 use crate::win32k::class;
@@ -18,7 +18,7 @@ use crate::win32k::queue::rig::{
     window_at,
 };
 use crate::win32k::queue::{end_sent, take, Filter, QueueSession, Taken};
-use crate::win32k::window::{Hwnd, WindowManager, WS_CHILD, WS_VISIBLE};
+use crate::win32k::window::{Hwnd, WindowManager};
 
 const DOWN: u32 = 0;
 const UP: u32 = KEYEVENTF_KEYUP;

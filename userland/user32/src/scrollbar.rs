@@ -45,11 +45,18 @@ use rtl::gdi::Rect;
 use rtl::nonclient::Frame;
 use rtl::pod::Pod;
 use rtl::scroll::*;
-use rtl::user::{WM_ENABLE, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_PAINT};
+use rtl::user::{
+    WM_ENABLE,
+    WM_ERASEBKGND,
+    WM_KEYDOWN,
+    WM_LBUTTONDBLCLK,
+    WM_LBUTTONDOWN,
+    WM_PAINT,
+    WS_DISABLED,
+};
 use rtl::window::{QUERY_WINDOW_EXTRA, QUERY_WINDOW_SCROLL_BARS};
 use rtl::winerror::ERROR_INVALID_SCROLLBAR_RANGE;
 
-use crate::dialog::WS_DISABLED;
 use crate::draw::{self, BF_MIDDLE, BF_RECT, EDGE_RAISED};
 use crate::{answered, failed, imports, message, paint, spec, window, ERROR_INVALID_PARAMETER};
 
@@ -818,14 +825,12 @@ pub extern "system" fn scroll_bar_proc_a(
 #[cfg(test)]
 mod tests {
     use rtl::testing::wide;
+    use rtl::user::{WS_HSCROLL, WS_VSCROLL};
     use rtl::winerror::ERROR_NO_SCROLLBARS;
 
     use super::*;
     use crate::class::SYSTEM_CLASSES_WANTED;
     use crate::imports::host::LAST_ERROR;
-
-    const WS_VSCROLL: u32 = rtl::nonclient::WS_VSCROLL;
-    const WS_HSCROLL: u32 = rtl::nonclient::WS_HSCROLL;
 
     fn last_error() -> u32 {
         LAST_ERROR.with(|error| error.get())

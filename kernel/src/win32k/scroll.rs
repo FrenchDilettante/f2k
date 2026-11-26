@@ -55,7 +55,6 @@
 //!   into `Result`.
 
 use rtl::gdi::Rect;
-use rtl::nonclient::{WS_HSCROLL, WS_VSCROLL};
 use rtl::scroll::{
     enable_arrows,
     scroll_area,
@@ -74,6 +73,7 @@ use rtl::scroll::{
     SW_INVALIDATE,
     SW_SCROLLCHILDREN,
 };
+use rtl::user::{WS_HSCROLL, WS_VSCROLL};
 use rtl::winerror::{
     ERROR_INVALID_PARAMETER,
     ERROR_INVALID_WINDOW_HANDLE,
@@ -687,11 +687,12 @@ mod tests {
         SIF_POS,
         SIMPLEREGION,
     };
+    use rtl::user::{WS_CHILD, WS_POPUP, WS_VISIBLE};
 
     use super::*;
     use crate::win32k::queue::rig::*;
     use crate::win32k::queue::QueueSession;
-    use crate::win32k::window::{WindowManager, WS_CHILD, WS_POPUP, WS_VISIBLE};
+    use crate::win32k::window::WindowManager;
 
     fn info(mask: u32, min: i32, max: i32, page: u32, pos: i32) -> ScrollInfo {
         ScrollInfo {

@@ -57,7 +57,7 @@ use rtl::menu::{
     MF_GRAYED,
     MF_POPUP,
 };
-use rtl::nonclient::{MENU, WS_CHILD};
+use rtl::nonclient::MENU;
 use rtl::user::{
     Msg,
     WM_CHAR,
@@ -78,6 +78,10 @@ use rtl::user::{
     WM_SYSKEYDOWN,
     WM_SYSKEYUP,
     WM_UNINITMENUPOPUP,
+    WS_CHILD,
+    WS_EX_DLGMODALFRAME,
+    WS_EX_TOOLWINDOW,
+    WS_EX_WINDOWEDGE,
 };
 
 use crate::draw::{
@@ -155,10 +159,7 @@ pub const SEPARATOR: i32 = 9;
 /// The popup windows' styles: a popup with a dialog frame (Windows 2000's menus have its raised
 /// edge), a tool window, over every other window.
 const POPUP_STYLE: u32 = 0x8000_0000;
-const POPUP_EX_STYLE: u32 = rtl::nonclient::WS_EX_DLGMODALFRAME
-    | rtl::nonclient::WS_EX_WINDOWEDGE
-    | rtl::nonclient::WS_EX_TOOLWINDOW
-    | 0x0000_0008;
+const POPUP_EX_STYLE: u32 = WS_EX_DLGMODALFRAME | WS_EX_WINDOWEDGE | WS_EX_TOOLWINDOW | 0x0000_0008;
 
 /// SetWindowPos's flags the popups are shown with, and HWND_TOPMOST.
 const SWP_NOSIZE: u32 = 0x0001;

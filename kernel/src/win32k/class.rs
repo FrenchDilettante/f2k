@@ -45,6 +45,20 @@
 #![allow(dead_code)]
 
 use rtl::pod::Pod;
+use rtl::user::{
+    CS_BYTEALIGNCLIENT,
+    CS_BYTEALIGNWINDOW,
+    CS_CLASSDC,
+    CS_DBLCLKS,
+    CS_GLOBALCLASS,
+    CS_HREDRAW,
+    CS_IME,
+    CS_NOCLOSE,
+    CS_OWNDC,
+    CS_PARENTDC,
+    CS_SAVEBITS,
+    CS_VREDRAW,
+};
 use rtl::winerror::{
     ERROR_ACCESS_DENIED,
     ERROR_CANNOT_FIND_WND_CLASS,
@@ -94,20 +108,6 @@ pub struct WndClassExW {
 unsafe impl Pod for WndClassExW {}
 
 const _: () = assert!(core::mem::size_of::<WndClassExW>() == 48);
-
-/// The class styles (winuser.h's CS_*).
-pub const CS_VREDRAW: u32 = 0x0001;
-pub const CS_HREDRAW: u32 = 0x0002;
-pub const CS_DBLCLKS: u32 = 0x0008;
-pub const CS_OWNDC: u32 = 0x0020;
-pub const CS_CLASSDC: u32 = 0x0040;
-pub const CS_PARENTDC: u32 = 0x0080;
-pub const CS_NOCLOSE: u32 = 0x0200;
-pub const CS_SAVEBITS: u32 = 0x0800;
-pub const CS_BYTEALIGNCLIENT: u32 = 0x1000;
-pub const CS_BYTEALIGNWINDOW: u32 = 0x2000;
-pub const CS_GLOBALCLASS: u32 = 0x4000;
-pub const CS_IME: u32 = 0x0001_0000;
 
 /// The union of the public CS_* bits: the style a class answers with (the byte-align bits are
 /// stored on registration but no longer honored).

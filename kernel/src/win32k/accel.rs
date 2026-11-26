@@ -56,7 +56,7 @@ use core::ptr::NonNull;
 
 use rtl::accel::{Accel, Modifiers, ACCEL_BITS};
 use rtl::menu::{MF_DISABLED, MF_GRAYED};
-use rtl::user::{WM_COMMAND, WM_INITMENU, WM_INITMENUPOPUP};
+use rtl::user::{WM_COMMAND, WM_INITMENU, WM_INITMENUPOPUP, WS_DISABLED};
 use rtl::winerror::{
     ERROR_INVALID_ACCEL_HANDLE,
     ERROR_INVALID_PARAMETER,
@@ -77,9 +77,6 @@ pub const INLINE: usize = 32;
 
 /// An ACCEL's bytes.
 const ACCEL_BYTES: usize = core::mem::size_of::<Accel>();
-
-/// WS_DISABLED: the window takes no input.
-const WS_DISABLED: u32 = 0x0800_0000;
 
 /// Why an accelerator operation failed: the Win32 error code (winerror.h) the decision reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

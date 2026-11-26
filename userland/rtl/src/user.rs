@@ -205,6 +205,58 @@ pub fn sync_only(message: u32) -> bool {
     )
 }
 
+// --- The window and class styles (winuser.h's WS_*, WS_EX_*, CS_*) ------------------------------
+
+pub const WS_OVERLAPPED: u32 = 0x0000_0000;
+pub const WS_POPUP: u32 = 0x8000_0000;
+pub const WS_CHILD: u32 = 0x4000_0000;
+pub const WS_MINIMIZE: u32 = 0x2000_0000;
+pub const WS_VISIBLE: u32 = 0x1000_0000;
+pub const WS_DISABLED: u32 = 0x0800_0000;
+pub const WS_CLIPSIBLINGS: u32 = 0x0400_0000;
+pub const WS_CLIPCHILDREN: u32 = 0x0200_0000;
+pub const WS_MAXIMIZE: u32 = 0x0100_0000;
+/// WS_BORDER | WS_DLGFRAME.
+pub const WS_CAPTION: u32 = 0x00C0_0000;
+pub const WS_BORDER: u32 = 0x0080_0000;
+pub const WS_DLGFRAME: u32 = 0x0040_0000;
+pub const WS_VSCROLL: u32 = 0x0020_0000;
+pub const WS_HSCROLL: u32 = 0x0010_0000;
+pub const WS_SYSMENU: u32 = 0x0008_0000;
+pub const WS_THICKFRAME: u32 = 0x0004_0000;
+pub const WS_GROUP: u32 = 0x0002_0000;
+pub const WS_TABSTOP: u32 = 0x0001_0000;
+pub const WS_MINIMIZEBOX: u32 = 0x0002_0000;
+pub const WS_MAXIMIZEBOX: u32 = 0x0001_0000;
+pub const WS_OVERLAPPEDWINDOW: u32 =
+    WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+
+pub const WS_EX_DLGMODALFRAME: u32 = 0x0000_0001;
+pub const WS_EX_NOPARENTNOTIFY: u32 = 0x0000_0004;
+pub const WS_EX_TOPMOST: u32 = 0x0000_0008;
+pub const WS_EX_TRANSPARENT: u32 = 0x0000_0020;
+pub const WS_EX_TOOLWINDOW: u32 = 0x0000_0080;
+pub const WS_EX_WINDOWEDGE: u32 = 0x0000_0100;
+pub const WS_EX_CLIENTEDGE: u32 = 0x0000_0200;
+pub const WS_EX_CONTEXTHELP: u32 = 0x0000_0400;
+pub const WS_EX_CONTROLPARENT: u32 = 0x0001_0000;
+pub const WS_EX_STATICEDGE: u32 = 0x0002_0000;
+pub const WS_EX_APPWINDOW: u32 = 0x0004_0000;
+pub const WS_EX_LAYERED: u32 = 0x0008_0000;
+
+pub const CS_VREDRAW: u32 = 0x0001;
+pub const CS_HREDRAW: u32 = 0x0002;
+pub const CS_DBLCLKS: u32 = 0x0008;
+pub const CS_OWNDC: u32 = 0x0020;
+pub const CS_CLASSDC: u32 = 0x0040;
+pub const CS_PARENTDC: u32 = 0x0080;
+pub const CS_NOCLOSE: u32 = 0x0200;
+pub const CS_SAVEBITS: u32 = 0x0800;
+pub const CS_BYTEALIGNCLIENT: u32 = 0x1000;
+pub const CS_BYTEALIGNWINDOW: u32 = 0x2000;
+pub const CS_GLOBALCLASS: u32 = 0x4000;
+pub const CS_IME: u32 = 0x0001_0000;
+
 // --- The structures (winuser.h) ------------------------------------------------------------------
 
 /// POINT: GDI's, one type for both headers' uses.

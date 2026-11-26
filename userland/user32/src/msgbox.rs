@@ -18,7 +18,18 @@
 
 use rtl::edge::InStr;
 use rtl::gdi::{LogFontW, Rect, DEFAULT_CHARSET, FW_NORMAL};
-use rtl::user::{WM_COMMAND, WM_INITDIALOG};
+use rtl::user::{
+    WM_COMMAND,
+    WM_INITDIALOG,
+    WS_CAPTION,
+    WS_CHILD,
+    WS_EX_TOPMOST,
+    WS_GROUP,
+    WS_POPUP,
+    WS_SYSMENU,
+    WS_TABSTOP,
+    WS_VISIBLE,
+};
 
 use crate::dialog::{self, Call, Reader, Request, IDCANCEL, IDOK};
 use crate::procedure::Procedure;
@@ -103,14 +114,6 @@ const ICON_ID: u16 = 20;
 const TEXT_ID: u16 = 0xFFFF;
 
 /// The styles of the box and its controls.
-const WS_POPUP: u32 = 0x8000_0000;
-const WS_CHILD: u32 = 0x4000_0000;
-const WS_VISIBLE: u32 = 0x1000_0000;
-const WS_CAPTION: u32 = 0x00C0_0000;
-const WS_SYSMENU: u32 = 0x0008_0000;
-const WS_GROUP: u32 = 0x0002_0000;
-const WS_TABSTOP: u32 = 0x0001_0000;
-const WS_EX_TOPMOST: u32 = 0x0000_0008;
 const BS_PUSHBUTTON: u32 = 0x0;
 const BS_DEFPUSHBUTTON: u32 = 0x1;
 const SS_LEFT: u32 = 0x00;

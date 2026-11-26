@@ -3562,15 +3562,10 @@ mod services {
 #[cfg(test)]
 pub(crate) mod rig {
     use rtl::gdi::Rect;
+    use rtl::user::WS_POPUP;
 
     use super::*;
-    use crate::win32k::window::{
-        CreateArgs,
-        MenuInput,
-        WindowManager,
-        DESKTOP_CREATEWINDOW,
-        WS_POPUP,
-    };
+    use crate::win32k::window::{CreateArgs, MenuInput, WindowManager, DESKTOP_CREATEWINDOW};
 
     pub const DESKTOP: u32 = 1;
     pub const OWNER: class::Owner = 0;
@@ -3774,11 +3769,13 @@ mod tests {
         WM_STYLECHANGING,
         WM_USER,
         WM_WINDOWPOSCHANGED,
+        WS_CHILD,
+        WS_POPUP,
     };
 
     use super::rig::*;
     use super::*;
-    use crate::win32k::window::{WindowManager, WS_CHILD, WS_POPUP};
+    use crate::win32k::window::WindowManager;
 
     /// A window's creation, in the host's session (which cannot call back): WM_NCCALCSIZE,
     /// WM_SIZE and WM_MOVE queued for its thread as sent messages, in that order, WM_NCCREATE and

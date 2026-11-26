@@ -95,6 +95,10 @@
 use rtl::gdi::Rect;
 pub use rtl::user::StyleStruct;
 use rtl::user::{
+    CS_CLASSDC,
+    CS_DBLCLKS,
+    CS_OWNDC,
+    CS_PARENTDC,
     WM_CREATE,
     WM_DESTROY,
     WM_GETMINMAXINFO,
@@ -112,6 +116,27 @@ use rtl::user::{
     WM_STYLECHANGING,
     WM_WINDOWPOSCHANGED,
     WM_WINDOWPOSCHANGING,
+    WS_BORDER,
+    WS_CAPTION,
+    WS_CHILD,
+    WS_CLIPCHILDREN,
+    WS_CLIPSIBLINGS,
+    WS_DISABLED,
+    WS_DLGFRAME,
+    WS_EX_APPWINDOW,
+    WS_EX_DLGMODALFRAME,
+    WS_EX_LAYERED,
+    WS_EX_NOPARENTNOTIFY,
+    WS_EX_STATICEDGE,
+    WS_EX_TOOLWINDOW,
+    WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT,
+    WS_EX_WINDOWEDGE,
+    WS_MAXIMIZE,
+    WS_MINIMIZE,
+    WS_POPUP,
+    WS_THICKFRAME,
+    WS_VISIBLE,
 };
 pub use rtl::window::{WindowData, WindowInfo, WindowPos};
 use rtl::winerror::{
@@ -144,38 +169,6 @@ pub type WParam = u32;
 pub type LParam = i32;
 /// A window procedure's answer (LRESULT, 32-bit on the target).
 pub type LResult = i32;
-
-/// The window styles (winuser.h's WS_*).
-pub const WS_OVERLAPPED: u32 = 0x0000_0000;
-pub const WS_POPUP: u32 = 0x8000_0000;
-pub const WS_CHILD: u32 = 0x4000_0000;
-pub const WS_VISIBLE: u32 = 0x1000_0000;
-pub const WS_CLIPSIBLINGS: u32 = 0x0400_0000;
-pub const WS_CLIPCHILDREN: u32 = 0x0200_0000;
-pub const WS_BORDER: u32 = 0x0080_0000;
-pub const WS_DLGFRAME: u32 = 0x0040_0000;
-pub const WS_CAPTION: u32 = 0x00C0_0000; // WS_BORDER | WS_DLGFRAME
-pub const WS_SYSMENU: u32 = 0x0008_0000;
-pub const WS_THICKFRAME: u32 = 0x0004_0000;
-pub const WS_MINIMIZEBOX: u32 = 0x0002_0000;
-pub const WS_MAXIMIZEBOX: u32 = 0x0001_0000;
-pub const WS_MINIMIZE: u32 = 0x2000_0000;
-pub const WS_DISABLED: u32 = 0x0800_0000;
-pub const WS_MAXIMIZE: u32 = 0x0100_0000;
-/// WS_OVERLAPPEDWINDOW.
-pub const WS_OVERLAPPEDWINDOW: u32 =
-    WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
-
-/// The extended window styles (winuser.h's WS_EX_*), the public subset.
-pub const WS_EX_DLGMODALFRAME: u32 = 0x0000_0001;
-pub const WS_EX_NOPARENTNOTIFY: u32 = 0x0000_0004;
-pub const WS_EX_TOPMOST: u32 = 0x0000_0008;
-pub const WS_EX_TRANSPARENT: u32 = 0x0000_0020;
-pub const WS_EX_TOOLWINDOW: u32 = 0x0000_0080;
-pub const WS_EX_WINDOWEDGE: u32 = 0x0000_0100;
-pub const WS_EX_STATICEDGE: u32 = 0x0002_0000;
-pub const WS_EX_APPWINDOW: u32 = 0x0004_0000;
-pub const WS_EX_LAYERED: u32 = 0x0008_0000;
 
 /// The private ex-style bit an ANSI create sets. It is consumed at creation (moved to the
 /// window's ANSI-creator flag) and never stored in the window's ex-style.
@@ -2581,7 +2574,7 @@ impl Windows {
 
         // The CS_PARENTDC compat hack (skipped for pre-4.0 windows): the class style overrides
         // the clip bits unless the parent clips children.
-        if !windows.at(id).flags.win31_compat && info.style & class::CS_PARENTDC != 0 {
+        if !windows.at(id).flags.win31_compat && info.style & CS_PARENTDC != 0 {
             if let Some(p) = parent {
                 if windows.at(p).style & WS_CLIPCHILDREN == 0 {
                     let w = windows.at_mut(id);
@@ -2631,8 +2624,8 @@ impl Windows {
             Windows::rollback_create(s, caller, id);
             return Err(Failure::OutOfMemory);
         }
-        if info.style & (class::CS_OWNDC | class::CS_CLASSDC) != 0
-            && !s.create_window_dc(id, info.style & class::CS_OWNDC != 0)
+        if info.style & (CS_OWNDC | CS_CLASSDC) != 0
+            && !s.create_window_dc(id, info.style & CS_OWNDC != 0)
         {
             Windows::rollback_create(s, caller, id);
             return Err(Failure::OutOfMemory);
@@ -5155,7 +5148,7 @@ impl WindowManager {
         // The desktop window's class answers CS_DBLCLKS (the guiclass capture's GetClassLong of
         // the desktop window); the message window's has no style.
         for (name, style) in [
-            (class::Name::Atom(DESKTOP_CLASS_ATOM), class::CS_DBLCLKS),
+            (class::Name::Atom(DESKTOP_CLASS_ATOM), CS_DBLCLKS),
             (class::Name::Text(&MESSAGE_CLASS), 0),
         ] {
             self.classes
@@ -6236,6 +6229,7 @@ mod tests {
     //! The create/destroy decision logic's host tests, over a registry of each test's own.
 
     use rtl::testing::wide;
+    use rtl::user::{CS_PARENTDC, WS_OVERLAPPED, WS_OVERLAPPEDWINDOW, WS_SYSMENU};
     use rtl::window::{QUERY_WINDOW_INFO, QUERY_WINDOW_VISIBLE};
 
     use super::*;
@@ -7569,7 +7563,7 @@ mod tests {
     fn the_parentdc_hack_clears_the_clip_bits() {
         let (w, c, t, _atom, _, _) = setup();
         let mut wc = wnd_class();
-        wc.style = class::CS_PARENTDC;
+        wc.style = CS_PARENTDC;
         let atom = register(c, &w.handles, class::Name::Text(&wide("PD")), &wc);
         let parent = raw_window(w, t, WS_OVERLAPPED, None); // no WS_CLIPCHILDREN
         let mut pump = Rec::new(t);

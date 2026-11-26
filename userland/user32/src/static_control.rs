@@ -24,11 +24,10 @@
 //! parent STN_CLICKED at WM_LBUTTONDOWN and STN_DBLCLK at WM_LBUTTONDBLCLK.
 
 use rtl::gdi::TRANSPARENT;
-use rtl::nonclient::WS_EX_STATICEDGE;
 use rtl::user::*;
 use rtl::window::{WindowLinks, GWL_EXSTYLE, QUERY_WINDOW_EXTRA};
 
-use crate::dialog::{DLGC_STATIC, WS_CHILD, WS_DISABLED};
+use crate::dialog::DLGC_STATIC;
 use crate::draw::{self, BF_LEFT, BF_RECT, BF_TOP};
 use crate::{imports, message, paint, window};
 

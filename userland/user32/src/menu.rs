@@ -30,7 +30,7 @@
 use rtl::edge::OutBuf;
 use rtl::menu::*;
 use rtl::status::NtStatus;
-use rtl::user::{NO_PARAM_CREATE_MENU, NO_PARAM_CREATE_POPUP_MENU};
+use rtl::user::{NO_PARAM_CREATE_MENU, NO_PARAM_CREATE_POPUP_MENU, WS_SYSMENU};
 use rtl::window::QUERY_WINDOW_MENU;
 
 use crate::imports::{self, ResourceName};
@@ -832,9 +832,6 @@ fn default_item(menu: usize, by_position: bool, flags: u32, depth: u32) -> u32 {
 
 // --- The system menu
 // ------------------------------------------------------------------------------
-
-/// WS_SYSMENU: the window has a system menu.
-const WS_SYSMENU: u32 = 0x0008_0000;
 
 /// The system commands (winuser.h's SC_*) the system menu's items carry.
 pub const SC_SIZE: u32 = 0xF000;

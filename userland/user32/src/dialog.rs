@@ -74,20 +74,6 @@ pub const BN_CLICKED: u32 = 0;
 pub const IDOK: u32 = 1;
 pub const IDCANCEL: u32 = 2;
 
-/// The window styles the dialog manager reads and sets.
-pub const WS_POPUP: u32 = 0x8000_0000;
-pub const WS_CHILD: u32 = 0x4000_0000;
-pub const WS_VISIBLE: u32 = 0x1000_0000;
-pub const WS_DISABLED: u32 = 0x0800_0000;
-pub const WS_CAPTION: u32 = 0x00C0_0000;
-pub const WS_SYSMENU: u32 = 0x0008_0000;
-pub const WS_GROUP: u32 = 0x0002_0000;
-pub const WS_TABSTOP: u32 = 0x0001_0000;
-pub const WS_EX_DLGMODALFRAME: u32 = 0x0000_0001;
-pub const WS_EX_NOPARENTNOTIFY: u32 = 0x0000_0004;
-pub const WS_EX_TOPMOST: u32 = 0x0000_0008;
-pub const WS_EX_CONTROLPARENT: u32 = 0x0001_0000;
-
 /// The dialog styles (winuser.h's DS_*).
 pub const DS_ABSALIGN: u32 = 0x0001;
 pub const DS_SYSMODAL: u32 = 0x0002;

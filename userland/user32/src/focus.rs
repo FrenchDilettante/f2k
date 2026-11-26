@@ -17,13 +17,11 @@ use rtl::user::{
     HWND_PARAM_LOCK_ENABLE_WINDOW,
     THREAD_STATE_ACTIVE_WINDOW,
     THREAD_STATE_FOCUS_WINDOW,
+    WS_DISABLED,
 };
 use rtl::window::{WindowInfo, QUERY_WINDOW_INFO};
 
 use crate::{answered, imports};
-
-/// WS_DISABLED (winuser.h).
-const WS_DISABLED: u32 = 0x0800_0000;
 
 /// SetFocus: the keyboard focus to the window (NULL: to no window), the messages it sent received;
 /// the window that had the focus, NULL for a window refused (a disabled one, one with a disabled

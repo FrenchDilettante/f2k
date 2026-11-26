@@ -28,6 +28,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use rtl::cstr::ascii_units;
 use rtl::edge::In;
 use rtl::icon::{ICON_SIZE, RT_CURSOR};
+use rtl::user::{CS_DBLCLKS, CS_HREDRAW, CS_PARENTDC, CS_SAVEBITS, CS_VREDRAW};
 
 use crate::imports::{self, UserBuffer};
 use crate::procedure::{self, Procedure};
@@ -364,13 +365,6 @@ pub unsafe extern "system" fn register_class_ex_a(class: *const WndClassEx) -> u
 /// user32's module handle, under which the classes it registers sit: its base, the module the
 /// window manager looks every process's classes up under after the process's own.
 pub const USER32_MODULE: usize = 0x77E1_0000;
-
-/// The class styles user32's own classes have (winuser.h's CS_*).
-const CS_VREDRAW: u32 = 0x0001;
-const CS_HREDRAW: u32 = 0x0002;
-const CS_DBLCLKS: u32 = 0x0008;
-const CS_PARENTDC: u32 = 0x0080;
-const CS_SAVEBITS: u32 = 0x0800;
 
 /// The dialog class's atom: the documented #32770.
 pub const DIALOG_CLASS_ATOM: u16 = 0x8002;

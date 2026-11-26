@@ -42,7 +42,6 @@ use rtl::window::{WindowLinks, GWL_STYLE};
 
 use crate::dialog::{self, BN_CLICKED, DLGC_BUTTON, DLGC_DEFPUSHBUTTON, DLGC_RADIOBUTTON};
 use crate::dialog::{DLGC_STATIC, DLGC_UNDEFPUSHBUTTON};
-use crate::dialog::{WS_CHILD, WS_DISABLED, WS_TABSTOP, WS_VISIBLE};
 use crate::draw::{self, BF_RECT, BF_SOFT, DT_CENTER, DT_LEFT, DT_SINGLELINE, DT_VCENTER};
 use crate::{focus, imports, message, paint, window};
 
@@ -865,9 +864,10 @@ fn draw_radio(dc: usize, mark: Rect, checked: bool, dimmed: bool) {
 mod tests {
     use core::cell::RefCell;
 
+    use rtl::user::{WS_POPUP, WS_VISIBLE};
+
     use super::*;
     use crate::class::SYSTEM_CLASSES_WANTED;
-    use crate::dialog::{WS_POPUP, WS_VISIBLE};
     use crate::imports::host::procedure;
 
     std::thread_local! {

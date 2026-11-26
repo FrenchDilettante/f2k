@@ -48,10 +48,10 @@
 //! - NtUserCallNoParam's DestroyCaret routine ([`super::menu`]'s service serves the others).
 
 use rtl::gdi::{Rect, DSTINVERT, HALFTONE_ROWS, PATINVERT};
-use rtl::user::{GuiThreadInfo, GUI_CARETBLINKING};
+use rtl::user::{GuiThreadInfo, GUI_CARETBLINKING, WS_CHILD};
 
 use super::raster::Pattern;
-use super::window::{WindowId, Windows, WS_CHILD};
+use super::window::{WindowId, Windows};
 use crate::sched::thread::ThreadId;
 use crate::status::*;
 
@@ -600,10 +600,11 @@ pub use services::{
 
 #[cfg(test)]
 mod tests {
+    use rtl::user::WS_CHILD;
+
     use super::*;
     use crate::win32k::queue::rig::*;
     use crate::win32k::queue::{take, Taken};
-    use crate::win32k::window::WS_CHILD;
 
     /// A thread with a popup and a child of it, and a second thread: (thread, popup, child, other).
     fn setup(

@@ -54,6 +54,10 @@ use rtl::user::{
     WM_KILLFOCUS,
     WM_NCACTIVATE,
     WM_SETFOCUS,
+    WS_CHILD,
+    WS_DISABLED,
+    WS_MINIMIZE,
+    WS_VISIBLE,
 };
 
 use super::window::{
@@ -68,10 +72,6 @@ use super::window::{
     SWP_NOACTIVATE,
     SWP_NOMOVE,
     SWP_NOSIZE,
-    WS_CHILD,
-    WS_DISABLED,
-    WS_MINIMIZE,
-    WS_VISIBLE,
 };
 use crate::sched::thread::ThreadId;
 
@@ -741,22 +741,13 @@ pub use services::{
 
 #[cfg(test)]
 mod tests {
-    use rtl::user::PM_QS_SENDMESSAGE;
+    use rtl::user::{PM_QS_SENDMESSAGE, WS_CAPTION, WS_POPUP};
 
     use super::*;
     use crate::sync::ShortLock;
     use crate::win32k::queue::rig::*;
     use crate::win32k::queue::{end_sent, head_of, Filter, QueueSession, Taken};
-    use crate::win32k::window::{
-        Hold,
-        Hwnd,
-        Locked,
-        WindowManager,
-        SW_SHOW,
-        SW_SHOWNOACTIVATE,
-        WS_CAPTION,
-        WS_POPUP,
-    };
+    use crate::win32k::window::{Hold, Hwnd, Locked, WindowManager, SW_SHOW, SW_SHOWNOACTIVATE};
 
     /// The messages the focus fixture's procedure records.
     const RECORDED: [u32; 7] = [

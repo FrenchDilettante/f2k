@@ -31,26 +31,24 @@
 //!   bar; HTBORDER on the client edge; the scroll bars; the client area.
 
 use crate::gdi::Rect;
-
-/// The window styles the frame reads (winuser.h's WS_*).
-pub const WS_CHILD: u32 = 0x4000_0000;
-pub const WS_MINIMIZE: u32 = 0x2000_0000;
-pub const WS_MAXIMIZE: u32 = 0x0100_0000;
-pub const WS_BORDER: u32 = 0x0080_0000;
-pub const WS_DLGFRAME: u32 = 0x0040_0000;
-pub const WS_CAPTION: u32 = 0x00C0_0000;
-pub const WS_VSCROLL: u32 = 0x0020_0000;
-pub const WS_HSCROLL: u32 = 0x0010_0000;
-pub const WS_SYSMENU: u32 = 0x0008_0000;
-pub const WS_THICKFRAME: u32 = 0x0004_0000;
-pub const WS_MINIMIZEBOX: u32 = 0x0002_0000;
-pub const WS_MAXIMIZEBOX: u32 = 0x0001_0000;
-pub const WS_EX_DLGMODALFRAME: u32 = 0x0000_0001;
-pub const WS_EX_TOOLWINDOW: u32 = 0x0000_0080;
-pub const WS_EX_WINDOWEDGE: u32 = 0x0000_0100;
-pub const WS_EX_CLIENTEDGE: u32 = 0x0000_0200;
-pub const WS_EX_CONTEXTHELP: u32 = 0x0000_0400;
-pub const WS_EX_STATICEDGE: u32 = 0x0002_0000;
+use crate::user::{
+    WS_BORDER,
+    WS_CAPTION,
+    WS_CHILD,
+    WS_DLGFRAME,
+    WS_EX_CLIENTEDGE,
+    WS_EX_CONTEXTHELP,
+    WS_EX_DLGMODALFRAME,
+    WS_EX_STATICEDGE,
+    WS_EX_TOOLWINDOW,
+    WS_HSCROLL,
+    WS_MAXIMIZEBOX,
+    WS_MINIMIZE,
+    WS_MINIMIZEBOX,
+    WS_SYSMENU,
+    WS_THICKFRAME,
+    WS_VSCROLL,
+};
 
 /// The standard scheme's metrics at 96 dpi, as GetSystemMetrics answers them.
 ///
@@ -494,11 +492,7 @@ pub fn hit_test(style: u32, ex_style: u32, menu: bool, window: Rect, x: i32, y: 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const OVERLAPPED_WINDOW: u32 =
-        WS_CAPTION | WS_SYSMENU | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
-    /// WS_POPUP, which the frame does not read.
-    const WS_POPUP_TEST: u32 = 0x8000_0000;
+    use crate::user::{WS_OVERLAPPEDWINDOW, WS_POPUP};
 
     /// AdjustWindowRectEx's widely published answers for the standard scheme: an overlapped
     /// window's 4-pixel border and 19-pixel caption, the menu bar's 19 more; and the coords
@@ -508,11 +502,11 @@ mod tests {
         let client = Rect::new(0, 0, 100, 100);
         let adjust = |style, ex, menu| Frame::of_styles(style, ex, menu).window(client);
         assert_eq!(
-            adjust(OVERLAPPED_WINDOW, 0, false),
+            adjust(WS_OVERLAPPEDWINDOW, 0, false),
             Rect::new(-4, -23, 104, 104)
         );
         assert_eq!(
-            adjust(OVERLAPPED_WINDOW, 0, true),
+            adjust(WS_OVERLAPPEDWINDOW, 0, true),
             Rect::new(-4, -42, 104, 104)
         );
         assert_eq!(adjust(WS_BORDER, 0, false), Rect::new(-1, -1, 101, 101));
@@ -532,14 +526,14 @@ mod tests {
             Rect::new(-4, -4, 104, 104)
         );
         assert_eq!(
-            adjust(OVERLAPPED_WINDOW, WS_EX_CLIENTEDGE, false),
+            adjust(WS_OVERLAPPEDWINDOW, WS_EX_CLIENTEDGE, false),
             Rect::new(-6, -25, 106, 106)
         );
         assert_eq!(
             adjust(WS_CAPTION | WS_SYSMENU, WS_EX_TOOLWINDOW, false),
             Rect::new(-3, -19, 103, 103)
         );
-        let frame = Frame::of(OVERLAPPED_WINDOW, 0, true);
+        let frame = Frame::of(WS_OVERLAPPEDWINDOW, 0, true);
         assert_eq!(frame.client(frame.window(client)), client);
         assert_eq!(Frame::of(WS_CHILD | WS_BORDER, 0, true).menu, 0);
     }
@@ -548,7 +542,7 @@ mod tests {
     #[test]
     fn the_hit_test_as_captured() {
         let w = Rect::new(160, 120, 480, 360);
-        let hit = |x, y| hit_test(OVERLAPPED_WINDOW, 0, false, w, x, y);
+        let hit = |x, y| hit_test(WS_OVERLAPPEDWINDOW, 0, false, w, x, y);
         let caption_y = w.top + FRAME + CAPTION / 2;
         assert_eq!(hit(320, caption_y), HTCAPTION);
         assert_eq!(hit(w.left + FRAME + SIZE / 2, caption_y), HTSYSMENU);
@@ -591,7 +585,7 @@ mod tests {
             Rect::new(0, 0, 10, 16)
         );
         assert_eq!(
-            Frame::of(WS_POPUP_TEST | WS_THICKFRAME, 0, false).border_width,
+            Frame::of(WS_POPUP | WS_THICKFRAME, 0, false).border_width,
             3
         );
     }
@@ -613,7 +607,7 @@ mod tests {
             runs
         };
         assert_eq!(
-            runs(OVERLAPPED_WINDOW, 0, 15),
+            runs(WS_OVERLAPPEDWINDOW, 0, 15),
             [
                 (0, 2, HTNOWHERE),
                 (2, 6, HTTOPLEFT),
@@ -658,7 +652,7 @@ mod tests {
     #[test]
     fn the_buttons_the_menu_bar_and_a_dialog_frame() {
         let w = Rect::new(0, 0, 300, 200);
-        let caption = Caption::of(OVERLAPPED_WINDOW, 0, w).unwrap();
+        let caption = Caption::of(WS_OVERLAPPEDWINDOW, 0, w).unwrap();
         let close = caption.buttons[0].unwrap();
         assert_eq!(close.1, Rect::new(278, 6, 294, 20));
         assert_eq!(caption.buttons[1].unwrap().1.right, 276);

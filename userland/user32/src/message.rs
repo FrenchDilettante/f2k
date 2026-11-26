@@ -991,7 +991,7 @@ fn ui_state_after(state: u32, wparam: u32) -> u32 {
 /// it changes sends itself WM_UPDATEUISTATE.
 fn change_ui_state(window: usize, wparam: u32) {
     let style = window::style_of(window).unwrap_or(0);
-    if style & rtl::nonclient::WS_CHILD != 0 {
+    if style & WS_CHILD != 0 {
         if let Ok(links) = window::links(window) {
             if links.parent != 0 {
                 let _ = send(links.parent as usize, WM_CHANGEUISTATE, wparam, 0);
@@ -1044,7 +1044,7 @@ fn window_pos_changed(window: usize, lparam: i32) {
         send(window, WM_MOVE, 0, at as i32);
     }
     if pos.flags & SWP_NOCLIENTSIZE == 0 {
-        let command = if info.style & rtl::nonclient::WS_MINIMIZE != 0 {
+        let command = if info.style & WS_MINIMIZE != 0 {
             1
         } else if info.style & 0x0100_0000 != 0 {
             2
@@ -1087,7 +1087,7 @@ use rtl::winerror::ERROR_INVALID_HANDLE;
 /// dropped (guimsg `ctxmenu`: the parent's procedure answers 5, the child's send 0); a top-level
 /// window's would open its window menu, which F2K has none of.
 fn context_menu(window: usize, wparam: u32, lparam: i32) {
-    if window::style_of(window).unwrap_or(0) & rtl::nonclient::WS_CHILD == 0 {
+    if window::style_of(window).unwrap_or(0) & WS_CHILD == 0 {
         return;
     }
     if let Ok(links) = window::links(window) {
@@ -1226,7 +1226,7 @@ const SW_RESTORE: i32 = 9;
 /// The top-level window `window` is in: itself, or its first ancestor that is not a child.
 fn top_level(window: usize) -> usize {
     let mut at = window;
-    while window::style_of(at).is_some_and(|style| style & rtl::nonclient::WS_CHILD != 0) {
+    while window::style_of(at).is_some_and(|style| style & WS_CHILD != 0) {
         match window::links(at) {
             Ok(links) if links.parent != 0 => at = links.parent as usize,
             _ => break,

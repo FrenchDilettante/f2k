@@ -89,7 +89,6 @@ use core::ffi::CStr;
 
 use rtl::edge::{In, InStr, InWStr, Out, OutBuf};
 use rtl::gdi::{Rect, ETO_OPAQUE, OPAQUE, TRANSPARENT};
-use rtl::nonclient::{WS_BORDER, WS_EX_CLIENTEDGE};
 use rtl::pod::Pod;
 use rtl::user::{
     CreateStructW,
@@ -120,6 +119,12 @@ use rtl::user::{
     WM_SETTEXT,
     WM_SIZE,
     WM_UNDO,
+    WS_BORDER,
+    WS_CHILD,
+    WS_DISABLED,
+    WS_EX_CLIENTEDGE,
+    WS_HSCROLL,
+    WS_VSCROLL,
 };
 use rtl::window::{GWL_EXSTYLE, GWL_STYLE};
 
@@ -130,8 +135,6 @@ use crate::dialog::{
     DLGC_WANTARROWS,
     DLGC_WANTCHARS,
     DM_GETDEFID,
-    WS_CHILD,
-    WS_DISABLED,
 };
 use crate::imports::{self, LocalFixed, LocalLocked, LMEM_FIXED, LMEM_MOVEABLE, LMEM_ZEROINIT};
 use crate::{caret, clipboard, message, paint, procedure, window};
@@ -191,10 +194,6 @@ pub const EN_CHANGE: u32 = 0x0300;
 pub const EN_UPDATE: u32 = 0x0400;
 pub const EN_ERRSPACE: u32 = 0x0500;
 pub const EN_MAXTEXT: u32 = 0x0501;
-
-/// The window styles an edit's scroll bars would take (winuser.h).
-const WS_HSCROLL: u32 = 0x0010_0000;
-const WS_VSCROLL: u32 = 0x0020_0000;
 
 /// EM_SETMARGINS's flags (winuser.h's EC_*).
 const EC_LEFTMARGIN: u32 = 0x1;
