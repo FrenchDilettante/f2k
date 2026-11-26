@@ -1,0 +1,109 @@
+# F2K capture of ntsvc (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sun 22/11/2026  1:13:43.90
+ntsvc F2KT-SOURCE-CRC=0x5F959B80
+>>> ntsvc.exe ntaccesscheck
+== ntaccesscheck
+NtOpenProcessToken(GetCurrentProcess(), TOKEN_QUERY): status=0x00000000, a handle
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY): ret=1 err=-, a handle
+NtAccessCheck(allow Everyone 0x000F01FF, requested 1): status=0xC000005C granted=0x00000000 err=-
+NtAccessCheck(same, requested 4, outside the mask): status=0xC000005C granted=0x00000000 err=-
+NtAccessCheck(deny Everyone first, requested 1): status=0xC000005C granted=0x00000000 err=-
+NtAccessCheck(the advapi32-opened token, deny first, requested 1): status=0xC000005C granted=0x00000000 err=-
+ntsvc: done
+<<< exit code=0
+>>> ntsvc.exe ntprivcheck
+== ntprivcheck
+NtOpenProcessToken(GetCurrentProcess(), TOKEN_QUERY): status=0x00000000, a handle
+NtQueryInformationToken(TokenPrivileges): status=0x00000000 err=- ReturnLength 232
+  LUID 23: attributes 0x3, enabled: yes
+  LUID 19: attributes 0x0, enabled: no
+  LUID 20: attributes 0x0, enabled: no
+NtPrivilegeCheck(an empty set): status=0x00000000 result=1 err=-
+NtPrivilegeCheck(SeShutdownPrivilege enabled, held disabled): status=0x00000000 result=0 err=-
+NtPrivilegeCheck(SeChangeNotifyPrivilege enabled, held enabled): status=0x00000000 result=1 err=-
+ntsvc: done
+<<< exit code=0
+>>> ntsvc.exe ntquerysecobj
+== ntquerysecobj
+CreateFileA(ntsvc.tmp, access 0xC0000000, CREATE_ALWAYS): a handle err=0
+NtQuerySecurityObject(the file handle, no buffer): status=0xC0000023 err=-; the size needed set
+NtQuerySecurityObject(a byte short): status=0x00000000 err=-; the buffer untouched: no
+NtQuerySecurityObject(the size asked for): status=0xC0000023 err=-
+NtQuerySecurityObject(the file handle, DACL, a big buffer): status=0x00000000 err=-
+the file's DACL read: Control 0x8000, owner present: no, DACL present: no, length 20
+NtQuerySecurityObject(the process handle, no buffer): status=0xC0000023 err=-; the size needed set
+NtQuerySecurityObject(the process handle, the size asked for): status=0x00000000 err=-
+the process's SD: Control 0x8004, owner present: yes, DACL present: no, length 116
+  the owner: S-1-5-32-544
+NtQuerySecurityObject(a closed handle): status=0xC0000008 err=-
+DeleteFileA(ntsvc.tmp): err=-
+ntsvc: done
+<<< exit code=0
+>>> ntsvc.exe ntsetsecobj
+== ntsetsecobj
+CreateFileA(ntsvc.tmp, access 0xC0000000, CREATE_ALWAYS): a handle err=0
+NtSetSecurityObject(the file handle, DACL, allow Everyone 0x000F01FF): status=0xC0000022 err=-
+NtQuerySecurityObject(the file handle, DACL, read back): status=0x00000000 err=-
+the file's SD read back: Control 0x8000, owner present: no, DACL present: no, length 20
+NtSetSecurityObject(the process handle, DACL): status=0x00000000 err=-
+NtSetSecurityObject(a closed handle): status=0xC0000022 err=-
+DeleteFileA(ntsvc.tmp): err=-
+ntsvc: done
+<<< exit code=0
+>>> ntsvc.exe createwithsd
+== createwithsd
+CreateFileA(ntsvc.tmp, access 0xC0000000, CREATE_ALWAYS, with a SECURITY_ATTRIBUTES): a handle err=0
+CloseHandle: ret=1 err=-
+CreateFileA(ntsvc.tmp, access 0xC0000000, CREATE_ALWAYS, with a SECURITY_ATTRIBUTES): a handle err=183
+CloseHandle(the denied case's handle, if any): ret=1 err=-
+CreateFileA(ntsvc.tmp, access 0xC0000000, CREATE_ALWAYS, with a SECURITY_ATTRIBUTES): a handle err=183
+CloseHandle: ret=1 err=-
+DeleteFileA(ntsvc.tmp): err=-
+ntsvc: done
+<<< exit code=0
+>>> ntsvc.exe ntbytype
+== ntbytype
+NtOpenProcessToken(GetCurrentProcess(), TOKEN_QUERY): status=0x00000000, a handle
+NtAccessCheckByType(two types, requested 1): status=0xC000005C granted=0x00000000 err=-
+NtAccessCheckByTypeResultList(two types, requested 4, outside the mask): status=0xC000005C err=-
+  type 0: status=0x00000000 granted=0x00000000
+  type 1: status=0x00000000 granted=0x00000000
+ntsvc: done
+<<< exit code=0
+>>> ntsvc.exe ntgroups
+== ntgroups
+NtOpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_GROUPS): status=0x00000000, a handle
+NtAdjustGroupsToken(ResetToDefault=FALSE, NewState NULL): status=0xC000000D err=-; ReturnLength untouched
+NtAdjustGroupsToken(NewState one group, PreviousState 4 bytes): status=0x00000000 err=-; ReturnLength untouched
+ntsvc: done
+<<< exit code=0
+>>> ntsvc.exe ntsetinfo
+== ntsetinfo
+NtOpenProcessToken(GetCurrentProcess(), adjust access): status=0x00000000, a handle
+NtSetInformationToken(class 0xFFFF): status=0xC0000003 err=-
+NtSetInformationToken(TokenUser, a 4-byte buffer): status=0xC0000003 err=-
+NtSetInformationToken(TokenType, a read-only class): status=0xC0000003 err=-
+ntsvc: done
+<<< exit code=0
+>>> ntsvc.exe ntcreatefilter
+== ntcreatefilter
+NtCreateToken(TOKEN_QUERY, no object attributes, all else NULL): status=0xC0000005 err=-, no handle
+NtOpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE): status=0x00000000, a handle
+NtFilterToken(flags 0, nothing disabled or restricted): status=0x00000000 err=-, a handle
+ntsvc: done
+<<< exit code=0
+>>> ntsvc.exe ntthreadtok
+== ntthreadtok
+NtOpenThreadToken(GetCurrentThread(), TOKEN_QUERY, OpenAsSelf=FALSE): status=0xC000007C err=-, no handle
+ntsvc: done
+<<< exit code=0
+>>> ntsvc.exe ntrtlpriv
+== ntrtlpriv
+RtlAdjustPrivilege(SeShutdownPrivilege, enable, the process): status=0x00000000 err=- previous=0
+RtlAdjustPrivilege(SeShutdownPrivilege, disable, the process): status=0x00000000 err=- previous=1
+RtlAdjustPrivilege(an unknown privilege, enable): status=0xC0000061 err=- previous=0
+ntsvc: done
+<<< exit code=0

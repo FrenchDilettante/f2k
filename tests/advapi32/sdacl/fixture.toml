@@ -1,0 +1,214 @@
+# sdacl: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Declared ahead of its real-machine files: tests\build.bat sdacl and tests\capture.bat sdacl
+# land sdacl.exe and output.txt together on the VM trip; until then the suite skips the
+# fixture (f2kboot.awaited).
+description = "sdacl - security descriptors, ACLs and SIDs as advapi32 builds and inspects them: InitializeSecurityDescriptor with IsValidSecurityDescriptor, GetSecurityDescriptorLength and GetSecurityDescriptorControl (initsd); InitializeAcl, IsValidAcl, AddAce with GetAce readback, FindFirstFreeAce and DeleteAce (acl); AddAccessAllowedAce with the mask read back (allowedace); AddAccessDeniedAce and the ACE order (deniedace); AllocateAndInitializeSid, InitializeSid, GetLengthSid, IsValidSid, EqualSid, EqualPrefixSid, CopySid, ConvertSidToStringSidA/W, CreateWellKnownSid, FreeSid (sid); MakeSelfRelativeSD and the owner/group/DACL/SACL set/get round trips (selfrel); the trustee builders and queries A/W (trustee); the object and audit ACE builders (objace); the string SD conversions A/W (strsd); the private object security calls (privobj); SetSecurityDescriptorControl, the RM control, RtlCopySecurityDescriptor, BuildSecurityDescriptorA/W and the Convert*ToAccess* conversions (sdcorner); GetAuditedPermissionsFromAclA/W and SetEntriesInAuditListA/W (saclaudit); EqualDomainSid, the site and domain SID queries, IsWellKnownSid and the account lookups A/W (sidmore). The advapi32 security calls go through GetProcAddress, so the program loads where advapi32 lacks them."
+kind = "sectioned"
+gate = true
+
+[pending]
+# Every block waits for the behavior it pins; tests/capture.bat sdacl fills output.txt on the VM
+# trip, and each block un-xfails when that behavior lands.
+initsd = "advapi32's security-descriptor entry points carry no impl yet: InitializeSecurityDescriptor, IsValidSecurityDescriptor, GetSecurityDescriptorLength and GetSecurityDescriptorControl are catalogued only"
+acl = "the ACL builders are unimplemented in advapi32: InitializeAcl, IsValidAcl, AddAce, GetAce, FindFirstFreeAce and DeleteAce are catalogued only"
+allowedace = "AddAccessAllowedAce is unimplemented in advapi32 (catalogued only), so no allowed ACE is built or read back"
+deniedace = "AddAccessDeniedAce is unimplemented in advapi32 (catalogued only), so no deny ACE is built and the walk order is unobserved"
+sid = "the SID entry points are unimplemented in advapi32: AllocateAndInitializeSid's siblings InitializeSid, GetLengthSid, IsValidSid, EqualSid, EqualPrefixSid, CopySid, ConvertSidToStringSidA/W, CreateWellKnownSid and FreeSid beyond the implemented AllocateAndInitializeSid/EqualSid/FreeSid are catalogued only"
+selfrel = "MakeSelfRelativeSD and the Get/SetSecurityDescriptorOwner/Group/Dacl/Sacl round trips are unimplemented in advapi32 (catalogued only)"
+trustee = "the trustee builders and queries are unimplemented in advapi32 (catalogued only): BuildTrusteeWith*, BuildImpersonate* and GetTrustee* A/W never fill a trustee"
+objace = "the object and audit ACE builders are unimplemented in advapi32 (catalogued only): AddAccessAllowedObjectAce, AddAccessDeniedObjectAce, AddAuditAccessAce(Ex), AddAuditAccessObjectAce and the AceEx forms never add an ACE"
+strsd = "the string security descriptor conversions are unimplemented in advapi32 (catalogued only): ConvertSecurityDescriptorToStringSecurityDescriptorA/W and ConvertStringSecurityDescriptorToSecurityDescriptorA/W never convert"
+privobj = "the private object security calls are unimplemented in advapi32 (catalogued only): CreatePrivateObjectSecurity(Ex), DestroyPrivateObjectSecurity, Get/SetPrivateObjectSecurity(Ex) and ConvertToAutoInheritPrivateObjectSecurity never run"
+sdcorner = "the SD corner calls are unimplemented in advapi32/ntdll (catalogued only): SetSecurityDescriptorControl, the RM control pair, BuildSecurityDescriptorA/W, the Convert*ToAccess* conversions and ntdll's RtlCopySecurityDescriptor never run"
+saclaudit = "GetAuditedPermissionsFromAclA/W and SetEntriesInAuditListA/W are unimplemented in advapi32 (catalogued only), so no audit list is queried or built"
+sidmore = "the remaining SID calls are unimplemented in advapi32 (catalogued only): EqualDomainSid, GetWindowsAccountDomainSid, GetSiteSidFromToken, GetMangledSiteSid, IsWellKnownSid and the LookupAccountName/Sid A/W pair never answer"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only what a section calls itself, through its own helpers too, never what the C runtime's
+# startup calls.
+initsd = [
+    "advapi32.InitializeSecurityDescriptor",
+    "advapi32.IsValidSecurityDescriptor",
+    "advapi32.GetSecurityDescriptorLength",
+    "advapi32.GetSecurityDescriptorControl",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]
+acl = [
+    "advapi32.InitializeAcl",
+    "advapi32.IsValidAcl",
+    "advapi32.AddAce",
+    "advapi32.GetAce",
+    "advapi32.FindFirstFreeAce",
+    "advapi32.DeleteAce",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]
+allowedace = [
+    "advapi32.InitializeAcl",
+    "advapi32.AddAccessAllowedAce",
+    "advapi32.GetAce",
+    "advapi32.IsValidAcl",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]
+deniedace = [
+    "advapi32.InitializeAcl",
+    "advapi32.AddAccessAllowedAce",
+    "advapi32.AddAccessDeniedAce",
+    "advapi32.GetAce",
+    "advapi32.IsValidAcl",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]
+sid = [
+    "advapi32.AllocateAndInitializeSid",
+    "advapi32.InitializeSid",
+    "advapi32.GetLengthSid",
+    "advapi32.IsValidSid",
+    "advapi32.EqualSid",
+    "advapi32.EqualPrefixSid",
+    "advapi32.CopySid",
+    "advapi32.ConvertSidToStringSidA",
+    "advapi32.ConvertSidToStringSidW",
+    "advapi32.CreateWellKnownSid",
+    "advapi32.FreeSid",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]
+selfrel = [
+    "advapi32.MakeSelfRelativeSD",
+    "advapi32.IsValidSecurityDescriptor",
+    "advapi32.GetSecurityDescriptorLength",
+    "advapi32.InitializeAcl",
+    "advapi32.AddAccessAllowedAce",
+    "advapi32.GetSecurityDescriptorDacl",
+    "advapi32.SetSecurityDescriptorDacl",
+    "advapi32.GetSecurityDescriptorOwner",
+    "advapi32.SetSecurityDescriptorOwner",
+    "advapi32.GetSecurityDescriptorGroup",
+    "advapi32.SetSecurityDescriptorGroup",
+    "advapi32.GetSecurityDescriptorSacl",
+    "advapi32.SetSecurityDescriptorSacl",
+    "advapi32.EqualSid",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]
+trustee = [
+    "advapi32.BuildTrusteeWithNameA",
+    "advapi32.BuildTrusteeWithNameW",
+    "advapi32.BuildTrusteeWithSidA",
+    "advapi32.BuildTrusteeWithSidW",
+    "advapi32.BuildTrusteeWithObjectsAndNameA",
+    "advapi32.BuildTrusteeWithObjectsAndNameW",
+    "advapi32.BuildTrusteeWithObjectsAndSidA",
+    "advapi32.BuildTrusteeWithObjectsAndSidW",
+    "advapi32.BuildImpersonateTrusteeA",
+    "advapi32.BuildImpersonateTrusteeW",
+    "advapi32.BuildImpersonateExplicitAccessWithNameA",
+    "advapi32.BuildImpersonateExplicitAccessWithNameW",
+    "advapi32.GetTrusteeFormA",
+    "advapi32.GetTrusteeFormW",
+    "advapi32.GetTrusteeNameA",
+    "advapi32.GetTrusteeNameW",
+    "advapi32.GetTrusteeTypeA",
+    "advapi32.GetTrusteeTypeW",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]
+objace = [
+    "advapi32.InitializeAcl",
+    "advapi32.GetAce",
+    "advapi32.IsValidAcl",
+    "advapi32.AddAccessAllowedObjectAce",
+    "advapi32.AddAccessDeniedObjectAce",
+    "advapi32.AddAuditAccessAce",
+    "advapi32.AddAuditAccessAceEx",
+    "advapi32.AddAuditAccessObjectAce",
+    "advapi32.AddAccessAllowedAceEx",
+    "advapi32.AddAccessDeniedAceEx",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]
+strsd = [
+    "advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorA",
+    "advapi32.ConvertSecurityDescriptorToStringSecurityDescriptorW",
+    "advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorA",
+    "advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW",
+    "advapi32.MakeSelfRelativeSD",
+    "advapi32.IsValidSecurityDescriptor",
+    "advapi32.GetSecurityDescriptorLength",
+    "advapi32.GetAce",
+    "advapi32.InitializeAcl",
+    "advapi32.AddAccessAllowedAce",
+    "kernel32.LocalFree",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]
+privobj = [
+    "advapi32.CreatePrivateObjectSecurity",
+    "advapi32.CreatePrivateObjectSecurityEx",
+    "advapi32.DestroyPrivateObjectSecurity",
+    "advapi32.GetPrivateObjectSecurity",
+    "advapi32.SetPrivateObjectSecurity",
+    "advapi32.SetPrivateObjectSecurityEx",
+    "advapi32.ConvertToAutoInheritPrivateObjectSecurity",
+    "advapi32.OpenProcessToken",
+    "advapi32.IsValidSecurityDescriptor",
+    "advapi32.GetSecurityDescriptorLength",
+    "advapi32.InitializeAcl",
+    "advapi32.AddAccessAllowedAce",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]
+sdcorner = [
+    "advapi32.SetSecurityDescriptorControl",
+    "advapi32.GetSecurityDescriptorRMControl",
+    "advapi32.SetSecurityDescriptorRMControl",
+    "advapi32.BuildSecurityDescriptorA",
+    "advapi32.BuildSecurityDescriptorW",
+    "advapi32.ConvertAccessToSecurityDescriptorA",
+    "advapi32.ConvertAccessToSecurityDescriptorW",
+    "advapi32.ConvertSecurityDescriptorToAccessA",
+    "advapi32.ConvertSecurityDescriptorToAccessW",
+    "advapi32.ConvertSecurityDescriptorToAccessNamedA",
+    "advapi32.ConvertSecurityDescriptorToAccessNamedW",
+    "advapi32.InitializeSecurityDescriptor",
+    "advapi32.BuildTrusteeWithNameA",
+    "advapi32.BuildTrusteeWithNameW",
+    "ntdll.RtlCopySecurityDescriptor",
+    "kernel32.GetCurrentProcess",
+    "kernel32.LocalFree",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]
+saclaudit = [
+    "advapi32.InitializeAcl",
+    "advapi32.AddAuditAccessAce",
+    "advapi32.GetAuditedPermissionsFromAclA",
+    "advapi32.GetAuditedPermissionsFromAclW",
+    "advapi32.SetEntriesInAuditListA",
+    "advapi32.SetEntriesInAuditListW",
+    "kernel32.LocalFree",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]
+sidmore = [
+    "advapi32.EqualDomainSid",
+    "advapi32.GetWindowsAccountDomainSid",
+    "advapi32.GetSiteSidFromToken",
+    "advapi32.GetMangledSiteSid",
+    "advapi32.IsWellKnownSid",
+    "advapi32.LookupAccountNameA",
+    "advapi32.LookupAccountNameW",
+    "advapi32.LookupAccountSidA",
+    "advapi32.LookupAccountSidW",
+    "advapi32.OpenProcessToken",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]

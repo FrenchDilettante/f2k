@@ -1,0 +1,98 @@
+# F2K capture of acccheck (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sun 22/11/2026  1:13:43.23
+acccheck F2KT-SOURCE-CRC=0xCD9444C2
+>>> acccheck.exe allowed
+== allowed
+AllocateAndInitializeSid(S-1-1-0): ret=1 err=-; S-1-5-0
+OpenProcess(PROCESS_QUERY_INFORMATION, this process): a handle: yes err=-
+OpenProcessToken(that handle, TOKEN_QUERY): ret=1 err=-, a handle
+AccessCheck(requested 1, allow 0x000F01FF): ret=0 err=1309 status=0x00000000 granted=0x00000000
+AccessCheck(requested the whole allowed mask): ret=0 err=1309 status=0x00000000 granted=0x00000000
+AccessCheck(requested 4, outside the mask): ret=0 err=1309 status=0x00000000 granted=0x00000000
+FreeSid: returned NULL: yes err=-
+acccheck: done
+<<< exit code=0
+>>> acccheck.exe denied
+== denied
+CreateWellKnownSid(LocalSystem): ret=1 err=-; S-1-5-18
+EqualSid(it, the hand-built SYSTEM): ret=1 err=0
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY): ret=1 err=-, a handle
+deny Everyone 0x000F01FF before allow all, requested 1: ret=0 err=1309 status=0x00000000 granted=0x00000000
+allow all before deny Everyone 0x000F01FF, requested 1: ret=0 err=1309 status=0x00000000 granted=0x00000000
+deny SYSTEM (not in the token) before allow, requested 1: ret=0 err=1309 status=0x00000000 granted=0x00000000
+acccheck: done
+<<< exit code=0
+>>> acccheck.exe owner
+== owner
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY): ret=1 err=-, a handle
+TokenUser: S-1-5-21-602162358-1085031214-839522115-1000
+AllocateAndInitializeSid(S-1-5-32-544): ret=1 err=-
+EqualSid(it, the hand-built): ret=1 err=0
+owner is the token's user, empty DACL, requested READ_CONTROL|WRITE_DAC: ret=0 err=1309 status=0x00000000 granted=0x00000000
+same, requested a plain bit 1: ret=0 err=1309 status=0x00000000 granted=0x00000000
+owner BUILTIN\Administrators, empty DACL, requested READ_CONTROL|WRITE_DAC: ret=0 err=1309 status=0x00000000 granted=0x00000000
+acccheck: done
+<<< exit code=0
+>>> acccheck.exe maximum
+== maximum
+AllocateAndInitializeSid(S-1-1-0): ret=1 err=-
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY): ret=1 err=-, a handle
+AccessCheck(MAXIMUM_ALLOWED, allow 0x000F01FF): ret=0 err=1309 status=0x00000000 granted=0x00000000
+  granted the whole allowed mask: no
+acccheck: done
+<<< exit code=0
+>>> acccheck.exe bytype
+== bytype
+AllocateAndInitializeSid(S-1-1-0): ret=1 err=-
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY): ret=1 err=-, a handle
+AccessCheckByType(two types, requested 1): ret=0 err=6 status=0x00000000 granted=0x00000000
+AccessCheckByTypeResultList(two types, requested 1): ret=0 err=998
+  type 0: status=0x00000000 granted=0x00000000
+  type 1: status=0x00000000 granted=0x00000000
+acccheck: done
+<<< exit code=0
+>>> acccheck.exe areall
+== areall
+AllocateAndInitializeSid(S-1-1-0): ret=1 err=-
+AreAllAccessesGranted(0x000F01FF, 1): ret=1 err=-
+AreAllAccessesGranted(1, 0x000F01FF): ret=0 err=-
+AreAnyAccessesGranted(1, 0x000F01FF): ret=1 err=-
+AreAnyAccessesGranted(0, 0x000F01FF): ret=0 err=-
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY): ret=1 err=-, a handle
+AccessCheck(requested 1): ret=0 err=1309 granted=0x00000000
+AreAllAccessesGranted(that granted, requested): ret=0 err=-
+acccheck: done
+<<< exit code=0
+>>> acccheck.exe priv
+== priv
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES): ret=1 err=-, a handle
+SeSecurityPrivilege (LUID 8): listed, disabled; SeTakeOwnershipPrivilege (LUID 9): listed, disabled
+AllocateAndInitializeSid(S-1-5-32-544): ret=1 err=-
+CreateWellKnownSid(LocalSystem): ret=1 err=-; S-1-5-18
+EqualSid(it, the hand-built SYSTEM): ret=1 err=0
+ACCESS_SYSTEM_SECURITY, privilege disabled, empty DACL: ret=0 err=1309 status=0x00000000 granted=0x00000000
+AdjustTokenPrivileges(SeSecurityPrivilege enable): ret=1 err=0
+SeSecurityPrivilege now: listed, enabled
+ACCESS_SYSTEM_SECURITY, privilege enabled, empty DACL: ret=0 err=1309 status=0x00000000 granted=0x00000000
+AdjustTokenPrivileges(SeSecurityPrivilege disable): ret=1 err=0
+SeSecurityPrivilege now: listed, disabled
+ACCESS_SYSTEM_SECURITY, disabled again, empty DACL: ret=0 err=1309 status=0x00000000 granted=0x00000000
+WRITE_OWNER, the owner is the token's user, empty DACL: ret=0 err=1309 status=0x00000000 granted=0x00000000
+WRITE_OWNER, the owner is SYSTEM, privilege disabled, empty DACL: ret=0 err=1309 status=0x00000000 granted=0x00000000
+AdjustTokenPrivileges(SeTakeOwnershipPrivilege enable): ret=1 err=0
+SeTakeOwnershipPrivilege now: listed, enabled
+WRITE_OWNER, the owner is SYSTEM, privilege enabled, empty DACL: ret=0 err=1309 status=0x00000000 granted=0x00000000
+AdjustTokenPrivileges(SeTakeOwnershipPrivilege disable): ret=1 err=0
+SeTakeOwnershipPrivilege now: listed, disabled
+acccheck: done
+<<< exit code=0
+>>> acccheck.exe effrights
+== effrights
+GetEffectiveRightsFromAclA(allow Everyone 0x000F01FF): ret=0 err=203 mask=0x000F01FF
+GetEffectiveRightsFromAclW (W): ret=0 err=203 mask=0x000F01FF
+GetEffectiveRightsFromAclA(deny Everyone first): ret=0 err=203 mask=0x02F0FE00
+acccheck: done
+<<< exit code=0

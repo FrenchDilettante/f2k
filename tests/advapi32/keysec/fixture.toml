@@ -1,0 +1,53 @@
+# keysec: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Declared ahead of its real-machine files: tests\build.bat keysec and tests\capture.bat keysec
+# land keysec.exe and output.txt together on the VM trip; until then the suite skips the
+# fixture (f2kboot.awaited). Each section works on HKEY_CURRENT_USER\Software\F2KRegSec alone,
+# deleting it at its start and end.
+description = "keysec - registry key security on a subkey of HKEY_CURRENT_USER the fixture creates with RegCreateKeyExA/W and deletes (create); RegGetKeySecurity and RegSetKeySecurity over the key's handle: the size query, a byte short, the size asked for, and the owner/group/DACL set with a built security descriptor and read back (roundtrip); and the error paths: a bogus handle, a key opened read-only, a deleted key's open handle, a missing key (errors). RegGetKeySecurity/RegSetKeySecurity and the SD/ACL builders go through GetProcAddress, so the program loads where advapi32 lacks them."
+kind = "sectioned"
+gate = true
+
+[pending]
+# Every listed block waits for the behavior it pins (the capture is in: tests\capture.bat keysec
+# ran on the VM trip); each un-xfails when that behavior lands. The create block is not pending:
+# RegCreateKeyEx/RegCloseKey/RegDeleteKey are implemented and it passes.
+roundtrip = "RegGetKeySecurity and RegSetKeySecurity are unimplemented in advapi32 (catalogued only), and F2K keeps no security descriptor on a registry key"
+errors = "the error paths of RegGetKeySecurity/RegSetKeySecurity are unimplemented in advapi32 (catalogued only)"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only what a section calls itself, through its own helpers too, never what the C runtime's
+# startup calls.
+create = [
+    "advapi32.RegCreateKeyExA",
+    "advapi32.RegCreateKeyExW",
+    "advapi32.RegCloseKey",
+    "advapi32.RegDeleteKeyA",
+    "advapi32.RegDeleteKeyW",
+]
+roundtrip = [
+    "advapi32.RegCreateKeyExA",
+    "advapi32.RegGetKeySecurity",
+    "advapi32.RegSetKeySecurity",
+    "advapi32.RegCloseKey",
+    "advapi32.RegDeleteKeyA",
+    "advapi32.InitializeSecurityDescriptor",
+    "advapi32.InitializeAcl",
+    "advapi32.AddAccessAllowedAce",
+    "advapi32.SetSecurityDescriptorDacl",
+    "advapi32.SetSecurityDescriptorOwner",
+    "advapi32.SetSecurityDescriptorGroup",
+]
+errors = [
+    "advapi32.RegCreateKeyExA",
+    "advapi32.RegCreateKeyExW",
+    "advapi32.RegGetKeySecurity",
+    "advapi32.RegSetKeySecurity",
+    "advapi32.RegCloseKey",
+    "advapi32.RegDeleteKeyA",
+    "advapi32.RegDeleteKeyW",
+    "advapi32.InitializeSecurityDescriptor",
+    "advapi32.InitializeAcl",
+    "advapi32.AddAccessAllowedAce",
+    "advapi32.SetSecurityDescriptorDacl",
+]

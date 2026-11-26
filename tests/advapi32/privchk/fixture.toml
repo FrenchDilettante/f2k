@@ -1,0 +1,99 @@
+# privchk: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Declared ahead of its real-machine files: tests\build.bat privchk and tests\capture.bat privchk
+# land privchk.exe and output.txt together on the VM trip; until then the suite skips the
+# fixture (f2kboot.awaited). Captured on an administrator account.
+description = "privchk - privileges and token membership: LookupPrivilegeNameA/W and LookupPrivilegeValueA/W over SeShutdownPrivilege, SeDebugPrivilege and SeSecurityPrivilege with the size queries, an unknown name and LUID (lookup); PrivilegeCheck over the process token with the privileges disabled, enabled through AdjustTokenPrivileges and disabled again (check); AdjustTokenPrivileges with PreviousState and ReturnLength on SeSecurityPrivilege (adjust); CheckTokenMembership over Everyone, BUILTIN\\Administrators, BUILTIN\\Users and BUILTIN\\Guests with a NULL token and the primary token, CreateWellKnownSid against AllocateAndInitializeSid, EqualSid, FreeSid (membership); and a DuplicateToken impersonation copy's type, level, PrivilegeCheck and membership (duplicate). a DuplicateToken impersonation copy's type, level, PrivilegeCheck and membership (duplicate); AdjustTokenGroups with a NULL NewState, a too-short PreviousState and ResetToDefault (tokengroups); SetTokenInformation with an unknown class, a short buffer and a read-only class (setinfo); DuplicateTokenEx, CreateRestrictedToken and IsTokenRestricted (duprestrict); OpenThreadToken, ImpersonateSelf and SetThreadToken on the current thread (threadtok); and LookupPrivilegeDisplayNameA/W for SeShutdownPrivilege (lookupdisp). The security calls advapi32 lacks go through GetProcAddress, so the program loads where they are missing."
+kind = "sectioned"
+gate = true
+
+[pending]
+# Every listed block waits for the behavior it pins (the capture is in: tests\capture.bat privchk
+# ran on the VM trip); each un-xfails when that behavior lands. The adjust block is not pending:
+# F2K's bookkeeping AdjustTokenPrivileges already answers it as the real machine does, and it passes.
+lookup = "LookupPrivilegeNameA/W are unimplemented in advapi32 (catalogued only), so a privilege's name cannot be looked up from its LUID"
+check = "PrivilegeCheck is unimplemented in advapi32 (catalogued only) and F2K checks no privilege: nothing answers whether an enabled privilege is held"
+membership = "CheckTokenMembership is catalogued only in advapi32 and F2K's tokens carry no group list to check membership against"
+duplicate = "the duplicate's checks wait on PrivilegeCheck and CheckTokenMembership, both catalogued only in advapi32"
+tokengroups = "AdjustTokenGroups is unimplemented in advapi32 (catalogued only), so no group list is adjusted or reset"
+setinfo = "SetTokenInformation is unimplemented in advapi32 (catalogued only), so no token information class is set"
+duprestrict = "DuplicateTokenEx, CreateRestrictedToken and IsTokenRestricted are unimplemented in advapi32 (catalogued only), so no restricted token is made or told apart"
+threadtok = "OpenThreadToken, SetThreadToken and ImpersonateSelf are unimplemented in advapi32 (catalogued only), so the thread never gets a token of its own"
+lookupdisp = "LookupPrivilegeDisplayNameA/W are unimplemented in advapi32 (catalogued only), so a privilege's display name is never looked up"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only what a section calls itself, through its own helpers too, never what the C runtime's
+# startup calls.
+lookup = [
+    "advapi32.LookupPrivilegeNameA",
+    "advapi32.LookupPrivilegeNameW",
+    "advapi32.LookupPrivilegeValueA",
+    "advapi32.LookupPrivilegeValueW",
+]
+check = [
+    "advapi32.PrivilegeCheck",
+    "advapi32.OpenProcessToken",
+    "advapi32.AdjustTokenPrivileges",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+]
+adjust = [
+    "advapi32.OpenProcessToken",
+    "advapi32.AdjustTokenPrivileges",
+    "advapi32.LookupPrivilegeValueA",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+]
+membership = [
+    "advapi32.CheckTokenMembership",
+    "advapi32.OpenProcessToken",
+    "advapi32.AllocateAndInitializeSid",
+    "advapi32.CreateWellKnownSid",
+    "advapi32.EqualSid",
+    "advapi32.FreeSid",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+]
+duplicate = [
+    "advapi32.DuplicateToken",
+    "advapi32.OpenProcessToken",
+    "advapi32.GetTokenInformation",
+    "advapi32.PrivilegeCheck",
+    "advapi32.CheckTokenMembership",
+    "advapi32.AllocateAndInitializeSid",
+    "advapi32.FreeSid",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+]
+tokengroups = [
+    "advapi32.AdjustTokenGroups",
+    "advapi32.OpenProcessToken",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+]
+setinfo = [
+    "advapi32.SetTokenInformation",
+    "advapi32.OpenProcessToken",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+]
+duprestrict = [
+    "advapi32.DuplicateTokenEx",
+    "advapi32.CreateRestrictedToken",
+    "advapi32.IsTokenRestricted",
+    "advapi32.OpenProcessToken",
+    "advapi32.GetTokenInformation",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+]
+threadtok = [
+    "advapi32.OpenThreadToken",
+    "advapi32.SetThreadToken",
+    "advapi32.ImpersonateSelf",
+    "kernel32.GetCurrentThread",
+    "kernel32.CloseHandle",
+]
+lookupdisp = [
+    "advapi32.LookupPrivilegeDisplayNameA",
+    "advapi32.LookupPrivilegeDisplayNameW",
+]

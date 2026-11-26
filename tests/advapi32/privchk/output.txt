@@ -1,0 +1,130 @@
+# F2K capture of privchk (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sun 22/11/2026  1:13:43.68
+privchk F2KT-SOURCE-CRC=0x7BD2A855
+>>> privchk.exe lookup
+== lookup
+LookupPrivilegeValueA(NULL, "SeShutdownPrivilege"): ret=1 err=997 luid=0:19
+LookupPrivilegeNameA(SeShutdownPrivilege, no buffer): ret=0 err=122; the size needed set
+LookupPrivilegeNameA(SeShutdownPrivilege, the size asked for): ret=1 err=997 name=SeShutdownPrivilege; the size now 19
+LookupPrivilegeNameA(SeShutdownPrivilege, one short): ret=0 err=122
+LookupPrivilegeNameW(SeShutdownPrivilege, 128 units) (W): ret=1 err=997 name=SeShutdownPrivilege
+LookupPrivilegeValueA(NULL, "SeDebugPrivilege"): ret=1 err=997 luid=0:20
+LookupPrivilegeNameA(SeDebugPrivilege, no buffer): ret=0 err=122; the size needed set
+LookupPrivilegeNameA(SeDebugPrivilege, the size asked for): ret=1 err=997 name=SeDebugPrivilege; the size now 16
+LookupPrivilegeNameA(SeDebugPrivilege, one short): ret=0 err=122
+LookupPrivilegeNameW(SeDebugPrivilege, 128 units) (W): ret=1 err=997 name=SeDebugPrivilege
+LookupPrivilegeValueA(NULL, "SeSecurityPrivilege"): ret=1 err=997 luid=0:8
+LookupPrivilegeNameA(SeSecurityPrivilege, no buffer): ret=0 err=122; the size needed set
+LookupPrivilegeNameA(SeSecurityPrivilege, the size asked for): ret=1 err=997 name=SeSecurityPrivilege; the size now 19
+LookupPrivilegeNameA(SeSecurityPrivilege, one short): ret=0 err=122
+LookupPrivilegeNameW(SeSecurityPrivilege, 128 units) (W): ret=1 err=997 name=SeSecurityPrivilege
+LookupPrivilegeValueA(NULL, "SeNoSuchPrivilege"): ret=0 err=1313 luid=0:0
+LookupPrivilegeNameA(an unknown LUID): ret=0 err=1313
+LookupPrivilegeNameW(an unknown LUID) (W): ret=0 err=1313
+LookupPrivilegeValueA(an unknown name): ret=0 err=1313
+LookupPrivilegeValueW(an unknown name) (W): ret=0 err=1313
+LookupPrivilegeValueA(a NULL name): ret=0 err=1313
+privchk: done
+<<< exit code=0
+>>> privchk.exe check
+== check
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES): ret=1 err=-, a handle
+PrivilegeCheck(an empty set): ret=1 err=- result=1
+PrivilegeCheck(SeShutdownPrivilege, disabled): ret=1 err=- result=0
+AdjustTokenPrivileges(SeShutdownPrivilege enable): ret=1 err=0
+PrivilegeCheck(SeShutdownPrivilege, enabled): ret=1 err=- result=1
+AdjustTokenPrivileges(SeShutdownPrivilege disable): ret=1 err=0
+PrivilegeCheck(SeShutdownPrivilege, disabled again): ret=1 err=- result=0
+PrivilegeCheck(SeDebugPrivilege, disabled): ret=1 err=- result=0
+AdjustTokenPrivileges(SeDebugPrivilege enable): ret=1 err=0
+PrivilegeCheck(SeDebugPrivilege, enabled): ret=1 err=- result=1
+AdjustTokenPrivileges(SeDebugPrivilege disable): ret=1 err=0
+PrivilegeCheck(SeDebugPrivilege, disabled again): ret=1 err=- result=0
+privchk: done
+<<< exit code=0
+>>> privchk.exe adjust
+== adjust
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES): ret=1 err=-, a handle
+LookupPrivilegeValueA(NULL, "SeSecurityPrivilege"): ret=1 err=997 luid=0:8
+AdjustTokenPrivileges(enable SeSecurityPrivilege, PreviousState): ret=1 err=0
+  PreviousState: count set; ReturnLength set; one entry's size: yes
+  its entry: luid 0:8, attributes 0x0
+AdjustTokenPrivileges(NewState = that PreviousState, put back): ret=1 err=0
+privchk: done
+<<< exit code=0
+>>> privchk.exe membership
+== membership
+AllocateAndInitializeSid(S-1-5-32-544): ret=1 err=-; S-1-5-32-544
+CreateWellKnownSid(BuiltinAdministrators): ret=1 err=-; S-1-5-32-544
+EqualSid(the two): ret=1 err=0
+CheckTokenMembership(NULL, Everyone (S-1-1-0)): ret=1 err=- IsMember=1
+CheckTokenMembership(NULL, BUILTIN\Administrators): ret=1 err=- IsMember=1
+CheckTokenMembership(NULL, BUILTIN\Users): ret=1 err=- IsMember=1
+CheckTokenMembership(NULL, BUILTIN\Guests): ret=1 err=- IsMember=0
+CheckTokenMembership(NULL, AllocateAndInitializeSid's): ret=1 err=- IsMember=1
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY): ret=1 err=-, a handle
+CheckTokenMembership(the primary token, Everyone (S-1-1-0)): ret=0 err=1309 IsMember=0
+CheckTokenMembership(the primary token, BUILTIN\Administrators): ret=0 err=1309 IsMember=0
+CheckTokenMembership(the primary token, BUILTIN\Guests): ret=0 err=1309 IsMember=0
+FreeSid: returned NULL: yes err=-
+privchk: done
+<<< exit code=0
+>>> privchk.exe duplicate
+== duplicate
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE | TOKEN_ADJUST_PRIVILEGES): ret=1 err=-, a handle
+DuplicateToken(SecurityImpersonation): ret=1 err=-, a handle
+GetTokenInformation(TokenType of the duplicate): ret=1 err=- type=2
+GetTokenInformation(TokenImpersonationLevel of the duplicate): ret=1 err=- level=2
+PrivilegeCheck(SeShutdownPrivilege on the duplicate, disabled): ret=1 err=- result=0
+CheckTokenMembership(the duplicate, BUILTIN\Administrators): ret=1 err=- IsMember=1
+CheckTokenMembership(the duplicate, Everyone (S-1-1-0)): ret=1 err=- IsMember=1
+privchk: done
+<<< exit code=0
+>>> privchk.exe tokengroups
+== tokengroups
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_GROUPS): ret=1 err=-, a handle
+AdjustTokenGroups(ResetToDefault=FALSE, NewState NULL): ret=0 err=87; ReturnLength untouched
+AdjustTokenGroups(NewState one group, PreviousState 4 bytes): ret=1 err=0; ReturnLength untouched
+AdjustTokenGroups(ResetToDefault=TRUE, NewState NULL): ret=1 err=0; ReturnLength untouched
+privchk: done
+<<< exit code=0
+>>> privchk.exe setinfo
+== setinfo
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_ADJUST_PRIVILEGES | TOKEN_ADJUST_GROUPS | TOKEN_ADJUST_DEFAULT): ret=1 err=-, a handle
+SetTokenInformation(class 0xFFFF): ret=0 err=87
+SetTokenInformation(TokenUser, a 4-byte buffer): ret=0 err=87
+SetTokenInformation(TokenType, a read-only class): ret=0 err=87
+privchk: done
+<<< exit code=0
+>>> privchk.exe duprestrict
+== duprestrict
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE): ret=1 err=-, a handle
+DuplicateTokenEx(TOKEN_QUERY, SecurityImpersonation, TokenImpersonation): ret=1 err=-, a handle
+GetTokenInformation(TokenType of the copy): ret=1 err=- type=2
+GetTokenInformation(TokenImpersonationLevel of the copy): ret=1 err=- level=2
+IsTokenRestricted(the DuplicateTokenEx copy): ret=0 err=-
+IsTokenRestricted(the primary token): ret=0 err=-
+CreateRestrictedToken(flags 0, nothing disabled or restricted): ret=1 err=-, a handle
+IsTokenRestricted(the restricted copy): ret=0 err=-
+privchk: done
+<<< exit code=0
+>>> privchk.exe threadtok
+== threadtok
+OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, OpenAsSelf=FALSE): ret=0 err=1008, no handle
+ImpersonateSelf(SecurityImpersonation): ret=1 err=-
+OpenThreadToken(after ImpersonateSelf, OpenAsSelf=TRUE): ret=1 err=-, a handle
+SetThreadToken(NULL, NULL) (revert the impersonation): ret=1 err=-
+SetThreadToken(&current thread, NULL): ret=1 err=-
+privchk: done
+<<< exit code=0
+>>> privchk.exe lookupdisp
+== lookupdisp
+LookupPrivilegeDisplayNameA(NULL, SeShutdownPrivilege, no buffer): ret=0 err=122; cch set lang set
+LookupPrivilegeDisplayNameA(room): ret=1 err=997; cch 20, lang 0x1809, 0x0409: no (the text never prints)
+LookupPrivilegeDisplayNameW(NULL, L"SeShutdownPrivilege") (W): ret=1 err=997; cch 20, lang 0x1809, 0x0409: no
+LookupPrivilegeDisplayNameA(an unknown name): ret=0 err=1313
+privchk: done
+<<< exit code=0

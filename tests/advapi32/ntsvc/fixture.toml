@@ -1,0 +1,109 @@
+# ntsvc: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Declared ahead of its real-machine files: tests\build.bat ntsvc and tests\capture.bat ntsvc
+# land ntsvc.exe and output.txt together on the VM trip; until then the suite skips the
+# fixture (f2kboot.awaited). The NT-gate services are called ntdll-direct through
+# GetProcAddress (the prototypes are declared in ntsvc.c); the fixture sits in advapi32's
+# group because that DLL's behavior is observed. Captured on an administrator account.
+description = "ntsvc - the NT-gate security services called through GetProcAddress on ntdll: NtAccessCheck granted and denied over the process token (ntaccesscheck); NtQueryInformationToken(TokenPrivileges) and NtPrivilegeCheck with an empty set, SeShutdownPrivilege held disabled and SeChangeNotifyPrivilege held enabled (ntprivcheck); NtQuerySecurityObject on a temp file's handle and the process handle with the size query, a short buffer and a closed handle (ntquerysecobj); NtSetSecurityObject with a DACL on the file and process handles, read back, and on a closed handle (ntsetsecobj); and CreateFileA with a SECURITY_ATTRIBUTES carrying an allowing SD, a denying one and a NULL one (createwithsd). advapi32's OpenProcessToken is called directly; NtAccessCheckByType and NtAccessCheckByTypeResultList over a two-GUID list (ntbytype); NtAdjustGroupsToken with a NULL NewState and a too-short PreviousState (ntgroups); NtSetInformationToken with an unknown class, a short buffer and a read-only class (ntsetinfo); NtCreateToken with no object attributes and NtFilterToken with nothing disabled (ntcreatefilter); NtOpenThreadToken on the current thread (ntthreadtok); and RtlAdjustPrivilege enabling and disabling SeShutdownPrivilege (ntrtlpriv). advapi32's OpenProcessToken is called directly."
+kind = "sectioned"
+gate = true
+
+[pending]
+# Every listed block waits for the behavior it pins (the capture is in: tests\capture.bat ntsvc
+# ran on the VM trip); each un-xfails when that behavior lands. The createwithsd block is not
+# pending: its calls are implemented and it passes (the SD at create is accepted, not yet enforced).
+ntaccesscheck = "NtAccessCheck is unimplemented in ntdll and F2K enforces no security descriptor: no access check runs"
+ntprivcheck = "NtPrivilegeCheck and NtQueryInformationToken's privilege class are unimplemented in ntdll: no privilege check runs"
+ntquerysecobj = "NtQuerySecurityObject is unimplemented in ntdll: F2K keeps no security descriptor on an object to query"
+ntsetsecobj = "NtSetSecurityObject is unimplemented in ntdll: F2K keeps no security descriptor to set on an object"
+ntbytype = "NtAccessCheckByType and NtAccessCheckByTypeResultList are unimplemented in ntdll (catalogued only): no by-type access check runs"
+ntgroups = "NtAdjustGroupsToken is unimplemented in ntdll (catalogued only): no group list is adjusted"
+ntsetinfo = "NtSetInformationToken is unimplemented in ntdll (catalogued only): no token information class is set"
+ntcreatefilter = "NtCreateToken and NtFilterToken are unimplemented in ntdll (catalogued only): no token is created or filtered"
+ntthreadtok = "NtOpenThreadToken is unimplemented in ntdll (catalogued only): the thread's token is never opened"
+ntrtlpriv = "RtlAdjustPrivilege is unimplemented in ntdll (catalogued only): no privilege is enabled or disabled through it"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only what a section calls itself, through its own helpers too, never what the C runtime's
+# startup calls.
+ntaccesscheck = [
+    "ntdll.NtAccessCheck",
+    "ntdll.NtOpenProcessToken",
+    "advapi32.OpenProcessToken",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+]
+ntprivcheck = [
+    "ntdll.NtPrivilegeCheck",
+    "ntdll.NtQueryInformationToken",
+    "ntdll.NtOpenProcessToken",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+]
+ntquerysecobj = [
+    "ntdll.NtQuerySecurityObject",
+    "kernel32.CreateFileA",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+    "kernel32.DeleteFileA",
+    "kernel32.GetLastError",
+]
+ntsetsecobj = [
+    "ntdll.NtSetSecurityObject",
+    "ntdll.NtQuerySecurityObject",
+    "kernel32.CreateFileA",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+    "kernel32.DeleteFileA",
+    "kernel32.GetLastError",
+]
+createwithsd = [
+    "kernel32.CreateFileA",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+    "kernel32.DeleteFileA",
+    "kernel32.GetLastError",
+]
+ntbytype = [
+    "ntdll.NtAccessCheckByType",
+    "ntdll.NtAccessCheckByTypeResultList",
+    "ntdll.NtOpenProcessToken",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+]
+ntgroups = [
+    "ntdll.NtAdjustGroupsToken",
+    "ntdll.NtOpenProcessToken",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+]
+ntsetinfo = [
+    "ntdll.NtSetInformationToken",
+    "ntdll.NtOpenProcessToken",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+]
+ntcreatefilter = [
+    "ntdll.NtCreateToken",
+    "ntdll.NtFilterToken",
+    "ntdll.NtOpenProcessToken",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+]
+ntthreadtok = [
+    "ntdll.NtOpenThreadToken",
+    "kernel32.GetCurrentThread",
+    "kernel32.CloseHandle",
+    "kernel32.GetLastError",
+]
+ntrtlpriv = [
+    "ntdll.RtlAdjustPrivilege",
+    "kernel32.GetLastError",
+]

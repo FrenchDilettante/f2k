@@ -1,0 +1,89 @@
+# filesec: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Declared ahead of its real-machine files: tests\build.bat filesec and tests\capture.bat filesec
+# land filesec.exe and output.txt together on the VM trip; until then the suite skips the
+# fixture (f2kboot.awaited). Each section creates filesec.tmp in its own directory and deletes
+# it at its end.
+description = "filesec - file security on a temp file the fixture creates in its own directory: GetFileSecurityA/W and SetFileSecurityA/W round trips (the size query, a byte short, the size asked for, the DACL set and read back with its ACE) (getset); GetNamedSecurityInfoA/W and SetNamedSecurityInfoA/W over the name, GetSecurityInfo and SetSecurityInfo over the handle, with read-back (named); and the error paths: a path that does not exist, a closed handle, a handle opened with no access (errors). the error paths: a path that does not exist, a closed handle, a handle opened with no access (errors); GetNamedSecurityInfoExA/W and SetNamedSecurityInfoExA/W over the name with no provider, property or lists, and on a missing path (namedex); GetKernelObjectSecurity and SetKernelObjectSecurity on the process handle with the size query, the DACL set and read back (kernelobj). The file security and SD/ACL builder calls go through GetProcAddress, so the program loads where advapi32 lacks them."
+kind = "sectioned"
+gate = true
+
+[pending]
+# Every block waits for the behavior it pins; tests/capture.bat filesec fills output.txt on the
+# VM trip, and each block un-xfails when that behavior lands.
+getset = "the file security calls are unimplemented in advapi32 (catalogued only): GetFileSecurityA/W and SetFileSecurityA/W, and F2K keeps no security descriptor on a file to set or read"
+named = "GetNamedSecurityInfoA/W, SetNamedSecurityInfoA/W, GetSecurityInfo and SetSecurityInfo are unimplemented in advapi32 (catalogued only)"
+errors = "the error paths of the file security calls are unimplemented in advapi32 (catalogued only)"
+namedex = "GetNamedSecurityInfoExA/W and SetNamedSecurityInfoExA/W are unimplemented in advapi32 (catalogued only)"
+kernelobj = "GetKernelObjectSecurity and SetKernelObjectSecurity are unimplemented in advapi32 (catalogued only), and F2K keeps no security descriptor on a kernel object"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only what a section calls itself, through its own helpers too, never what the C runtime's
+# startup calls.
+getset = [
+    "advapi32.GetFileSecurityA",
+    "advapi32.GetFileSecurityW",
+    "advapi32.SetFileSecurityA",
+    "advapi32.SetFileSecurityW",
+    "advapi32.InitializeSecurityDescriptor",
+    "advapi32.InitializeAcl",
+    "advapi32.AddAccessAllowedAce",
+    "advapi32.SetSecurityDescriptorDacl",
+    "kernel32.CreateFileA",
+    "kernel32.CloseHandle",
+    "kernel32.DeleteFileA",
+    "kernel32.GetLastError",
+]
+named = [
+    "advapi32.GetNamedSecurityInfoA",
+    "advapi32.GetNamedSecurityInfoW",
+    "advapi32.SetNamedSecurityInfoA",
+    "advapi32.SetNamedSecurityInfoW",
+    "advapi32.GetSecurityInfo",
+    "advapi32.SetSecurityInfo",
+    "advapi32.InitializeSecurityDescriptor",
+    "advapi32.InitializeAcl",
+    "advapi32.AddAccessAllowedAce",
+    "advapi32.SetSecurityDescriptorDacl",
+    "kernel32.CreateFileA",
+    "kernel32.CloseHandle",
+    "kernel32.DeleteFileA",
+    "kernel32.GetLastError",
+]
+errors = [
+    "advapi32.GetFileSecurityA",
+    "advapi32.SetFileSecurityA",
+    "advapi32.GetNamedSecurityInfoA",
+    "advapi32.GetNamedSecurityInfoW",
+    "advapi32.SetNamedSecurityInfoA",
+    "advapi32.GetSecurityInfo",
+    "advapi32.SetSecurityInfo",
+    "advapi32.InitializeSecurityDescriptor",
+    "advapi32.InitializeAcl",
+    "advapi32.AddAccessAllowedAce",
+    "advapi32.SetSecurityDescriptorDacl",
+    "kernel32.CreateFileA",
+    "kernel32.CloseHandle",
+    "kernel32.DeleteFileA",
+    "kernel32.GetLastError",
+]
+namedex = [
+    "advapi32.GetNamedSecurityInfoExA",
+    "advapi32.GetNamedSecurityInfoExW",
+    "advapi32.SetNamedSecurityInfoExA",
+    "advapi32.SetNamedSecurityInfoExW",
+    "kernel32.CreateFileA",
+    "kernel32.CloseHandle",
+    "kernel32.DeleteFileA",
+    "kernel32.GetLastError",
+]
+kernelobj = [
+    "advapi32.GetKernelObjectSecurity",
+    "advapi32.SetKernelObjectSecurity",
+    "advapi32.InitializeSecurityDescriptor",
+    "advapi32.InitializeAcl",
+    "advapi32.AddAccessAllowedAce",
+    "advapi32.SetSecurityDescriptorDacl",
+    "kernel32.GetCurrentProcess",
+    "kernel32.GetLastError",
+]

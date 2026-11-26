@@ -24,7 +24,7 @@ if not "%~1"=="" goto some
 set F2KT_ALL=yes
 call :srcsum
 if errorlevel 1 exit /b 1
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe newcon screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge vmdemand startup lcid ntquery locale atom winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont bitmaps mapmode shapes regions guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl registry token hellomd crt seh fd wide strings process msvcrt cxxeh wmain drvload) do (
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe newcon screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge vmdemand startup lcid ntquery locale atom winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont bitmaps mapmode shapes regions guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl registry token sdacl acccheck filesec keysec privchk ntsvc hellomd crt seh fd wide strings process msvcrt cxxeh wmain drvload) do (
     call :%%F
     if errorlevel 1 exit /b 1
 )
@@ -53,7 +53,7 @@ exit /b 0
 rem Whether %1 names a fixture: an unknown name fails, saying so.
 :known
 set F2KT_ONE=
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe newcon screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge vmdemand startup lcid ntquery locale atom winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont bitmaps mapmode shapes regions guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl registry token hellomd crt seh fd wide strings process msvcrt cxxeh wmain drvload) do if /I "%%F"=="%~1" set F2KT_ONE=yes
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe newcon screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge vmdemand startup lcid ntquery locale atom winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont bitmaps mapmode shapes regions guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl registry token sdacl acccheck filesec keysec privchk ntsvc hellomd crt seh fd wide strings process msvcrt cxxeh wmain drvload) do if /I "%%F"=="%~1" set F2KT_ONE=yes
 if not defined F2KT_ONE (
     echo build.bat: no such fixture %~1
     exit /b 1
@@ -861,6 +861,66 @@ call :stamp token.c
 cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% token.c advapi32.lib
 if errorlevel 1 (echo build.bat: token failed & exit /b 1)
 del token.obj
+cd ..\..
+goto :eof
+
+:sdacl
+echo === sdacl
+cd advapi32\sdacl
+call :stamp sdacl.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% sdacl.c advapi32.lib
+if errorlevel 1 (echo build.bat: sdacl failed & exit /b 1)
+del sdacl.obj
+cd ..\..
+goto :eof
+
+:acccheck
+echo === acccheck
+cd advapi32\acccheck
+call :stamp acccheck.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% acccheck.c advapi32.lib
+if errorlevel 1 (echo build.bat: acccheck failed & exit /b 1)
+del acccheck.obj
+cd ..\..
+goto :eof
+
+:filesec
+echo === filesec
+cd advapi32\filesec
+call :stamp filesec.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% filesec.c advapi32.lib
+if errorlevel 1 (echo build.bat: filesec failed & exit /b 1)
+del filesec.obj
+cd ..\..
+goto :eof
+
+:keysec
+echo === keysec
+cd advapi32\keysec
+call :stamp keysec.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% keysec.c advapi32.lib
+if errorlevel 1 (echo build.bat: keysec failed & exit /b 1)
+del keysec.obj
+cd ..\..
+goto :eof
+
+:privchk
+echo === privchk
+cd advapi32\privchk
+call :stamp privchk.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% privchk.c advapi32.lib
+if errorlevel 1 (echo build.bat: privchk failed & exit /b 1)
+del privchk.obj
+cd ..\..
+goto :eof
+
+:ntsvc
+echo === ntsvc
+cd advapi32\ntsvc
+call :stamp ntsvc.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% ntsvc.c advapi32.lib
+if errorlevel 1 (echo build.bat: ntsvc failed & exit /b 1)
+del ntsvc.obj
 cd ..\..
 goto :eof
 

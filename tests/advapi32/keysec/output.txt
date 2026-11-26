@@ -1,0 +1,55 @@
+# F2K capture of keysec (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sun 22/11/2026  1:14:17.42
+keysec F2KT-SOURCE-CRC=0xB57BC48F
+>>> keysec.exe create
+== create
+RegCreateKeyExA(Software\F2KRegSec, KEY_READ): ret=0 err=-; disposition new, a handle: yes
+RegCloseKey: ret=0 err=-
+RegCreateKeyExW(Software\F2KRegSec, KEY_READ) (W): ret=0 err=-; disposition existing
+RegCloseKey: ret=0 err=-
+RegCreateKeyExA again: ret=0 err=-; disposition existing: yes
+RegCloseKey: ret=0 err=-
+RegCreateKeyExA(an empty subkey name): ret=0 err=-
+RegCreateKeyExA(a bogus root): ret=6 err=-
+RegDeleteKeyA(Software\F2KRegSec): ret=0 err=-
+RegDeleteKeyW(Software\F2KRegSec) (W): ret=2 err=-
+RegDeleteKeyA again (missing): ret=2 err=-
+keysec: done
+<<< exit code=0
+>>> keysec.exe roundtrip
+== roundtrip
+RegCreateKeyExA(Software\F2KRegSec, KEY_ALL_ACCESS): ret=0 err=-, a handle: yes
+RegGetKeySecurity(no buffer): ret=0 err=-; the size needed set
+RegGetKeySecurity(a byte short): ret=122 err=-; the size needed the same: yes; the buffer untouched: yes
+RegGetKeySecurity(the size asked for): ret=0 err=-
+the key's SD: Control 0x8004, owner present: yes, DACL present: no, length 272
+  the owner the one set (S-1-5-32-544): yes
+RegSetKeySecurity(owner|group|DACL, admins/Everyone/allow 0x000F01FF): ret=0 err=-
+RegGetKeySecurity(read back): ret=0 err=-
+the key's SD read back: Control 0x8004, owner present: yes, DACL present: no, length 2048
+  the owner the one set (S-1-5-32-544): yes
+RegSetKeySecurity(DACL alone, allow Everyone 1): ret=0 err=-
+RegGetKeySecurity(DACL, read back): ret=0 err=-
+the DACL read back: Control 0x8004, owner present: no, DACL present: no, length 2048
+RegCloseKey: ret=0 err=-
+RegDeleteKeyA(Software\F2KRegSec): ret=5 err=-
+keysec: done
+<<< exit code=0
+>>> keysec.exe errors
+== errors
+RegGetKeySecurity(a bogus handle): ret=6 err=-
+RegSetKeySecurity(a bogus handle): ret=6 err=-
+RegCreateKeyExA(Software\F2KRegSec, KEY_READ): ret=0 err=-, a handle: yes
+RegSetKeySecurity(a key opened KEY_READ, DACL): ret=5 err=-
+RegGetKeySecurity(a key opened KEY_READ): ret=0 err=-
+RegCloseKey: ret=0 err=-
+RegCreateKeyExW(Software\F2KRegSec, KEY_ALL_ACCESS) (W): ret=0 err=-, a handle: yes
+RegDeleteKeyW(the open key's name): ret=0 err=-
+RegGetKeySecurity(the deleted key's open handle): ret=1018 err=-
+RegSetKeySecurity(the deleted key's open handle): ret=1018 err=-
+RegCloseKey(the deleted key's handle): ret=0 err=-
+keysec: done
+<<< exit code=0

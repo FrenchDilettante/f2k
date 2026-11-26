@@ -1,0 +1,95 @@
+# acccheck: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Declared ahead of its real-machine files: tests\build.bat acccheck and tests\capture.bat acccheck
+# land acccheck.exe and output.txt together on the VM trip; until then the suite skips the
+# fixture (f2kboot.awaited). Captured on an administrator account.
+description = "acccheck - the AccessCheck family over the process handle, with a security descriptor and DACL the fixture builds by hand: a granted request against an allowed mask (allowed), a deny ACE for a well-known SID winning in walk order and the reverse (denied), the token owner's implicit READ_CONTROL/WRITE_DAC (owner), MAXIMUM_ALLOWED (maximum), AccessCheckByType and AccessCheckByTypeResultList over a two-GUID list (bytype), AreAllAccessesGranted and AreAnyAccessesGranted (areall), and WRITE_OWNER/ACCESS_SYSTEM_SECURITY with SeSecurityPrivilege/SeTakeOwnershipPrivilege disabled, enabled and disabled again (priv). WRITE_OWNER/ACCESS_SYSTEM_SECURITY with SeSecurityPrivilege/SeTakeOwnershipPrivilege disabled, enabled and disabled again (priv), and GetEffectiveRightsFromAclA/W over a built DACL for an Everyone trustee (effrights). The advapi32 security calls go through GetProcAddress, so the program loads where advapi32 lacks them."
+kind = "sectioned"
+gate = true
+
+[pending]
+# Every block waits for the behavior it pins; tests/capture.bat acccheck fills output.txt on the
+# VM trip, and each block un-xfails when that behavior lands.
+allowed = "AccessCheck is unimplemented in advapi32 (catalogued only) and F2K enforces no security descriptor, so no access check runs"
+denied = "the deny-first walk order of the access check is unimplemented: AccessCheck is catalogued only in advapi32 and F2K keeps no DACL to walk"
+owner = "the owner's implicit READ_CONTROL/WRITE_DAC in the access check is unimplemented: AccessCheck is catalogued only in advapi32"
+maximum = "the MAXIMUM_ALLOWED fast path of the access check is unimplemented: AccessCheck is catalogued only in advapi32"
+bytype = "AccessCheckByType and AccessCheckByTypeResultList are unimplemented in advapi32 (catalogued only)"
+areall = "AreAllAccessesGranted and AreAnyAccessesGranted are unimplemented in advapi32 (catalogued only)"
+priv = "the privilege-gated rights of the access check (ACCESS_SYSTEM_SECURITY needs SeSecurityPrivilege, WRITE_OWNER needs the owner or SeTakeOwnershipPrivilege) are unimplemented: AccessCheck is catalogued only in advapi32"
+effrights = "GetEffectiveRightsFromAclA/W are unimplemented in advapi32 (catalogued only), so no effective rights are computed from an ACL"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only what a section calls itself, through its own helpers too, never what the C runtime's
+# startup calls.
+allowed = [
+    "advapi32.AccessCheck",
+    "advapi32.OpenProcessToken",
+    "advapi32.AllocateAndInitializeSid",
+    "advapi32.FreeSid",
+    "kernel32.GetCurrentProcess",
+    "kernel32.GetCurrentProcessId",
+    "kernel32.OpenProcess",
+    "kernel32.CloseHandle",
+]
+denied = [
+    "advapi32.AccessCheck",
+    "advapi32.OpenProcessToken",
+    "advapi32.CreateWellKnownSid",
+    "advapi32.EqualSid",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+]
+owner = [
+    "advapi32.AccessCheck",
+    "advapi32.OpenProcessToken",
+    "advapi32.GetTokenInformation",
+    "advapi32.AllocateAndInitializeSid",
+    "advapi32.EqualSid",
+    "advapi32.FreeSid",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+]
+maximum = [
+    "advapi32.AccessCheck",
+    "advapi32.OpenProcessToken",
+    "advapi32.AllocateAndInitializeSid",
+    "advapi32.FreeSid",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+]
+bytype = [
+    "advapi32.AccessCheckByType",
+    "advapi32.AccessCheckByTypeResultList",
+    "advapi32.OpenProcessToken",
+    "advapi32.AllocateAndInitializeSid",
+    "advapi32.FreeSid",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+]
+areall = [
+    "advapi32.AreAllAccessesGranted",
+    "advapi32.AreAnyAccessesGranted",
+    "advapi32.AccessCheck",
+    "advapi32.OpenProcessToken",
+    "advapi32.AllocateAndInitializeSid",
+    "advapi32.FreeSid",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+]
+priv = [
+    "advapi32.AccessCheck",
+    "advapi32.OpenProcessToken",
+    "advapi32.GetTokenInformation",
+    "advapi32.AdjustTokenPrivileges",
+    "advapi32.AllocateAndInitializeSid",
+    "advapi32.CreateWellKnownSid",
+    "advapi32.EqualSid",
+    "advapi32.FreeSid",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+]
+effrights = [
+    "advapi32.GetEffectiveRightsFromAclA",
+    "advapi32.GetEffectiveRightsFromAclW",
+]

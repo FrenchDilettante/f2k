@@ -1,0 +1,83 @@
+# F2K capture of filesec (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sun 22/11/2026  1:13:43.40
+filesec F2KT-SOURCE-CRC=0xE199A774
+>>> filesec.exe getset
+== getset
+CreateFileA(filesec.tmp, access 0xC0000000, CREATE_ALWAYS): a handle err=0
+GetFileSecurityA(filesec.tmp, no buffer): ret=0 err=122; the size needed set
+GetFileSecurityA(a byte short): ret=0 err=122; the size needed the same: yes; the buffer untouched: no
+GetFileSecurityA(the size asked for): ret=1 err=-
+the SD read back: Control 0x8000, owner present: yes, DACL present: no, length 52
+  the owner: a SID: yes
+GetFileSecurityW(filesec.tmp, the size asked for) (W): ret=1 err=-
+the SD read back (W): Control 0x8000, owner present: yes, DACL present: no, length 52
+  the owner: a SID: yes
+SetFileSecurityA(filesec.tmp, DACL, allow Everyone 0x000F01FF): ret=0 err=1
+SetFileSecurityW(filesec.tmp, DACL) (W): ret=0 err=1
+GetFileSecurityA(filesec.tmp, DACL, read back): ret=1 err=-
+the DACL read back: Control 0x8000, owner present: no, DACL present: no, length 20
+GetFileSecurityW(filesec.tmp, DACL, read back) (W): ret=1 err=-
+the DACL read back (W): Control 0x8000, owner present: no, DACL present: no, length 20
+CloseHandle: ret=1 err=-
+DeleteFileA(filesec.tmp): ret=1 err=-
+filesec: done
+<<< exit code=0
+>>> filesec.exe named
+== named
+CreateFileA(filesec.tmp, access 0xC0000000, CREATE_ALWAYS): a handle err=0
+GetNamedSecurityInfoA(filesec.tmp, file, owner|group|DACL): ret=0 err=122; owner set, group set, DACL NULL, SD set
+GetNamedSecurityInfoW(filesec.tmp, file, owner|group|DACL) (W): ret=0 err=122; SD set
+SetNamedSecurityInfoA(filesec.tmp, file, DACL, allow Everyone 0x000F01FF): ret=1 err=1
+SetNamedSecurityInfoW(filesec.tmp, file, DACL) (W): ret=1 err=1
+GetNamedSecurityInfoA(filesec.tmp, DACL, read back): ret=0 err=122; DACL NULL
+GetSecurityInfo(the handle, file, owner|group|DACL): ret=0 err=122; SD set
+SetSecurityInfo(the handle, file, DACL, allow Everyone 1): ret=5 err=5
+GetSecurityInfo(the handle, DACL, read back): ret=0 err=122; DACL NULL
+CloseHandle: ret=1 err=-
+DeleteFileA(filesec.tmp): ret=1 err=-
+filesec: done
+<<< exit code=0
+>>> filesec.exe errors
+== errors
+GetFileSecurityA(a path that does not exist): ret=0 err=2; the size needed untouched
+SetFileSecurityA(a path that does not exist): ret=0 err=2
+GetNamedSecurityInfoA(a path that does not exist): ret=2 err=0
+GetNamedSecurityInfoW(a path that does not exist) (W): ret=2 err=-
+SetNamedSecurityInfoA(a path that does not exist): ret=2 err=-
+CreateFileA(filesec.tmp, access 0xC0000000, CREATE_ALWAYS): a handle err=0
+CloseHandle: ret=1 err=-
+GetSecurityInfo(a closed handle): ret=6 err=6
+SetSecurityInfo(a closed handle): ret=6 err=6
+CreateFileA(filesec.tmp, access 0x00000000, CREATE_ALWAYS): a handle err=183
+GetSecurityInfo(a handle opened with no access, owner): ret=5 err=5
+SetSecurityInfo(a handle opened with no access, DACL): ret=5 err=5
+CloseHandle: ret=1 err=-
+DeleteFileA(filesec.tmp): ret=1 err=-
+filesec: done
+<<< exit code=0
+>>> filesec.exe namedex
+== namedex
+CreateFileA(filesec.tmp, access 0xC0000000, CREATE_ALWAYS): a handle err=0
+GetNamedSecurityInfoExA(filesec.tmp, file, owner|group|DACL, no provider): ret=0 err=1332; access set, audit NULL, owner set, group set
+GetNamedSecurityInfoExW(filesec.tmp, file, owner|group|DACL, no provider) (W): ret=0 err=1332; owner set
+SetNamedSecurityInfoExA(filesec.tmp, file, DACL, no lists): ret=1 err=1008
+SetNamedSecurityInfoExW(filesec.tmp, file, DACL, no lists) (W): ret=1 err=1008
+GetNamedSecurityInfoExA(a path that does not exist): ret=87 err=-
+CloseHandle: ret=1 err=-
+DeleteFileA(filesec.tmp): ret=1 err=-
+filesec: done
+<<< exit code=0
+>>> filesec.exe kernelobj
+== kernelobj
+GetKernelObjectSecurity(the process handle, no buffer): ret=0 err=122; the size needed set
+GetKernelObjectSecurity(the size asked for): ret=1 err=-
+the process's SD: Control 0x8004, owner present: yes, DACL present: no, length 116
+  the owner: a SID: yes
+SetKernelObjectSecurity(the process handle, DACL, allow Everyone 0x000F01FF): ret=1 err=-
+GetKernelObjectSecurity(the process handle, DACL, read back): ret=1 err=-
+the process's DACL read back: Control 0x8004, owner present: no, DACL present: no, length 1044
+filesec: done
+<<< exit code=0
