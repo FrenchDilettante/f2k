@@ -1,5 +1,5 @@
-//! The painting: InvalidateRect, ValidateRect, GetUpdateRect, BeginPaint and EndPaint, each over
-//! its win32k service ([`imports`]).
+//! The painting: InvalidateRect, ValidateRect, InvalidateRgn, ValidateRgn, GetUpdateRect,
+//! GetUpdateRgn, BeginPaint and EndPaint, each over its win32k service ([`imports`]).
 //!
 //! The erase: Windows 2000's BeginPaint (and GetUpdateRect, asked to erase) sends WM_ERASEBKGND
 //! itself. win32k cannot send it (it calls no user-mode code), so its services report the pending
@@ -42,6 +42,39 @@ pub extern "system" fn get_update_rect(window: usize, rect: *mut Rect, erase: u3
         }
     }
     (bits & UPDATE_NOT_EMPTY != 0) as u32
+}
+
+/// InvalidateRgn: the region (client coordinates; NULL: the whole client area) added to the
+/// window's update region, its background to be erased when `erase` says; TRUE, or FALSE with
+/// 1400 for a handle naming no window.
+#[unsafe(export_name = "f2k_export_InvalidateRgn")]
+pub extern "system" fn invalidate_rgn(window: usize, region: usize, erase: u32) -> u32 {
+    answered(imports::invalidate_rgn(window, region, erase != 0)).is_some() as u32
+}
+
+/// ValidateRgn: the region (NULL: all of it) taken out of the window's update region; TRUE, or
+/// FALSE with 1400 for a handle naming no window.
+#[unsafe(export_name = "f2k_export_ValidateRgn")]
+pub extern "system" fn validate_rgn(window: usize, region: usize) -> u32 {
+    answered(imports::validate_rgn(window, region)).is_some() as u32
+}
+
+/// GetUpdateRgn: the region made a copy of the window's update region (client coordinates; the
+/// empty region for none); with `erase`, a pending erase carried out as GetUpdateRect's. The
+/// region's complexity; ERROR, with 1400 for a handle naming no window.
+#[unsafe(export_name = "f2k_export_GetUpdateRgn")]
+pub extern "system" fn get_update_rgn(window: usize, region: usize, erase: u32) -> i32 {
+    let Some((complexity, erased)) = answered(imports::update_rgn(window, region, erase != 0))
+    else {
+        return rtl::gdi::ERROR;
+    };
+    if erased {
+        if let Ok(dc) = imports::get_dc(window) {
+            let _ = message::send(window, WM_ERASEBKGND, dc, 0);
+            let _ = imports::delete_dc(dc as usize);
+        }
+    }
+    complexity
 }
 
 /// BeginPaint: the window prepared for painting, its PAINTSTRUCT filled (the DC, clipped to the

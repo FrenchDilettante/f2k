@@ -718,10 +718,13 @@ pub const HWND_LOCK_ACTIVATE_FOCUS: u32 = 2;
 /// procedure's WM_SETREDRAW (the parameter is its wParam: the window's WS_VISIBLE set or cleared,
 /// nothing shown, hidden or painted; the result 0); the default window procedure's
 /// WM_WINDOWPOSCHANGING (the parameter is the WINDOWPOS's address: a resize's size clamped into
-/// the window's tracking sizes, as WM_GETMINMAXINFO answers them, in place; the result 0).
+/// the window's tracking sizes, as WM_GETMINMAXINFO answers them, in place; the result 0);
+/// ValidateRgn (the parameter is the region's handle, 0 for all of the update region: Windows
+/// 2000's SFI_XXXVALIDATERGN; the result 0).
 pub const HWND_PARAM_LOCK_ENABLE_WINDOW: u32 = 0;
 pub const HWND_PARAM_LOCK_SET_REDRAW: u32 = 1;
 pub const HWND_PARAM_LOCK_WINDOW_POS_CHANGING: u32 = 2;
+pub const HWND_PARAM_LOCK_VALIDATE_RGN: u32 = 3;
 
 /// NtUserGetThreadState's routines: the calling thread's focus window (GetFocus) and its active
 /// window (GetActiveWindow); the time and the cursor position (x in the low word, y in the high

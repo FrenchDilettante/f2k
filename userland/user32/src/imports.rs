@@ -576,6 +576,15 @@ mod raw {
         pub fn NtUserInvalidateRect(window: usize, rect: usize, erase: u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserValidateRect"]
         pub fn NtUserValidateRect(window: usize, rect: usize) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserInvalidateRgn"]
+        pub fn NtUserInvalidateRgn(window: usize, region: usize, erase: u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserGetUpdateRgn"]
+        pub fn NtUserGetUpdateRgn(
+            window: usize,
+            region: usize,
+            erase: u32,
+            result: *mut u32,
+        ) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserGetUpdateRect"]
         pub fn NtUserGetUpdateRect(window: usize, rect: usize, erase: u32, result: *mut u32)
             -> u32;
@@ -2137,6 +2146,36 @@ pub fn invalidate_rect(window: usize, rect: usize, erase: bool) -> Result<(), Nt
 pub fn validate_rect(window: usize, rect: usize) -> Result<(), NtStatus> {
     // SAFETY: the kernel reads the rectangle through its fault-tolerant copies.
     checked(unsafe { raw::NtUserValidateRect(window, rect) })
+}
+
+/// NtUserInvalidateRgn: the region `region` (zero: the client area) added to `window`'s update
+/// region.
+pub fn invalidate_rgn(window: usize, region: usize, erase: bool) -> Result<(), NtStatus> {
+    // SAFETY: no memory changes hands.
+    checked(unsafe { raw::NtUserInvalidateRgn(window, region, erase as u32) })
+}
+
+/// NtUserCallHwndParamLock's ValidateRgn: the region `region` (zero: all of it) taken out of
+/// `window`'s update region.
+pub fn validate_rgn(window: usize, region: usize) -> Result<(), NtStatus> {
+    call_hwnd_param_lock(
+        window,
+        region as u32,
+        rtl::user::HWND_PARAM_LOCK_VALIDATE_RGN,
+    )
+    .map(|_| ())
+}
+
+/// NtUserGetUpdateRgn: `region` made a copy of `window`'s update region; its complexity, and
+/// whether a pending erase was handed over (asked with `erase`).
+pub fn update_rgn(window: usize, region: usize, erase: bool) -> Result<(i32, bool), NtStatus> {
+    let mut result = 0u32;
+    // SAFETY: the kernel writes the answer into the local.
+    checked(unsafe { raw::NtUserGetUpdateRgn(window, region, erase as u32, &mut result) })?;
+    Ok((
+        (result & 0xFFFF) as u16 as i16 as i32,
+        (result >> 16) & rtl::user::UPDATE_ERASE != 0,
+    ))
 }
 
 /// NtUserGetUpdateRect: `window`'s update region's box into the RECT at `rect` (zero: none), its
