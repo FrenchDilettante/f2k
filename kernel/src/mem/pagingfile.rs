@@ -1,7 +1,8 @@
 //! The paging file: the boot volume's disposable backing store for pages paged out of memory.
 //!
-//! The file is created fresh at each boot — its contents are never needed across boots, so it
-//! carries no header and there is no recovery — sized from the volume's free space, and laid out
+//! The boot takes over the file an earlier boot (or the disk's build) left, making one only when
+//! there is none — its contents are never needed across boots, so it carries no header, there is
+//! no recovery and nothing is cleared — sized from the volume's free space, and laid out
 //! as a flat array of 4 KiB pages: slot `s` lives at byte offset `s * 4096`. Slot 0 is reserved
 //! and never handed out, so a zero slot index reads as "no page". Which slots are allocated is
 //! kept in an in-memory bitmap; the disk I/O itself goes through [`PageStore`], which the kernel
@@ -34,11 +35,12 @@ pub const EXTEND_PAGES: u64 = 1024;
 /// keeps this much of its free space for the files written beside the paging file.
 pub const FREE_SPACE_RESERVE_BYTES: u64 = 8 * 1024 * 1024;
 
-/// The largest paging file the boot makes fresh, in pages: 2048 (8 MiB). The file is made anew at
-/// every boot and on this volume a cluster is one sector, so its length costs the device one
+/// The paging file's size at boot, at most, in pages: 2048 (8 MiB). A boot that finds no file
+/// makes it, and on this volume a cluster is one sector, so its length costs the device one
 /// allocation per 512 bytes — the boot keeps the file to what it can afford to write and lets it
 /// grow in [`EXTEND_PAGES`] chunks (which is also what raises the commit limit) when the allocator
-/// runs out of room.
+/// runs out of room; the next boot cuts it back to this size, as Windows 2000 shrinks a paging
+/// file back to its initial size.
 pub const BOOT_MAX_PAGES: u64 = 2048;
 
 /// The paging file's size in bytes from the volume's free space: whole pages of what the reserve
@@ -65,9 +67,9 @@ pub enum StoreError {
 }
 
 /// The paging file's disk side: whole-page reads and writes at byte offsets, and setting the
-/// file's length. The kernel's adapter wires this to the paging file on the boot volume (made
-/// fresh at each boot, so a fresh store's first [`PageStore::set_len`] creates the file); host
-/// tests drive it over a RAM disk.
+/// file's length. The kernel's adapter wires this to the paging file on the boot volume (kept
+/// across boots, or made empty by the boot that found none, which a first [`PageStore::set_len`]
+/// then sizes); host tests drive it over a RAM disk.
 pub trait PageStore {
     /// Read the page at byte `offset` into `page`.
     fn read_at(&mut self, offset: u64, page: &mut Page) -> Result<(), StoreError>;
@@ -118,18 +120,41 @@ impl<S: PageStore> PagingFile<S> {
     /// [`MAX_PAGES`]): the store is asked to make the file that long, and slots `1..pages` start
     /// free. The store's refusal comes back as the error.
     pub fn create(mut store: S, size: u64) -> Result<PagingFile<S>, StoreError> {
-        let pages = size.div_ceil(PAGE_BYTES as u64).min(MAX_PAGES);
+        let pages = Self::pages_for(size);
         store.set_len(pages * PAGE_BYTES as u64)?;
+        Ok(Self::with_pages(store, pages))
+    }
+
+    /// Take over the paging file an earlier boot (or setup) left, `current` bytes long, at `size`
+    /// bytes (rounded and capped as [`Self::create`]'s): the store is asked for the new length only
+    /// when it differs — a longer file is cut back, a shorter one grown — and nothing is written
+    /// otherwise, the old contents being never read before they are written. Every slot but the
+    /// reserved one starts free. The store's refusal comes back as the error.
+    pub fn reuse(mut store: S, current: u64, size: u64) -> Result<PagingFile<S>, StoreError> {
+        let pages = Self::pages_for(size);
+        if current != pages * PAGE_BYTES as u64 {
+            store.set_len(pages * PAGE_BYTES as u64)?;
+        }
+        Ok(Self::with_pages(store, pages))
+    }
+
+    /// `size` bytes in whole pages, capped at [`MAX_PAGES`].
+    fn pages_for(size: u64) -> u64 {
+        size.div_ceil(PAGE_BYTES as u64).min(MAX_PAGES)
+    }
+
+    /// The file over a store already `pages` long: slots `1..pages` free, slot 0 reserved.
+    fn with_pages(store: S, pages: u64) -> PagingFile<S> {
         let mut bitmap = [u64::MAX; MAX_WORDS];
         // Every bit starts set; the file's own slots come out free, slot 0 staying reserved.
         clear_bits(&mut bitmap, 1, pages);
-        Ok(PagingFile {
+        PagingFile {
             store,
             bitmap,
             pages,
             used: 0,
             next: 1,
-        })
+        }
     }
 
     /// The file's length in pages: its size in pages for the commit limit.
@@ -358,11 +383,12 @@ impl<S: PageStore> PagingIo for FileIo<'_, S> {
 // The kernel wires the paging file to a file on the boot volume: [`BootVolumeStore`] adapts the
 // volume's file layer to [`PageStore`] — whole-page reads and writes at byte offsets and setting
 // the file's length, each operation inside the volume's own locked section — and [`boot_create`]
-// makes the file fresh at boot and sets the commit limit from it. Page I/O goes straight to the
-// device along the file's runs ([`Extents`], made again whenever the length changes), with no chain
-// walk and no directory-entry update, as Windows 2000's paging I/O does; a file in too many pieces
-// for the map goes through the file layer. The system holds the file open for its life, sharing
-// nothing, so no process opens it (its pages are other processes' memory and stale disk contents).
+// takes over (or makes) the file at boot and sets the commit limit from it. Page I/O goes straight
+// to the device along the file's runs ([`Extents`], made again whenever the length changes), with
+// no chain walk and no directory-entry update, as Windows 2000's paging I/O does; a file in too
+// many pieces for the map goes through the file layer. The system holds the file open for its life,
+// sharing nothing, so no process opens it (its pages are other processes' memory and stale disk
+// contents).
 
 #[cfg(target_arch = "x86")]
 mod target {
@@ -565,36 +591,28 @@ mod target {
         FileIo::new(file)
     }
 
-    /// Take the entry named [`PAGING_FILE_NAME`] off the volume, when it is a file: the paging
-    /// file is made fresh at each boot, so one left by an earlier boot goes first.
-    fn remove_existing() {
-        let _ = with_boot_volume(|volume| match lookup::lookup(volume, PAGING_FILE_NAME) {
-            Ok(file) if !file.directory => write::delete(volume, &file),
-            _ => Ok(()),
-        });
+    /// The paging file's attributes, as the memory manager's create sets them.
+    const ATTRIBUTES: u8 = ATTR_HIDDEN | ATTR_SYSTEM;
+
+    /// The file named [`PAGING_FILE_NAME`] an earlier boot (or the disk's build, as Windows 2000's
+    /// setup leaves one) left on the volume, with its runs; none when there is none, or the name
+    /// is a directory's.
+    fn existing() -> Option<(File, Option<Extents>)> {
+        with_boot_volume(|volume| match lookup::lookup(volume, PAGING_FILE_NAME) {
+            Ok(file) if !file.directory => {
+                let extents = Extents::of(volume, &file).ok().flatten();
+                Some((file, extents))
+            }
+            _ => None,
+        })
+        .flatten()
     }
 
-    /// Make the paging file fresh on the boot volume — sized from the volume's free space (see
-    /// [`super::size_from_free_space`]) — and set the system's commit limit to physical memory
-    /// plus the file's size. Boot context, after the volume's mount. A boot with no volume, or
-    /// whose volume cannot hold the file, leaves the limit at physical memory.
-    pub fn boot_create() {
-        PAGING_FILE.init();
-        let free_bytes = with_boot_volume(|volume| {
-            let cluster = u64::from(volume.layout().sectors_per_cluster) * 512;
-            volume.free_clusters().map(|free| u64::from(free) * cluster)
-        });
-        let Some(Ok(free_bytes)) = free_bytes else {
-            return;
-        };
-        // Physical memory while the limit is unset: the boot's physical pages.
-        let ram_bytes = crate::mem::system_commit_limit();
-        let (size, limit) = boot_sizing(free_bytes, ram_bytes);
-
-        remove_existing();
-        let file = match with_boot_volume(|volume| -> Result<File, NtStatus> {
+    /// Make the paging file's entry, empty, in the volume's root.
+    fn create_entry() -> Option<File> {
+        with_boot_volume(|volume| -> Result<File, NtStatus> {
             let mut file = File::plain(0, 0, false);
-            file.attributes = ATTR_HIDDEN | ATTR_SYSTEM;
+            file.attributes = ATTRIBUTES;
             file.times = crate::fs::io::now();
             write::create_entry(
                 volume,
@@ -603,29 +621,70 @@ mod target {
                 &mut file,
             )?;
             Ok(file)
-        }) {
-            Some(Ok(file)) => file,
-            _ => return,
+        })?
+        .ok()
+    }
+
+    /// Set up the paging file on the boot volume — reusing the one an earlier boot (or the disk's
+    /// build) left, made only when there is none — sized from the volume's free space (see
+    /// [`super::size_from_free_space`]; the old file's clusters count as free, being the paging
+    /// file's to keep), and set the system's commit limit to physical memory plus the file's size.
+    /// As Windows 2000's memory manager does (MmCreatePagingFile, which SMSS calls at each boot),
+    /// an old file longer than the size is cut back, a shorter one grown, and its contents are
+    /// never cleared: no slot is read before it is written. Boot context, after the volume's mount.
+    /// A boot with no volume, or whose volume cannot hold the file, leaves the limit at physical
+    /// memory.
+    pub fn boot_create() {
+        PAGING_FILE.init();
+        let existing = existing();
+        let free_bytes = with_boot_volume(|volume| {
+            let cluster = u64::from(volume.layout().sectors_per_cluster) * 512;
+            let kept = existing.as_ref().map_or(0, |(file, _)| {
+                u64::from(file.size).div_ceil(cluster) * cluster
+            });
+            volume
+                .free_clusters()
+                .map(|free| u64::from(free) * cluster + kept)
+        });
+        let Some(Ok(free_bytes)) = free_bytes else {
+            return;
         };
+        // Physical memory while the limit is unset: the boot's physical pages.
+        let ram_bytes = crate::mem::system_commit_limit();
+        let (size, limit) = boot_sizing(free_bytes, ram_bytes);
+
+        let (mut file, extents) = match existing {
+            Some(existing) => existing,
+            None => match create_entry() {
+                Some(file) => (file, None),
+                None => return,
+            },
+        };
+        let current = u64::from(file.size);
+        if file.attributes != ATTRIBUTES {
+            // The create's attributes, as Windows 2000's supersede of the old file sets them.
+            file.attributes = ATTRIBUTES;
+            if with_boot_volume(|volume| write::update_entry(volume, &file)) != Some(Ok(())) {
+                return;
+            }
+        }
         // The memory manager's open of the file (IoCreateFile with SL_OPEN_PAGING_FILE), held for
         // the system's life: no process opens the file after it.
         let Ok(record) = with_records(|records| records.open_system(file, SYSTEM_ACCESS)) else {
-            remove_existing();
             return;
         };
         let store = BootVolumeStore {
             file,
             record,
-            extents: None,
+            extents,
         };
-        let file = match PagingFile::create(store, size) {
+        let file = match PagingFile::reuse(store, current, size) {
             Ok(file) => file,
             Err(_) => {
                 with_records(|records| {
                     let _ = records.cleanup(record, SYSTEM_ACCESS, 0, false);
                     records.close(record);
                 });
-                remove_existing();
                 return;
             }
         };
@@ -633,8 +692,8 @@ mod target {
         let pages = file.pages();
         PAGING_FILE.with(|slot| *slot = Some(file));
         // Leave the volume as the boot found it: the file's writes are all on disk, so the flush
-        // counts its free clusters into FSInfo and marks it clean, and a shutdown later finds
-        // nothing to write.
+        // counts its free clusters into FSInfo and marks it clean (nothing to do when the old file
+        // was kept as it was), and a shutdown later finds nothing to write.
         let _ = with_boot_volume(|volume| volume.flush());
         crate::serial_println!(
             "F2K: paging file: {} pages ({} MiB), commit limit {} pages",
@@ -712,6 +771,8 @@ mod tests {
         fail: bool,
         reads: Vec<u64>,
         writes: Vec<u64>,
+        /// The lengths `set_len` was asked for, in order.
+        lens: Vec<u64>,
     }
 
     impl RamDisk {
@@ -722,7 +783,15 @@ mod tests {
                 fail: false,
                 reads: Vec::new(),
                 writes: Vec::new(),
+                lens: Vec::new(),
             }
+        }
+
+        /// A disk holding an earlier boot's file: `pages` pages of `byte`.
+        fn holding(pages: u64, byte: u8) -> RamDisk {
+            let mut disk = RamDisk::new(u64::MAX);
+            disk.data = vec![byte; pages as usize * PAGE_BYTES];
+            disk
         }
     }
 
@@ -762,6 +831,7 @@ mod tests {
             if len > self.max {
                 return Err(StoreError::NoSpace);
             }
+            self.lens.push(len);
             self.data.resize(len as usize, 0);
             Ok(())
         }
@@ -811,6 +881,62 @@ mod tests {
         assert_eq!(
             PagingFile::create(disk, PAGE_BYTES as u64).err().unwrap(),
             StoreError::Io
+        );
+    }
+
+    /// An earlier boot's file of the right length is taken over as it is: no length is set and
+    /// nothing written, its old contents left in place, and every slot but the reserved one free.
+    #[test]
+    fn reuse_keeps_a_file_of_the_right_length_untouched() {
+        let size = 8 * PAGE_BYTES as u64;
+        let mut file = PagingFile::reuse(RamDisk::holding(8, 0xC5), size, size).unwrap();
+        assert_eq!(file.pages(), 8);
+        assert!(file.store().lens.is_empty(), "the length was kept");
+        assert!(file.store().writes.is_empty(), "nothing was written");
+        assert!(
+            file.store().data.iter().all(|&byte| byte == 0xC5),
+            "the old contents were not cleared"
+        );
+        assert_eq!((file.used(), file.free_slots()), (0, 7));
+        assert_eq!(file.allocate_slot(), Some(1), "slot 0 stays reserved");
+        file.write_page(1, &page(0x11)).unwrap();
+        let mut back = page(0);
+        file.read_page(1, &mut back).unwrap();
+        assert_eq!(back, page(0x11));
+    }
+
+    /// A longer file is cut back to the size and a shorter one grown, the kept part's old bytes
+    /// left alone; a length off the page grid is set to whole pages.
+    #[test]
+    fn reuse_cuts_a_longer_file_back_and_grows_a_shorter_one() {
+        let page_bytes = PAGE_BYTES as u64;
+        let file =
+            PagingFile::reuse(RamDisk::holding(12, 0xC5), 12 * page_bytes, 8 * page_bytes).unwrap();
+        assert_eq!(file.pages(), 8);
+        assert_eq!(file.store().lens, [8 * page_bytes], "cut back to the size");
+        assert_eq!(file.store().data.len(), 8 * PAGE_BYTES);
+        assert!(file.store().data.iter().all(|&byte| byte == 0xC5));
+        assert!(!file.is_allocated(8), "past the new end is no slot");
+
+        let file =
+            PagingFile::reuse(RamDisk::holding(4, 0xC5), 4 * page_bytes, 8 * page_bytes).unwrap();
+        assert_eq!(file.pages(), 8);
+        assert_eq!(file.store().lens, [8 * page_bytes], "grown to the size");
+        assert_eq!(file.free_slots(), 7);
+        assert!(file.store().writes.is_empty(), "the growth writes nothing");
+
+        let file = PagingFile::reuse(RamDisk::holding(4, 0), 4 * page_bytes - 100, 4 * page_bytes)
+            .unwrap();
+        assert_eq!(file.store().lens, [4 * page_bytes], "whole pages");
+
+        let mut disk = RamDisk::holding(4, 0);
+        disk.max = 6 * page_bytes;
+        assert_eq!(
+            PagingFile::reuse(disk, 4 * page_bytes, 8 * page_bytes)
+                .err()
+                .unwrap(),
+            StoreError::NoSpace,
+            "a growth the store refuses comes back as its error"
         );
     }
 
