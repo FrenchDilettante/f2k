@@ -34,6 +34,17 @@ import f2kboot
 DEFAULT_FORBIDS = ("KERNEL PANIC", "F2K: object audit FAILED")
 DEFAULT_TIMEOUT = 10.0
 
+# The base profile: the subsystem table's Boot rows, which every boot starts (kernel/src/boot/subsys.rs).
+BASE_PROFILE = (
+    "com1", "cpu", "memory", "console", "registry", "quantum", "io", "interrupts", "scheduler",
+    "ramdisk", "block", "bootvol", "pagingfile", "ntdll",
+)
+# Every subsystem, as a boot without `subsys=` starts them, and reports them.
+ALL_SUBSYSTEMS = (
+    "F2K: subsystems: com1,cpu,memory,console,registry,quantum,io,interrupts,scheduler,winsta,pci,"
+    "devtree,ramdisk,ide,keyboard,block,bootvol,pagingfile,fonts,ntdll (20 of 20)"
+)
+
 # Every full boot's own checks, before any program runs.
 BOOTED = (
     "F2K Booted Successfully",
@@ -502,7 +513,8 @@ CASES = (
     *both_paths(
         "boot-smoke",
         "full boot through the first PE image (exit0) to its exit syscall, no command line",
-        expects=(*BOOTED, "F2K: image loaded", "F2K: entering ring 3", *EXITED_CLEAN),
+        ordered=True,
+        expects=(*BOOTED, ALL_SUBSYSTEMS, "F2K: image loaded", "F2K: entering ring 3", *EXITED_CLEAN),
         forbids=("F2K: command line:",),
     ),
     *program_smoke(
@@ -799,6 +811,64 @@ CASES = (
             "F2K: nest-smoke: both served, the disk's after the keyboard's; interrupt audit: ok",
             "F2K: entering ring 3",
             *EXITED_CLEAN,
+        ),
+    ),
+    # Boot-time selection (kernel/src/boot/subsys.rs): `subsys=` on the kernel command line names
+    # the subsystems beyond the base profile; the boot starts those, what they depend on and every
+    # Boot row, and reports the set. The base profile alone runs a console program from the RAM
+    # disk, with no PCI scan, IDE disk, keyboard or win32k.
+    Case(
+        name="subsys-base",
+        description="the base profile alone (subsys= naming nothing) starts the fourteen Boot rows, reports them, and runs a console program clean",
+        image="kernel",
+        storage="ram",
+        cmdline="hello.exe",
+        kernel_options="subsys=",
+        ordered=True,
+        expects=(
+            *BOOTED,
+            f"F2K: subsystems: {','.join(BASE_PROFILE)} ({len(BASE_PROFILE)} of 20)",
+            "F2K: image loaded",
+            "F2K: entering ring 3",
+            "Hello, world!",
+            *EXITED_CLEAN,
+        ),
+        forbids=("F2K: pci:", "F2K: dev:", "F2K: ide:", "F2K: kbd:"),
+    ),
+    Case(
+        name="subsys-ide",
+        description="subsys=ide starts the IDE disk and the PCI scan it depends on beside the base profile, not the device tree, the keyboard or win32k",
+        image="kernel",
+        storage="ram",
+        cmdline="hello.exe",
+        kernel_options="subsys=ide",
+        ordered=True,
+        expects=(
+            *BOOTED,
+            "F2K: pci: 5 devices",
+            "F2K: ide: no disk on the primary master",
+            "F2K: subsystems: com1,cpu,memory,console,registry,quantum,io,interrupts,scheduler,pci,ramdisk,ide,block,bootvol,pagingfile,ntdll (16 of 20)",
+            "Hello, world!",
+            *EXITED_CLEAN,
+        ),
+        forbids=("F2K: dev:",),
+    ),
+    # A program's win32k service on a boot without win32k: refused with
+    # STATUS_INVALID_SYSTEM_SERVICE (Windows 2000's answer when win32k is not loaded), the first
+    # refusal reported on COM1; user32's attach fails and the process ends, never served against a
+    # window station that was not made.
+    Case(
+        name="subsys-unstarted",
+        description="a GUI program on the base profile: its first win32k service is refused loudly (a COM1 line, STATUS_INVALID_SYSTEM_SERVICE), and the boot carries on to the program's end",
+        image="kernel",
+        storage="ram",
+        cmdline="CORPUS\\winsta.exe handles",
+        kernel_options="subsys=",
+        ordered=True,
+        expects=(
+            "F2K: entering ring 3",
+            "re:^F2K: win32k service 0x1[0-9a-f]{3} refused: subsystem winsta,fonts not started \\(subsys=\\), STATUS_INVALID_SYSTEM_SERVICE$",
+            "F2K: teardown audit: frame database ok",
         ),
     ),
 )
