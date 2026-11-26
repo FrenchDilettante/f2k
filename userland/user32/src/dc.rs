@@ -2,105 +2,48 @@
 //! services ([`imports`]).
 //!
 //! A DC is a GDI object of the calling process; ReleaseDC deletes it (gdi32's DeleteDC). user32
-//! keeps the DCs the family handed out with their windows ([`Handed`]): WindowFromDC answers from
-//! there (no service answers a DC's window: the kernel's DCs are the screen's, the window a seam),
-//! and ReleaseDC releases those alone, as its documentation says (a CreateDC DC goes to DeleteDC).
-
-use core::sync::atomic::{AtomicU64, Ordering};
+//! keeps the DCs the family handed out with their windows ([`HANDED_DCS`]): WindowFromDC answers
+//! from there (no service answers a DC's window: the kernel's DCs are the screen's, the window a
+//! seam), and ReleaseDC releases those alone, as its documentation says (a CreateDC DC goes to
+//! DeleteDC).
+//!
+//! A process may hold as many as it likes at once: Windows 2000 hands them out of a DC cache it
+//! grows on demand (the GDI handle quota its only bound), and F2K's list grows on the process heap
+//! the same way ([`crate::records`]), a record a DC, gone with its ReleaseDC.
 
 use rtl::status::NtStatus;
 
 use crate::imports;
+use crate::records::Table;
 use crate::window::is_window_alive;
 use crate::{answered, failed, ERROR_INVALID_WINDOW_HANDLE, ERROR_NOT_ENOUGH_MEMORY};
 
-/// How many DCs of the family a process holds at once.
-const HANDED: usize = 64;
-
-/// The DCs the family handed out and not released yet: each slot the DC's handle in its low
-/// dword and its window's in the high one, zero for a free slot. Shared by the process's
-/// threads: a slot is taken and freed by one compare-and-swap.
-struct Handed([AtomicU64; HANDED]);
-
-static HANDED_DCS: Handed = Handed([const { AtomicU64::new(0) }; HANDED]);
-
-impl Handed {
-    /// Keep `dc` of `window`; false when every slot is taken.
-    fn keep(&self, dc: u32, window: u32) -> bool {
-        let entry = u64::from(window) << 32 | u64::from(dc);
-        self.0.iter().any(|slot| {
-            slot.compare_exchange(0, entry, Ordering::AcqRel, Ordering::Relaxed)
-                .is_ok()
-        })
-    }
-
-    /// The window `dc` was handed out for, when it was.
-    fn window_of(&self, dc: u32) -> Option<u32> {
-        self.0
-            .iter()
-            .map(|slot| slot.load(Ordering::Acquire))
-            .find(|&entry| entry != 0 && entry as u32 == dc)
-            .map(|entry| (entry >> 32) as u32)
-    }
-
-    /// Forget `dc`; false when it was not handed out.
-    fn forget(&self, dc: u32) -> bool {
-        self.0.iter().any(|slot| {
-            let entry = slot.load(Ordering::Acquire);
-            entry != 0
-                && entry as u32 == dc
-                && slot
-                    .compare_exchange(entry, 0, Ordering::AcqRel, Ordering::Relaxed)
-                    .is_ok()
-        })
-    }
-}
+/// The DCs the family handed out and not released yet: each record the DC's handle, then its
+/// window's (0: the screen's). Shared by the process's threads under user32's lock.
+static HANDED_DCS: Table<2> = Table::new();
 
 /// The family's core: a DC of `window` (zero: the screen) from `service`, kept with its window;
-/// NULL with 1400 for a handle naming no window, ERROR_NOT_ENOUGH_MEMORY when the process holds
-/// as many as it may (the DC closed again).
-fn handed(
-    window: usize,
-    service: impl FnOnce() -> Result<u32, NtStatus>,
-    call: (&rtl::stub::Entry, &[u64]),
-) -> usize {
+/// NULL with 1400 for a handle naming no window, ERROR_NOT_ENOUGH_MEMORY when the heap has no room
+/// to keep it (the DC closed again).
+fn handed(window: usize, service: impl FnOnce() -> Result<u32, NtStatus>) -> usize {
     if window != 0 && !is_window_alive(window) {
         return failed(ERROR_INVALID_WINDOW_HANDLE).unwrap_or(0);
     }
     let Some(dc) = answered(service()) else {
         return 0;
     };
-    if !HANDED_DCS.keep(dc, window as u32) {
-        // A program that leaks its DCs meets this on every call after: one line.
-        static FULL_LOGGED: rtl::stub::Logged<1> = rtl::stub::Logged::new();
-        let (entry, args) = call;
-        // SAFETY: the family's arguments: handles and flags, none read.
-        unsafe {
-            crate::stub::unhandled_once(
-                &FULL_LOGGED,
-                0,
-                entry,
-                format_args!(
-                    "more than {HANDED} DCs of the GetDC family held at once by a process are \
-                     not yet implemented"
-                ),
-                args,
-            )
-        };
-        let _ = imports::delete_dc(dc as usize);
+    let dc = dc as usize;
+    if !HANDED_DCS.with(|handed| handed.set([dc, window])) {
+        let _ = imports::delete_dc(dc);
         return failed(ERROR_NOT_ENOUGH_MEMORY).unwrap_or(0);
     }
-    dc as usize
+    dc
 }
 
 /// GetDC: a DC of the window's client area (NULL: the screen's).
 #[unsafe(export_name = "f2k_export_GetDC")]
 pub extern "system" fn get_dc(window: usize) -> usize {
-    handed(
-        window,
-        || imports::get_dc(window),
-        (&crate::spec::GetDC, &[window as u64]),
-    )
+    handed(window, || imports::get_dc(window))
 }
 
 /// GetDCEx: a DC of the window with GetDCEx's clipping region and DCX_ flags.
@@ -121,11 +64,7 @@ pub extern "system" fn get_dc_ex(window: usize, region: usize, flags: u32) -> us
             };
         }
     }
-    handed(
-        window,
-        || imports::get_dc_ex(window, region, flags),
-        (&crate::spec::GetDCEx, &args),
-    )
+    handed(window, || imports::get_dc_ex(window, region, flags))
 }
 
 /// The DCX_ flags whose clipping the DCs do not have yet (they are clipped to the window's
@@ -155,18 +94,14 @@ static CLIPPING_LOGGED: rtl::stub::Logged<8> = rtl::stub::Logged::new();
 /// GetWindowDC: a DC of the window's whole rectangle.
 #[unsafe(export_name = "f2k_export_GetWindowDC")]
 pub extern "system" fn get_window_dc(window: usize) -> usize {
-    handed(
-        window,
-        || imports::get_window_dc(window),
-        (&crate::spec::GetWindowDC, &[window as u64]),
-    )
+    handed(window, || imports::get_window_dc(window))
 }
 
 /// ReleaseDC: a DC the family handed out released (its handle closed); 1, or 0 for a DC it did not
 /// hand out (NULL among them), the last error untouched.
 #[unsafe(export_name = "f2k_export_ReleaseDC")]
 pub extern "system" fn release_dc(_window: usize, dc: usize) -> u32 {
-    if dc == 0 || !HANDED_DCS.forget(dc as u32) {
+    if HANDED_DCS.with(|handed| handed.take(dc)).is_none() {
         return 0;
     }
     imports::delete_dc(dc) as u32
@@ -176,7 +111,9 @@ pub extern "system" fn release_dc(_window: usize, dc: usize) -> u32 {
 /// a DC it did not hand out).
 #[unsafe(export_name = "f2k_export_WindowFromDC")]
 pub extern "system" fn window_from_dc(dc: usize) -> usize {
-    HANDED_DCS.window_of(dc as u32).unwrap_or(0) as usize
+    HANDED_DCS
+        .with(|handed| handed.get(dc))
+        .map_or(0, |[_, window]| window)
 }
 
 #[cfg(test)]
@@ -210,6 +147,26 @@ mod tests {
         assert_eq!(release_dc(window, dc), 0, "released once");
         assert_eq!(release_dc(window, 0), 0);
         assert_eq!(LAST_ERROR.with(|error| error.get()), UNSET);
+        assert!(wm(|wm| wm.dcs.is_empty()), "every handle closed");
+    }
+
+    /// A process holds as many DCs at once as it asks for, far past the 64 a fixed list kept, each
+    /// naming its window until released; the last release leaves no record and no handle behind.
+    #[test]
+    fn dcs_are_held_past_any_fixed_number() {
+        let window = DESKTOP_WINDOW as usize;
+        let held: std::vec::Vec<(usize, usize)> = (0..300)
+            .map(|index| {
+                let of = if index % 3 == 0 { 0 } else { window };
+                (get_dc(of), of)
+            })
+            .collect();
+        assert!(held.iter().all(|&(dc, _)| dc != 0));
+        assert!(held.iter().all(|&(dc, of)| window_from_dc(dc) == of));
+        for &(dc, of) in held.iter().rev() {
+            assert_eq!(release_dc(of, dc), 1);
+        }
+        assert!(HANDED_DCS.with(|handed| handed.is_empty()));
         assert!(wm(|wm| wm.dcs.is_empty()), "every handle closed");
     }
 
