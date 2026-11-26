@@ -44,6 +44,13 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         " instead of comparing against them",
     )
     group.addoption(
+        "--full-system",
+        action="store_true",
+        help="boot every test with every kernel subsystem (no subsys=), not the narrowed set its"
+        " declaration and its programs' imports choose: the drift guard, whose results must equal a"
+        " narrowed run's (F2K_FULL_SYSTEM=1 does the same)",
+    )
+    group.addoption(
         "--perf-trace",
         action="store_true",
         help="build with the kernel's perf-trace feature and write each boot's profile to"
@@ -69,6 +76,9 @@ OUTCOMES: dict[str, dict] | None = None
 
 def pytest_configure(config: pytest.Config) -> None:
     global OUTCOMES
+    # Every process's, the xdist workers' too: each boots.
+    if config.getoption("--full-system"):
+        f2kboot.FULL_SYSTEM = True
     if not hasattr(config, "workerinput"):
         OUTCOMES = {}
 
@@ -239,7 +249,9 @@ def run_block(request, builder, boot_timeout, profile_writer) -> Callable[[f2kbo
     kernel's RAM disk) unless the fixture declares `storage = "ide"` or the run asks for the IDE
     disk (F2K_STORAGE=ide): `f2kboot.boot`; a fixture declaring `memory` boots the IDE disk with
     that guest memory instead of RAM_MEMORY (the small-RAM rung), so it declares `storage = "ide"`
-    too (`f2kboot.fixture_memory`)."""
+    too (`f2kboot.fixture_memory`). The boot starts the kernel subsystems its blocks' fixtures
+    need, together (`f2kboot.fixture_needs`: a fixture's `needs`, else its programs' imports; all
+    of them under `--full-system`), and a block that reached one it left out fails, naming it."""
 
     def run(captured: f2kboot.Captured, image: str = "kernel") -> None:
         name = batch_name(request.node)

@@ -317,6 +317,7 @@ import f2kboot
 work = Path({work!r})
 disk = work / "blank.img"
 disk.write_bytes(bytes(512 * 64))
+f2kboot.FULL_SYSTEM = True  # no subsys=, which a Limine boot writes into its (blank) disk
 f2kboot.boot(f2kboot.Build(work / "none", disk), image="disk", log_path=work / "com1.log",
              timeout=120, done=lambda log: False)
 """
@@ -422,6 +423,7 @@ def test_a_kept_boot_attaches_its_disk_and_a_restart_ends_it(tmp_path, monkeypat
     """A boot on a kept disk attaches that disk without a snapshot, and QEMU's exit after the
     kernel's restart line (its -no-reboot exit) is the boot's end, "reset"; any other exit stays
     "exited". A stand-in QEMU records its arguments and writes COM1, then exits."""
+    monkeypatch.setattr(f2kboot, "FULL_SYSTEM", True)  # the options compared below are the caller's
     record = tmp_path / "arguments.json"
     qemu = tmp_path / "qemu"
     qemu.write_text(FAKE_QEMU.format(python=sys.executable, record=str(record), output=output))
@@ -497,6 +499,8 @@ def test_a_limine_or_kept_boot_reads_the_ide_disk(tmp_path, monkeypatch):
     attach the IDE disk whatever the run or the test asks for."""
     arguments = stand_in_qemu(tmp_path, monkeypatch)
     monkeypatch.setenv("F2K_STORAGE", "ram")
+    # No subsys=, which a Limine boot writes into its disk (here a stand-in).
+    monkeypatch.setattr(f2kboot, "FULL_SYSTEM", True)
     disk = tmp_path / "f2k-disk.img"
     build = f2kboot.Build(tmp_path / "f2k-kernel", disk)
     f2kboot.boot(build, image="disk", log_path=tmp_path / "com1.log", timeout=20,
@@ -539,6 +543,183 @@ def test_a_fixture_declares_its_storage(tmp_path, monkeypatch):
         declared.write_text(f'kind = "sectioned"\nstorage = {wrong}\n')
         with pytest.raises(ValueError, match="storage"):
             f2kboot.fixture_storage("secfake")
+
+
+# --- Subsystems: each boot starts the ones its programs need -----------------------------------
+
+SUBSYS_RS = f2kboot.REPO_ROOT / "kernel" / "src" / "boot" / "subsys.rs"
+
+
+def test_the_optional_subsystems_are_the_kernel_tables():
+    """The rows a boot can leave out are the kernel table's System and Auto rows, and the alias is
+    the kernel's (kernel/src/boot/subsys.rs)."""
+    source = SUBSYS_RS.read_text()
+    rows = re.findall(r'subsystem\(\s*S::\w+,\s*"(\w+)",\s*T::(\w+),', source)
+    assert len(rows) == 20
+    assert tuple(name for name, start in rows if start != "Boot") == f2kboot.OPTIONAL_SUBSYSTEMS
+    assert re.search(r'ALIASES[^=]*= \[\("gui", Subsystem::WinSta\.bit\(\) \| Subsystem::Fonts\.bit\(\)\)\]',
+                     source)
+    assert f2kboot.SUBSYSTEM_ALIASES == {"gui": ("winsta", "fonts")}
+
+
+def test_needs_are_subsystem_names():
+    assert f2kboot.subsystem_names(["gui", "ide"], "t") == {"winsta", "fonts", "ide"}
+    assert f2kboot.subsystem_names([], "t") == frozenset()
+    for wrong in (["memory"], ["GUI"], "gui", [1]):
+        with pytest.raises(ValueError, match="needs"):
+            f2kboot.subsystem_names(wrong, "t")
+
+
+def test_the_subsys_option_names_the_needs_win32ks_as_gui():
+    assert f2kboot.subsys_value(frozenset()) == "subsys="
+    assert f2kboot.subsys_value(frozenset({"keyboard", "ide"})) == "subsys=ide,keyboard"
+    assert f2kboot.subsys_value(frozenset({"winsta", "fonts", "pci"})) == "subsys=gui,pci"
+    assert f2kboot.subsys_value(frozenset({"fonts"})) == "subsys=fonts"
+
+
+def test_a_programs_needs_follow_its_imports():
+    """A console program needs nothing beyond the base profile; one importing user32 or gdi32 (or a
+    DLL that does) needs win32k's two, `gui`; a program the harness cannot find, everything."""
+    hello = f2kboot.TESTS / "core" / "hello" / "hello.exe"
+    hellogui = f2kboot.fixture_directory("hellogui") / "hellogui.exe"
+    assert f2kboot.program_needs(hello) == frozenset()
+    assert f2kboot.program_needs(hellogui) == {"winsta", "fonts"}
+    assert f2kboot.command_needs(None) == frozenset()
+    assert f2kboot.command_needs("hello.exe ;; exit0") == frozenset()
+    assert f2kboot.command_needs("CORPUS\\hellogui.exe ;; hello.exe") == {"winsta", "fonts"}
+    assert f2kboot.command_needs("hello.exe", "keyboard") == {"keyboard"}
+    assert f2kboot.command_needs("CORPUS\\nosuch.exe") == f2kboot.EVERY_SUBSYSTEM
+
+
+def needs_fixture(tmp_path, monkeypatch, declaration: str, programs=("hello.exe",)) -> None:
+    """A sectioned fixture, secfake, with `programs` (copies of the corpus's) and `declaration`."""
+    directory = tmp_path / "kernel32" / "secfake"
+    directory.mkdir(parents=True, exist_ok=True)
+    for program in programs:
+        source = f2kboot.program_path(program)
+        shutil.copyfile(source, directory / ("secfake.exe" if program == programs[0] else program))
+    (directory / "fixture.toml").write_text('kind = "sectioned"\n' + declaration)
+    monkeypatch.setattr(f2kboot, "fixture_directories", lambda: {"secfake": directory})
+
+
+def test_a_fixtures_needs_default_to_its_programs_imports(tmp_path, monkeypatch):
+    needs_fixture(tmp_path, monkeypatch, "")
+    assert f2kboot.fixture_needs("secfake") == frozenset()
+    # A companion program (a child it starts) counts too.
+    needs_fixture(tmp_path, monkeypatch, "", programs=("hello.exe", "hellogui.exe"))
+    assert f2kboot.fixture_needs("secfake") == {"winsta", "fonts"}
+
+
+def test_a_fixtures_declared_needs_replace_its_imports(tmp_path, monkeypatch):
+    needs_fixture(tmp_path, monkeypatch, 'needs = ["pci"]\n', programs=("hellogui.exe",))
+    assert f2kboot.fixture_needs("secfake") == {"pci"}
+    needs_fixture(tmp_path, monkeypatch, 'needs = []\n', programs=("hellogui.exe",))
+    assert f2kboot.fixture_needs("secfake") == frozenset()
+    needs_fixture(tmp_path, monkeypatch, 'needs = ["memory"]\n')
+    with pytest.raises(ValueError, match="needs"):
+        f2kboot.fixture_needs("secfake")
+
+
+def test_a_fixtures_keys_and_fonts_bring_their_subsystems(tmp_path, monkeypatch):
+    needs_fixture(tmp_path, monkeypatch, 'needs = []\nsystem_fonts = true\n')
+    assert f2kboot.fixture_needs("secfake") == {"fonts"}
+    needs_fixture(tmp_path, monkeypatch, '[keys]\nread = [{ press = ["a"] }]\n')
+    assert f2kboot.fixture_needs("secfake") == {"keyboard"}
+
+
+def kernel_options_of(arguments: list[str]) -> str:
+    """The kernel's own options a kernel boot's QEMU arguments carry (before -append's "--")."""
+    return arguments[arguments.index("-append") + 1].split("--")[0].strip()
+
+
+@pytest.mark.parametrize("storage, cmdline, needs, options, expected", [
+    ("ram", "hello.exe", None, "", "subsys="),
+    ("ram", "CORPUS\\hellogui.exe", None, "redirected", "redirected subsys=gui"),
+    ("ide", "hello.exe", None, "", "subsys=ide"),
+    ("ram", "hello.exe", ["keyboard"], "", "subsys=keyboard"),
+    ("ram", "hello.exe", ["pci"], "subsys=gui", "subsys=gui"),
+], ids=["console", "gui", "ide-disk", "declared", "own-option"])
+def test_a_boot_starts_the_subsystems_it_needs(tmp_path, monkeypatch, storage, cmdline, needs, options, expected):
+    """A boot names its subsystems in a `subsys=` kernel option: its `needs`, else its command
+    line's programs' imports, and `ide` on the IDE disk; kernel options choosing their own keep
+    them."""
+    arguments = stand_in_qemu(tmp_path, monkeypatch)
+    monkeypatch.setattr(f2kboot, "FULL_SYSTEM", False)
+    build = f2kboot.Build(tmp_path / "f2k-kernel", tmp_path / "f2k-disk.img")
+    f2kboot.boot(build, image="kernel", log_path=tmp_path / "com1.log", timeout=20, done=lambda log: False,
+                 storage=storage, cmdline=cmdline, needs=needs, kernel_options=options)
+    assert kernel_options_of(arguments()) == expected
+
+
+def test_the_full_system_boots_every_subsystem(tmp_path, monkeypatch):
+    """`--full-system` (FULL_SYSTEM): no subsys=, so the kernel starts every subsystem."""
+    arguments = stand_in_qemu(tmp_path, monkeypatch)
+    monkeypatch.setattr(f2kboot, "FULL_SYSTEM", True)
+    build = f2kboot.Build(tmp_path / "f2k-kernel", tmp_path / "f2k-disk.img")
+    f2kboot.boot(build, image="kernel", log_path=tmp_path / "com1.log", timeout=20, done=lambda log: False,
+                 storage="ide", cmdline="hello.exe", needs=[], kernel_options="redirected")
+    assert kernel_options_of(arguments()) == "redirected"
+
+
+REFUSAL = ("F2K: win32k service 0x119f refused: subsystem winsta,fonts not started (subsys=),"
+           " STATUS_INVALID_SYSTEM_SERVICE")
+NOT_STARTED = ("KERNEL PANIC: SUBSYSTEM_NOT_STARTED: pci::devices needs subsystem pci, which this boot's"
+               " subsys= left out")
+
+
+def test_a_reach_into_a_left_out_subsystem_names_it():
+    assert f2kboot.undeclared_subsystem("F2K: entering ring 3\nhello\n") is None
+    refused = f2kboot.undeclared_subsystem(f"F2K: entering ring 3\n{REFUSAL}\n")
+    assert refused is not None and 'needs = ["gui"]' in refused and "0x119f" in refused
+    panic = f2kboot.undeclared_subsystem(f"{NOT_STARTED}\n")
+    assert panic is not None and 'needs = ["pci"]' in panic and "pci::devices" in panic
+
+
+def test_a_boot_that_reached_a_left_out_subsystem_fails(tmp_path, monkeypatch):
+    """A boot that chose its subsystems fails its test on a reach into one it left out, naming it;
+    the full system's boot, and one whose kernel options chose, are left to their own checks."""
+    record, qemu = tmp_path / "arguments.json", tmp_path / "qemu"
+    qemu.write_text(FAKE_QEMU.format(python=sys.executable, record=str(record),
+                                     output=f"F2K Booted Successfully\n{REFUSAL}\n"))
+    qemu.chmod(0o755)
+    monkeypatch.setattr(f2kboot, "QEMU", str(qemu))
+    monkeypatch.setattr(f2kboot, "exit_with_parent", lambda: [])
+    monkeypatch.setattr(f2kboot, "FULL_SYSTEM", False)
+    build = f2kboot.Build(tmp_path / "f2k-kernel", tmp_path / "f2k-disk.img")
+    boot = dict(image="kernel", log_path=tmp_path / "com1.log", timeout=20, done=lambda log: False,
+                storage="ram", cmdline="hello.exe")
+    with pytest.raises(pytest.fail.Exception, match=r"used subsystem gui"):
+        f2kboot.boot(build, **boot)
+    f2kboot.boot(build, **boot, kernel_options="subsys=")
+    f2kboot.boot(build, **boot, check_needs=False)
+    monkeypatch.setattr(f2kboot, "FULL_SYSTEM", True)
+    f2kboot.boot(build, **boot)
+
+
+def test_a_batch_fails_the_block_that_reached_a_left_out_subsystem():
+    lines = (BATCH_BOOT + leg(1, "t.exe a", "A") + leg(2, "t.exe b", "B")[:2] + [REFUSAL]
+             + leg(2, "t.exe b", "B")[2:] + leg(3, "t.exe c", "C"))
+    batch = batch_of(lines)
+    batch.narrowed = True
+    assert batch.verdict(0, [], f2kboot.Block("t.exe a", ["A"], 0)) is None
+    assert "used subsystem gui" in batch.verdict(1, [], f2kboot.Block("t.exe b", ["B"], 0))
+    assert batch.verdict(2, [], f2kboot.Block("t.exe c", ["C"], 0)) is None
+    # A later block that differs is told of the earlier reach (the refusal is reported once a boot).
+    assert "used subsystem gui" in batch.verdict(2, [], f2kboot.Block("t.exe c", ["D"], 0))
+    batch.narrowed = False
+    assert batch.verdict(1, [], f2kboot.Block("t.exe b", ["B"], 0)) is None
+
+
+def test_a_batch_starts_the_union_of_its_fixtures_needs(tmp_path, monkeypatch):
+    directories = {}
+    for name, declaration in (("one", 'needs = ["keyboard"]\n'), ("two", 'needs = ["gui"]\n')):
+        directory = tmp_path / "kernel32" / name
+        directory.mkdir(parents=True)
+        (directory / "fixture.toml").write_text('kind = "sectioned"\n' + declaration)
+        directories[name] = directory
+    monkeypatch.setattr(f2kboot, "fixture_directories", lambda: directories)
+    captured = [f2kboot.Captured(name, f2kboot.Block("t.exe"), (), 1.0) for name in ("one", "two", "one")]
+    assert f2kboot.batch_needs(captured) == {"keyboard", "winsta", "fonts"}
 
 
 def test_a_fixture_declares_its_memory(tmp_path, monkeypatch):

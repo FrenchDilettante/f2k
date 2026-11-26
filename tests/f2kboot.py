@@ -548,6 +548,170 @@ def storage_args(disk: Path, storage: str, memory: str, *, kept: bool = False) -
     raise ValueError(f"storage is one of {STORAGES}, not {storage!r}")
 
 
+# --- Subsystems: what a boot starts ---------------------------------------------------------------
+#
+# The kernel starts its subsystem table's Boot rows at every boot (the base profile) and the others
+# only as the kernel command line's `subsys=` names them (kernel/src/boot/subsys.rs); without a
+# `subsys=` it starts them all. Every boot here names the subsystems it needs: a fixture's
+# declaration (`needs` in fixture.toml), else what its programs import (`program_needs`: user32 or
+# gdi32 → `gui`), plus what the boot itself is (an IDE-disk boot needs `ide`, a boot whose keys are
+# pressed `keyboard`). A program that reaches a subsystem its boot left out fails loudly on COM1 (a
+# refused win32k service, or a SUBSYSTEM_NOT_STARTED panic), and the harness fails its test naming
+# the row (`undeclared_subsystem`). `--full-system` (FULL_SYSTEM) boots everything with every
+# subsystem instead: the drift guard, whose results must equal the narrowed run's.
+
+# The rows a boot can leave out (the table's System and Auto rows), by their `name`s, and the
+# kernel's alias for win32k's two (`subsys::ALIASES`). harness/test_harness.py holds them to the
+# kernel's table.
+OPTIONAL_SUBSYSTEMS = ("winsta", "pci", "devtree", "ide", "keyboard", "fonts")
+SUBSYSTEM_ALIASES = {"gui": ("winsta", "fonts")}
+# What a boot needs that nothing narrows: every optional row.
+EVERY_SUBSYSTEM = frozenset(OPTIONAL_SUBSYSTEMS)
+# The DLLs whose import puts a program on win32k: it needs the `gui` alias.
+GUI_DLLS = frozenset({"user32.dll", "gdi32.dll"})
+# Whether this run boots every test with every subsystem (`--full-system`, or F2K_FULL_SYSTEM=1):
+# no `subsys=` where the harness would have chosen one.
+FULL_SYSTEM = os.environ.get("F2K_FULL_SYSTEM", "") not in ("", "0")
+# A kernel option that already chooses the subsystems (a kernel case's own `subsys=`): the harness
+# then adds none, and checks nothing.
+SUBSYS_OPTION = re.compile(r"(?:^|\s)subsys=")
+
+
+def subsystem_names(needs, where: str) -> frozenset[str]:
+    """`needs` (subsystem names: OPTIONAL_SUBSYSTEMS' and the aliases) as a set, the aliases
+    expanded; a name that is neither is an error naming `where`."""
+    if isinstance(needs, str) or not all(isinstance(name, str) for name in needs):
+        raise ValueError(f"{where}: needs is a list of subsystem names, [\"gui\"]")
+    names: set[str] = set()
+    for name in needs:
+        if name in SUBSYSTEM_ALIASES:
+            names.update(SUBSYSTEM_ALIASES[name])
+        elif name in OPTIONAL_SUBSYSTEMS:
+            names.add(name)
+        else:
+            known = ", ".join([*OPTIONAL_SUBSYSTEMS, *SUBSYSTEM_ALIASES])
+            raise ValueError(f"{where}: needs names {name!r}, no subsystem a boot can leave out ({known})")
+    return frozenset(names)
+
+
+def subsys_value(needs: frozenset[str]) -> str:
+    """The kernel option that starts `needs` (beside the base profile): `subsys=` and the names,
+    win32k's two as the alias, in OPTIONAL_SUBSYSTEMS' order."""
+    words = [name for name in OPTIONAL_SUBSYSTEMS if name in needs]
+    for alias, rows in SUBSYSTEM_ALIASES.items():
+        if set(rows) <= needs:
+            words = [alias, *(word for word in words if word not in rows)]
+    return "subsys=" + ",".join(words)
+
+
+@functools.cache
+def _image_imports(path: Path) -> tuple[str, ...]:
+    """The modules `path`'s import tables name (load-time and delay-load), lower-cased."""
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    try:
+        from pe import Image, imports
+    finally:
+        sys.path.pop(0)
+    return tuple(module.lower() for module, _, _ in imports(Image(path.read_bytes())))
+
+
+def imported_modules(image: Path) -> frozenset[str]:
+    """Every DLL `image` loads, its imports' closure: each found beside it (a corpus fixture's
+    companion DLLs), else among F2K's built DLLs (BUILT_PROGRAMS); one found in neither (a DLL F2K
+    lacks, whose program does not load) adds nothing further."""
+    seen: set[str] = set()
+    pending = [image]
+    while pending:
+        for module in _image_imports(pending.pop()):
+            if module in seen:
+                continue
+            seen.add(module)
+            found = next((place / module for place in (image.parent, BUILT_PROGRAMS)
+                          if (place / module).is_file()), None)
+            if found is not None:
+                pending.append(found)
+    return frozenset(seen)
+
+
+def program_needs(image: Path) -> frozenset[str]:
+    """The subsystems a program needs by what it imports: `gui` (win32k's window station and fonts)
+    when its imports' closure reaches user32 or gdi32, nothing beyond the base profile otherwise."""
+    return frozenset(SUBSYSTEM_ALIASES["gui"]) if imported_modules(image) & GUI_DLLS else frozenset()
+
+
+@functools.cache
+def _corpus_programs() -> dict[str, Path]:
+    """Every corpus program by its lower-cased file name (tests/<group>/<fixture>/*.exe; the names
+    are distinct across the fixtures: harness/test_repository.py)."""
+    return {path.name.lower(): path for path in sorted(TESTS.glob("*/*/*.exe"))}
+
+
+def program_path(word: str) -> Path | None:
+    """The file a command line's program word names (`CORPUS\\pipe.exe`, `WINNT\\system32\\fish.exe`,
+    `hello.exe`): F2K's own build of a system32 program, a corpus program otherwise (F2K's build as
+    the fallback); None for a name neither has."""
+    name = word.replace("/", "\\").rsplit("\\", 1)[-1].lower()
+    built = BUILT_PROGRAMS / name
+    corpus = _corpus_programs().get(name)
+    order = (built, corpus) if "system32" in word.lower() else (corpus, built)
+    return next((path for path in order if path is not None and path.is_file()), None)
+
+
+# A word of a command line that names a program.
+PROGRAM_WORD = re.compile(r"\S+\.exe", re.IGNORECASE)
+
+
+def command_needs(cmdline: str | None, *also: str) -> frozenset[str]:
+    """The subsystems a boot of user command line `cmdline` needs, and `also`: what every program it
+    names imports (`program_needs`; each word naming a .exe, so a program another runs, as FiSH runs
+    its argument, counts too). A program the harness cannot find (one only the disk carries) may
+    need anything: every subsystem. No command line runs exit0, which needs none."""
+    needs = set(subsystem_names(also, "command_needs"))
+    for word in PROGRAM_WORD.findall(cmdline or ""):
+        path = program_path(word)
+        if path is None:
+            return EVERY_SUBSYSTEM
+        needs |= program_needs(path)
+    return frozenset(needs)
+
+
+# The COM1 lines that say a program reached a subsystem its boot left out: win32k's refusal of a
+# service (kernel/src/user/syscall.rs; the first per boot) and a kernel-internal reach's panic
+# (`subsys::require`).
+REFUSED = re.compile(r"F2K: win32k service \S+ refused: subsystem (\S+) not started")
+NOT_STARTED = re.compile(r"SUBSYSTEM_NOT_STARTED: (.*) needs subsystem (\w+)")
+
+
+def undeclared_subsystem(log: str) -> str | None:
+    """None when `log` shows no reach into a subsystem its boot left out; otherwise what to declare,
+    in one line: the missing rows (win32k's two as `gui`) and the line that showed it."""
+    for line in lines_of(log):
+        refused = REFUSED.search(line)
+        if refused is not None:
+            rows = refused.group(1).split(",")
+        else:
+            not_started = NOT_STARTED.search(line)
+            if not_started is None:
+                continue
+            rows = [not_started.group(2)]
+        name = "gui" if set(rows) & set(SUBSYSTEM_ALIASES["gui"]) else ",".join(rows)
+        return (f"the boot used subsystem {name}, which its subsys= left out: declare it (fixture.toml"
+                f" `needs = [\"{name}\"]`, a core or kernel test's `needs`); COM1: {line.strip()}")
+    return None
+
+
+def boot_subsystems(needs, *, cmdline: str | None, storage: str, kernel_options: str) -> str | None:
+    """The `subsys=` option a boot passes (None: none, every subsystem starts): `needs` (None:
+    `command_needs(cmdline)`), and `ide` for a boot from the IDE disk. None under FULL_SYSTEM, and
+    for kernel options that already choose."""
+    if FULL_SYSTEM or SUBSYS_OPTION.search(kernel_options):
+        return None
+    chosen = command_needs(cmdline) if needs is None else subsystem_names(needs, "boot")
+    if storage == "ide":
+        chosen |= {"ide"}
+    return subsys_value(chosen)
+
+
 def boot(
     build: Build,
     *,
@@ -563,6 +727,8 @@ def boot(
     kept: Path | None = None,
     clock: BootClock | None = None,
     storage: str | None = None,
+    needs=None,
+    check_needs: bool = True,
 ) -> tuple[str, str]:
     """Boot `build` (`image` "kernel": the ELF through QEMU's Multiboot loader, the disk attached;
     "disk": the disk itself through Limine) and log COM1 to `log_path` until `done(log)` holds, QEMU
@@ -578,13 +744,24 @@ def boot(
     rewritten on it, in place). With `observe` or `during`, QEMU also carries a QMP socket: `during`
     is called with the socket's path and the log at each look while the boot runs, and once
     `done(log)` holds `observe` is called with the socket's path while QEMU still runs (the
-    machine's state, read before it is stopped). Returns the log and why the boot stopped: "done",
-    "timeout", "exited", or "reset" when QEMU's exit followed the kernel's restart line
+    machine's state, read before it is stopped). The boot starts the subsystems `needs` names
+    (subsystem names; None: what `cmdline`'s programs import, `command_needs`) and `ide` on the IDE
+    disk, by a `subsys=` kernel option (`boot_subsystems`: none under FULL_SYSTEM, or when
+    `kernel_options` choose their own); with `check_needs`, a log showing a reach into a subsystem it
+    left out fails the test (`undeclared_subsystem`). Returns the log and why the boot stopped:
+    "done", "timeout", "exited", or "reset" when QEMU's exit followed the kernel's restart line
     (`ended_by_reset`)."""
     log_path.parent.mkdir(parents=True, exist_ok=True)
     log_path.unlink(missing_ok=True)
     disk = kept or build.disk
     variant = None
+    if image != "kernel" or kept is not None:
+        storage = "ide"
+    elif storage is None:
+        storage = run_storage()
+    subsys = boot_subsystems(needs, cmdline=cmdline, storage=storage, kernel_options=kernel_options)
+    if subsys is not None:
+        kernel_options = f"{kernel_options} {subsys}".strip()
     args = [QEMU]
     if image == "kernel":
         args += ["-kernel", str(build.kernel)]
@@ -595,10 +772,6 @@ def boot(
     elif cmdline or kernel_options:
         variant = disk = limine_disk(build, cmdline or "", WORK / "variants" / f"{log_path.stem}.img",
                                      kernel_options)
-    if image != "kernel" or kept is not None:
-        storage = "ide"
-    elif storage is None:
-        storage = run_storage()
     args += [
         *storage_args(disk, storage, memory, kept=kept is not None),
         "-display", "none", "-monitor", "none", "-net", "none",
@@ -649,6 +822,12 @@ def boot(
         log += section
         with open(log_path, "a", encoding="latin-1", errors="replace") as file:
             file.write(section)
+    if subsys is not None and check_needs:
+        undeclared = undeclared_subsystem(log)
+        if undeclared is not None:
+            import pytest
+
+            pytest.fail(f"{undeclared}\nlog: {log_path}", pytrace=False)
     return log, reason
 
 
@@ -2057,6 +2236,44 @@ def fixture_memory(fixture: str) -> str | None:
     return memory
 
 
+def fixture_programs(fixture: str) -> list[Path]:
+    """The programs a fixture's boot runs, by path: its own and the companion programs beside it
+    (the children it starts), its `boot_under` program and its `system_programs`; a script
+    fixture's cmd.exe, and the programs its script names."""
+    directory = fixture_directory(fixture)
+    programs = sorted(directory.glob("*.exe"))
+    if declaration(fixture).get("kind") == "script":
+        programs.append(SCRIPT_INTERPRETER)
+        script = script_path(fixture)
+        words = PROGRAM_WORD.findall(script.read_text(errors="replace")) if script.exists() else []
+        programs += [path for path in map(program_path, words) if path is not None]
+        return programs
+    under = boot_under(fixture)
+    if under is not None:
+        programs.append(program_path(under) or BUILT_PROGRAMS / under.rsplit("\\", 1)[-1].lower())
+    return programs + system_programs(fixture)
+
+
+def fixture_needs(fixture: str) -> frozenset[str]:
+    """The subsystems a fixture's boot needs: its declaration's `needs` (subsystem names, the alias
+    `gui` among them: OPTIONAL_SUBSYSTEMS, SUBSYSTEM_ALIASES), else what its programs import
+    (`fixture_programs`, `program_needs`: user32 or gdi32 → gui; a program missing from the build
+    may need anything: every subsystem); and whatever it declares, `keyboard` for its `[keys]` and
+    `fonts` for its `system_fonts`. The IDE disk's `ide` the boot adds itself (`boot`)."""
+    declared = declaration(fixture)
+    if "needs" in declared:
+        needs = set(subsystem_names(declared["needs"], fixture))
+    else:
+        needs = set()
+        for program in fixture_programs(fixture):
+            needs |= program_needs(program) if program.is_file() else EVERY_SUBSYSTEM
+    if declared.get("keys"):
+        needs.add("keyboard")
+    if system_fonts(fixture):
+        needs.add("fonts")
+    return frozenset(needs)
+
+
 def corpus_disk(build: Build, fixture: str, path: Path) -> Path | None:
     """The disk a fixture's batch boots when it is not `build`'s own: a copy at `path`, a script
     fixture's (`script_disk`) or a sectioned one's with its `system_programs`, `data_files` and
@@ -2091,6 +2308,8 @@ def corpus_params(fixture: str) -> list:
         return [pytest.param(None, id="awaited", marks=[pytest.mark.corpus, pytest.mark.skip(reason=reason)])]
     fixture_storage(fixture)  # a storage it cannot have fails the collection, not the boot
     fixture_memory(fixture)  # likewise, its memory
+    if "needs" in declared:
+        subsystem_names(declared["needs"], fixture)  # likewise, its needs
     if kind == "script":
         captured = read_capture(fixture)
         reason = declared.get("pending")
@@ -2239,6 +2458,9 @@ class Batch:
     prefix: str
     programs: list[tuple[str, str]]
     under: list[str | None] = field(default_factory=list)
+    # Whether the boot chose its subsystems (a `subsys=`): its log is then checked for a reach into
+    # one it left out (`undeclared_subsystem`).
+    narrowed: bool = False
 
     def stopped_in(self) -> str:
         """The block's command line the boot stopped in: the last to start (the first when none
@@ -2259,6 +2481,17 @@ class Batch:
             part = self.programs[index][1]
         else:
             part = ""  # the boot stopped before the first program: its own lines say why
+        if self.narrowed:
+            # A reach into a subsystem the boot left out: this block's own, or (the refusal being
+            # reported once per boot) an earlier block's, which may be why this one differs.
+            undeclared = undeclared_subsystem(self.prefix + part)
+            if undeclared is not None:
+                return undeclared
+            mismatch = compare_block(block, self.prefix + part, masks)
+            elsewhere = undeclared_subsystem(self.log)
+            if mismatch is not None and elsewhere is not None:
+                mismatch += f"; and {elsewhere}"
+            return mismatch
         return compare_block(block, self.prefix + part, masks)
 
 
@@ -2271,7 +2504,9 @@ def boot_batch(build: Build, captured: list[Captured], *, image: str, log_path: 
     fixture's `boot_under` program where it declares one. With `keys`, each block's section's keys
     are pressed as the block asks for them (`KeyPresser`). `storage` is where the boot reads
     its disk, as `boot` takes it; `memory` is the guest memory for the IDE-disk boot (a fixture's
-    declaration; RAM_MEMORY by default)."""
+    declaration; RAM_MEMORY by default). The boot starts the subsystems its blocks' fixtures need,
+    together (`fixture_needs`), and each block's verdict fails it for a reach into one it left out
+    (`Batch.verdict`)."""
     blocks = [each.block for each in captured]
     under = [boot_under(each.fixture) for each in captured]
     clock = BootClock()
@@ -2303,11 +2538,21 @@ def boot_batch(build: Build, captured: list[Captured], *, image: str, log_path: 
         during=during if steps else None,
         clock=clock,
         storage=storage,
+        needs=batch_needs(captured),
+        check_needs=False,
     )
     if watch.overran is not None:
         stopped = "timeout"
     prefix, programs = split_programs(log)
-    return Batch(commands, log, log_path, stopped, prefix, programs, under)
+    return Batch(commands, log, log_path, stopped, prefix, programs, under, narrowed=not FULL_SYSTEM)
+
+
+def batch_needs(captured: list[Captured]) -> frozenset[str]:
+    """The subsystems a batch of blocks needs: the union of their fixtures' (`fixture_needs`)."""
+    needs: set[str] = set()
+    for fixture in dict.fromkeys(each.fixture for each in captured):
+        needs |= fixture_needs(fixture)
+    return frozenset(needs)
 
 
 def log_path_for(nodeid: str) -> Path:

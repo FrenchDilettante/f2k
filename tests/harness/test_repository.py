@@ -72,10 +72,11 @@ LISTED = [name for name in SECTIONED if '"../common/f2kt.h"' in fixture_source(n
 REQUIRE_SOURCE_STAMPS = False
 DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending", "skip", "pins",
                     "keys", "system_programs", "boot_under", "data_files", "system_fonts", "storage",
-                    "memory", "separate"}
+                    "memory", "separate", "needs"}
 # A script fixture's declaration: one block, so no per-section fields: its masks a list, its pending
 # a string (the block's reason).
-SCRIPT_DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending", "storage"}
+SCRIPT_DECLARATION_KEYS = {"description", "kind", "gate", "timeout", "masks", "retake", "pending", "storage",
+                           "needs"}
 # The script fixtures (tests/cmd/<name>/), and those whose capture is checked in.
 SCRIPTS = [name for name in DECLARED if f2kboot.declaration(name)["kind"] == "script"]
 CAPTURED_SCRIPTS = [name for name in SCRIPTS if not f2kboot.awaited(name)]
@@ -177,6 +178,22 @@ def test_system_programs_name_built_programs_the_disk_leaves_out(fixture: str):
         assert (f2kboot.REPO_ROOT / "userland" / name / "Cargo.toml").is_file(), f"no userland/{name}"
         assert name in built, f"{name}: not a program `make userland` copies to its .exe name"
         assert name not in on_disk, f"{name}: the disk the tests boot carries it already"
+
+
+@pytest.mark.parametrize("fixture", [name for name in DECLARED if not f2kboot.awaited(name)])
+def test_fixture_programs_are_found(fixture: str):
+    """Each program a fixture's boot runs is one the harness reads the imports of, so its needs
+    default to them (`f2kboot.fixture_needs`) rather than to every subsystem; its declared `needs`
+    name subsystems a boot can leave out."""
+    declared = f2kboot.declaration(fixture)
+    if "needs" in declared:
+        f2kboot.subsystem_names(declared["needs"], fixture)
+    programs = f2kboot.fixture_programs(fixture)
+    if any(program.is_relative_to(f2kboot.BUILT_PROGRAMS) for program in programs) \
+            and not f2kboot.BUILT_PROGRAMS.is_dir():
+        pytest.skip(f"{f2kboot.BUILT_PROGRAMS} is not built: `make userland`")
+    missing = [str(program) for program in programs if not program.is_file()]
+    assert not missing, f"programs the harness cannot find: {missing}"
 
 
 # The fixtures declaring `system_fonts`.
