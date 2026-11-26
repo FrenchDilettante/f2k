@@ -746,6 +746,117 @@ impl Region {
     }
 }
 
+/// A region its holder owns alone, no other body naming its block: a DC's clipping regions, a
+/// window's update region, a copy a service works on. Its block goes back when it drops.
+#[derive(Debug, PartialEq, Eq)]
+pub struct OwnedRegion(Region);
+
+impl OwnedRegion {
+    /// The empty region.
+    pub const fn empty() -> Self {
+        OwnedRegion(Region::none())
+    }
+
+    /// The region of one rectangle (the empty region for an empty one).
+    pub fn rect(rect: Rect) -> Self {
+        OwnedRegion(Region::rect((!rect.is_empty()).then_some(rect)))
+    }
+
+    /// Take `region` over.
+    ///
+    /// # Safety
+    ///
+    /// Its block (if any) is no other body's: nothing else gives it back or reads it after.
+    pub unsafe fn adopt(region: Region) -> Self {
+        OwnedRegion(region)
+    }
+
+    /// The region of the banded rectangles `rects` (see the module notes), copied; none when the
+    /// pool has no room for them.
+    pub fn of_rects(rects: &[Rect]) -> Option<Self> {
+        let mut buf = rect_buf();
+        for rect in rects {
+            if !buf.push(*rect) {
+                return None;
+            }
+        }
+        Some(OwnedRegion(Region::of_buf(buf, None)))
+    }
+
+    /// What `keep` makes of `a` and `b` (CombineRgn's algebra); none when the pool has no room.
+    pub fn combined(a: &[Rect], b: &[Rect], keep: fn(bool, bool) -> bool) -> Option<Self> {
+        let mut buf = rect_buf();
+        combine(a, b, keep, &mut buf).then(|| OwnedRegion(Region::of_buf(buf, None)))
+    }
+
+    /// The region `rects` moved by `dx` and `dy` (each edge saturating); none when the pool has
+    /// no room.
+    pub fn moved(rects: &[Rect], dx: i32, dy: i32) -> Option<Self> {
+        OwnedRegion::mapped(rects, |rect| rect.saturating_offset(dx, dy))
+    }
+
+    /// The region `rects` moved back by `dx` and `dy` (each edge saturating:
+    /// [`Rect::saturating_offset_back`]); none when the pool has no room.
+    pub fn moved_back(rects: &[Rect], dx: i32, dy: i32) -> Option<Self> {
+        OwnedRegion::mapped(rects, |rect| rect.saturating_offset_back(dx, dy))
+    }
+
+    /// The region of `rects`, each moved by `map` (the bands kept).
+    fn mapped(rects: &[Rect], map: impl Fn(&Rect) -> Rect) -> Option<Self> {
+        let mut buf = rect_buf();
+        for rect in rects {
+            if !buf.push(map(rect)) {
+                return None;
+            }
+        }
+        Some(OwnedRegion(Region::of_buf(buf, None)))
+    }
+
+    /// A copy; none when the pool has no room.
+    pub fn duplicate(&self) -> Option<Self> {
+        OwnedRegion::of_rects(self.rects())
+    }
+
+    /// Its rectangles.
+    pub fn rects(&self) -> &[Rect] {
+        // SAFETY: the block (if any) is this holder's alone.
+        unsafe { self.0.rects() }
+    }
+
+    /// Its box (the empty rectangle for the empty region).
+    pub fn bounds(&self) -> Rect {
+        self.0.bounds
+    }
+
+    /// Its complexity.
+    pub fn complexity(&self) -> i32 {
+        self.0.complexity()
+    }
+
+    /// Whether it holds no pixel.
+    pub fn is_empty(&self) -> bool {
+        self.0.count() == 0
+    }
+
+    /// It as the rasterizer clips to it.
+    pub fn clip(&self) -> super::raster::Clip<'_> {
+        super::raster::Clip::new(self.rects(), self.bounds())
+    }
+
+    /// The region's body, its block the caller's to give back from now on.
+    pub fn into_inner(self) -> Region {
+        let region = self.0;
+        core::mem::forget(self);
+        region
+    }
+}
+
+impl Drop for OwnedRegion {
+    fn drop(&mut self) {
+        release_storage(&self.0);
+    }
+}
+
 /// Give back the block `region` keeps its rectangles in, if any: the region object's deletion
 /// (and a body replaced).
 pub fn release_storage(region: &Region) {
@@ -1034,7 +1145,7 @@ pub fn fill_rgn(
         super::bitmap::with_surface(&state, |surface| {
             for rect in &chunk[..taken] {
                 let rect = state.screen_rect(*rect);
-                super::raster::pat_blt(surface, state.clip, rect, PATCOPY, Some(&pattern));
+                super::raster::pat_blt(surface, state.clip(), rect, PATCOPY, Some(&pattern));
             }
         });
         at += taken;
@@ -1176,6 +1287,27 @@ mod objects {
         Ok(complexity)
     }
 
+    /// A copy of the region `handle` names, the caller's own; STATUS_NO_MEMORY when the pool has
+    /// no room for it.
+    pub fn copy_of(_call: &mut NtCall, handle: Handle) -> Result<OwnedRegion, NtStatus> {
+        let reference = reference(handle)?;
+        locked_region(reference.id(), |region| {
+            // SAFETY: the body read in this hold of the directory; the copy's block its own.
+            unsafe { region.duplicate() }.map(|copy| unsafe { OwnedRegion::adopt(copy) })
+        })?
+        .ok_or(STATUS_NO_MEMORY)
+    }
+
+    /// Make the region `handle` names a copy of `source`.
+    pub fn assign(call: &mut NtCall, handle: Handle, source: &OwnedRegion) -> Result<(), NtStatus> {
+        let new = source.duplicate().ok_or(STATUS_NO_MEMORY)?.into_inner();
+        let result = update(call, handle, |old| Ok(core::mem::replace(old, new)));
+        if result.is_err() {
+            release_storage(&new);
+        }
+        result
+    }
+
     /// Make the region `handle` names the union of `parts` (ScrollWindowEx's hrgnUpdate).
     pub fn set_parts(call: &mut NtCall, handle: Handle, parts: &[Rect]) -> Result<(), NtStatus> {
         let mut region = rect_buf();
@@ -1250,9 +1382,17 @@ mod objects {
     pub fn set_parts(_: &mut NtCall, _: Handle, _: &[Rect]) -> Result<(), NtStatus> {
         Err(STATUS_INVALID_HANDLE)
     }
+
+    pub fn copy_of(_: &mut NtCall, _: Handle) -> Result<OwnedRegion, NtStatus> {
+        Err(STATUS_INVALID_HANDLE)
+    }
+
+    pub fn assign(_: &mut NtCall, _: Handle, _: &OwnedRegion) -> Result<(), NtStatus> {
+        Err(STATUS_INVALID_HANDLE)
+    }
 }
 
-pub use objects::set_parts;
+pub use objects::{assign, copy_of, set_parts};
 
 // --- The batch -----------------------------------------------------------------------------------
 
