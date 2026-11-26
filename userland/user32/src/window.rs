@@ -38,6 +38,7 @@ use rtl::window::*;
 
 use crate::imports::{self, Creation};
 use crate::procedure::{self, Procedure};
+use crate::records::WindowList;
 use crate::{
     answered,
     failed,
@@ -759,59 +760,57 @@ pub extern "system" fn bring_window_to_top(window: usize) -> u32 {
     set_window_pos(window, 0, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE)
 }
 
-/// The most windows one enumeration lists: as many as the window manager holds (its WINDOWS).
-const ENUM_LIMIT: usize = 256;
-/// The deepest nesting of windows an enumeration walks below its parent (the window manager's
-/// nesting limit is 100).
-const ENUM_DEPTH: usize = 128;
-
 /// The windows below `parent`, from the top of each z-order: its children only, or with
 /// `descendants` every window under them too, each child followed by its own (depth first, as
-/// Windows 2000's NtUserBuildHwndList lists them), into `list`: how many. The list is taken before
-/// any callback runs.
-fn window_list(parent: usize, descendants: bool, list: &mut [u32; ENUM_LIMIT]) -> usize {
-    let mut count = 0;
-    // The siblings still to visit after each subtree being walked.
-    let mut after = [0u32; ENUM_DEPTH];
-    let mut depth = 0;
+/// Windows 2000's NtUserBuildHwndList lists them), as many as there are; none when the heap has no
+/// room for the list. The list is taken before any callback runs.
+///
+/// The walk climbs back up through each window's parent once its subtree is done, so it keeps no
+/// stack: it goes as deep as the windows nest (the window manager's limit, 100, Windows 2000's).
+fn window_list(parent: usize, descendants: bool) -> Option<WindowList> {
+    let mut list = WindowList::new();
     let mut current = links(parent).map_or(0, |own| own.child);
-    while count < ENUM_LIMIT {
-        if current == 0 {
-            if depth == 0 {
-                break;
-            }
-            depth -= 1;
-            current = after[depth];
+    while current != 0 {
+        if !list.push(current as usize) {
+            return None;
+        }
+        let own = links(current as usize).unwrap_or_default();
+        if descendants && own.child != 0 {
+            current = own.child;
             continue;
         }
-        list[count] = current;
-        count += 1;
-        let own = links(current as usize).unwrap_or_default();
-        if descendants && own.child != 0 && depth < ENUM_DEPTH {
-            after[depth] = own.next;
-            depth += 1;
-            current = own.child;
-        } else {
-            current = own.next;
-        }
+        // The next window after `current`'s subtree: its next sibling, or the next sibling of the
+        // nearest window above it that has one, below `parent`.
+        let mut done = own;
+        current = loop {
+            if done.next != 0 {
+                break done.next;
+            }
+            if !descendants || done.parent == 0 || done.parent as usize == parent {
+                break 0;
+            }
+            done = links(done.parent as usize).unwrap_or_default();
+        };
     }
-    count
+    Some(list)
 }
 
 /// The enumerations' walk: `proc` called with each window below `parent` ([`window_list`]) still
 /// alive and `lparam`, until it answers 0. FALSE when it stopped one early or there is none (the
-/// callback never called: the wintree capture's enum block), TRUE once every window was given.
+/// callback never called: the wintree capture's enum block), TRUE once every window was given;
+/// FALSE with ERROR_NOT_ENOUGH_MEMORY when the heap has no room for the list.
 fn enumerate(parent: usize, descendants: bool, proc: usize, lparam: u32) -> u32 {
-    let mut list = [0u32; ENUM_LIMIT];
-    let count = window_list(parent, descendants, &mut list);
-    if count == 0 {
+    let Some(list) = window_list(parent, descendants) else {
+        return failed(crate::ERROR_NOT_ENOUGH_MEMORY).unwrap_or(0);
+    };
+    if list.is_empty() {
         return 0;
     }
-    for &window in &list[..count] {
-        if !is_window_alive(window as usize) {
+    for &window in list.as_slice() {
+        if !is_window_alive(window) {
             continue;
         }
-        if imports::call_window_enum_procedure(proc as u32, window, lparam) == 0 {
+        if imports::call_window_enum_procedure(proc as u32, window as u32, lparam) == 0 {
             return 0;
         }
     }
@@ -2322,6 +2321,41 @@ mod tests {
                 window as usize
             })
             .collect()
+    }
+
+    /// The enumerations give every window, however many there are and however deep they nest:
+    /// past the 256 windows and the 128 levels the fixed walk stopped at, depth first, the walk
+    /// climbing back out of a deep subtree to its parent's next child.
+    #[test]
+    fn enumerations_reach_every_window() {
+        use crate::imports::host::enum_procedure;
+        register();
+        let top = make_at(0x00CF_0000, 0, 0, 0, 300, 200);
+        let first = make_at(WS_CHILD, top, 0, 0, 10, 10);
+        let mut expected = std::vec![first];
+        let mut parent = first;
+        for _ in 0..150 {
+            parent = make_at(WS_CHILD, parent, 0, 0, 10, 10);
+            expected.push(parent);
+        }
+        for _ in 0..300 {
+            expected.push(make_at(WS_CHILD, top, 0, 0, 10, 10));
+        }
+        let tops: std::vec::Vec<usize> = (0..260)
+            .map(|_| make_at(0x00CF_0000, 0, 0, 0, 10, 10))
+            .collect();
+        seen();
+
+        let proc = enum_procedure(enumerated) as usize;
+        assert_eq!(enum_child_windows(top, proc, 0x300), 1);
+        assert_eq!(given(0x300), expected);
+        assert_eq!(enum_child_windows(expected[100], proc, 0x300), 1);
+        assert_eq!(given(0x300), expected[101..151]);
+        assert_eq!(enum_windows(proc, 0x400), 1);
+        let given_tops = given(0x400);
+        assert!(given_tops.contains(&top));
+        assert!(tops.iter().all(|window| given_tops.contains(window)));
+        assert!(!given_tops.contains(&first));
     }
 
     /// The wintree capture's parent, enum and zorder blocks over the stand-ins' tree: GetParent of
