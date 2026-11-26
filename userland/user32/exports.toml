@@ -2077,7 +2077,7 @@ args = ["u32 cInputs", "ptr pInputs", "i32 cbSize"]
 impl = { native = "SendInput" }
 ordinal = 536
 fails = "0"
-note = "keyboard events (virtual keys, scan codes, KEYEVENTF_UNICODE); the first mouse or hardware event stops the run: there is no mouse yet"
+note = "keyboard events (virtual keys, scan codes, KEYEVENTF_UNICODE) and mouse events (moves, absolute or relative, and the three buttons; not the wheel); the first hardware event stops the run"
 
 [[export]]
 name = "NtUserSendInput"
@@ -2127,7 +2127,7 @@ note = "US English's layout (0x04090409), the one F2K has, for every thread"
 name = "GetCapture"
 group = "input"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "GetCapture" }
 ordinal = 232
 fails = "NULL"
 
@@ -2135,7 +2135,7 @@ fails = "NULL"
 name = "SetCapture"
 group = "input"
 args = ["handle hWnd"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetCapture" }
 ordinal = 546
 fails = "NULL"
 
@@ -2143,7 +2143,7 @@ fails = "NULL"
 name = "ReleaseCapture"
 group = "input"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "ReleaseCapture" }
 ordinal = 519
 fails = "FALSE"
 
@@ -2151,7 +2151,7 @@ fails = "FALSE"
 name = "GetCursorPos"
 group = "input"
 args = ["ptr lpPoint"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetCursorPos" }
 ordinal = 256
 fails = "FALSE"
 
@@ -2159,7 +2159,7 @@ fails = "FALSE"
 name = "SetCursorPos"
 group = "input"
 args = ["i32 X", "i32 Y"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetCursorPos" }
 ordinal = 557
 fails = "FALSE"
 
@@ -2167,9 +2167,32 @@ fails = "FALSE"
 name = "SetCursor"
 group = "input"
 args = ["handle hCursor"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetCursor" }
 ordinal = 555
 fails = "NULL"
+note = "the shape is kept, GetCursor's to answer: nothing draws the cursor yet"
+
+[[export]]
+name = "GetCursor"
+group = "input"
+args = []
+impl = { native = "GetCursor" }
+ordinal = 253
+fails = "NULL"
+
+[[export]]
+name = "NtUserSetCapture"
+group = "input"
+args = ["handle Window", "ptr<u32> Previous"]
+impl = { syscall = "crate::win32k::focus::set_capture_service" }
+internal = true
+
+[[export]]
+name = "NtUserSetCursor"
+group = "input"
+args = ["handle Cursor", "ptr<u32> Previous"]
+impl = { syscall = "crate::win32k::mouse::set_cursor" }
+internal = true
 
 # --- dialog boxes and message boxes ---------------------------------------------------------------
 
@@ -4275,10 +4298,6 @@ ordinal = 251
 [[export]]
 name = "GetComboBoxInfo"
 ordinal = 252
-
-[[export]]
-name = "GetCursor"
-ordinal = 253
 
 [[export]]
 name = "GetCursorFrameInfo"

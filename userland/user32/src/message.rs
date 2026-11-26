@@ -56,6 +56,7 @@ use crate::{
     focus,
     imports,
     menubar,
+    mouse,
     nonclient,
     paint,
     window,
@@ -812,7 +813,8 @@ pub fn translate(msg: &Msg) -> u32 {
 /// F10 alone, and Alt with a character, send the top-level window SC_KEYMENU, Alt+F4 SC_CLOSE)
 /// and WM_SYSCOMMAND (SC_KEYMENU runs the keyboard menu loop, SC_CLOSE sends WM_CLOSE,
 /// SC_MINIMIZE, SC_MAXIMIZE and SC_RESTORE minimize, maximize and restore the window);
-/// WM_CANCELMODE the window's menu loop ended ([`menubar::cancel_mode`]); WM_SETREDRAW the window's
+/// WM_CANCELMODE the window's menu loop ended ([`menubar::cancel_mode`]) and its capture released;
+/// WM_SETCURSOR the cursor set, WM_MOUSEACTIVATE MA_ACTIVATE ([`mouse`]); WM_SETREDRAW the window's
 /// WS_VISIBLE set or cleared, 0; WM_CONTEXTMENU a child's handed to its parent, 0; WM_SETICON the
 /// window's big or small icon kept, the one it replaces answered, and WM_GETICON's answer it
 /// ([`set_icon`]); WM_WINDOWPOSCHANGING a resize's size clamped into the window's tracking sizes
@@ -904,8 +906,11 @@ pub fn default_procedure(window: usize, message: u32, wparam: u32, lparam: i32, 
         }
         WM_CANCELMODE => {
             menubar::cancel_mode(window);
+            mouse::cancel_capture(window);
             0
         }
+        WM_SETCURSOR => mouse::set_cursor_default(window, wparam, lparam),
+        WM_MOUSEACTIVATE => mouse::mouse_activate_default(window, wparam, lparam),
         WM_ACTIVATE => {
             if wparam & 0xFFFF != WA_INACTIVE && wparam >> 16 == 0 {
                 focus::activate_focus(window);

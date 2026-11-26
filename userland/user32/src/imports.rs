@@ -589,6 +589,10 @@ mod raw {
         pub fn NtUserSetFocus(window: usize, previous: *mut u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserSetActiveWindow"]
         pub fn NtUserSetActiveWindow(window: usize, previous: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserSetCapture"]
+        pub fn NtUserSetCapture(window: usize, previous: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserSetCursor"]
+        pub fn NtUserSetCursor(cursor: usize, previous: *mut u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserGetForegroundWindow"]
         pub fn NtUserGetForegroundWindow(window: *mut u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserGetThreadState"]
@@ -1968,6 +1972,23 @@ pub fn foreground_window() -> Result<u32, NtStatus> {
     // SAFETY: the kernel writes the answer into the local.
     checked(unsafe { raw::NtUserGetForegroundWindow(&mut window) })?;
     Ok(window)
+}
+
+/// NtUserSetCapture: the mouse capture to `window` (0: released); the window that had it (0 for
+/// none, or for a refusal).
+pub fn set_capture(window: usize) -> Result<u32, NtStatus> {
+    let mut previous = 0u32;
+    // SAFETY: the kernel writes the answer into the local.
+    checked(unsafe { raw::NtUserSetCapture(window, &mut previous) })?;
+    Ok(previous)
+}
+
+/// NtUserSetCursor: the cursor's shape set to `cursor`; the one it replaces.
+pub fn set_cursor(cursor: usize) -> Result<u32, NtStatus> {
+    let mut previous = 0u32;
+    // SAFETY: the kernel writes the answer into the local.
+    checked(unsafe { raw::NtUserSetCursor(cursor, &mut previous) })?;
+    Ok(previous)
 }
 
 /// NtUserGetThreadState: the routine `routine` (rtl::user's THREAD_STATE_*): its result.

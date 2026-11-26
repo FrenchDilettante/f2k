@@ -497,6 +497,11 @@ pub struct Wm {
     /// The time and the position (x low, y high) of the last message a read retrieved.
     pub message_time: u32,
     pub message_pos: u32,
+    /// The calling thread's capture window (0 for none), the cursor's place (x low, y high) and
+    /// its shape.
+    pub capture: u32,
+    pub cursor_pos: u32,
+    pub cursor: u32,
 }
 
 std::thread_local! {
@@ -1736,6 +1741,35 @@ pub unsafe extern "system" fn NtUserSetFocus(window: usize, previous: *mut u32) 
     status
 }
 
+/// The capture to `window` (0: released): WM_CAPTURECHANGED to the window that had it, as the
+/// kernel sends it.
+pub unsafe extern "system" fn NtUserSetCapture(window: usize, previous: *mut u32) -> u32 {
+    let status = wm(|wm| {
+        let handle = match named(wm, window) {
+            Ok(handle) => handle,
+            Err(status) => return status,
+        };
+        let old = wm.capture;
+        wm.capture = handle;
+        if old != 0 && old != handle {
+            wm.send(old, WM_CAPTURECHANGED, 0, handle as i32);
+        }
+        // SAFETY: the caller's out-pointer.
+        unsafe { previous.write(old) };
+        STATUS_SUCCESS
+    });
+    deliver_sent();
+    status
+}
+
+/// The cursor's shape set; the one it replaces answered.
+pub unsafe extern "system" fn NtUserSetCursor(cursor: usize, previous: *mut u32) -> u32 {
+    let had = wm(|wm| core::mem::replace(&mut wm.cursor, cursor as u32));
+    // SAFETY: the caller's out-pointer.
+    unsafe { previous.write(had) };
+    STATUS_SUCCESS
+}
+
 pub unsafe extern "system" fn NtUserSetActiveWindow(window: usize, previous: *mut u32) -> u32 {
     let status = wm(|wm| {
         let handle = match named(wm, window) {
@@ -1765,6 +1799,9 @@ pub unsafe extern "system" fn NtUserGetThreadState(routine: u32, result: *mut u3
         THREAD_STATE_ACTIVE_WINDOW => Ok(wm.active),
         THREAD_STATE_MESSAGE_TIME => Ok(wm.message_time),
         THREAD_STATE_MESSAGE_POS => Ok(wm.message_pos),
+        THREAD_STATE_CAPTURE_WINDOW => Ok(wm.capture),
+        THREAD_STATE_CURSOR_POS => Ok(wm.cursor_pos),
+        THREAD_STATE_CURSOR => Ok(wm.cursor),
         _ => Err(STATUS_INVALID_PARAMETER),
     });
     match answer {
@@ -1949,6 +1986,12 @@ pub unsafe extern "system" fn NtUserCallTwoParam(
     result: *mut u32,
 ) -> u32 {
     SERVICES.with(|count| count.set(count.get() + 1));
+    if routine == TWO_PARAM_SET_CURSOR_POS {
+        WM.with(|wm| wm.borrow_mut().cursor_pos = param1 & 0xFFFF | param2 << 16);
+        // SAFETY: the caller's out-pointer.
+        unsafe { result.write(1) };
+        return STATUS_SUCCESS;
+    }
     if routine != TWO_PARAM_SET_CARET_POS {
         return STATUS_INVALID_PARAMETER;
     }
@@ -2394,6 +2437,12 @@ pub unsafe extern "system" fn NtUserCallNoParam(routine: u32, result: *mut u32) 
                     ..HostCaret::default()
                 })
             });
+            1
+        }
+        NO_PARAM_RELEASE_CAPTURE => {
+            let mut previous = 0;
+            // SAFETY: a local out-pointer.
+            unsafe { NtUserSetCapture(0, &mut previous) };
             1
         }
         _ => return STATUS_INVALID_PARAMETER,

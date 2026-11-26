@@ -68,9 +68,9 @@ pub unsafe extern "system" fn set_keyboard_state(keys: *const u8) -> u32 {
 }
 
 /// SendInput: the caller's `count` INPUT records, `size` bytes each, injected in order as the
-/// keyboard's keystrokes; how many were. 0 with ERROR_INVALID_PARAMETER for a size other than an
-/// INPUT's. The first record that is not a keyboard event (the mouse's: there is no mouse yet)
-/// stops the run.
+/// keyboard's keystrokes and the mouse's events (win32k's input path: [`crate::mouse`]); how many
+/// were. 0 with ERROR_INVALID_PARAMETER for a size other than an INPUT's. The first hardware
+/// event stops the run.
 ///
 /// # Safety
 ///

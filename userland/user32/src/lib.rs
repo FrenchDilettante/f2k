@@ -60,6 +60,7 @@ pub mod menu;
 pub mod menubar;
 pub mod menuinfo;
 pub mod message;
+pub mod mouse;
 pub mod msgbox;
 pub mod nonclient;
 pub mod obm;
