@@ -594,6 +594,11 @@ mod target {
     /// The keyboard DPC's hand-over of a byte for win32k: kept for the raw input thread, which is
     /// woken. A byte that finds the ring full is lost.
     pub fn raw_byte(dispatch: &mut At<Dispatch>, byte: u8) {
+        // The thread is started with the window station: a GUI foreground without one is a bug.
+        crate::boot::subsys::require(
+            crate::boot::subsys::Subsystem::WinSta,
+            "the keyboard's hand-over to win32k's raw input thread",
+        );
         if !RAW.push(byte) {
             crate::serial_println!("F2K: kbd: raw input ring full: a byte dropped");
         }

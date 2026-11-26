@@ -152,6 +152,9 @@ static ROUTES: InitOnce<Option<PirqRoutes>> = InitOnce::new();
 
 /// The devices the boot scan found ([`init`]).
 pub fn devices() -> &'static Devices {
+    // A boot whose `subsys=` left the scan out has no table: a reach for it (a driver's
+    // HalGetBusData, a device's bring-up) would answer "no device" where the machine has one.
+    crate::boot::subsys::require(crate::boot::subsys::Subsystem::Pci, "the PCI device table");
     SCAN_REF.get()
 }
 

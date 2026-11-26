@@ -1364,6 +1364,11 @@ fn teardown(process: &'static Process, quiescent: bool) {
     crate::mem::kstacks::release_parked();
     crate::win32k::gdi::end_process(process.object().index);
     if process.win32k().is_some() {
+        // A process connects at its first win32k service, which a boot without win32k refuses
+        // (`user::syscall`): a connection there is a bug, not a step to skip.
+        use crate::boot::subsys::{require, Subsystem};
+        require(Subsystem::WinSta, "a process's win32k teardown");
+        require(Subsystem::Fonts, "a process's win32k teardown");
         let owner = process.object().index;
         crate::win32k::queue::locked(|manager| manager.end_process(owner));
         crate::win32k::fonts::end_process(owner);

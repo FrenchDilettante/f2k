@@ -86,8 +86,12 @@ pub fn run() -> ! {
     // stack is one of the boot's permanent allocations.
     crate::csr::start_control_thread();
     // win32k's raw input thread, which takes the keyboard's keystrokes to the windows while a GUI
-    // program is in the foreground: a permanent allocation too.
-    crate::win32k::input::start();
+    // program is in the foreground: a permanent allocation too. Part of win32k: a boot whose
+    // `subsys=` left the window station out has no GUI program to give keys to (its win32k
+    // services are refused), and no thread (the keyboard's hand-over to it checks).
+    if crate::boot::subsys::started(crate::boot::subsys::Subsystem::WinSta) {
+        crate::win32k::input::start();
+    }
     // The baseline for the per-process teardown audits: recorded once the boot's permanent
     // allocations are done, before the first process takes any frame.
     crate::process::record_allocator_baseline();

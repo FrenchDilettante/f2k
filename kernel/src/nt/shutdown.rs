@@ -181,25 +181,42 @@ mod target {
         }
     }
 
-    /// The kernel's side of the steps.
+    /// The kernel's side of the steps. Each step's owner (the subsystem table's teardown hooks) is
+    /// a base-profile row, started at every boot; the checks keep it so.
     struct Kernel;
+
+    use crate::boot::subsys::{require, Subsystem};
 
     impl Machine for Kernel {
         fn close_volume(&mut self) {
+            require(
+                Subsystem::BootVolume,
+                "the shutdown's close of the boot volume",
+            );
             // The images cached for a next run hold their files open: they go with the volume.
             crate::nt::section::purge_image_cache();
             with_boot_volume(|volume| volume.close());
         }
 
         fn flush_volume(&mut self) -> Option<Result<Flushed, NtStatus>> {
+            require(
+                Subsystem::BootVolume,
+                "the shutdown's flush of the boot volume",
+            );
             with_boot_volume(|volume| volume.flush())
         }
 
         fn flush_disk_cache(&mut self) -> Option<Result<CacheFlush, NtStatus>> {
+            // The volume's disk is one the block registry took, the IDE disk only once started.
+            require(
+                Subsystem::Block,
+                "the shutdown's flush of the disk's write cache",
+            );
             with_boot_volume(|volume| volume.device().flush_cache())
         }
 
         fn flush_registry(&mut self) {
+            require(Subsystem::Registry, "the shutdown's flush of the registry");
             crate::cm::flush_hives();
         }
 

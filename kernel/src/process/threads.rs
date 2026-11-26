@@ -359,6 +359,11 @@ fn end_thread(end: ThreadEnd) -> ! {
     #[cfg(target_arch = "x86")]
     if process.win32k().is_some() && crate::pcr::pcr().current() == crate::interrupt::irql::PASSIVE
     {
+        // Connected through a win32k service, which a boot without win32k refuses.
+        crate::boot::subsys::require(
+            crate::boot::subsys::Subsystem::WinSta,
+            "a thread's win32k teardown",
+        );
         if let Some(thread) = crate::ob::current_thread() {
             let key = crate::win32k::window::ThreadKey {
                 index: thread.index,

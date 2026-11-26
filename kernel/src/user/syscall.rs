@@ -108,6 +108,39 @@ pub fn find_service(number: u32) -> Result<(u32, ServiceFn), NtStatus> {
     }
 }
 
+/// The subsystems win32k's services need: its window station (every service connects to it) and
+/// its fonts (GDI's text and the font services).
+pub const WIN32K_NEEDS: u32 =
+    crate::boot::subsys::Subsystem::WinSta.bit() | crate::boot::subsys::Subsystem::Fonts.bit();
+
+/// Which of win32k's needs a boot that started `started` lacks: none, or the service is refused.
+pub fn win32k_missing(started: u32) -> u32 {
+    WIN32K_NEEDS & !started
+}
+
+/// Whether win32k is there for service `number`: a boot whose `subsys=` left its window station or
+/// its fonts out refuses every win32k service with STATUS_INVALID_SYSTEM_SERVICE, as Windows 2000
+/// answers a win32k service when win32k is not loaded (the shadow table's entry is empty, so the
+/// index lies past its limit), rather than serve it against state it never made. The first
+/// refusal of the boot is reported on COM1, so a test that used an undeclared subsystem says so.
+#[cfg(target_arch = "x86")]
+fn win32k_started(number: u32) -> Result<(), NtStatus> {
+    use core::sync::atomic::{AtomicBool, Ordering};
+    static REPORTED: AtomicBool = AtomicBool::new(false);
+    let missing = win32k_missing(crate::boot::subsys::STATE.started_set());
+    if missing == 0 {
+        return Ok(());
+    }
+    if !REPORTED.swap(true, Ordering::Relaxed) {
+        crate::serial_println!(
+            "F2K: win32k service {:#06x} refused: subsystem {} not started (subsys=), STATUS_INVALID_SYSTEM_SERVICE",
+            number,
+            crate::boot::subsys::Names(&crate::boot::subsys::SUBSYSTEMS, missing)
+        );
+    }
+    Err(STATUS_INVALID_SYSTEM_SERVICE)
+}
+
 /// Probe a user range: zero length passes; otherwise it must lie below [`USER_PROBE_LIMIT`] without
 /// wrapping. Violations report [`STATUS_ACCESS_VIOLATION`]; the range is never read.
 pub(crate) fn probe_user_range(pointer: u32, length: u32) -> Result<(), NtStatus> {
@@ -445,6 +478,7 @@ fn serve(frame: &mut TrapFrame, passive: &mut At<Passive>) -> Result<(), NtStatu
     // Windows 2000's first win32k call makes a thread a GUI thread (the internal numbers' table
     // bits are 0).
     if table == WIN32K_TABLE {
+        win32k_started(frame.eax)?;
         crate::win32k::winsta::connect(crate::user::args::calling_process())?;
     }
 
@@ -643,6 +677,25 @@ mod tests {
     fn vector_is_the_syscall_vector() {
         assert_eq!(SYSCALL_VECTOR, 0x2E);
         assert!(SYSCALL_VECTOR > 31);
+    }
+
+    /// win32k's services need its window station and its fonts, both: a boot without either
+    /// refuses them.
+    #[test]
+    fn win32k_needs_its_window_station_and_its_fonts() {
+        use crate::boot::subsys::{selection, Subsystem as S, SUBSYSTEMS};
+        assert_eq!(win32k_missing(u32::MAX), 0);
+        assert_eq!(win32k_missing(selection(&SUBSYSTEMS, 0)), WIN32K_NEEDS);
+        assert_eq!(
+            win32k_missing(selection(&SUBSYSTEMS, S::WinSta.bit())),
+            S::Fonts.bit()
+        );
+        assert_eq!(
+            win32k_missing(selection(&SUBSYSTEMS, S::Fonts.bit())),
+            S::WinSta.bit()
+        );
+        let gui = crate::boot::subsys::parse(&SUBSYSTEMS, b"gui").unwrap();
+        assert_eq!(win32k_missing(selection(&SUBSYSTEMS, gui)), 0);
     }
 
     /// A number is read as Windows 2000's dispatcher reads it: the table in bits 12-13, the index
