@@ -8,6 +8,7 @@
 #![no_main]
 
 use dlgshow::*;
+use exe::winuser::{PM_NOREMOVE, WM_CLOSE, WM_COMMAND, WM_INITDIALOG, WM_KEYDOWN};
 
 exe::entry!(main);
 
@@ -25,9 +26,6 @@ mod ffi {
         pub x: i32,
         pub y: i32,
     }
-
-    /// PeekMessage's flag leaving the message in the queue.
-    pub const PM_NOREMOVE: u32 = 0;
 
     #[link(
         name = "kernel32",
@@ -143,7 +141,7 @@ fn main() -> u32 {
     let mut msg = ffi::Msg::default();
     loop {
         // SAFETY: the loop's own MSG.
-        if !ready && unsafe { ffi::PeekMessageW(&mut msg, 0, 0, 0, ffi::PM_NOREMOVE) } == 0 {
+        if !ready && unsafe { ffi::PeekMessageW(&mut msg, 0, 0, 0, PM_NOREMOVE) } == 0 {
             ready = true;
             let _ = exe::stdout().print(format_args!("{READY}, {}\r\n", focus()));
         }

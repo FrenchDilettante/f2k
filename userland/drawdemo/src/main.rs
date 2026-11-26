@@ -7,18 +7,32 @@
 #![no_main]
 
 use drawdemo::*;
+use exe::winuser::{
+    BF_ADJUST,
+    BF_MIDDLE,
+    BF_RECT,
+    BF_SOFT,
+    COLOR_3DFACE,
+    COLOR_3DSHADOW,
+    COLOR_WINDOW,
+    DT_CALCRECT,
+    DT_CENTER,
+    DT_EXPANDTABS,
+    DT_SINGLELINE,
+    DT_VCENTER,
+    DT_WORDBREAK,
+    EDGE_RAISED,
+    EDGE_SUNKEN,
+    SW_SHOW,
+    WM_PAINT,
+    WS_POPUP,
+};
 
 exe::entry!(main);
 
 /// The window's procedure, its class's name, and the messages it reads (winuser.h).
 const CLASS: &[u8] = b"F2KDrawDemo\0";
-const WM_PAINT: u32 = 0x000F;
-const WS_POPUP: u32 = 0x8000_0000;
-const SW_SHOW: i32 = 5;
 /// The system colors and stock objects the sheet paints with (winuser.h, wingdi.h).
-const COLOR_WINDOW: usize = 5;
-const COLOR_3DFACE: usize = 15;
-const COLOR_3DSHADOW: i32 = 16;
 const BLACK_BRUSH: i32 = 4;
 const TRANSPARENT: i32 = 1;
 
@@ -222,7 +236,7 @@ fn paint(dc: &Dc) {
     let (black, shadow) = unsafe {
         (
             ffi::GetStockObject(BLACK_BRUSH),
-            ffi::GetSysColorBrush(COLOR_3DSHADOW),
+            ffi::GetSysColorBrush(COLOR_3DSHADOW as i32),
         )
     };
     dc.frame(FRAME, black);

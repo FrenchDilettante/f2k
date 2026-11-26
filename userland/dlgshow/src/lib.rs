@@ -7,11 +7,25 @@
 
 use core::fmt;
 
-/// The messages and keys dlgshow reads (winuser.h).
-pub const WM_KEYDOWN: u32 = 0x0100;
-pub const WM_INITDIALOG: u32 = 0x0110;
-pub const WM_COMMAND: u32 = 0x0111;
-pub const WM_CLOSE: u32 = 0x0010;
+use exe::winuser::{
+    BS_AUTOCHECKBOX,
+    BS_AUTORADIOBUTTON,
+    BS_DEFPUSHBUTTON,
+    BS_GROUPBOX,
+    BS_PUSHBUTTON,
+    DS_CENTER,
+    DS_MODALFRAME,
+    DS_SETFONT,
+    SS_ETCHEDHORZ,
+    SS_LEFT,
+    WS_CAPTION,
+    WS_CHILD,
+    WS_GROUP,
+    WS_POPUP,
+    WS_SYSMENU,
+    WS_TABSTOP,
+    WS_VISIBLE,
+};
 
 /// The dialog's controls' ids.
 pub const ID_OK: u16 = 1;
@@ -26,25 +40,6 @@ pub const READY: &str = "dlgshow: ready";
 
 /// dlgshow's exit codes: 0 once OK or Cancel ended it; 1 when its dialog could not be made.
 pub const NO_DIALOG: u32 = 1;
-
-/// The styles of the dialog and its controls (winuser.h).
-const WS_POPUP: u32 = 0x8000_0000;
-const WS_CHILD: u32 = 0x4000_0000;
-const WS_VISIBLE: u32 = 0x1000_0000;
-const WS_CAPTION: u32 = 0x00C0_0000;
-const WS_SYSMENU: u32 = 0x0008_0000;
-const WS_GROUP: u32 = 0x0002_0000;
-const WS_TABSTOP: u32 = 0x0001_0000;
-const DS_SETFONT: u32 = 0x0040;
-const DS_MODALFRAME: u32 = 0x0080;
-const DS_CENTER: u32 = 0x0800;
-const BS_PUSHBUTTON: u32 = 0x0;
-const BS_DEFPUSHBUTTON: u32 = 0x1;
-const BS_AUTOCHECKBOX: u32 = 0x3;
-const BS_GROUPBOX: u32 = 0x7;
-const BS_AUTORADIOBUTTON: u32 = 0x9;
-const SS_LEFT: u32 = 0x00;
-const SS_ETCHEDHORZ: u32 = 0x10;
 
 /// The predefined classes' ordinals.
 const BUTTON: u16 = 0x80;

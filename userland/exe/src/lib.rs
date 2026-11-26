@@ -63,6 +63,7 @@ mod text;
 #[cfg(all(target_arch = "x86", target_os = "windows"))]
 mod toolhelp;
 pub mod winerror;
+pub mod winuser;
 
 pub use command::CommandLine;
 #[cfg(all(target_arch = "x86", target_os = "windows"))]

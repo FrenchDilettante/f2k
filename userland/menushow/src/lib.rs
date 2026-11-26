@@ -7,24 +7,27 @@
 
 use core::fmt;
 
-/// The messages menushow reads (winuser.h).
-pub const WM_DESTROY: u32 = 0x0002;
-pub const WM_COMMAND: u32 = 0x0111;
-pub const WM_SYSCOMMAND: u32 = 0x0112;
-pub const WM_TIMER: u32 = 0x0113;
-pub const WM_INITMENU: u32 = 0x0116;
-pub const WM_INITMENUPOPUP: u32 = 0x0117;
-pub const WM_MENUSELECT: u32 = 0x011F;
-pub const WM_ENTERIDLE: u32 = 0x0121;
-pub const WM_UNINITMENUPOPUP: u32 = 0x0125;
-pub const WM_ENTERMENULOOP: u32 = 0x0211;
-pub const WM_EXITMENULOOP: u32 = 0x0212;
+use exe::winuser::{
+    MF_CHECKED,
+    MF_GRAYED,
+    MF_SEPARATOR,
+    MF_STRING,
+    WM_COMMAND,
+    WM_ENTERIDLE,
+    WM_ENTERMENULOOP,
+    WM_EXITMENULOOP,
+    WM_INITMENU,
+    WM_INITMENUPOPUP,
+    WM_MENUSELECT,
+    WM_SYSCOMMAND,
+    WM_UNINITMENUPOPUP,
+    WS_CAPTION,
+    WS_MINIMIZEBOX,
+    WS_SYSMENU,
+    WS_VISIBLE,
+};
 
 /// The window's styles: calc's (a caption, its system menu and minimize box, a fixed frame).
-pub const WS_CAPTION: u32 = 0x00C0_0000;
-pub const WS_SYSMENU: u32 = 0x0008_0000;
-pub const WS_MINIMIZEBOX: u32 = 0x0002_0000;
-pub const WS_VISIBLE: u32 = 0x1000_0000;
 pub const STYLE: u32 = WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX | WS_VISIBLE;
 
 /// The menu's commands.
@@ -35,13 +38,6 @@ pub const ID_SCIENTIFIC: u16 = 304;
 pub const ID_GROUPING: u16 = 305;
 pub const ID_TOPICS: u16 = 310;
 pub const ID_ABOUT: u16 = 311;
-
-/// AppendMenu's flags (winuser.h).
-pub const MF_STRING: u32 = 0x0000;
-pub const MF_GRAYED: u32 = 0x0001;
-pub const MF_CHECKED: u32 = 0x0008;
-pub const MF_POPUP: u32 = 0x0010;
-pub const MF_SEPARATOR: u32 = 0x0800;
 
 /// One item of a popup: its flags, its command, its text (with its accelerator after a tab).
 pub type Item = (u32, u16, &'static str);
@@ -173,6 +169,8 @@ pub fn menu_parameter(message: u32, wparam: u32, lparam: u32) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
+    use exe::winuser::WM_TIMER;
+
     use super::*;
 
     /// The lines read as tests/core/test_nonclient.py expects them.

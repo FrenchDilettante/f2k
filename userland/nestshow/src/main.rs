@@ -13,6 +13,8 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use exe::winuser::{WM_CREATE, WM_USER, WS_CHILD, WS_POPUP, WS_VISIBLE};
+
 exe::entry!(main);
 
 /// How many windows nest, each made inside its parent's WM_CREATE.
@@ -20,11 +22,6 @@ const DEPTH: u32 = 20;
 
 /// The window's class name, and the messages and styles it uses (winuser.h).
 const CLASS: &[u8] = b"F2KNestShow\0";
-const WM_CREATE: u32 = 0x0001;
-const WM_USER: u32 = 0x0400;
-const WS_POPUP: u32 = 0x8000_0000;
-const WS_CHILD: u32 = 0x4000_0000;
-const WS_VISIBLE: u32 = 0x1000_0000;
 
 /// The program's module, the class's instance.
 static INSTANCE: AtomicU32 = AtomicU32::new(0);

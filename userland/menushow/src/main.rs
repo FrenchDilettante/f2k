@@ -10,6 +10,18 @@
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+use exe::winuser::{
+    COLOR_3DFACE,
+    MF_BYCOMMAND,
+    MF_POPUP,
+    MF_SEPARATOR,
+    MF_STRING,
+    PM_NOREMOVE,
+    SM_CXSCREEN,
+    SM_CYSCREEN,
+    WM_COMMAND,
+    WM_DESTROY,
+};
 use menushow::*;
 
 exe::entry!(main);
@@ -53,14 +65,6 @@ mod ffi {
         pub menu_name: *const u16,
         pub class_name: *const u16,
     }
-
-    /// PeekMessage's flag leaving the message in the queue; CheckMenuRadioItem's by-command flag;
-    /// COLOR_3DFACE; SM_CXSCREEN and SM_CYSCREEN.
-    pub const PM_NOREMOVE: u32 = 0;
-    pub const MF_BYCOMMAND: u32 = 0;
-    pub const COLOR_3DFACE: usize = 15;
-    pub const SM_CXSCREEN: i32 = 0;
-    pub const SM_CYSCREEN: i32 = 1;
 
     #[link(
         name = "kernel32",
@@ -177,7 +181,7 @@ extern "system" fn procedure(window: usize, message: u32, wparam: usize, lparam:
                         ID_STANDARD.into(),
                         ID_SCIENTIFIC.into(),
                         id,
-                        ffi::MF_BYCOMMAND,
+                        MF_BYCOMMAND,
                     );
                     ffi::DrawMenuBar(window);
                 }
@@ -220,7 +224,7 @@ fn build_menu() -> usize {
             ID_STANDARD.into(),
             ID_SCIENTIFIC.into(),
             ID_STANDARD.into(),
-            ffi::MF_BYCOMMAND,
+            MF_BYCOMMAND,
         );
         bar
     }
@@ -240,7 +244,7 @@ fn main() -> u32 {
             instance,
             icon: 0,
             cursor: 0,
-            background: ffi::COLOR_3DFACE + 1,
+            background: COLOR_3DFACE + 1,
             menu_name: core::ptr::null(),
             class_name: class_name.as_ptr(),
         };
@@ -257,8 +261,8 @@ fn main() -> u32 {
         };
         ffi::AdjustWindowRectEx(&mut rect, STYLE, 1, 0);
         let (cx, cy) = (rect.right - rect.left, rect.bottom - rect.top);
-        let x = (ffi::GetSystemMetrics(ffi::SM_CXSCREEN) - cx) / 2;
-        let y = (ffi::GetSystemMetrics(ffi::SM_CYSCREEN) - cy) / 2;
+        let x = (ffi::GetSystemMetrics(SM_CXSCREEN) - cx) / 2;
+        let y = (ffi::GetSystemMetrics(SM_CYSCREEN) - cy) / 2;
         ffi::CreateWindowExW(
             0,
             class_name.as_ptr(),
@@ -284,7 +288,7 @@ fn main() -> u32 {
     let mut msg = ffi::Msg::default();
     loop {
         // SAFETY: the loop's own MSG.
-        let idle = unsafe { ffi::PeekMessageW(&mut msg, 0, 0, 0, ffi::PM_NOREMOVE) } == 0;
+        let idle = unsafe { ffi::PeekMessageW(&mut msg, 0, 0, 0, PM_NOREMOVE) } == 0;
         if idle && !ready {
             ready = true;
             let _ = exe::stdout().print(format_args!("{READY}\r\n"));

@@ -6,13 +6,7 @@
 
 use core::fmt;
 
-/// The keyboard messages a window receives (winuser.h).
-pub const WM_KEYDOWN: u32 = 0x0100;
-pub const WM_KEYUP: u32 = 0x0101;
-pub const WM_CHAR: u32 = 0x0102;
-pub const WM_SYSKEYDOWN: u32 = 0x0104;
-pub const WM_SYSKEYUP: u32 = 0x0105;
-pub const WM_SYSCHAR: u32 = 0x0106;
+use exe::winuser::{WM_CHAR, WM_KEYDOWN, WM_KEYUP, WM_SYSCHAR, WM_SYSKEYDOWN, WM_SYSKEYUP};
 
 /// The character that ends keyshow: Escape's.
 pub const ESCAPE: u32 = 0x1B;

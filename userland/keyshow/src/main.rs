@@ -6,16 +6,13 @@
 #![no_std]
 #![no_main]
 
+use exe::winuser::{WM_CHAR, WM_DESTROY, WS_BORDER, WS_POPUP, WS_VISIBLE};
 use keyshow::*;
 
 exe::entry!(main);
 
 /// The window's class name, and the messages and styles it uses (winuser.h).
 const CLASS: &[u8] = b"F2KKeyShow\0";
-const WM_DESTROY: u32 = 0x0002;
-const WS_POPUP: u32 = 0x8000_0000;
-const WS_VISIBLE: u32 = 0x1000_0000;
-const WS_BORDER: u32 = 0x0080_0000;
 
 /// The calls keyshow makes, as user32 and kernel32 export them.
 mod ffi {

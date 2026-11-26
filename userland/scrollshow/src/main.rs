@@ -15,6 +15,30 @@
 #![no_std]
 #![no_main]
 
+use exe::winuser::{
+    COLOR_WINDOW,
+    ESB_DISABLE_BOTH,
+    ESB_DISABLE_LTUP,
+    PM_NOREMOVE,
+    SBS_HORZ,
+    SBS_VERT,
+    SB_CTL,
+    SB_HORZ,
+    SB_VERT,
+    SIF_PAGE,
+    SIF_POS,
+    SIF_RANGE,
+    SM_CXSCREEN,
+    SM_CYSCREEN,
+    WM_DESTROY,
+    WS_CAPTION,
+    WS_CHILD,
+    WS_HSCROLL,
+    WS_SYSMENU,
+    WS_VISIBLE,
+    WS_VSCROLL,
+};
+
 exe::entry!(main);
 
 /// The calls scrollshow makes, as user32 and kernel32 export them.
@@ -69,19 +93,6 @@ mod ffi {
         pub track_pos: i32,
     }
 
-    pub const PM_NOREMOVE: u32 = 0;
-    pub const COLOR_WINDOW: usize = 5;
-    pub const SM_CXSCREEN: i32 = 0;
-    pub const SM_CYSCREEN: i32 = 1;
-    pub const SB_HORZ: i32 = 0;
-    pub const SB_VERT: i32 = 1;
-    pub const SB_CTL: i32 = 2;
-    pub const SIF_RANGE: u32 = 0x1;
-    pub const SIF_PAGE: u32 = 0x2;
-    pub const SIF_POS: u32 = 0x4;
-    pub const ESB_DISABLE_BOTH: u32 = 0x3;
-    pub const ESB_DISABLE_LTUP: u32 = 0x1;
-
     #[link(
         name = "kernel32",
         kind = "raw-dylib",
@@ -123,17 +134,8 @@ mod ffi {
     }
 }
 
-/// The messages the procedure reads (winuser.h).
-const WM_DESTROY: u32 = 0x0002;
-
 /// The window's styles: a caption with its system menu, a fixed frame, both scroll bars.
-const WS_OVERLAPPED_FIXED: u32 = 0x00C0_0000 | 0x0008_0000; // WS_CAPTION | WS_SYSMENU
-const WS_HSCROLL: u32 = 0x0010_0000;
-const WS_VSCROLL: u32 = 0x0020_0000;
-const WS_VISIBLE: u32 = 0x1000_0000;
-const WS_CHILD: u32 = 0x4000_0000;
-const SBS_HORZ: u32 = 0x0;
-const SBS_VERT: u32 = 0x1;
+const WS_OVERLAPPED_FIXED: u32 = WS_CAPTION | WS_SYSMENU;
 const STYLE: u32 = WS_OVERLAPPED_FIXED | WS_HSCROLL | WS_VSCROLL | WS_VISIBLE;
 
 /// The line printed once the window shows and the queue is idle.
@@ -174,7 +176,7 @@ extern "system" fn procedure(window: usize, message: u32, wparam: usize, lparam:
 fn set(window: usize, bar: i32, min: i32, max: i32, page: u32, pos: i32) {
     let info = ffi::ScrollInfo {
         size: core::mem::size_of::<ffi::ScrollInfo>() as u32,
-        mask: ffi::SIF_RANGE | ffi::SIF_PAGE | ffi::SIF_POS,
+        mask: SIF_RANGE | SIF_PAGE | SIF_POS,
         min,
         max,
         page,
@@ -201,7 +203,7 @@ fn main() -> u32 {
             instance,
             icon: 0,
             cursor: 0,
-            background: ffi::COLOR_WINDOW + 1,
+            background: COLOR_WINDOW + 1,
             menu_name: core::ptr::null(),
             class_name: class_name.as_ptr(),
         };
@@ -216,8 +218,8 @@ fn main() -> u32 {
         };
         ffi::AdjustWindowRectEx(&mut rect, STYLE, 0, 0);
         let (cx, cy) = (rect.right - rect.left, rect.bottom - rect.top);
-        let x = (ffi::GetSystemMetrics(ffi::SM_CXSCREEN) - cx) / 2;
-        let y = (ffi::GetSystemMetrics(ffi::SM_CYSCREEN) - cy) / 2;
+        let x = (ffi::GetSystemMetrics(SM_CXSCREEN) - cx) / 2;
+        let y = (ffi::GetSystemMetrics(SM_CYSCREEN) - cy) / 2;
         let window = ffi::CreateWindowExW(
             0,
             class_name.as_ptr(),
@@ -270,21 +272,21 @@ fn main() -> u32 {
         let _ = exe::stderr().print(format_args!("scrollshow: the windows cannot be made\r\n"));
         return NO_WINDOW;
     }
-    set(window, ffi::SB_VERT, 0, 99, 20, 30);
-    set(window, ffi::SB_HORZ, 0, 49, 10, 0);
-    set(across, ffi::SB_CTL, 0, 10, 0, 5);
-    set(down, ffi::SB_CTL, 0, 4, 0, 0);
+    set(window, SB_VERT, 0, 99, 20, 30);
+    set(window, SB_HORZ, 0, 49, 10, 0);
+    set(across, SB_CTL, 0, 10, 0, 5);
+    set(down, SB_CTL, 0, 4, 0, 0);
     // SAFETY: the program's own windows.
     unsafe {
-        ffi::EnableScrollBar(window, ffi::SB_HORZ as u32, ffi::ESB_DISABLE_LTUP);
-        ffi::EnableScrollBar(down, ffi::SB_CTL as u32, ffi::ESB_DISABLE_BOTH);
+        ffi::EnableScrollBar(window, SB_HORZ as u32, ESB_DISABLE_LTUP);
+        ffi::EnableScrollBar(down, SB_CTL as u32, ESB_DISABLE_BOTH);
         ffi::SetForegroundWindow(window);
     }
     let mut ready = false;
     let mut msg = ffi::Msg::default();
     loop {
         // SAFETY: the loop's own MSG.
-        let idle = unsafe { ffi::PeekMessageW(&mut msg, 0, 0, 0, ffi::PM_NOREMOVE) } == 0;
+        let idle = unsafe { ffi::PeekMessageW(&mut msg, 0, 0, 0, PM_NOREMOVE) } == 0;
         if idle && !ready {
             ready = true;
             let _ = exe::stdout().print(format_args!("{READY}\r\n"));

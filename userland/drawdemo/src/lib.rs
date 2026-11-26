@@ -6,6 +6,20 @@
 #![cfg_attr(not(test), no_std)]
 #![forbid(unsafe_code)]
 
+use exe::winuser::{
+    BF_SOFT,
+    DT_BOTTOM,
+    DT_CENTER,
+    DT_LEFT,
+    DT_RIGHT,
+    DT_TOP,
+    DT_VCENTER,
+    EDGE_BUMP,
+    EDGE_ETCHED,
+    EDGE_RAISED,
+    EDGE_SUNKEN,
+};
+
 /// RECT, as user32 and gdi32 take it: its right and bottom edges outside it.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -50,28 +64,6 @@ pub const WINDOW: Rect = rect(20, 20, 620, 460);
 
 /// The client area, in client coordinates.
 pub const CLIENT: Rect = rect(0, 0, WINDOW.right - WINDOW.left, WINDOW.bottom - WINDOW.top);
-
-/// DrawEdge's borders and flags the sheet uses (winuser.h).
-pub const EDGE_RAISED: u32 = 0x0005;
-pub const EDGE_SUNKEN: u32 = 0x000A;
-pub const EDGE_ETCHED: u32 = 0x0006;
-pub const EDGE_BUMP: u32 = 0x0009;
-pub const BF_RECT: u32 = 0x000F;
-pub const BF_MIDDLE: u32 = 0x0800;
-pub const BF_SOFT: u32 = 0x1000;
-pub const BF_ADJUST: u32 = 0x2000;
-
-/// DrawText's format flags the sheet uses (winuser.h).
-pub const DT_LEFT: u32 = 0x0000;
-pub const DT_TOP: u32 = 0x0000;
-pub const DT_CENTER: u32 = 0x0001;
-pub const DT_RIGHT: u32 = 0x0002;
-pub const DT_VCENTER: u32 = 0x0004;
-pub const DT_BOTTOM: u32 = 0x0008;
-pub const DT_WORDBREAK: u32 = 0x0010;
-pub const DT_SINGLELINE: u32 = 0x0020;
-pub const DT_EXPANDTABS: u32 = 0x0040;
-pub const DT_CALCRECT: u32 = 0x0400;
 
 /// One edge sample: its box, its label (`&` a mnemonic), its border and its extra flags (every
 /// box is BF_RECT, BF_MIDDLE and BF_ADJUST, its label centered in what the border leaves).
