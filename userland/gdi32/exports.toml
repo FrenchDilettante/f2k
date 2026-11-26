@@ -1214,6 +1214,83 @@ impl = { stub = "not yet implemented" }
 ordinal = 501
 fails = "FALSE"
 
+[[export]]
+name = "NtGdiCreateRectRgn"
+group = "regions"
+args = ["i32 Left", "i32 Top", "i32 Right", "i32 Bottom", "ptr<u32> Region"]
+impl = { syscall = "crate::win32k::region::create_rect_rgn" }
+internal = true
+
+[[export]]
+name = "NtGdiPolyPolyDraw"
+group = "regions"
+args = ["u32 Dc", "ptr Points", "ptr Counts", "u32 Count", "u32 Function", "ptr<u32> Result"]
+impl = { syscall = "crate::win32k::region::poly_poly_draw" }
+internal = true
+
+[[export]]
+name = "NtGdiSetRectRgn"
+group = "regions"
+args = ["handle Region", "i32 Left", "i32 Top", "i32 Right", "i32 Bottom"]
+impl = { syscall = "crate::win32k::region::set_rect_rgn" }
+internal = true
+
+[[export]]
+name = "NtGdiCombineRgn"
+group = "regions"
+args = ["handle Dest", "handle Source1", "handle Source2", "u32 Mode", "ptr<u32> Complexity"]
+impl = { syscall = "crate::win32k::region::combine_rgn" }
+internal = true
+
+[[export]]
+name = "NtGdiOffsetRgn"
+group = "regions"
+args = ["handle Region", "i32 X", "i32 Y", "ptr<u32> Complexity"]
+impl = { syscall = "crate::win32k::region::offset_rgn" }
+internal = true
+
+[[export]]
+name = "NtGdiGetRgnBox"
+group = "regions"
+args = ["handle Region", "ptr Box", "ptr<u32> Complexity"]
+impl = { syscall = "crate::win32k::region::get_rgn_box" }
+internal = true
+
+[[export]]
+name = "NtGdiEqualRgn"
+group = "regions"
+args = ["handle Region1", "handle Region2", "ptr<u32> Equal"]
+impl = { syscall = "crate::win32k::region::equal_rgn" }
+internal = true
+
+[[export]]
+name = "NtGdiPtInRegion"
+group = "regions"
+args = ["handle Region", "i32 X", "i32 Y", "ptr<u32> Inside"]
+impl = { syscall = "crate::win32k::region::pt_in_region" }
+internal = true
+
+[[export]]
+name = "NtGdiGetRegionData"
+group = "regions"
+args = ["handle Region", "u32 Count", "ptr Buffer", "ptr<u32> Size"]
+impl = { syscall = "crate::win32k::region::get_region_data" }
+internal = true
+
+[[export]]
+name = "NtGdiFillRgn"
+group = "regions"
+args = ["handle Dc", "handle Region", "handle Brush", "ptr<u32> Result"]
+impl = { syscall = "crate::win32k::region::fill_rgn" }
+internal = true
+
+[[export]]
+name = "NtGdiFlush"
+group = "dc"
+args = []
+impl = { syscall = "crate::win32k::region::flush" }
+internal = true
+
 # --- pens, lines and shapes -----------------------------------------------------------------------
 
 [[export]]

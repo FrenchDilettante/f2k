@@ -402,6 +402,7 @@ pub fn type_name(kind: ObjectType) -> &'static str {
         ObjectType::Brush => "Brush",
         ObjectType::Bitmap => "Bitmap",
         ObjectType::Font => "Font",
+        ObjectType::Region => "Region",
         ObjectType::Token => "Token",
     }
 }
@@ -692,7 +693,8 @@ fn object_name(entry: Entry, out: &mut [u16]) -> Result<usize, NtStatus> {
         | ObjectType::Dc
         | ObjectType::Brush
         | ObjectType::Bitmap
-        | ObjectType::Font => Err(STATUS_NOT_IMPLEMENTED),
+        | ObjectType::Font
+        | ObjectType::Region => Err(STATUS_NOT_IMPLEMENTED),
         #[cfg(target_arch = "x86")]
         ObjectType::File => {
             let reference = crate::ob::reference(id).ok_or(STATUS_INVALID_HANDLE)?;

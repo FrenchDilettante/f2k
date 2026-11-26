@@ -1,9 +1,9 @@
 //! The GDI handle table: one system-wide table of the GDI objects every process made (DCs,
-//! brushes, bitmaps, fonts), as Windows 2000's GDI keeps its own handle table beside the
+//! brushes, bitmaps, fonts, regions), as Windows 2000's GDI keeps its own handle table beside the
 //! processes' object handle tables.
 //!
-//! A GDI object is an object of the object manager ([`crate::ob`]'s Dc, Brush, Bitmap and Font
-//! types), and the table's entry holds its creator's reference on it, never a handle in its
+//! A GDI object is an object of the object manager ([`crate::ob`]'s Dc, Brush, Bitmap, Font and
+//! Region types), and the table's entry holds its creator's reference on it, never a handle in its
 //! process's handle table: CloseHandle and DuplicateHandle know nothing of GDI objects, and a
 //! process's handle count does not include them, as on Windows 2000. The entry names its owner,
 //! the process that made the object, and only the owner finds it: a handle another process
@@ -13,7 +13,7 @@
 //! process names alike.
 //!
 //! A handle is [`GdiHandle`]'s shape: the slot's index in the low word, the object's kind in bits
-//! 16-18 ([`rtl::gdi::object_handle`]; a DC's clear), the stock bit (23) clear, and the slot's
+//! 16-19 ([`rtl::gdi::object_handle`]; a DC's clear), the stock bit (23) clear, and the slot's
 //! uniqueness in bits 24-31, so a deleted object's handle names nothing even once its slot is
 //! taken again (the slot comes back with a uniqueness one more). The slot freed last is reused
 //! first. 16,384 slots at most, Windows 2000's own ceiling, in chunks of one page made as the
@@ -28,7 +28,7 @@
 //! fails (its id's generation moved on), so nothing the table hands out ever names another object.
 
 use rtl::dib::OBJ_BITMAP;
-use rtl::gdi::{object_handle, OBJ_BRUSH, OBJ_FONT};
+use rtl::gdi::{object_handle, OBJ_BRUSH, OBJ_FONT, OBJ_REGION};
 
 use crate::ob::{ObjectId, ObjectType};
 use crate::slots::{per_page, Codec, GdiHandle, Inline, Pages, Record, Slots};
@@ -80,6 +80,7 @@ pub const fn kind_bits(kind: ObjectType) -> Option<u32> {
         ObjectType::Brush => Some(OBJ_BRUSH),
         ObjectType::Bitmap => Some(OBJ_BITMAP),
         ObjectType::Font => Some(OBJ_FONT),
+        ObjectType::Region => Some(OBJ_REGION),
         _ => None,
     }
 }
@@ -301,7 +302,7 @@ mod tests {
     const ONE: u16 = 3;
     const OTHER: u16 = 5;
 
-    /// A handle carries its slot in the low word, its kind in bits 16-18 (a DC's clear) and its
+    /// A handle carries its slot in the low word, its kind in bits 16-19 (a DC's clear) and its
     /// uniqueness, from 1, in bits 24-31, the stock bit clear; rtl::gdi reads its kind back.
     #[test]
     fn handles_carry_their_slot_kind_and_uniqueness() {
@@ -319,10 +320,14 @@ mod tests {
         let bitmap = table
             .insert(ONE, object(ObjectType::Bitmap, 1), &pages)
             .unwrap();
+        let region = table
+            .insert(ONE, object(ObjectType::Region, 1), &pages)
+            .unwrap();
         assert_eq!(dc, 0x0100_0001);
         assert_eq!(brush, 0x0102_0002);
         assert_eq!(font, 0x0106_0003);
         assert_eq!(bitmap, 0x0107_0004);
+        assert_eq!(region, 0x0108_0005, "OBJ_REGION, 8: the kind bits' widest");
         assert_eq!(
             rtl::gdi::object_of(dc),
             None,
@@ -331,7 +336,8 @@ mod tests {
         assert_eq!(rtl::gdi::object_kind(brush), Some(OBJ_BRUSH));
         assert_eq!(rtl::gdi::object_kind(font), Some(OBJ_FONT));
         assert_eq!(rtl::gdi::object_kind(bitmap), Some(OBJ_BITMAP));
-        for handle in [dc, brush, font, bitmap] {
+        assert_eq!(rtl::gdi::object_kind(region), Some(OBJ_REGION));
+        for handle in [dc, brush, font, bitmap, region] {
             assert_eq!(handle & crate::slots::GDI_STOCK, 0);
             assert_eq!(rtl::gdi::global_object_kind(handle), None);
         }
@@ -425,10 +431,11 @@ mod tests {
             ObjectType::Brush,
             ObjectType::Bitmap,
             ObjectType::Font,
+            ObjectType::Region,
         ];
         let mut others = std::vec::Vec::new();
         for index in 0..(TAKE_STEP as u16 * 2 + 5) {
-            let kind = kinds[index as usize % 4];
+            let kind = kinds[index as usize % kinds.len()];
             table.insert(ONE, object(kind, index), &pages).unwrap();
             let other = object(kind, 1000 + index);
             others.push((table.insert(OTHER, other, &pages).unwrap(), other));

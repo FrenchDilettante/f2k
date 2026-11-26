@@ -107,6 +107,8 @@ pub enum ObjectType {
     Bitmap,
     /// A font object: win32k's, a LOGFONT (see [`crate::win32k::fonts`]).
     Font,
+    /// A region: win32k's, its rectangles (see [`crate::win32k::region`]).
+    Region,
     /// A token: a process's, made at its first open (see [`crate::se`]).
     Token,
 }
@@ -145,6 +147,7 @@ impl ObjectId {
             | ObjectType::Brush
             | ObjectType::Bitmap
             | ObjectType::Font
+            | ObjectType::Region
             | ObjectType::Token => None,
         }
     }
@@ -915,6 +918,7 @@ pools! {
         Bitmap => bitmaps: crate::win32k::bitmap::Bitmap = crate::win32k::bitmap::Bitmap::none();
         Font => fonts: crate::win32k::fonts::FontObject =
             crate::win32k::fonts::FontObject::none();
+        Region => regions: crate::win32k::region::Region = crate::win32k::region::Region::none();
         Token => tokens: crate::se::TokenBody = crate::se::TokenBody::none();
     }
 }
@@ -990,6 +994,7 @@ bodies! {
     crate::win32k::brush::Brush => Brush, brushes, brush;
     crate::win32k::bitmap::Bitmap => Bitmap, bitmaps, bitmap;
     crate::win32k::fonts::FontObject => Font, fonts, font;
+    crate::win32k::region::Region => Region, regions, region;
     crate::se::TokenBody => Token, tokens, token;
 }
 
@@ -1370,6 +1375,12 @@ impl Directory {
         })
     }
 
+    /// A region holding `body`'s rectangles (its block, if any, the region's from now on); none
+    /// when the pool is exhausted.
+    pub fn create_region(&mut self, body: crate::win32k::region::Region) -> Option<ObjectId> {
+        self.insert(body)
+    }
+
     /// A font object holding `body`'s LOGFONT; none when the pool is exhausted.
     pub fn create_font(&mut self, body: crate::win32k::fonts::FontObject) -> Option<ObjectId> {
         self.insert(body)
@@ -1651,6 +1662,15 @@ impl Directory {
             ObjectType::File => Some(Followup::FileClose {
                 context: self.file(id).expect("deleting a live file object").context,
             }),
+            ObjectType::Region => {
+                // A large region's rectangles are a block of the pool, which goes with it.
+                let region = core::mem::replace(
+                    self.region(id).expect("deleting a live region"),
+                    crate::win32k::region::Region::none(),
+                );
+                crate::win32k::region::release_storage(&region);
+                None
+            }
             ObjectType::Event
             | ObjectType::Semaphore
             | ObjectType::Thread
@@ -1839,6 +1859,7 @@ impl Directory {
             ObjectType::Brush,
             ObjectType::Bitmap,
             ObjectType::Font,
+            ObjectType::Region,
             ObjectType::Token,
         ] {
             // A cached image's file object is the cache's, not a leak (see

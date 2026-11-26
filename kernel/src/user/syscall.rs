@@ -482,6 +482,12 @@ fn serve(frame: &mut TrapFrame, passive: &mut At<Passive>) -> Result<(), NtStatu
         crate::win32k::winsta::connect(crate::user::args::calling_process())?;
     }
 
+    // And runs the thread's GDI batch, as Windows 2000's dispatcher does before a win32k service
+    // (KeGdiFlushUserBatch): the region deletions gdi32 queued.
+    if table == WIN32K_TABLE {
+        crate::win32k::region::run_batch();
+    }
+
     probe_user_range(frame.edx, arg_bytes)?;
 
     let mut args = [0u32; MAX_ARG_BYTES / 4];

@@ -372,9 +372,9 @@ pub fn get_window_dc(call: &mut NtCall, window: Handle, out: UserPtr<u32>) -> Nt
     window_dc(call, window, true, out)
 }
 
-/// NtGdiDeleteObjectApp(Object): a DC's, a brush's or a font's handle closed (the object goes with
-/// it); a global object stays (it is never deleted: the call succeeds); STATUS_INVALID_HANDLE for
-/// anything else.
+/// NtGdiDeleteObjectApp(Object): a DC's, a brush's, a font's, a bitmap's or a region's handle
+/// closed (the object goes with it); a global object stays (it is never deleted: the call
+/// succeeds); STATUS_INVALID_HANDLE for anything else.
 pub fn delete_object(call: &mut NtCall, object: Handle) -> NtResult {
     if global_object_kind(object.raw()).is_some() {
         return Ok(STATUS_SUCCESS);
@@ -747,14 +747,15 @@ fn close_dc(_call: &mut NtCall, handle: Handle) -> Result<(), NtStatus> {
 }
 
 /// Delete the calling process's object `handle` names, a DC (its handle has no kind bits), a
-/// brush, a font or a bitmap (its kind in its bits: [`rtl::gdi::object_of`]), DeleteObject's;
-/// STATUS_INVALID_HANDLE otherwise.
+/// brush, a font, a bitmap or a region (its kind in its bits: [`rtl::gdi::object_of`]),
+/// DeleteObject's; STATUS_INVALID_HANDLE otherwise.
 #[cfg(target_arch = "x86")]
 fn close_object(call: &mut NtCall, handle: Handle) -> Result<(), NtStatus> {
     match object_of(handle.raw()) {
         Some((OBJ_BRUSH, _)) if super::gdi::delete(handle.raw(), OBJ_BRUSH) => Ok(()),
         Some((OBJ_FONT, _)) => super::fonts::delete_font(call, handle),
         Some((rtl::dib::OBJ_BITMAP, _)) => super::bitmap::delete_bitmap(call, handle.raw()),
+        Some((OBJ_REGION, _)) if super::gdi::delete(handle.raw(), OBJ_REGION) => Ok(()),
         Some(_) => Err(STATUS_INVALID_HANDLE),
         None => close_dc(call, handle),
     }
