@@ -158,11 +158,12 @@ impl CursorTable {
         is_icon: bool,
         secret: bool,
     ) -> Option<(CursorId, u32)> {
-        if handles.is_full() {
-            return None;
-        }
         let (id, record) = self.slots.allocate_or_grow(0, super::pages()).ok()?;
         let handle = handles.insert(UserObject::Cursor(id));
+        if handle == 0 {
+            self.slots.free(id);
+            return None;
+        }
         *record = Cursor {
             handle,
             secret,

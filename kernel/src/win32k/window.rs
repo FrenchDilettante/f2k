@@ -7010,20 +7010,24 @@ mod tests {
     // --- Allocation and early record state
     // ------------------------------------------------------------
 
-    /// Windows past the old fixed array's 256, each its own record and handle; destroyed, they
-    /// leave the pool at its peak, and the next window takes the lowest slot with its count moved
-    /// on.
+    /// Windows past the old fixed array's 256 and the user handle table's old 1,024 slots, each
+    /// its own record and handle (even low words, all distinct); destroyed, they leave the pool at
+    /// its peak, and the next window takes the lowest slot with its count moved on.
     #[test]
     fn the_pool_grows_past_its_old_cap() {
         let (w, c, t, atom, _, _) = setup();
         let mut pump = Rec::new(t);
-        let ids: Vec<_> = (0..300)
+        let ids: Vec<_> = (0..1100)
             .map(|_| create(w, c, t, atom, WS_POPUP, &mut pump).unwrap())
             .collect();
-        assert_eq!(live(w), 302);
+        assert_eq!(live(w), 1102);
         let handles: std::collections::BTreeSet<_> =
             ids.iter().map(|&id| w.handle_of(id)).collect();
-        assert_eq!(handles.len(), 300);
+        assert_eq!(handles.len(), 1100);
+        assert!(
+            handles.iter().all(|&h| h & 1 == 0),
+            "windows' low words are even"
+        );
         assert!(ids
             .iter()
             .all(|&id| w.window_from_handle(w.handle_of(id)) == Some(id)));

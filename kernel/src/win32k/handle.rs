@@ -5,12 +5,13 @@
 //! An entry is typed: it names a window, a menu, an accelerator table or a cursor/icon, by its
 //! record's id in that kind's pool ([`UserObject`]); the records themselves stay in their kinds'
 //! pools ([`super::window`], [`super::menu`], [`super::accel`], [`super::icon`]). A handle holds
-//! its slot in the low word (the slot's index shifted left two, the shape of F2K's handle tables,
-//! [`crate::sched::object`]) and the slot's uniqueness count in the high word, which moves on by
-//! one each time the slot's handle is closed, so a destroyed object's handle names nothing once
-//! its slot names another. A slot's first handle has a count of 1, and the count runs to 0xFFFE
-//! and wraps to 1: it is never 0 or 0xFFFF, the wildcards, so a live handle's high word always
-//! tells it from the slot's later objects.
+//! its slot's index in the low word, as Windows 2000's do, and the slot's uniqueness count in the
+//! high word, which moves on by one each time the slot's handle is closed, so a destroyed object's
+//! handle names nothing once its slot names another. The slots are a slot pool's
+//! ([`crate::slots`], the [`UserHandle`] codec), grown a page at a time: the 16-bit low word is
+//! the only ceiling, 65,535 handles. A slot's first handle has a count of 1, and the count runs to
+//! 0xFFFE and wraps to 1: it is never 0 or 0xFFFF, the wildcards, so a live handle's high word
+//! always tells it from the slot's later objects.
 //!
 //! Every lookup is by kind, and checks the type and the count: a window's call on a menu's handle
 //! finds no window, and a handle whose count is not its slot's finds nothing — unless its high
@@ -31,8 +32,8 @@
 //! The menus capture shows each of these: a window made after a window's destruction takes its
 //! slot, its high word one more, and so does a table after a menu's; a menu or an icon made after
 //! a window's destruction takes another slot, and so does a window after a menu's or an icon's.
-//! The parity is the index's, F2K's handles being the index shifted left two (every low word is
-//! even, a window's or not).
+//! The parity is the low word's: a window's handle is even, a menu's, a table's or a cursor's odd
+//! until the odd slots run out (predicted for Windows 2000, `manywin`'s `parity`).
 //!
 //! Seams recorded: Windows 2000's table has more kinds — hooks, the clipboard's data objects,
 //! window positions (BeginDeferWindowPos), DDE objects, keyboard layouts, monitors and others.
@@ -44,7 +45,7 @@ use super::accel::TableId;
 use super::icon::CursorId;
 use super::menu::MenuId;
 use super::window::WindowEntry;
-use crate::sched::object::{HANDLE_SHIFT, HANDLE_SLOTS};
+use crate::slots::{per_page, Full, Record, Slots, UserHandle};
 
 /// What a slot holds: an object of one kind, by its record's id in that kind's pool.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -57,101 +58,77 @@ pub enum UserObject {
     Cursor(CursorId),
 }
 
-/// A handle's high word that names whatever object its slot holds, besides 0.
-const ANY_UNIQ: u16 = 0xFFFF;
+/// A slot's entry: the object it holds, none until its first insert.
+#[derive(Clone, Copy)]
+struct Entry(Option<UserObject>);
 
-/// A slot's first uniqueness count.
-const FIRST_UNIQ: u16 = 1;
+// SAFETY: `write_fresh` writes a whole entry.
+unsafe impl Record for Entry {
+    unsafe fn write_fresh(at: *mut Self, _: u32) {
+        // SAFETY: the caller's contract.
+        unsafe { at.write(Entry(None)) };
+    }
+}
 
-/// The highest uniqueness count; the one after it is [`FIRST_UNIQ`].
-const LAST_UNIQ: u16 = 0xFFFE;
+/// Entries to a chunk: one page's worth.
+const ENTRIES_PER_CHUNK: usize = per_page::<Entry>();
 
-/// The user handle table: the slots, each slot's uniqueness count, the freed slots and the next
-/// slots of either parity never used. Slot 0 is never handed out, so no handle is 0.
+const _: () = assert!(Slots::<Entry, UserHandle, ENTRIES_PER_CHUNK>::CHUNK_PAGES == 1);
+
+/// The lane of the even slots, windows'.
+const EVEN: usize = 0;
+/// The lane of the odd slots, every other kind's first.
+const ODD: usize = 1;
+
+/// The user handle table: a slot pool ([`crate::slots`]) in two lanes, the even slots and the odd,
+/// each with its own freed slots (the one freed last first) and its own slots never used (lowest
+/// first). It grows a page at a time, to the 16-bit low word's 65,535 slots (slot 0 is never
+/// handed out, so no handle is 0): Windows' ceiling on USER handles, system-wide.
 pub struct UserHandles {
-    slots: [Option<UserObject>; HANDLE_SLOTS],
-    uniq: [u16; HANDLE_SLOTS],
-    /// The freed slots, the most recently freed last.
-    freed: [u16; HANDLE_SLOTS],
-    freed_count: usize,
-    /// The next even and odd slots never used.
-    fresh: [usize; 2],
+    slots: Slots<Entry, UserHandle, ENTRIES_PER_CHUNK>,
 }
 
 impl UserHandles {
-    /// Write an empty table at `handles`, field by field.
+    /// Write an empty table at `handles`: no chunk made, no page held.
     ///
     /// # Safety
     ///
     /// `handles` is valid for writes and aligned; its previous contents are overwritten, not
     /// dropped.
     pub unsafe fn write_empty(handles: *mut UserHandles) {
-        use core::ptr::addr_of_mut;
-        // SAFETY: the caller's contract; every field is written, the arrays element by element.
+        // SAFETY: the caller's contract.
         unsafe {
-            let slots = addr_of_mut!((*handles).slots) as *mut Option<UserObject>;
-            let uniq = addr_of_mut!((*handles).uniq) as *mut u16;
-            let freed = addr_of_mut!((*handles).freed) as *mut u16;
-            for index in 0..HANDLE_SLOTS {
-                slots.add(index).write(None);
-                uniq.add(index).write(FIRST_UNIQ);
-                freed.add(index).write(0);
-            }
-            addr_of_mut!((*handles).freed_count).write(0);
-            addr_of_mut!((*handles).fresh).write([2, 1]);
-        }
+            handles.write(UserHandles {
+                slots: Slots::new(),
+            })
+        };
     }
 
-    /// Whether every slot is taken: the next insert would hand out no handle.
-    pub fn is_full(&self) -> bool {
-        self.freed_count == 0 && self.fresh.iter().all(|&next| next >= HANDLE_SLOTS)
+    /// Take a slot of `lane` for `object`, making its chunk if it needs one: its handle.
+    fn take(&mut self, lane: usize, object: UserObject) -> Result<u32, Full> {
+        let (handle, entry) = self.slots.allocate_or_grow(lane, super::pages())?;
+        *entry = Entry(Some(object));
+        Ok(handle)
     }
 
-    /// The slot of the parity `parity` (0 even, 1 odd) the next object of it takes, taken off the
-    /// freed slots or the fresh ones; none when neither has one.
-    fn take(&mut self, parity: usize) -> Option<usize> {
-        let freed = &self.freed[..self.freed_count];
-        if let Some(at) = freed
-            .iter()
-            .rposition(|&index| index as usize % 2 == parity)
-        {
-            let index = self.freed[at] as usize;
-            self.freed.copy_within(at + 1..self.freed_count, at);
-            self.freed_count -= 1;
-            return Some(index);
-        }
-        let next = self.fresh[parity];
-        (next < HANDLE_SLOTS).then(|| {
-            self.fresh[parity] = next + 2;
-            next
-        })
-    }
-
-    /// Insert `object`: its handle, 0 when no slot its kind may take is free (a window takes an
-    /// even slot, any other kind an odd one, or an even one once no odd one is left).
+    /// Insert `object`: its handle, 0 when no slot its kind may take is free or no page is left
+    /// for one (a window takes an even slot, any other kind an odd one, or an even one once no
+    /// odd one is left).
     pub fn insert(&mut self, object: UserObject) -> u32 {
-        let index = match object {
-            UserObject::Window(_) => self.take(0),
-            _ => self.take(1).or_else(|| self.take(0)),
+        let taken = match object {
+            UserObject::Window(_) => self.take(EVEN, object),
+            _ => match self.take(ODD, object) {
+                Err(Full::Limit) => self.take(EVEN, object),
+                taken => taken,
+            },
         };
-        let Some(index) = index else {
-            return 0;
-        };
-        self.slots[index] = Some(object);
-        (index as u32) << HANDLE_SHIFT | (self.uniq[index] as u32) << 16
+        taken.unwrap_or(0)
     }
 
-    /// The index of `handle`'s slot, when its high word is the slot's count or a wildcard.
-    fn slot(&self, handle: u32) -> Option<usize> {
-        let index = ((handle & 0xFFFF) >> HANDLE_SHIFT) as usize;
-        let high = (handle >> 16) as u16;
-        let uniq = *self.uniq.get(index)?;
-        (index != 0 && (high == uniq || high == 0 || high == ANY_UNIQ)).then_some(index)
-    }
-
-    /// The object `handle` names, of whatever kind.
+    /// The object `handle` names, of whatever kind: its slot's, when its high word is the slot's
+    /// count or a wildcard.
     pub fn object(&self, handle: u32) -> Option<UserObject> {
-        self.slots[self.slot(handle)?]
+        self.slots.get(handle)?.0
     }
 
     /// The window `handle` names: none for a handle naming nothing or another kind's object.
@@ -192,12 +169,9 @@ impl UserHandles {
         handle: u32,
         change: impl FnOnce(WindowEntry) -> WindowEntry,
     ) -> bool {
-        let Some(index) = self.slot(handle) else {
-            return false;
-        };
-        match self.slots[index] {
-            Some(UserObject::Window(entry)) => {
-                self.slots[index] = Some(UserObject::Window(change(entry)));
+        match self.slots.get_mut(handle) {
+            Some(Entry(Some(UserObject::Window(entry)))) => {
+                *entry = change(*entry);
                 true
             }
             _ => false,
@@ -207,26 +181,28 @@ impl UserHandles {
     /// Close `handle`, its slot's count moved on (from 0xFFFE back to 1, never to a wildcard);
     /// what it named.
     pub fn close(&mut self, handle: u32) -> Option<UserObject> {
-        let index = self.slot(handle)?;
-        let object = self.slots[index].take()?;
-        self.uniq[index] = match self.uniq[index] {
-            LAST_UNIQ.. => FIRST_UNIQ,
-            uniq => uniq + 1,
-        };
-        self.freed[self.freed_count] = index as u16;
-        self.freed_count += 1;
+        let object = self.slots.get_mut(handle)?.0.take()?;
+        self.slots.free(handle);
         Some(object)
+    }
+
+    /// The handles open: one per live object of every kind.
+    #[cfg(test)]
+    pub fn live(&self) -> u32 {
+        self.slots.live()
     }
 }
 
 #[cfg(test)]
 mod tests {
     //! The table's host tests: the kinds share the slots, a lookup checks the kind and the count,
-    //! and the wildcards.
+    //! the wildcards, the lanes, the wrap, growth past the old 1,024 slots and the ceiling.
 
     use std::boxed::Box;
+    use std::vec::Vec;
 
     use super::*;
+    use crate::win32k::test_pages;
 
     fn handles() -> Box<UserHandles> {
         let mut handles = Box::<UserHandles>::new_uninit();
@@ -246,7 +222,7 @@ mod tests {
     const CURSOR: UserObject = UserObject::Cursor(CursorId::for_tests(1));
 
     /// Objects of every kind take slots of the one table: no two live handles share a low word.
-    /// Each kind's lookup finds its own kind only.
+    /// Each kind's lookup finds its own kind only. The low word is the slot's index.
     #[test]
     fn kinds_share_the_slots_and_lookups_check_the_kind() {
         let mut t = handles();
@@ -254,13 +230,14 @@ mod tests {
         let c = t.insert(CURSOR);
         assert_eq!(
             (m, c),
-            (0x1_0004, 0x1_000C),
-            "odd slots, a slot's first handle a count of 1"
+            (0x1_0001, 0x1_0003),
+            "odd slots, the index in the low word, a slot's first handle a count of 1"
         );
         assert!(t.menu(m).is_some() && t.cursor(m).is_none() && t.window(m).is_none());
         assert!(t.cursor(c).is_some() && t.menu(c).is_none());
         assert!(t.accelerator_table(m).is_none());
         assert!(!t.update_window(m, |e| e), "a menu's entry is no window's");
+        assert_eq!(t.live(), 2);
     }
 
     /// A slot freed goes to the next object, of any kind, its count one more; the old handle names
@@ -288,27 +265,28 @@ mod tests {
         );
         assert_eq!(t.object(0), None);
         assert_eq!(t.object(0xFFFF_0000), None, "slot 0 holds nothing");
+        assert_eq!(t.object(0xFFFF_FFFF), None, "a slot never made");
+        assert_eq!(t.object(0x0001_0005), None, "a made slot never used");
         assert_eq!(
-            t.object(0xFFFF_0000 | (HANDLE_SLOTS as u32) << HANDLE_SHIFT),
-            None
+            t.close(m & 0xFFFF),
+            Some(MENU),
+            "a wildcard closes the live object"
         );
+        assert_eq!(t.menu(m), None);
+        assert_eq!(t.live(), 0);
     }
 
     /// A window takes an even slot, every other kind an odd one: a menu made after a window's
     /// destruction leaves its slot, and a window after a menu's; the other kinds take an even slot
-    /// once no odd one is left.
+    /// once no odd one is left. The slot freed last of a lane goes first.
     #[test]
     fn windows_take_the_even_slots() {
         let mut t = handles();
         let w = t.insert(WINDOW);
-        assert_eq!(w, 0x1_0000 | 2 << HANDLE_SHIFT);
+        assert_eq!(w, 0x1_0002);
         t.close(w);
         let m = t.insert(MENU);
-        assert_eq!(
-            m,
-            0x1_0000 | 1 << HANDLE_SHIFT,
-            "a fresh odd slot, the window's left"
-        );
+        assert_eq!(m, 0x1_0001, "a fresh odd slot, the window's left");
         t.close(m);
         assert_eq!(
             t.insert(WINDOW),
@@ -316,32 +294,114 @@ mod tests {
             "the window's, not the menu's"
         );
         assert_eq!(t.insert(CURSOR), m + 0x1_0000, "the menu's");
+        let (a, b) = (t.insert(MENU), t.insert(MENU));
+        t.close(a);
+        t.close(b);
+        assert_eq!(t.insert(MENU), b + 0x1_0000, "the one freed last first");
+        assert_eq!(t.insert(MENU), a + 0x1_0000);
         let mut odd = 0;
-        while t.fresh[1] < HANDLE_SLOTS {
-            t.insert(MENU);
+        loop {
+            let h = t.insert(MENU);
+            if h & 1 == 0 {
+                assert_eq!(h, 0x1_0004, "an even slot once no odd one is left");
+                break;
+            }
             odd += 1;
         }
-        assert_eq!(odd, HANDLE_SLOTS / 2 - 1);
         assert_eq!(
-            t.insert(MENU),
-            0x1_0000 | 4 << HANDLE_SHIFT,
-            "an even slot once no odd one is left"
+            odd,
+            0x8000 - 3,
+            "the odd slots 1..=0xFFFF, three taken before"
         );
+        assert_eq!(t.object(0x1_FFFF), Some(MENU), "the last odd slot, 0xFFFF");
     }
 
-    /// A slot's count runs 1..=0xFFFE: closed at 0xFFFE, its next handle's high word is 1, never 0
-    /// or the wildcard 0xFFFF.
+    /// The table has no cap but the 16-bit low word: 2,000 windows (past the 1,024 slots it had)
+    /// take distinct even low words, each naming its own; once every even slot is taken, a window
+    /// gets no handle while a menu still does.
     #[test]
+    #[cfg_attr(miri, ignore)]
+    fn windows_go_past_the_old_cap_to_the_low_word() {
+        let mut t = handles();
+        let windows: Vec<u32> = (0..2000).map(|_| t.insert(WINDOW)).collect();
+        assert!(windows
+            .iter()
+            .all(|&h| h != 0 && h & 1 == 0 && h >> 16 == 1));
+        let lows: std::collections::BTreeSet<u32> = windows.iter().map(|h| h & 0xFFFF).collect();
+        assert_eq!(lows.len(), 2000);
+        assert!(windows.iter().all(|&h| t.window(h)
+            == Some(match WINDOW {
+                UserObject::Window(e) => e,
+                _ => unreachable!(),
+            })));
+        let mut more = 2000;
+        while t.insert(WINDOW) != 0 {
+            more += 1;
+        }
+        assert_eq!(more, 0x7FFF, "the even slots 2..=0xFFFE");
+        assert_eq!(t.object(0x1_FFFE), Some(WINDOW));
+        assert_eq!(t.insert(MENU), 0x1_0001, "the odd lane still has room");
+        assert_eq!(t.live(), 0x8000);
+    }
+
+    /// A slot made and destroyed 65,540 times keeps its low word; its count runs 1..=0xFFFE and
+    /// wraps to 1, never 0 or the wildcard 0xFFFF, the closed 0xFFFE handle naming nothing (what
+    /// `manywin`'s `wrap` predicts: 0xFFFD, 0xFFFE, then 0x0001, 0x0002).
+    #[test]
+    #[cfg_attr(miri, ignore)]
     fn the_count_wraps_from_0xfffe_to_1() {
         let mut t = handles();
+        let first = t.insert(MENU);
+        let mut highs = std::vec![first >> 16];
+        let mut last = first;
+        for _ in 0..65_540 {
+            assert_eq!(t.close(last), Some(MENU));
+            last = t.insert(MENU);
+            assert_eq!(last & 0xFFFF, first & 0xFFFF, "the same slot every round");
+            highs.push(last >> 16);
+        }
+        assert!(highs.iter().all(|&h| h != 0 && h != 0xFFFF));
+        let turn = highs.iter().position(|&h| h == 0xFFFE).unwrap();
+        assert_eq!(highs[turn - 1..turn + 3], [0xFFFD, 0xFFFE, 1, 2]);
+        let stale = (first & 0xFFFF) | 0xFFFE_0000;
+        assert_eq!(
+            t.menu(stale),
+            None,
+            "the closed 0xFFFE handle names nothing"
+        );
+        assert_eq!(t.menu(last), Some(MenuId::for_tests(1)));
+    }
+
+    /// A handle table that finds no page for a chunk hands out no handle, and is as it was: the
+    /// live handles still name their objects and the next insert with pages succeeds.
+    #[test]
+    fn no_page_no_handle() {
+        let mut t = handles();
+        test_pages::budget(0);
+        assert_eq!(t.insert(MENU), 0);
+        assert_eq!(t.insert(WINDOW), 0);
+        test_pages::unlimited();
         let m = t.insert(MENU);
-        let index = ((m & 0xFFFF) >> HANDLE_SHIFT) as usize;
-        t.uniq[index] = LAST_UNIQ;
-        let m = (m & 0xFFFF) | (LAST_UNIQ as u32) << 16;
+        assert_eq!(m, 0x1_0001);
         assert_eq!(t.menu(m), Some(MenuId::for_tests(1)));
-        assert_eq!(t.close(m), Some(MENU));
-        let again = t.insert(MENU);
-        assert_eq!(again, (m & 0xFFFF) | 0x1_0000, "0xFFFE wraps to 1");
-        assert_eq!(t.menu(m), None, "the closed 0xFFFE handle names nothing");
+    }
+
+    /// A process's teardown closes every handle it held: the table is left with none live, every
+    /// closed handle names nothing, and the slots go to the next objects, counts moved on.
+    #[test]
+    fn teardown_closes_every_handle() {
+        let mut t = handles();
+        let held: Vec<u32> = (0..1500)
+            .map(|i| t.insert(if i % 3 == 0 { WINDOW } else { MENU }))
+            .collect();
+        assert_eq!(t.live(), 1500);
+        for &h in &held {
+            assert!(t.close(h).is_some());
+        }
+        assert_eq!(t.live(), 0);
+        assert!(held.iter().all(|&h| t.object(h).is_none()));
+        let w = t.insert(WINDOW);
+        let last_window = *held.iter().rev().find(|&&h| h & 1 == 0).unwrap();
+        assert_eq!(w, last_window + 0x1_0000, "the window slot closed last");
     }
 }

@@ -324,9 +324,6 @@ impl Accelerators {
         if capacity == 0 {
             return Err(Failure::InvalidParameter);
         }
-        if handles.is_full() {
-            return Err(Failure::NotEnoughMemory);
-        }
         let mut block = None;
         let mut pages = 0;
         if capacity as usize > INLINE {
@@ -344,6 +341,14 @@ impl Accelerators {
             }
         };
         let handle = handles.insert(UserObject::AcceleratorTable(id));
+        if handle == 0 {
+            if let Some(at) = block {
+                // SAFETY: just taken, for `pages` pages, and named nowhere else.
+                unsafe { give(at, pages) };
+            }
+            self.tables.free(id);
+            return Err(Failure::NotEnoughMemory);
+        }
         // Field by field: a whole record would cross the gate stack as a temporary. The entries
         // past the count are never read.
         table.handle = handle;

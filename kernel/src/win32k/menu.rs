@@ -355,14 +355,15 @@ impl Menus {
     /// (CreateMenu's) are the same record until the menu bar's drawing and the menus' tracking
     /// tell them apart.
     pub fn create(&mut self, handles: &mut UserHandles, owner: Owner) -> Result<u32, Failure> {
-        if handles.is_full() {
-            return Err(Failure::NotEnoughMemory);
-        }
         let (id, record) = self
             .menus
             .allocate_or_grow(0, &KERNEL_PAGES)
             .map_err(|_| Failure::NotEnoughMemory)?;
         let handle = handles.insert(UserObject::Menu(id));
+        if handle == 0 {
+            self.menus.free(id);
+            return Err(Failure::NotEnoughMemory);
+        }
         record.handle = handle;
         record.owner = owner;
         record.destroying = false;
