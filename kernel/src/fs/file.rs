@@ -947,16 +947,28 @@ impl FileRecords {
     }
 
     /// Forget every record (at quiescence, once every process's opens were closed) but the
-    /// system's own, returning how many were still taken.
-    pub fn clear(&mut self) -> usize {
-        let live = self.live();
-        for record in self.records.iter_mut() {
-            if record.is_some_and(|record| !record.system) {
+    /// system's own and those `cached` names (the image cache's: a cached image holds its file
+    /// open), returning how many others were still taken.
+    pub fn clear(&mut self, mut cached: impl FnMut(FileRecordId) -> bool) -> usize {
+        let mut leaked = 0;
+        for (index, record) in self.records.iter_mut().enumerate() {
+            if record.is_some_and(|record| !record.system) && !cached(FileRecordId(index as u16)) {
                 *record = None;
+                leaked += 1;
             }
         }
         self.locks.fill(None);
-        live
+        leaked
+    }
+
+    /// Whether the record `record` is held by one file object alone, cleaned up and not being
+    /// deleted: a cached image's file, its segment's file object the only holder.
+    pub fn held_by_one_object(&self, record: FileRecordId) -> bool {
+        let record = self.get(record);
+        record.references == 1
+            && record.cleanups == 0
+            && !record.delete_pending
+            && record.share == ShareAccess::default()
     }
 
     /// How many records the processes' opens hold (the system's own not counted).
@@ -1574,7 +1586,11 @@ mod tests {
             .unwrap();
         records.open(entry(2), ACCESS_READ, 0).unwrap();
         assert_eq!(records.live(), 1, "the system's open is not a process's");
-        assert_eq!(records.clear(), 1, "only the process's open leaked");
+        assert_eq!(
+            records.clear(|_| false),
+            1,
+            "only the process's open leaked"
+        );
         assert_eq!(records.find(&entry(1)), Some(held));
         assert_eq!(records.find(&entry(2)), None);
         assert_eq!(
@@ -1582,6 +1598,28 @@ mod tests {
             Err(OpenError::System),
             "still refused"
         );
+    }
+
+    /// The quiescent sweep keeps a cached image's file record, held by the image's file object
+    /// alone (its open cleaned up), and counts it as no leak.
+    #[test]
+    fn the_sweep_keeps_a_cached_images_record() {
+        let mut records = FileRecords::empty();
+        let image = records.open(entry(1), ACCESS_READ, ACCESS_READ).unwrap();
+        assert!(
+            !records.held_by_one_object(image),
+            "its open is not cleaned up yet"
+        );
+        let _ = records.cleanup(image, ACCESS_READ, ACCESS_READ, false);
+        assert!(
+            records.held_by_one_object(image),
+            "the segment's object alone"
+        );
+        let leaked = records.open(entry(2), ACCESS_READ, 0).unwrap();
+        assert_eq!(records.clear(|record| record == image), 1, "the other open");
+        assert_eq!(records.find(&entry(1)), Some(image));
+        assert_eq!(records.find(&entry(2)), None);
+        let _ = leaked;
     }
 
     /// Delete-on-close is the file's, not the handle's: the flagged open's cleanup marks it
@@ -1729,7 +1767,7 @@ mod tests {
             records.open(entry(FILE_RECORDS as u32 + 2), ACCESS_READ, SHARE_ALL),
             Err(OpenError::Full)
         );
-        assert_eq!(records.clear(), FILE_RECORDS);
+        assert_eq!(records.clear(|_| false), FILE_RECORDS);
     }
 
     /// The byte-range locks exhaust at their capacity, whichever files and owners hold them (the

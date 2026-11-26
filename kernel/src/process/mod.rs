@@ -1421,9 +1421,10 @@ fn audit_objects(process: &Process, quiescent: bool) {
     }
     // With no process left, the console has none attached: its input-wait event goes with it.
     crate::csr::release_input_event();
-    // The images cached for their next run are no leak: they go first, giving their frames and
-    // their files back.
-    crate::nt::section::purge_image_cache();
+    // The images cached for their next run are no leak: they stay, their file objects and file
+    // records with them, for the next process to map without reading them again — unless a leak
+    // holds one's file too, which purges the cache for the sweep to find it.
+    crate::nt::section::settle_image_cache();
     // The sweep, one leak at a time: a leaked section's frames are given back between the steps,
     // outside the directory's lock (the file records are forgotten whole after).
     let mut leaked = 0;
@@ -1434,7 +1435,11 @@ fn audit_objects(process: &Process, quiescent: bool) {
         }
     }
     crate::ob::locked(crate::ob::Directory::sweep_end);
-    leaked += crate::fs::file::with_records(crate::fs::file::FileRecords::clear);
+    leaked += crate::ob::locked(|directory| {
+        crate::fs::file::with_records(|records| {
+            records.clear(|record| directory.caches_record(record))
+        })
+    });
     leaked += crate::fs::pipes::sweep();
     // A window or window class of a process is one its end left behind (they are counted, not
     // swept: the window manager's records hold no frames).
@@ -1464,13 +1469,16 @@ static BASELINE_FRAMES: crate::sync::InitOnce<u32> = crate::sync::InitOnce::new(
 /// The free frames as the teardown audits count them: the frame database's, with the frames the
 /// slot pools' chunks and directory pages hold — permanent allocations made as the pools grow,
 /// kept at their peak, which no process's end gives back: the process records among them (see
-/// [`pool`] and [`crate::slots::chunk_frames`]) — and the registry's storage's, which outlive the
-/// process that made them (see [`crate::cm`]).
+/// [`pool`] and [`crate::slots::chunk_frames`]) — the registry's storage's, which outlive the
+/// process that made them (see [`crate::cm`]), and the image cache's frame tables, which outlive
+/// quiescence (the pages they name wait on Standby, counted available: see
+/// [`crate::ob::Directory::cached_frames`]).
 #[cfg(target_arch = "x86")]
 fn audited_frames() -> u32 {
     crate::mem::bootmem::with_frame_db(|db| db.available())
         + crate::slots::chunk_frames()
         + crate::cm::held_frames()
+        + crate::ob::locked(|directory| directory.cached_frames())
 }
 
 /// Record the allocator baseline (`available()` at the call site).

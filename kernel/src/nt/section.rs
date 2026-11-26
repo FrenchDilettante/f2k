@@ -39,7 +39,8 @@
 //! parses the headers from it. A cached image is purged when its file is
 //! about to be cut, overwritten, deleted or replaced ([`purge_cached_image`], NT's
 //! MmFlushImageSection) or written ([`forget_image`]), when its record is needed for another image,
-//! at quiescence and at shutdown. A view is the
+//! and at shutdown; it outlives quiescence, so a boot's later processes map it again without a
+//! read ([`settle_image_cache`]). A view is the
 //! whole image at its preferred base — an image is never relocated, so a base another region holds
 //! is STATUS_CONFLICTING_ADDRESSES — a MEM_IMAGE reservation whose pages carry their sections'
 //! protections, as the loader maps a program's (a writable section's pages copy-on-write: the
@@ -753,8 +754,25 @@ mod target {
         }
     }
 
-    /// Purge every cached image segment (at quiescence, before the leak sweep: a cached segment is
-    /// no leak).
+    /// At quiescence, before the leak sweep: the cached image segments stay for the next process,
+    /// as Windows 2000 keeps its image control areas while no process runs the image — the sweep
+    /// counts them, their file objects and their files' records as the cache's, not as leaks
+    /// (see [`ob::Directory::sweep_next`]) — as long as nothing else holds a cached image's file.
+    /// Anything that does is a leak: the cache is purged whole, for the sweep to find it.
+    pub fn settle_image_cache() {
+        let settled = ob::locked(|directory| {
+            directory.image_cache_settled(|object| {
+                let record = mapped_record(object);
+                crate::fs::file::with_records(|records| records.held_by_one_object(record))
+            })
+        });
+        if !settled {
+            purge_image_cache();
+        }
+    }
+
+    /// Purge every cached image segment (at shutdown, as the volume closes: they hold their files
+    /// open; or at quiescence, when a leak holds one's file).
     pub fn purge_image_cache() {
         while let Some(followup) = ob::locked(ob::Directory::purge_next_cached) {
             ob::finish(followup);

@@ -1241,6 +1241,11 @@ impl SectionFrames {
             .filter(|&frame| frame != 0)
     }
 
+    /// How many frame tables it holds (each a frame of its own).
+    pub fn tables_held(&self) -> u32 {
+        self.tables.iter().filter(|&&table| table != 0).count() as u32
+    }
+
     /// The section is gone: it drops its hold on every frame it made (a frame a view still maps
     /// stays with the view), and gives its tables back.
     pub fn release(&mut self, pages: &mut impl Pages) {

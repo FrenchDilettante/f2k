@@ -467,8 +467,9 @@ impl SectionObject {
 /// the file. A cached segment is purged — its frames and its file given back — when its file is
 /// cut, overwritten, written or deleted ([`Directory::purge_segment`]), when the table needs its
 /// record for another image ([`Directory::make_room_for_segment`], the least recently cached
-/// first), and at quiescence. A segment whose file changed while it was active is detached: no
-/// longer its file's, its last reference deletes it.
+/// first), and at shutdown; it outlives quiescence, its file object and record the cache's, not
+/// leaks ([`Directory::image_cache_settled`]). A segment whose file changed while it was active
+/// is detached: no longer its file's, its last reference deletes it.
 #[derive(Clone, Copy)]
 pub struct ImageSegment {
     /// Its frames, page by page, made as views first need them.
@@ -1194,6 +1195,50 @@ impl Directory {
         None
     }
 
+    /// Whether the image cache may outlive quiescence: every cached segment's file object is the
+    /// segment's alone (one reference, no handle) and `record_settled` holds for it (its file's
+    /// record held by that object alone). Anything else holding a cached image's file is a leak,
+    /// for the sweep to find once the cache is purged.
+    pub fn image_cache_settled(
+        &self,
+        mut record_settled: impl FnMut(&crate::fs::file::FileObject) -> bool,
+    ) -> bool {
+        self.cached_files().all(|file| {
+            self.files.get(slot_id(file)).is_some_and(|record| {
+                record.counts == Counts::CREATED && record_settled(&record.body)
+            })
+        })
+    }
+
+    /// The file objects the cached segments hold.
+    fn cached_files(&self) -> impl Iterator<Item = ObjectId> + '_ {
+        self.segments
+            .iter()
+            .filter(|(_, record)| record.counts.pointers == 0)
+            .map(|(_, record)| record.body.file_object)
+    }
+
+    /// Whether a cached segment holds the file record `record` open (through its file object):
+    /// the record outlives quiescence with the cache.
+    pub fn caches_record(&self, record: crate::fs::file::FileRecordId) -> bool {
+        self.cached_files().any(|file| {
+            self.files
+                .get(slot_id(file))
+                .is_some_and(|object| object.body.disk() == Some(record))
+        })
+    }
+
+    /// The frames the cached segments hold outside the allocator's lists, once each is parked (as
+    /// every one is at quiescence: its caching's follow-up parks it): their frame tables. The
+    /// frames they parked wait on Standby, which the allocator counts as available.
+    pub fn cached_frames(&self) -> u32 {
+        self.segments
+            .iter()
+            .filter(|(_, record)| record.counts.pointers == 0)
+            .map(|(_, record)| record.body.frames.tables_held())
+            .sum()
+    }
+
     /// Purge the next cached segment (at quiescence, or a volume's end), none once none is left.
     pub fn purge_next_cached(&mut self) -> Option<Followup> {
         let (id, _) = self.cached_segments().next()?;
@@ -1769,7 +1814,17 @@ impl Directory {
             ObjectType::Font,
             ObjectType::Token,
         ] {
-            if let Some(id) = self.lowest_live(kind) {
+            // A cached image's file object is the cache's, not a leak (see
+            // `image_cache_settled`).
+            let lowest = match kind {
+                ObjectType::File => self
+                    .files
+                    .iter()
+                    .map(|(id, _)| object_id(kind, id))
+                    .find(|&id| !self.cached_files().any(|file| file == id)),
+                kind => self.lowest_live(kind),
+            };
+            if let Some(id) = lowest {
                 // A leaked image section's segment goes with it, not into the cache.
                 let followup = match self.delete(id) {
                     Some(Followup::Park(segment)) => Some(self.delete_segment(segment)),
@@ -1778,9 +1833,12 @@ impl Directory {
                 return Some(Leak { followup });
             }
         }
-        // The image sections went above, and every view with its process: a segment left is a
-        // leak too.
-        let (segment, _) = self.segments.iter().next()?;
+        // The image sections went above, and every view with its process: an active segment left
+        // is a leak too (a cached one is the image cache's).
+        let (segment, _) = self
+            .segments
+            .iter()
+            .find(|(_, record)| record.counts.pointers != 0)?;
         let segment = SegmentId {
             index: segment.index,
             generation: segment.uniq,
@@ -3606,14 +3664,9 @@ mod tests {
         let held = segment(directory, 1);
         image_section(directory, held);
         segment(directory, 2);
-        // A cached segment is no leak: it is purged ahead of the sweep.
-        let cached = segment(directory, 3);
-        assert_eq!(
-            directory.dereference_segment(cached),
-            Some(Followup::Park(cached))
-        );
-        assert!(directory.purge_next_cached().is_some());
-        assert_eq!(directory.purge_next_cached(), None);
+        // A cached segment is no leak: it, and the file object it holds, outlive the sweep.
+        let (cached, file) = cached_image(directory, 9);
+        assert!(directory.image_cache_settled(|_| true));
         let (leaks, followups) = sweep(directory);
         assert_eq!(leaks, 2, "the section and the lone segment");
         assert_eq!(followups.len(), 2);
@@ -3623,7 +3676,61 @@ mod tests {
                 .all(|followup| matches!(followup, Followup::Section { .. })),
             "the leaked section's segment goes with it, not into the cache"
         );
-        assert_eq!(directory.segments.live(), 0);
+        assert_eq!(directory.segments.live(), 1, "the cached one");
+        assert!(directory.segment_cached(cached));
+        assert!(directory.is_live(file), "its file object stays open");
+        // Purged (a shutdown), it gives its file object back.
+        assert!(directory.purge_next_cached().is_some());
+        assert_eq!(directory.purge_next_cached(), None);
+    }
+
+    /// A cached image of the file whose record is `record`, as a process's end leaves it: a file
+    /// object (its handle closed) held by the segment alone, the segment cached. The segment
+    /// and the file object.
+    fn cached_image(directory: &mut Directory, record: u16) -> (SegmentId, ObjectId) {
+        use crate::fs::file::{Context, FileRecordId};
+        let context = Context::Disk(FileRecordId::at(record));
+        let file = directory.create_file(context, 1, 0x8000_0000, 1).unwrap();
+        let segment = directory
+            .create_segment(ImageSegment::new(file, 0x1000_0000, 0x1000))
+            .unwrap();
+        assert!(directory.reference(file), "the segment's");
+        assert_eq!(directory.dereference(file), None, "the open's, gone");
+        assert_eq!(
+            directory.dereference_segment(segment),
+            Some(Followup::Park(segment))
+        );
+        (segment, file)
+    }
+
+    /// The image cache outlives quiescence only while its file objects are its own: one held by
+    /// anything else (a leaked reference or handle), or a file record that something else holds,
+    /// unsettles it. A cached segment names its file's record.
+    #[test]
+    fn the_image_cache_settles_when_only_it_holds_its_files() {
+        use crate::fs::file::FileRecordId;
+        let directory = directory();
+        assert!(directory.image_cache_settled(|_| false), "no cache");
+        let (_, file) = cached_image(directory, 4);
+        assert!(directory.caches_record(FileRecordId::at(4)));
+        assert!(!directory.caches_record(FileRecordId::at(5)));
+        assert!(
+            directory.image_cache_settled(|object| { object.disk() == Some(FileRecordId::at(4)) })
+        );
+        assert!(
+            !directory.image_cache_settled(|_| false),
+            "its record held elsewhere"
+        );
+        assert!(directory.reference(file), "a leaked reference");
+        assert!(!directory.image_cache_settled(|_| true));
+        assert_eq!(directory.dereference(file), None);
+        assert!(directory.handle_opened(file), "a leaked handle");
+        assert!(!directory.image_cache_settled(|_| true));
+        // The sweep then takes the leak (the cache purged first, as the reap does).
+        assert!(directory.purge_next_cached().is_some());
+        let (leaks, _) = sweep(directory);
+        assert_eq!(leaks, 1, "the file object");
+        assert!(!directory.caches_record(FileRecordId::at(4)));
     }
 
     /// A file object's last handle is its cleanup (share access, delete-on-close), and its last
