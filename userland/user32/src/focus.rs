@@ -3,14 +3,13 @@
 //! each over its win32k service ([`imports`]), and the default window procedure's WM_ACTIVATE
 //! ([`activate_focus`]).
 //!
-//! The messages these calls make the window manager send (WM_SETFOCUS and WM_KILLFOCUS,
-//! WM_NCACTIVATE, WM_ACTIVATE and WM_ACTIVATEAPP, WM_CANCELMODE and WM_ENABLE) are queued for the
-//! window's thread: each call here that can send them receives them once its service returns
-//! ([`message::receive_sent`]), so a program sees its procedure called before the call returns,
-//! as on Windows 2000. GetFocus and GetActiveWindow read the calling thread's state through
-//! NtUserGetThreadState, as Windows 2000's do; IsWindowEnabled reads the window's style, which
-//! Windows 2000's user32 reads from the window manager's records mapped into its process, through
-//! NtUserQueryWindow.
+//! The messages these calls make the window manager send to the calling thread's windows
+//! (WM_SETFOCUS and WM_KILLFOCUS, WM_NCACTIVATE, WM_ACTIVATE and WM_ACTIVATEAPP, WM_CANCELMODE and
+//! WM_ENABLE) reach their procedures by callback from inside the service ([`crate::callback`]),
+//! so a program sees its procedure called before the call returns, as on Windows 2000. GetFocus and
+//! GetActiveWindow read the calling thread's state through NtUserGetThreadState, as Windows 2000's
+//! do; IsWindowEnabled reads the window's style, which Windows 2000's user32 reads from the window
+//! manager's records mapped into its process, through NtUserQueryWindow.
 
 use rtl::user::{
     HWND_LOCK_ACTIVATE_FOCUS,
@@ -21,7 +20,7 @@ use rtl::user::{
 };
 use rtl::window::{WindowInfo, QUERY_WINDOW_INFO};
 
-use crate::{answered, imports, message};
+use crate::{answered, imports};
 
 /// WS_DISABLED (winuser.h).
 const WS_DISABLED: u32 = 0x0800_0000;
@@ -32,7 +31,6 @@ const WS_DISABLED: u32 = 0x0800_0000;
 #[unsafe(export_name = "f2k_export_SetFocus")]
 pub extern "system" fn set_focus(window: usize) -> usize {
     let answer = imports::set_focus(window);
-    message::receive_sent();
     answered(answer).unwrap_or(0) as usize
 }
 
@@ -48,7 +46,6 @@ pub extern "system" fn get_focus() -> usize {
 #[unsafe(export_name = "f2k_export_SetActiveWindow")]
 pub extern "system" fn set_active_window(window: usize) -> usize {
     let answer = imports::set_active_window(window);
-    message::receive_sent();
     answered(answer).unwrap_or(0) as usize
 }
 
@@ -70,7 +67,6 @@ pub extern "system" fn get_foreground_window() -> usize {
 #[unsafe(export_name = "f2k_export_SetForegroundWindow")]
 pub extern "system" fn set_foreground_window(window: usize) -> u32 {
     let answer = imports::call_hwnd_lock(window, HWND_LOCK_SET_FOREGROUND_WINDOW);
-    message::receive_sent();
     answered(answer).is_some() as u32
 }
 
@@ -81,7 +77,6 @@ pub extern "system" fn set_foreground_window(window: usize) -> u32 {
 pub extern "system" fn enable_window(window: usize, enable: u32) -> u32 {
     let answer =
         imports::call_hwnd_param_lock(window, (enable != 0) as u32, HWND_PARAM_LOCK_ENABLE_WINDOW);
-    message::receive_sent();
     answered(answer).unwrap_or(0)
 }
 
@@ -101,7 +96,6 @@ pub extern "system" fn is_window_enabled(window: usize) -> u32 {
 /// focus to it, the messages that sends received.
 pub fn activate_focus(window: usize) {
     let _ = imports::call_hwnd_lock(window, HWND_LOCK_ACTIVATE_FOCUS);
-    message::receive_sent();
 }
 
 #[cfg(test)]

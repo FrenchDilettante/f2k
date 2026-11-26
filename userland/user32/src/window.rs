@@ -5,10 +5,9 @@
 //! GetWindowTextLength, SetWindowText), each over its win32k service ([`imports`]).
 //!
 //! The messages the window manager sends while it decides (the creation's WM_NCCREATE to WM_MOVE,
-//! the destruction's WM_DESTROY and WM_NCDESTROY, UpdateWindow's WM_PAINT) are queued for the
-//! window's thread: the kernel calls no user-mode code. Each call here that can send them receives
-//! them once its service returns ([`message::receive_sent`]), so a program sees its procedure
-//! called before the call returns, as on Windows 2000.
+//! the destruction's WM_DESTROY and WM_NCDESTROY, UpdateWindow's WM_PAINT) reach the calling
+//! thread's procedures by callback from inside the service ([`crate::callback`]), so a program
+//! sees its procedure called before the call returns, as on Windows 2000.
 //!
 //! The coordinate calls (GetClientRect, ClientToScreen, ScreenToClient, MapWindowPoints, IsChild,
 //! ChildWindowFromPoint and ChildWindowFromPointEx) work from the windows' rectangles and parents.
@@ -87,7 +86,6 @@ pub fn create_or_missing(
 ) -> Result<usize, Option<(&'static str, &'static str)>> {
     crate::class::register_system_classes();
     let answer = imports::create_window(creation);
-    message::receive_sent();
     let mut missing = None;
     // The kernel's own error (a child without a parent's 1406, the out-of-memory paths'
     // ERROR_OUTOFMEMORY), the class decision's 1407 telling of a system class F2K lacks.
@@ -285,7 +283,6 @@ pub unsafe extern "system" fn create_window_ex_a(
 #[unsafe(export_name = "f2k_export_DestroyWindow")]
 pub extern "system" fn destroy_window(window: usize) -> u32 {
     let answer = imports::destroy_window(window);
-    message::receive_sent();
     answered(answer).is_some() as u32
 }
 
@@ -859,7 +856,6 @@ pub extern "system" fn get_last_active_popup(window: usize) -> usize {
 #[unsafe(export_name = "f2k_export_ShowWindow")]
 pub extern "system" fn show_window(window: usize, command: i32) -> u32 {
     let answer = imports::show_window(window, command);
-    message::receive_sent();
     answered(answer).unwrap_or(0)
 }
 
@@ -925,7 +921,6 @@ pub unsafe extern "system" fn set_window_placement(
     // SAFETY: the caller's structure.
     let placement = unsafe { rtl::edge::In::new(placement) }.read();
     let answer = imports::set_window_placement(window, &placement);
-    message::receive_sent();
     answered(answer).is_some() as u32
 }
 
@@ -1079,7 +1074,6 @@ pub extern "system" fn end_defer_window_pos(handle: usize) -> u32 {
                     let mut answer = 1;
                     for part in batch.chunks(DEFER_PART) {
                         let done = imports::end_defer_window_pos(part);
-                        message::receive_sent();
                         if answered(done).is_none() {
                             answer = 0;
                             break;
@@ -1111,7 +1105,6 @@ pub extern "system" fn set_window_pos(
     flags: u32,
 ) -> u32 {
     let answer = imports::set_window_pos(window, insert_after, x, y, cx, cy, flags);
-    message::receive_sent();
     answered(answer).is_some() as u32
 }
 
@@ -1127,7 +1120,6 @@ pub extern "system" fn move_window(
     repaint: u32,
 ) -> u32 {
     let answer = imports::move_window(window, x, y, cx, cy, repaint != 0);
-    message::receive_sent();
     answered(answer).is_some() as u32
 }
 
@@ -1136,7 +1128,6 @@ pub extern "system" fn move_window(
 #[unsafe(export_name = "f2k_export_UpdateWindow")]
 pub extern "system" fn update_window(window: usize) -> u32 {
     let answer = imports::call_hwnd_lock(window, HWND_LOCK_UPDATE_WINDOW);
-    message::receive_sent();
     answered(answer).is_some() as u32
 }
 
@@ -1260,7 +1251,6 @@ fn set_long(window: usize, index: i32, value: i32, ansi: bool) -> i32 {
         }
     };
     let answer = imports::set_window_long(window, index, target.address, target.ansi);
-    message::receive_sent();
     match failed_with(answer, window_error) {
         Some((previous, previous_ansi)) if index == GWL_WNDPROC => {
             let previous = Procedure {

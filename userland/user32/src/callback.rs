@@ -2,12 +2,14 @@
 //! process attach points PEB.KernelCallbackTable at ([`attach`]), which ntdll's
 //! KiUserCallbackDispatcher calls through with the input block's address and length.
 //!
-//! The message slots (`__fnDWORD`, `__fnINLPCREATESTRUCT`, `__fnNCDESTROY` and the structure
-//! thunks, rtl::callback's FN_*) carry a message the window manager sends to one of the thread's
-//! windows while it decides: [`serve`] points the lParam at the structure the block carries (and a
-//! CREATESTRUCTW's lpszName at the name after it), calls the procedure as a sent message's
-//! receipt would ([`crate::message::invoke`]), and the routine answers its LRESULT through
-//! NtCallbackReturn. The other Windows 2000 slots are not served yet: each answers
+//! The message slots (`__fnDWORD`, `__fnINLPCREATESTRUCT`, `__fnNCDESTROY`, the structure thunks
+//! and the text thunks, rtl::callback's FN_*) carry a message the window manager sends to one of
+//! the thread's windows while it decides, or one another thread sent, delivered from inside the
+//! thread's read or wait: [`serve`] points the lParam at the structure or text the block carries
+//! (a CREATESTRUCTW's lpszName at the name after it, a COPYDATASTRUCT's lpData at the data after
+//! it, WM_GETTEXT's at the buffer in the block), calls the procedure ([`crate::message::invoke`]),
+//! and the routine answers its LRESULT through NtCallbackReturn, then the in-out structure or
+//! WM_GETTEXT's text. The other Windows 2000 slots are not served yet: each answers
 //! STATUS_NOT_IMPLEMENTED, by returning it (the dispatcher hands a returned value to
 //! NtCallbackReturn as the status). The last slot is F2K's smoke routine ([`rtl::callback`]), which
 //! the kernel calls only in its `callback-smoke` boot; [`answer`] decides what it does, over the
@@ -18,6 +20,7 @@ use rtl::callback::{
     CallbackMsg,
     SmokeReply,
     SmokeRequest,
+    FN_COPYDATA,
     FN_DWORD,
     FN_INLPCREATESTRUCT,
     FN_INLPWINDOWPOS,
@@ -25,7 +28,9 @@ use rtl::callback::{
     FN_INOUTLPWINDOWPOS,
     FN_INOUTNCCALCSIZE,
     FN_INOUTSTYLECHANGE,
+    FN_INSTRINGNULL,
     FN_NCDESTROY,
+    FN_OUTSTRING,
 };
 use rtl::gdi::Rect;
 use rtl::pod::Pod;
@@ -57,14 +62,26 @@ fn address_of(at: *const u8) -> u32 {
     u32::try_from(at as usize).unwrap_or(0)
 }
 
-/// A message slot's call: the procedure's answer, and the length of the structure its output
-/// block hands back after it (the block's, from just past its [`CallbackMsg`], as the procedure
-/// left it: rtl::callback's `out_size`).
+/// A message slot's call: the procedure's answer, and what its output block hands back.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Served {
     pub answer: i32,
-    pub out: usize,
+    pub out: Output,
 }
+
+/// What a message slot's output block is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Output {
+    /// The LRESULT, then this many bytes of the block from just past its [`CallbackMsg`], the
+    /// structure as the procedure left it (rtl::callback's `out_size`; 0 for none).
+    Structure(usize),
+    /// This range of the block whole: `__fnOUTSTRING`'s LRESULT (written into the block's answer
+    /// word) and the units the procedure copied after it.
+    Block(usize, usize),
+}
+
+/// The head's size: where the structure or the text starts in a block.
+const HEAD: usize = core::mem::size_of::<CallbackMsg>();
 
 /// The message the message slot `api`'s input `block` carries, called: the lParam pointed at the
 /// structure in the block, a CREATESTRUCTW's lpszName at the name after it, an
@@ -72,9 +89,7 @@ pub struct Served {
 /// thread's stack, the procedure's to read and write). None for a slot that is not a message's,
 /// or a block too short for its slot.
 pub fn serve(api: u32, block: &mut [u8]) -> Option<Served> {
-    let head = CallbackMsg::from_bytes(block.get(..core::mem::size_of::<CallbackMsg>())?)?;
-    let carried = carried_size(api, head.wparam)?;
-    let rest = &mut block[core::mem::size_of::<CallbackMsg>()..];
+    let head = CallbackMsg::from_bytes(block.get(..HEAD)?)?;
     let mut msg = Msg {
         hwnd: head.hwnd,
         message: head.message,
@@ -82,6 +97,11 @@ pub fn serve(api: u32, block: &mut [u8]) -> Option<Served> {
         lparam: head.lparam,
         ..Msg::default()
     };
+    if matches!(api, FN_INSTRINGNULL | FN_COPYDATA | FN_OUTSTRING) {
+        return serve_text(api, head.proc, msg, block);
+    }
+    let carried = carried_size(api, head.wparam)?;
+    let rest = &mut block[HEAD..];
     if carried != 0 {
         if rest.len() < carried {
             return None;
@@ -107,8 +127,60 @@ pub fn serve(api: u32, block: &mut [u8]) -> Option<Served> {
     let answer = crate::message::invoke(head.proc, msg, false);
     Some(Served {
         answer,
-        out: rtl::callback::out_size(api, head.wparam),
+        out: Output::Structure(rtl::callback::out_size(api, head.wparam)),
     })
+}
+
+/// [`serve`] for a text slot (another process's message: rtl::callback's notes): the procedure
+/// `proc` called with `msg`, its lParam pointed at the text after the block's head — WM_SETTEXT's,
+/// NUL-terminated; WM_COPYDATA's COPYDATASTRUCT, its lpData pointed at the bytes after it (0 for
+/// none); WM_GETTEXT's buffer, past the answer word, zeroed first, its wParam the buffer's units.
+/// The text messages reach the procedure in the wide form, translated for a narrow one. None for a
+/// block too short for its slot.
+fn serve_text(api: u32, proc: u32, mut msg: Msg, block: &mut [u8]) -> Option<Served> {
+    let rest = block.get_mut(HEAD..)?;
+    let at = address_of(rest.as_ptr());
+    let structure = |answer| Served {
+        answer,
+        out: Output::Structure(0),
+    };
+    match api {
+        FN_INSTRINGNULL => {
+            if rest.len() < 2 || rest[rest.len() - 2..] != [0, 0] {
+                return None;
+            }
+            msg.lparam = at as i32;
+            Some(structure(crate::message::invoke(proc, msg, true)))
+        }
+        FN_COPYDATA => {
+            let head = rest.get_mut(..2 * rtl::user::COPY_DATA_HEAD)?;
+            let count = u32::from_le_bytes([head[4], head[5], head[6], head[7]]);
+            let data = if count == 0 || at == 0 {
+                0
+            } else {
+                at.wrapping_add(2 * rtl::user::COPY_DATA_HEAD as u32)
+            };
+            head[8..12].copy_from_slice(&data.to_le_bytes());
+            msg.lparam = at as i32;
+            Some(structure(crate::message::invoke(proc, msg, false)))
+        }
+        _ => {
+            if rest.len() < 4 {
+                return None;
+            }
+            let room = (rest.len() - 4) / 2;
+            rest[4..].fill(0);
+            msg.lparam = address_of(rest[4..].as_ptr()) as i32;
+            msg.wparam = room as u32;
+            let answer = crate::message::invoke(proc, msg, true);
+            let count = (answer.max(0) as usize).min(room);
+            rest[..4].copy_from_slice(&answer.to_ne_bytes());
+            Some(Served {
+                answer,
+                out: Output::Block(HEAD, 4 + 2 * count),
+            })
+        }
+    }
 }
 
 /// What the smoke routine reaches: the kernel's smoke entry, and the thread's memory.
@@ -181,6 +253,7 @@ mod target {
         SmokeReply,
         SmokeRequest,
         CALLBACK_SLOTS,
+        FN_COPYDATA,
         FN_DWORD,
         FN_INLPCREATESTRUCT,
         FN_INLPWINDOWPOS,
@@ -188,7 +261,9 @@ mod target {
         FN_INOUTLPWINDOWPOS,
         FN_INOUTNCCALCSIZE,
         FN_INOUTSTYLECHANGE,
+        FN_INSTRINGNULL,
         FN_NCDESTROY,
+        FN_OUTSTRING,
         OUT_MAX,
         SMOKE_API,
     };
@@ -196,7 +271,7 @@ mod target {
     use rtl::status::{STATUS_INVALID_PARAMETER, STATUS_NOT_IMPLEMENTED, STATUS_SUCCESS};
     use rtl::stub::Memory;
 
-    use super::{answer, serve, Kernel};
+    use super::{answer, serve, Kernel, Output};
     use crate::imports;
 
     /// A slot's routine: the input block's address and length.
@@ -213,6 +288,9 @@ mod target {
         table[FN_INOUTLPWINDOWPOS as usize] = fn_inoutlpwindowpos;
         table[FN_INOUTSTYLECHANGE as usize] = fn_inoutstylechange;
         table[FN_INOUTLPPOINT5 as usize] = fn_inoutlppoint5;
+        table[FN_COPYDATA as usize] = fn_copydata;
+        table[FN_INSTRINGNULL as usize] = fn_instringnull;
+        table[FN_OUTSTRING as usize] = fn_outstring;
         table[SMOKE_API as usize] = smoke;
         table
     };
@@ -241,11 +319,18 @@ mod target {
         let Some(served) = serve(api, block) else {
             return STATUS_INVALID_PARAMETER;
         };
+        let out = match served.out {
+            // WM_GETTEXT's answer and text, straight from the block (`serve` keeps it inside).
+            Output::Block(from, length) => {
+                return imports::callback_return(&block[from..from + length], STATUS_SUCCESS);
+            }
+            Output::Structure(out) => out,
+        };
         let mut output = [0u8; 4 + OUT_MAX];
         output[..4].copy_from_slice(&served.answer.to_ne_bytes());
         let at = core::mem::size_of::<rtl::callback::CallbackMsg>();
         // `serve` checked the block holds the structure; `out` is never longer than it.
-        let out = served.out.min(OUT_MAX).min(block.len() - at);
+        let out = out.min(OUT_MAX).min(block.len() - at);
         output[4..4 + out].copy_from_slice(&block[at..at + out]);
         imports::callback_return(&output[..4 + out], STATUS_SUCCESS)
     }
@@ -296,6 +381,24 @@ mod target {
     unsafe extern "system" fn fn_inoutlppoint5(input: usize, length: u32) -> u32 {
         // SAFETY: the dispatcher's block.
         unsafe { message(FN_INOUTLPPOINT5, input, length) }
+    }
+
+    /// `__fnCOPYDATA`.
+    unsafe extern "system" fn fn_copydata(input: usize, length: u32) -> u32 {
+        // SAFETY: the dispatcher's block.
+        unsafe { message(FN_COPYDATA, input, length) }
+    }
+
+    /// `__fnINSTRINGNULL`.
+    unsafe extern "system" fn fn_instringnull(input: usize, length: u32) -> u32 {
+        // SAFETY: the dispatcher's block.
+        unsafe { message(FN_INSTRINGNULL, input, length) }
+    }
+
+    /// `__fnOUTSTRING`.
+    unsafe extern "system" fn fn_outstring(input: usize, length: u32) -> u32 {
+        // SAFETY: the dispatcher's block.
+        unsafe { message(FN_OUTSTRING, input, length) }
     }
 
     /// The smoke slot: the request answered through NtCallbackReturn.
@@ -463,7 +566,7 @@ mod tests {
 
     use rtl::callback::op;
     use rtl::status::STATUS_STACK_OVERFLOW;
-    use rtl::user::{WM_CREATE, WM_DESTROY};
+    use rtl::user::{WM_COPYDATA, WM_CREATE, WM_DESTROY, WM_GETTEXT, WM_SETTEXT};
 
     use super::*;
     use crate::imports::host::procedure;
@@ -504,7 +607,10 @@ mod tests {
         let mut plain = block(head(WM_DESTROY, 77), &[]);
         assert_eq!(
             serve(FN_DWORD, &mut plain),
-            Some(Served { answer: -7, out: 0 })
+            Some(Served {
+                answer: -7,
+                out: Output::Structure(0)
+            })
         );
         let heard = HEARD.with(|heard| heard.take());
         assert_eq!(heard, [(0x40, WM_DESTROY, 9, 77)]);
@@ -519,7 +625,10 @@ mod tests {
         let mut created = block(head(WM_CREATE, 0), &carried);
         assert_eq!(
             serve(FN_INLPCREATESTRUCT, &mut created),
-            Some(Served { answer: -7, out: 0 })
+            Some(Served {
+                answer: -7,
+                out: Output::Structure(0)
+            })
         );
         let at = created.as_ptr() as usize + core::mem::size_of::<CallbackMsg>();
         let written =
@@ -555,7 +664,7 @@ mod tests {
             s,
             Some(Served {
                 answer: -7,
-                out: 16
+                out: Output::Structure(16)
             })
         );
         let pos = WindowPos {
@@ -567,17 +676,29 @@ mod tests {
             s,
             Some(Served {
                 answer: -7,
-                out: 28
+                out: Output::Structure(28)
             })
         );
         let (s, _) = served(FN_INLPWINDOWPOS, 0x47, 0, pos.as_bytes());
-        assert_eq!(s, Some(Served { answer: -7, out: 0 }));
+        assert_eq!(
+            s,
+            Some(Served {
+                answer: -7,
+                out: Output::Structure(0)
+            })
+        );
         let style = StyleStruct {
             style_old: 1,
             style_new: 2,
         };
         let (s, _) = served(FN_INOUTSTYLECHANGE, 0x7C, 0xFFFF_FFF0, style.as_bytes());
-        assert_eq!(s, Some(Served { answer: -7, out: 8 }));
+        assert_eq!(
+            s,
+            Some(Served {
+                answer: -7,
+                out: Output::Structure(8)
+            })
+        );
         let mmi = MinMaxInfo {
             max_track: rtl::user::Point { x: 400, y: 300 },
             ..MinMaxInfo::default()
@@ -587,7 +708,7 @@ mod tests {
             s,
             Some(Served {
                 answer: -7,
-                out: 40
+                out: Output::Structure(40)
             })
         );
         let at = core::mem::size_of::<CallbackMsg>();
@@ -609,7 +730,7 @@ mod tests {
             s,
             Some(Served {
                 answer: -7,
-                out: 52
+                out: Output::Structure(52)
             })
         );
         let at = core::mem::size_of::<CallbackMsg>();
@@ -623,6 +744,76 @@ mod tests {
         let (s, _) = served(FN_INOUTNCCALCSIZE, 0x83, 1, params.as_bytes());
         assert_eq!(s, None);
         HEARD.with(|heard| heard.take());
+    }
+
+    fn five(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+        listener(window, message, wparam, lparam);
+        5
+    }
+
+    /// The text slots: WM_SETTEXT's text, NUL-terminated (a block without its terminator calls
+    /// nothing); WM_COPYDATA's COPYDATASTRUCT, its lpData pointed at the bytes after it (0 for
+    /// none, or where no address fits a parameter); WM_GETTEXT's buffer zeroed, its wParam the
+    /// buffer's units, the output the answer word and as many units as the answer says, no more
+    /// than the buffer holds.
+    #[test]
+    fn the_text_slots_point_into_the_block() {
+        let head = |proc, message, wparam| CallbackMsg {
+            proc,
+            hwnd: 0x40,
+            message,
+            wparam,
+            lparam: 0,
+        };
+        let proc = procedure(listener);
+        let mut text = block(head(proc, WM_SETTEXT, 0), &[0x48, 0, 0x69, 0, 0, 0]);
+        assert_eq!(
+            serve(FN_INSTRINGNULL, &mut text),
+            Some(Served {
+                answer: -7,
+                out: Output::Structure(0)
+            })
+        );
+        let mut unterminated = block(head(proc, WM_SETTEXT, 0), &[0x48, 0]);
+        assert_eq!(serve(FN_INSTRINGNULL, &mut unterminated), None);
+        let heard = HEARD.with(|heard| heard.take());
+        assert_eq!(heard.len(), 1);
+        assert_eq!(heard[0].3, address_of(text[HEAD..].as_ptr()));
+
+        let mut data = vec![0x1D, 0x4B, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0];
+        data.extend_from_slice(b"abc\0");
+        let mut copy = block(head(proc, WM_COPYDATA, 0x40), &data);
+        assert!(serve(FN_COPYDATA, &mut copy).is_some());
+        let at = address_of(copy[HEAD..].as_ptr());
+        let expected = if at == 0 { 0 } else { at + 12 };
+        assert_eq!(copy[HEAD + 8..HEAD + 12], expected.to_le_bytes());
+        let mut none = block(head(proc, WM_COPYDATA, 0x40), &[0; 12]);
+        assert!(serve(FN_COPYDATA, &mut none).is_some());
+        assert_eq!(none[HEAD + 8..HEAD + 12], [0; 4]);
+        assert_eq!(
+            serve(FN_COPYDATA, &mut block(head(proc, WM_COPYDATA, 0), &[0; 8])),
+            None
+        );
+        HEARD.with(|heard| heard.take());
+
+        let mut buffer = block(head(procedure(five), WM_GETTEXT, 99), &[0xAA; 4 + 6]);
+        assert_eq!(
+            serve(FN_OUTSTRING, &mut buffer),
+            Some(Served {
+                answer: 5,
+                out: Output::Block(HEAD, 4 + 6)
+            })
+        );
+        assert_eq!(buffer[HEAD..HEAD + 4], 5i32.to_ne_bytes());
+        assert_eq!(buffer[HEAD + 4..], [0; 6], "zeroed for the procedure");
+        let heard = HEARD.with(|heard| heard.take());
+        assert_eq!(
+            (heard[0].1, heard[0].2),
+            (WM_GETTEXT, 3),
+            "the buffer's units"
+        );
+        let mut short = block(head(proc, WM_GETTEXT, 3), &[0; 2]);
+        assert_eq!(serve(FN_OUTSTRING, &mut short), None);
     }
 
     /// A block too short for its slot's structure, or a slot that is not a message's, calls

@@ -8,10 +8,9 @@
 //! NtUserGetThreadState ([`THREAD_STATE_*`]). Only F2K's user32 calls those services, so their
 //! shapes are F2K's.
 //!
-//! A message another thread sent, or one win32k sent on its own behalf (the window's creation and
-//! destruction messages), reaches the window procedure through the receiving thread's own message
-//! calls: the receipt names the procedure, user32 calls it and hands its answer back
-//! ([`ONE_PARAM_END_SENT_MESSAGE`]).
+//! A message another thread sent, or one win32k sent on its own behalf, reaches the window
+//! procedure by a callback from inside the receiving thread's own message calls
+//! ([`crate::callback`]), never through a receipt.
 //!
 //! [`ONE_PARAM_*`]: ONE_PARAM_POST_QUIT_MESSAGE
 //! [`NO_PARAM_*`]: NO_PARAM_CREATE_MENU
@@ -22,7 +21,6 @@
 
 use crate::gdi::Rect;
 use crate::pod::Pod;
-use crate::window::WindowPos;
 
 // --- The messages (winuser.h's WM_*) -------------------------------------------------------------
 
@@ -259,101 +257,55 @@ unsafe impl Pod for MinMaxInfo {}
 // --- F2K's receipt -------------------------------------------------------------------------------
 
 /// What a receipt holds: WM_QUIT (GetMessage answers 0 for it), a posted message or one the queue
-/// made (WM_PAINT, WM_TIMER), a sent message for the window procedure the receipt names, or nothing
-/// (PeekMessage on a queue with nothing for the filter).
+/// made (WM_PAINT, WM_TIMER), or nothing (PeekMessage on a queue with nothing for the filter). The
+/// messages sent to the thread never reach a receipt: the reads deliver them by callback first
+/// ([`crate::callback`]), as Windows 2000's xxxReceiveMessage does. (2 was a sent message's.)
 pub const RECEIVED_QUIT: u32 = 0;
 pub const RECEIVED_MESSAGE: u32 = 1;
-pub const RECEIVED_SENT: u32 = 2;
 pub const RECEIVED_NONE: u32 = 3;
-
-/// A receipt's `text` for a message that carries none.
-pub const NO_TEXT: u32 = u32::MAX;
 
 /// The units WM_COPYDATA's carried form starts with: its COPYDATASTRUCT (dwData, cbData, then
 /// lpData 0, which the receiver points at the bytes), its bytes after it, two a unit, the last
 /// unit's high byte 0 for an odd count.
 pub const COPY_DATA_HEAD: usize = 6;
 
-/// What win32k's GetMessage and PeekMessage services write into user32's buffer.
-///
-/// For a sent message, `proc` is the window procedure to call with `msg`'s window, message and
-/// parameters; when the message carries a structure, `msg.lparam` points at the receipt's own copy
-/// of it: `rect` (WM_NCCALCSIZE, wParam FALSE), `calc` (WM_NCCALCSIZE, wParam TRUE, its lppos
-/// pointing at `window_pos`), `window_pos` (WM_WINDOWPOSCHANGING, WM_WINDOWPOSCHANGED), `style`
-/// (WM_STYLECHANGING, WM_STYLECHANGED) or `min_max` (WM_GETMINMAXINFO), the window manager's
-/// messages to another thread's window (its own thread's are callbacks, [`crate::callback`]). The
-/// answer goes back with [`ONE_PARAM_END_SENT_MESSAGE`] once the procedure returns; the window
-/// manager reads an in-out structure back from the receipt then (the procedure's edits reach the
-/// waiting sender), so the receipt stays where it is until that call.
-///
-/// A sent message that carries a text, as long as it is, says how long in `text` ([`NO_TEXT`] for
-/// none): WM_SETTEXT's text from another process; WM_GETTEXT from another process carries an empty
-/// one, its buffer wParam's units; WM_COPYDATA from another process its COPYDATASTRUCT and the
-/// data, as units ([`COPY_DATA_HEAD`]). The receiver asks for it into a buffer of its own
-/// ([`TWO_PARAM_RECEIVE_TEXT`]) and points `msg.lparam` (0 until then) at it; WM_COPYDATA's lpData
-/// at the bytes (0 when there are none).
-#[repr(C)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Receipt {
-    pub kind: u32,
-    pub proc: u32,
-    pub msg: Msg,
-    pub rect: Rect,
-    pub window_pos: WindowPos,
-    /// The length of the text the message carries, in units, its terminator excluded; [`NO_TEXT`]
-    /// for none.
-    pub text: u32,
-    pub style: StyleStruct,
-    pub calc: crate::window::NcCalcSizeParams,
-    pub min_max: MinMaxInfo,
-}
-
-// SAFETY: integers and structures of them, without padding.
-unsafe impl Pod for Receipt {}
-
-/// The part of a receipt every message has: what it is, the procedure, the message.
+/// What win32k's GetMessage and PeekMessage services write into user32's buffer: what it is, and
+/// the message.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct ReceiptHead {
+pub struct Receipt {
     pub kind: u32,
-    pub proc: u32,
     pub msg: Msg,
 }
 
 // SAFETY: integers only.
-unsafe impl Pod for ReceiptHead {}
+unsafe impl Pod for Receipt {}
 
 // --- The NtUserCall* services' routines (F2K's numbering) ----------------------------------------
 
 /// NtUserCallOneParam's routines: PostQuitMessage (the parameter is the exit code), ReplyMessage
 /// (the parameter is the answer; the result is whether the thread was answering another thread's
-/// message), the end of a sent message's delivery (the parameter is the window procedure's
-/// answer, handed to the sender unless ReplyMessage did already), EnumClipboardFormats (the
-/// parameter is the format before, 0 for the first; the result the next one, 0 past the last),
-/// and InSendMessage (no parameter; the result whether the message the thread is delivering was
-/// sent by another thread).
+/// message), EnumClipboardFormats (the parameter is the format before, 0 for the first; the result
+/// the next one, 0 past the last), and InSendMessage (no parameter; the result whether the message
+/// the thread is delivering was sent by another thread). (2 ended a sent message's delivery from
+/// a receipt, before the reads delivered them by callback.)
 pub const ONE_PARAM_POST_QUIT_MESSAGE: u32 = 0;
 pub const ONE_PARAM_REPLY_MESSAGE: u32 = 1;
-pub const ONE_PARAM_END_SENT_MESSAGE: u32 = 2;
 pub const ONE_PARAM_ENUM_CLIPBOARD_FORMATS: u32 = 3;
 pub const ONE_PARAM_IN_SEND_MESSAGE: u32 = 4;
 /// IsHungAppWindow (the parameter is the window; the result whether its thread is hung).
 pub const ONE_PARAM_IS_HUNG_APP_WINDOW: u32 = 5;
 
-/// F2K's NtUserMessageCall's timeout, SendMessageTimeout's (none for SendMessage's first call):
-/// its SMTO_* flags, and how long the sender waits for another thread's answer, in milliseconds;
-/// and `resume`, 0 for a fresh send, or the token of the send whose wait the call resumes, as the
-/// kernel answered it with STATUS_PENDING once messages were sent to the waiting thread (which
-/// delivers them first; the flags and the timeout are the first call's then).
+/// F2K's NtUserMessageCall's timeout, SendMessageTimeout's (none for SendMessage's): its SMTO_*
+/// flags, and how long the sender waits for another thread's answer, in milliseconds.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SendTimeout {
     pub flags: u32,
     pub timeout: u32,
-    pub resume: u32,
 }
 
-// SAFETY: three integers.
+// SAFETY: two integers.
 unsafe impl Pod for SendTimeout {}
 
 /// The keyboard layout every thread has, as its HKL: US English's (the language 0x0409 in both
@@ -428,12 +380,8 @@ pub const NO_PARAM_CREATE_EMPTY_CURSOR: u32 = 2;
 pub const NO_PARAM_DESTROY_CARET: u32 = 3;
 
 /// NtUserCallTwoParam's routines: SetCaretPos (the two parameters are the place; the result 1).
+/// (1 handed a received message's text over, before callbacks carried it.)
 pub const TWO_PARAM_SET_CARET_POS: u32 = 0;
-/// The text the message the thread is delivering carries ([`Receipt`]'s `text`) into the buffer
-/// at the first parameter, of as many units as the second: as much as fits, terminated; for
-/// WM_GETTEXT from another process, the buffer its procedure writes its answer into, read back as
-/// the delivery ends. The result 1.
-pub const TWO_PARAM_RECEIVE_TEXT: u32 = 1;
 /// MsgWaitForMultipleObjects' wait ([`MsgWait`] at the first parameter; the second 0): the
 /// result as WaitForMultipleObjects answers, WAIT_OBJECT_0 + the count for input of the wake
 /// mask's kinds come to the queue since a read last looked for them.
@@ -506,20 +454,15 @@ mod tests {
         assert_eq!(offset_of!(CreateStructW, cy), 16);
         assert_eq!(offset_of!(CreateStructW, x), 28);
         assert_eq!(offset_of!(CreateStructW, ex_style), 44);
-        assert_eq!(size_of::<ReceiptHead>(), 36);
-        assert_eq!(offset_of!(Receipt, msg), 8);
-        assert_eq!(offset_of!(Receipt, rect), 36);
-        assert_eq!(offset_of!(Receipt, window_pos), 52);
-        assert_eq!(offset_of!(Receipt, text), 80);
-        assert_eq!(offset_of!(Receipt, style), 84);
+        assert_eq!(size_of::<Receipt>(), 32);
+        assert_eq!(offset_of!(Receipt, msg), 4);
         assert_eq!(size_of::<StyleStruct>(), 8);
-        assert_eq!(size_of::<Receipt>() % 4, 0);
         assert_eq!(size_of::<Input>(), 28);
         assert_eq!(offset_of!(Input, flags), 8);
         assert_eq!(offset_of!(Input, extra_info), 16);
         assert_eq!(size_of::<GuiThreadInfo>(), 48);
         assert_eq!(offset_of!(GuiThreadInfo, rc_caret), 32);
-        assert_eq!(size_of::<SendTimeout>(), 12);
+        assert_eq!(size_of::<SendTimeout>(), 8);
     }
 
     /// The messages whose pointer no asynchronous send carries are below WM_USER; a registered

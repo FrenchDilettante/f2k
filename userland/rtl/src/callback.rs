@@ -23,6 +23,17 @@
 //! NCCALCSIZE_PARAMS ([`crate::window::NcCalcSizeParams`]) and the move's WINDOWPOS after it,
 //! which the routine points the structure's lppos at.
 //!
+//! A message another thread sent reaches its procedure the same way, from inside the receiving
+//! thread's read or wait (Windows 2000's xxxReceiveMessage): the window manager's copy of its
+//! structure in the block. A text another process's message carries is in the block too, as
+//! units: WM_SETTEXT's text, NUL-terminated ([`FN_INSTRINGNULL`], the lParam pointed at it);
+//! WM_COPYDATA's COPYDATASTRUCT and its bytes in rtl::user's COPY_DATA_HEAD form ([`FN_COPYDATA`],
+//! the lParam pointed at the structure, its lpData at the bytes or 0 for none); WM_GETTEXT's
+//! ([`FN_OUTSTRING`]) a word for the answer then a buffer of wParam's units (fewer when wParam asks
+//! for more than [`OUT_STRING_MAX`]): the procedure writes its text there, and the routine answers
+//! the LRESULT followed by as many units as it says it copied (no more than the buffer holds),
+//! straight from the block.
+//!
 //! The smoke slot serves the kernel's `callback-smoke` boot: each [`SmokeRequest`] names an
 //! operation ([`op`]), and a routine that calls back into the kernel for a nested level enters it
 //! through NtQuerySystemInformation with the class [`SMOKE_INFORMATION_CLASS`] and a request of its
@@ -35,8 +46,11 @@ use crate::pod::Pod;
 /// The callback table's length: Windows 2000's `__fn*` slots and F2K's smoke slot.
 pub const CALLBACK_SLOTS: usize = 128;
 
-// The Windows 2000 slots F2K serves (apfnDispatch's order, as later Windows versions keep it): a
-// message's thunk by the kind of its lParam.
+// The Windows 2000 slots F2K serves (apfnDispatch's order, as later Windows versions keep it; not
+// checked against Windows 2000's own table): a message's thunk by the kind of its lParam.
+
+/// `__fnCOPYDATA`: WM_COPYDATA from another process, its COPYDATASTRUCT and data.
+pub const FN_COPYDATA: u32 = 0;
 
 /// `__fnDWORD`: a message whose parameters are plain values.
 pub const FN_DWORD: u32 = 2;
@@ -54,8 +68,16 @@ pub const FN_INOUTNCCALCSIZE: u32 = 21;
 /// `__fnINOUTLPWINDOWPOS`: WM_WINDOWPOSCHANGING, the WINDOWPOS in and out. (Its slot number is
 /// F2K's pick among the table's, not checked against Windows 2000's apfnDispatch.)
 pub const FN_INOUTLPWINDOWPOS: u32 = 22;
+/// `__fnINSTRINGNULL`: WM_SETTEXT from another process, the text.
+pub const FN_INSTRINGNULL: u32 = 27;
+/// `__fnOUTSTRING`: WM_GETTEXT from another process, a buffer of wParam's units out.
+pub const FN_OUTSTRING: u32 = 35;
 /// `__fnINOUTSTYLECHANGE`: WM_STYLECHANGING and WM_STYLECHANGED, the STYLESTRUCT in and out.
 pub const FN_INOUTSTYLECHANGE: u32 = 39;
+
+/// The most units [`FN_OUTSTRING`]'s buffer holds: the block goes on the receiver's stack, so a
+/// WM_GETTEXT asking for more gets this many (64 KiB).
+pub const OUT_STRING_MAX: u32 = 0x8000;
 
 /// The size of the structure a message slot's output block carries after the LRESULT: the
 /// `__fnINOUT*` slots' (WM_NCCALCSIZE's by its form, `wparam`), none for the others.
@@ -169,6 +191,9 @@ mod tests {
         assert!(SMOKE_INFORMATION_CLASS > 0xFFFF);
         assert_eq!(core::mem::size_of::<CallbackMsg>(), 20);
         for slot in [
+            FN_COPYDATA,
+            FN_INSTRINGNULL,
+            FN_OUTSTRING,
             FN_DWORD,
             FN_NCDESTROY,
             FN_INLPCREATESTRUCT,

@@ -465,10 +465,10 @@ pub struct Wm {
     pub next_atom: u16,
     pub windows: Vec<HostWindow>,
     pub created: Vec<Created>,
+    /// The messages the stand-ins sent the calling thread's windows, not delivered yet
+    /// ([`deliver_sent`]).
     pub sent: VecDeque<HostSent>,
-    /// The messages handed out and not answered yet, innermost last.
-    pub receiving: Vec<u32>,
-    /// The answers the procedures gave, by message, in order (a receipt's, or a callback's).
+    /// The answers the procedures gave, by message, in order (the stand-ins' callbacks').
     pub answers: Vec<(u32, i32)>,
     pub posted: VecDeque<Msg>,
     pub quit: Option<u32>,
@@ -585,6 +585,24 @@ impl Wm {
 }
 
 /// Run `f` on the window manager.
+/// The stand-ins' callbacks: the messages a stand-in sent the calling thread's windows (or another
+/// thread's, as a test queues them), each delivered to its procedure in the order they were sent
+/// once the stand-in lets the window manager go, as win32k calls back from inside its service and
+/// its reads; the answers recorded.
+pub fn deliver_sent() {
+    while let Some(sent) = WM.with(|wm| wm.borrow_mut().sent.pop_front()) {
+        let msg = Msg {
+            hwnd: sent.hwnd,
+            message: sent.message,
+            wparam: sent.wparam,
+            lparam: sent.lparam,
+            ..Msg::default()
+        };
+        let answer = crate::message::invoke(sent.proc, msg, false);
+        WM.with(|wm| wm.borrow_mut().answers.push((sent.message, answer)));
+    }
+}
+
 pub fn wm<R>(f: impl FnOnce(&mut Wm) -> R) -> R {
     SERVICES.with(|count| count.set(count.get() + 1));
     WM.with(|wm| f(&mut wm.borrow_mut()))
@@ -885,7 +903,7 @@ fn call_back_create(hwnd: u32, proc: u32, message: u32, create: CreateStructW, n
 const WS_VISIBLE_BIT: u32 = 0x1000_0000;
 
 pub unsafe extern "system" fn NtUserDestroyWindow(window: usize) -> u32 {
-    wm(|wm| {
+    let status = wm(|wm| {
         let (atom, proc, handle) = match wm.window(window) {
             Ok(w) if w.proc == 0 => return STATUS_ACCESS_DENIED,
             Ok(w) => {
@@ -908,7 +926,9 @@ pub unsafe extern "system" fn NtUserDestroyWindow(window: usize) -> u32 {
             });
         }
         STATUS_SUCCESS
-    })
+    });
+    deliver_sent();
+    status
 }
 
 pub unsafe extern "system" fn NtUserQueryWindow(
@@ -1452,8 +1472,8 @@ pub unsafe extern "system" fn NtUserPostThreadMessage(
     unsafe { NtUserPostMessage(0, message, wparam, lparam) }
 }
 
-/// GetMessage's and PeekMessage's read, into the receipt: the sent messages first, then the posted
-/// ones the filter takes, WM_QUIT, WM_PAINT.
+/// GetMessage's and PeekMessage's read, into the receipt: the sent messages delivered first
+/// ([`deliver_sent`]), then the posted ones the filter takes, WM_QUIT, WM_PAINT.
 fn take(receipt: *mut Receipt, window: usize, min: u32, max: u32, flags: u32) -> u32 {
     let remove = flags & PM_REMOVE != 0;
     let kinds = flags >> 16;
@@ -1461,26 +1481,12 @@ fn take(receipt: *mut Receipt, window: usize, min: u32, max: u32, flags: u32) ->
         (window == 0 || msg.hwnd as usize == window)
             && ((min == 0 && max == 0) || (min <= msg.message && msg.message <= max))
     };
-    let mut answer = Receipt::zeroed();
+    let mut answer = Receipt::default();
+    if window != 0 && wm(|wm| wm.window(window).is_err()) {
+        return STATUS_INVALID_HANDLE;
+    }
+    deliver_sent();
     wm(|wm| {
-        if window != 0 && wm.window(window).is_err() {
-            return Err(STATUS_INVALID_HANDLE);
-        }
-        if let Some(sent) = wm.sent.pop_front() {
-            wm.receiving.push(sent.message);
-            answer.kind = RECEIVED_SENT;
-            // The stand-ins' messages carry no text (a host's addresses fit no lParam).
-            answer.text = NO_TEXT;
-            answer.proc = sent.proc;
-            answer.msg = Msg {
-                hwnd: sent.hwnd,
-                message: sent.message,
-                wparam: sent.wparam,
-                lparam: sent.lparam,
-                ..Msg::default()
-            };
-            return Ok(());
-        }
         answer.kind = RECEIVED_NONE;
         if kinds == QS_SENDMESSAGE {
             return Ok(());
@@ -1641,13 +1647,6 @@ pub unsafe extern "system" fn NtUserCallOneParam(
         ONE_PARAM_REPLY_MESSAGE | ONE_PARAM_IN_SEND_MESSAGE => Ok(0),
         // The stand-ins' windows are the calling thread's, which is never hung.
         ONE_PARAM_IS_HUNG_APP_WINDOW => wm.window(param as usize).map(|_| 0),
-        ONE_PARAM_END_SENT_MESSAGE => Ok(match wm.receiving.pop() {
-            Some(message) => {
-                wm.answers.push((message, param as i32));
-                1
-            }
-            None => 0,
-        }),
         _ => Err(STATUS_INVALID_PARAMETER),
     });
     match answer {
@@ -1661,7 +1660,7 @@ pub unsafe extern "system" fn NtUserCallOneParam(
 }
 
 pub unsafe extern "system" fn NtUserCallHwndLock(window: usize, routine: u32) -> u32 {
-    wm(|wm| {
+    let status = wm(|wm| {
         let (update, handle, proc) = match wm.window(window) {
             Ok(w) => (w.update.is_some(), w.handle, w.proc),
             Err(status) => return status,
@@ -1690,7 +1689,9 @@ pub unsafe extern "system" fn NtUserCallHwndLock(window: usize, routine: u32) ->
             });
         }
         STATUS_SUCCESS
-    })
+    });
+    deliver_sent();
+    status
 }
 
 /// WS_DISABLED.
@@ -1706,7 +1707,7 @@ fn named(wm: &mut Wm, window: usize) -> Result<u32, u32> {
 }
 
 pub unsafe extern "system" fn NtUserSetFocus(window: usize, previous: *mut u32) -> u32 {
-    wm(|wm| {
+    let status = wm(|wm| {
         let handle = match named(wm, window) {
             Ok(handle) => handle,
             Err(status) => return status,
@@ -1725,11 +1726,13 @@ pub unsafe extern "system" fn NtUserSetFocus(window: usize, previous: *mut u32) 
         // SAFETY: the caller's out-pointer.
         unsafe { previous.write(answer) };
         STATUS_SUCCESS
-    })
+    });
+    deliver_sent();
+    status
 }
 
 pub unsafe extern "system" fn NtUserSetActiveWindow(window: usize, previous: *mut u32) -> u32 {
-    wm(|wm| {
+    let status = wm(|wm| {
         let handle = match named(wm, window) {
             Ok(handle) => handle,
             Err(status) => return status,
@@ -1739,7 +1742,9 @@ pub unsafe extern "system" fn NtUserSetActiveWindow(window: usize, previous: *mu
         // SAFETY: the caller's out-pointer.
         unsafe { previous.write(old) };
         STATUS_SUCCESS
-    })
+    });
+    deliver_sent();
+    status
 }
 
 pub unsafe extern "system" fn NtUserGetForegroundWindow(window: *mut u32) -> u32 {
@@ -1773,7 +1778,7 @@ pub unsafe extern "system" fn NtUserCallHwndParamLock(
     routine: u32,
     result: *mut u32,
 ) -> u32 {
-    wm(|wm| {
+    let status = wm(|wm| {
         if routine == HWND_PARAM_LOCK_SET_REDRAW {
             return match wm.window(window) {
                 Ok(w) => {
@@ -1807,7 +1812,9 @@ pub unsafe extern "system" fn NtUserCallHwndParamLock(
         // SAFETY: the caller's out-pointer.
         unsafe { result.write(if was { 8 } else { 0 }) };
         STATUS_SUCCESS
-    })
+    });
+    deliver_sent();
+    status
 }
 
 // --- The caret -----------------------------------------------------------------------------------

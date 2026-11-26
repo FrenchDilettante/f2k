@@ -164,7 +164,7 @@ impl Reply {
 
 #[cfg(target_arch = "x86")]
 #[cfg_attr(not(feature = "callback-smoke"), allow(unused_imports))]
-pub use target::{call_user_mode, outstanding};
+pub use target::{call_user_mode, call_user_mode_with_room, outstanding};
 
 #[cfg(target_arch = "x86")]
 mod target {
@@ -251,7 +251,19 @@ mod target {
     /// nothing a nested system call could want. Refused with STATUS_STACK_OVERFLOW when the kernel
     /// stack lacks [`CALLBACK_ROOM`], with STATUS_ACCESS_VIOLATION when the user stack or the TEB
     /// cannot be written.
-    pub fn call_user_mode(_passive: &mut At<Passive>, api: u32, input: &[&[u8]]) -> Reply {
+    pub fn call_user_mode(passive: &mut At<Passive>, api: u32, input: &[&[u8]]) -> Reply {
+        call_user_mode_with_room(passive, api, input, 0)
+    }
+
+    /// [`call_user_mode`], the block `room` bytes longer than `input`: room after the input for the
+    /// routine to write into (its contents whatever the user stack held there), which its output
+    /// block may then point at (`__fnOUTSTRING`'s buffer).
+    pub fn call_user_mode_with_room(
+        _passive: &mut At<Passive>,
+        api: u32,
+        input: &[&[u8]],
+        room: u32,
+    ) -> Reply {
         let (words, slot, teb) = raised::<Dispatch, _>(|dispatch| {
             let record = DISPATCHER
                 .get(dispatch)
@@ -292,11 +304,27 @@ mod target {
             return Reply::refused(STATUS_STACK_OVERFLOW);
         }
         let length: usize = input.iter().map(|part| part.len()).sum();
-        let user = user_image(image.frame.user_esp, api, length as u32);
+        let Some(length) = u32::try_from(length)
+            .ok()
+            .and_then(|length| length.checked_add(room))
+        else {
+            return Reply::refused(STATUS_ACCESS_VIOLATION);
+        };
+        let user = user_image(image.frame.user_esp, api, length);
         let exception_list = UserPtr::<u32>::at(teb);
         let Ok(chain) = exception_list.read() else {
             return Reply::refused(STATUS_ACCESS_VIOLATION);
         };
+        // The pages under the user stack pointer touched top down, so that a block longer than a
+        // page grows the stack one guard at a time, as the routine's own frames would.
+        let page_mask = !(crate::mem::paging::PAGE_SIZE - 1);
+        let mut page = Some(image.frame.user_esp.wrapping_sub(1) & page_mask);
+        while let Some(at) = page.filter(|&at| at >= user.esp & page_mask) {
+            if super::super::syscall::write_user(at.max(user.esp), &[0]).is_err() {
+                return Reply::refused(STATUS_ACCESS_VIOLATION);
+            }
+            page = at.checked_sub(crate::mem::paging::PAGE_SIZE);
+        }
         let mut at = user.input;
         for part in input {
             if super::super::syscall::write_user(at, part).is_err() {

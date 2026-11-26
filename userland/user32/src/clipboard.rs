@@ -23,7 +23,7 @@ use rtl::user::ONE_PARAM_ENUM_CLIPBOARD_FORMATS;
 
 use crate::imports::{self, GlobalLocked, UserBuffer};
 use crate::records::Table;
-use crate::{failed_with, message, window_error};
+use crate::{failed_with, window_error};
 
 /// GlobalAlloc's flags for a block GetClipboardData makes: movable, and shareable as clipboard
 /// data is (GMEM_MOVEABLE | GMEM_DDESHARE).
@@ -93,7 +93,6 @@ pub extern "system" fn close_clipboard() -> u32 {
 #[unsafe(export_name = "f2k_export_EmptyClipboard")]
 pub extern "system" fn empty_clipboard() -> u32 {
     let answer = imports::empty_clipboard();
-    message::receive_sent();
     let emptied = answered(answer).is_some();
     if emptied {
         release();

@@ -1430,7 +1430,6 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (window, bar, view) = window_with_menu();
-        crate::message::receive_sent();
         for vk in [VK_RIGHT, VK_DOWN, VK_DOWN, VK_RETURN] {
             let _ = imports::post_message(window, WM_KEYDOWN, vk, 0);
         }
@@ -1471,7 +1470,6 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (window, _, view) = window_with_menu();
-        crate::message::receive_sent();
         let _ = imports::post_message(window, rtl::user::WM_CANCELMODE, 0, 0);
         SEEN.with(|seen| seen.borrow_mut().clear());
         assert_eq!(

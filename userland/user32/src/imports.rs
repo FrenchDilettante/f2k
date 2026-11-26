@@ -1852,28 +1852,18 @@ pub fn peek_message(
     checked(unsafe { raw::NtUserPeekMessage(receipt, window, min, max, flags) })
 }
 
-/// What NtUserMessageCall answered.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Called {
-    /// The window procedure to call for a window of the calling thread's (nonzero), or 0 and the
-    /// answer.
-    Done(u32, i32),
-    /// Messages were sent to the calling thread while it waited for another thread's answer: it
-    /// delivers them, then resumes the wait with this token (SendTimeout's `resume`).
-    Received(u32),
-}
-
 /// NtUserMessageCall: SendMessage's kernel side, with SendMessageTimeout's `timeout` (none for
-/// SendMessage's first call; a resumed wait's names its token): [`Called`], or STATUS_TIMEOUT as
-/// a failure when another thread's answer did not come in time (or its thread is hung, with
-/// SMTO_ABORTIFHUNG).
+/// SendMessage): the window procedure to call for a window of the calling thread's (nonzero), or 0
+/// and the answer (the messages sent to the thread while it waits for another thread's are
+/// delivered by callback inside); STATUS_TIMEOUT as a failure when another thread's answer did not
+/// come in time (or its thread is hung, with SMTO_ABORTIFHUNG).
 pub fn message_call_timeout(
     window: usize,
     message: u32,
     wparam: u32,
     lparam: i32,
     timeout: Option<SendTimeout>,
-) -> Result<Called, NtStatus> {
+) -> Result<(u32, i32), NtStatus> {
     let (mut proc, mut result) = (0u32, 0i32);
     let limit = timeout
         .as_ref()
@@ -1892,10 +1882,9 @@ pub fn message_call_timeout(
     };
     match status {
         rtl::status::STATUS_TIMEOUT => Err(NtStatus(status)),
-        rtl::status::STATUS_PENDING => Ok(Called::Received(result as u32)),
         _ => {
             checked(status)?;
-            Ok(Called::Done(proc, result))
+            Ok((proc, result))
         }
     }
 }
@@ -2038,17 +2027,6 @@ pub fn call_two_param(param1: u32, param2: u32, routine: u32) -> Result<u32, NtS
     // SAFETY: the kernel writes the result into the local.
     checked(unsafe { raw::NtUserCallTwoParam(param1, param2, routine, &mut result) })?;
     Ok(result)
-}
-
-/// NtUserCallTwoParam's TWO_PARAM_RECEIVE_TEXT: the text the message being delivered carries
-/// into `buffer`, as much as fits, terminated (WM_GETTEXT's buffer kept for its answer).
-pub fn receive_text(buffer: &mut [u16]) -> Result<(), NtStatus> {
-    call_two_param(
-        buffer.as_mut_ptr() as usize as u32,
-        buffer.len() as u32,
-        rtl::user::TWO_PARAM_RECEIVE_TEXT,
-    )
-    .map(|_| ())
 }
 
 /// NtUserCallHwndParamLock: the routine `routine` (rtl::user's HWND_PARAM_LOCK_*) on `window` with

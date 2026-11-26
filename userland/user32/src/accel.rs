@@ -22,14 +22,7 @@ use rtl::edge::{InBuf, OutBuf};
 use rtl::user::Msg;
 
 use crate::imports::{self, HeapBlock, ResourceName};
-use crate::{
-    failed,
-    failed_with,
-    message,
-    window_error,
-    ERROR_INVALID_PARAMETER,
-    ERROR_NOT_ENOUGH_MEMORY,
-};
+use crate::{failed, failed_with, window_error, ERROR_INVALID_PARAMETER, ERROR_NOT_ENOUGH_MEMORY};
 
 /// RT_ACCELERATOR: an accelerator table's resource type.
 const RT_ACCELERATOR: u16 = 9;
@@ -336,10 +329,7 @@ fn translate(window: usize, table: usize, msg: &Msg) -> i32 {
         imports::translate_accelerator(window, table, msg),
         window_error,
     ) {
-        Some(true) => {
-            message::receive_sent();
-            1
-        }
+        Some(true) => 1,
         _ => 0,
     }
 }

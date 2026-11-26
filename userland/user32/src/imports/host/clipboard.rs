@@ -163,19 +163,22 @@ pub unsafe extern "system" fn NtUserEmptyClipboard() -> u32 {
     });
     match previous {
         Ok(0) => STATUS_SUCCESS,
-        Ok(owner) => wm(|wm| {
-            if let Some(w) = wm.windows.iter().find(|w| w.alive && w.handle == owner) {
-                let proc = w.proc;
-                wm.sent.push_back(HostSent {
-                    hwnd: owner,
-                    message: WM_DESTROYCLIPBOARD,
-                    wparam: 0,
-                    lparam: 0,
-                    proc,
-                });
-            }
+        Ok(owner) => {
+            wm(|wm| {
+                if let Some(w) = wm.windows.iter().find(|w| w.alive && w.handle == owner) {
+                    let proc = w.proc;
+                    wm.sent.push_back(HostSent {
+                        hwnd: owner,
+                        message: WM_DESTROYCLIPBOARD,
+                        wparam: 0,
+                        lparam: 0,
+                        proc,
+                    });
+                }
+            });
+            super::deliver_sent();
             STATUS_SUCCESS
-        }),
+        }
         Err(status) => status,
     }
 }

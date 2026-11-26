@@ -205,7 +205,6 @@ fn set_info(window: usize, bar: i32, mut info: ScrollInfo, redraw: bool) -> i32 
     let Some(answer) = answered(imports::set_scroll_info(window, bar, &info, redraw)) else {
         return 0;
     };
-    message::receive_sent();
     if redraw {
         draw_window_bars(window);
     }
@@ -321,7 +320,6 @@ pub extern "system" fn show_scroll_bar(window: usize, bar: i32, show: u32) -> u3
         return 1;
     }
     let answer = imports::show_scroll_bar(window, bar, show != 0);
-    message::receive_sent();
     answered(answer).is_some() as u32
 }
 
@@ -392,7 +390,6 @@ pub unsafe extern "system" fn scroll_window_ex(
     let Some((complexity, bounds)) = answered(answer) else {
         return ERROR;
     };
-    message::receive_sent();
     // SAFETY: the caller's RECT.
     if let Some(mut update) = unsafe { Out::optional(update) } {
         update.set(bounds);

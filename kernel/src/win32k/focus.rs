@@ -746,7 +746,7 @@ mod tests {
     use super::*;
     use crate::sync::ShortLock;
     use crate::win32k::queue::rig::*;
-    use crate::win32k::queue::{end_sent, receipt_head, Filter, QueueSession, Taken};
+    use crate::win32k::queue::{end_sent, head_of, Filter, QueueSession, Taken};
     use crate::win32k::window::{
         Hold,
         Hwnd,
@@ -795,9 +795,7 @@ mod tests {
             let only_sent = Filter::new(0, 0, 0, PM_QS_SENDMESSAGE);
             let mut got = Vec::new();
             while let Taken::Sent(id) = read(self.m, self.t, &only_sent, 0) {
-                let msg = receipt_head(&self.m.windows, self.t, id, 0x1000, 0)
-                    .unwrap()
-                    .msg;
+                let msg = head_of(&self.m.windows, id).unwrap().msg;
                 if RECORDED.contains(&msg.message) {
                     got.push((msg.hwnd, msg.message, msg.wparam, msg.lparam));
                 }

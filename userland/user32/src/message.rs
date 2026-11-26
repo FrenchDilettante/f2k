@@ -8,17 +8,16 @@
 //! A message the window manager sends to one of the calling thread's windows while it decides
 //! (CreateWindowEx's, DestroyWindow's, ShowWindow's...) reaches its procedure by a callback from
 //! inside the service, as on Windows 2000 ([`crate::callback`]), and its answer goes back to the
-//! decision. A message another thread sends reaches it through the thread's own reads: win32k's
-//! GetMessage and PeekMessage services answer a receipt (rtl::user::Receipt): a posted message,
-//! WM_QUIT, or a sent message with the procedure to call, whose answer goes back through
-//! NtUserCallOneParam's ONE_PARAM_END_SENT_MESSAGE. GetMessage and PeekMessage deliver the sent
-//! messages they find and read on, as Windows 2000's do; the calls that make the window manager
-//! send receive the ones that came meanwhile as soon as their service returns ([`receive_sent`]).
+//! decision. So does a message another thread sends, from inside the receiving thread's own calls:
+//! win32k's GetMessage and PeekMessage services deliver the sent messages they find by callback,
+//! then answer a receipt (rtl::user::Receipt: a posted message, WM_QUIT, or none), as Windows
+//! 2000's xxxReceiveMessage delivers them; so do WaitMessage and a thread's wait for another
+//! thread's answer.
 //!
 //! SendMessage to a window of the calling thread calls its procedure here, as Windows 2000's
-//! user32 does; to another thread's window the kernel waits for that thread's answer, the messages
-//! sent to the waiting thread meanwhile delivered here as they come (the kernel hands the wait back
-//! for them, and it resumes), so two threads sending to each other do not deadlock. A message
+//! user32 does; to another thread's window the kernel waits for that thread's answer, delivering
+//! the messages sent to the waiting thread meanwhile by callback, so two threads sending to each
+//! other do not deadlock. A message
 //! reaches a procedure of the other form than its sender's translated ([`procedure`]): SendMessageA
 //! and DispatchMessageA hand over narrow messages, SendMessageW and DispatchMessageW wide ones, the
 //! window manager wide ones; another thread's message reaches the procedure as it was sent. The A
@@ -37,7 +36,6 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use rtl::edge::{In, InStr, OutBuf};
-use rtl::pod::Pod;
 use rtl::status::NtStatus;
 use rtl::user::*;
 use rtl::window::WINDOW_OTHER_PROCESS;
@@ -57,78 +55,7 @@ use crate::{
     Out,
 };
 
-/// The units of a carried text's buffer on the stack; a longer one is a block of the process heap.
-const RECEIVED_UNITS: usize = 260;
-
-/// The sent message `receipt` holds, delivered ([`answer`]): when it carries a text (another
-/// process's WM_SETTEXT text or WM_GETTEXT buffer, or its WM_COPYDATA's structure and data,
-/// [`point_copy_data`]), the text is asked for into a buffer of this thread's own, as long as it
-/// is (wParam's units for WM_GETTEXT), on the stack or the process heap, which lParam then points
-/// at. A buffer the heap has no room for answers the message 0, its procedure not called.
-fn deliver(receipt: &mut Receipt) {
-    if receipt.text == NO_TEXT {
-        answer(receipt.proc, receipt.msg, false);
-        return;
-    }
-    let room = match receipt.msg.message {
-        WM_GETTEXT => receipt.msg.wparam as usize,
-        _ => receipt.text as usize + 1,
-    };
-    let delivered = with_buffer(room, |buffer| {
-        if imports::receive_text(buffer).is_err() {
-            return false;
-        }
-        let at = buffer.as_mut_ptr() as usize as u32;
-        if receipt.msg.message == WM_COPYDATA {
-            point_copy_data(buffer, at);
-        }
-        receipt.msg.lparam = at as i32;
-        let carried = matches!(receipt.msg.message, WM_SETTEXT | WM_GETTEXT);
-        answer(receipt.proc, receipt.msg, carried);
-        true
-    });
-    if delivered != Some(true) {
-        let _ = imports::call_one_param(0, ONE_PARAM_END_SENT_MESSAGE);
-    }
-}
-
-/// WM_COPYDATA's carried form received into `buffer`, at `at` in this process (rtl::user's
-/// COPY_DATA_HEAD): its COPYDATASTRUCT's lpData pointed at the bytes after it, or left 0 when there
-/// are none, so that the receiving procedure reads the data from its own copy (guimsg
-/// `copydata`).
-fn point_copy_data(buffer: &mut [u16], at: u32) {
-    if buffer.len() < COPY_DATA_HEAD {
-        return;
-    }
-    let count = u32::from(buffer[2]) | u32::from(buffer[3]) << 16;
-    let data = if count == 0 {
-        0
-    } else {
-        at + 2 * COPY_DATA_HEAD as u32
-    };
-    buffer[4] = data as u16;
-    buffer[5] = (data >> 16) as u16;
-}
-
-/// Run `f` on a buffer of `room` units: on the stack when it is short, in a block of the process
-/// heap otherwise; none when the heap has no room for it.
-fn with_buffer<R>(room: usize, f: impl FnOnce(&mut [u16]) -> R) -> Option<R> {
-    if room <= RECEIVED_UNITS {
-        let mut units = [0u16; RECEIVED_UNITS];
-        return Some(f(&mut units[..room]));
-    }
-    let mut block = imports::HeapBlock::new(room.checked_mul(2)?)?;
-    Some(f(&mut block.units_mut()[..room]))
-}
-
-/// The procedure `proc` a sent message's receipt names, called with its message ([`invoke`]); the
-/// answer handed back to its sender.
-fn answer(proc: u32, msg: Msg, carried_text: bool) {
-    let answer = invoke(proc, msg, carried_text);
-    let _ = imports::call_one_param(answer as u32, ONE_PARAM_END_SENT_MESSAGE);
-}
-
-/// The procedure `proc` a sent message names (a receipt's, or a callback's), called with its
+/// The procedure `proc` a sent message names (a callback's), called with its
 /// message (the window manager's are wide: a narrow procedure's creation messages are translated,
 /// and a text another process's message carries, `carried_text`); its answer. `msg` is a copy: no
 /// reference to where it came from is held while the procedure runs, which may write the structure
@@ -173,17 +100,6 @@ fn call(proc: u32, from: Option<bool>, msg: &Msg) -> i32 {
         msg.wparam,
         msg.lparam,
     )
-}
-
-/// Receive the messages sent to the calling thread's windows: each delivered to its procedure, in
-/// the order they were sent, until none is left.
-pub fn receive_sent() {
-    let mut receipt = Receipt::zeroed();
-    while imports::peek_message(&mut receipt, 0, 0, 0, PM_REMOVE | PM_QS_SENDMESSAGE).is_ok()
-        && receipt.kind == RECEIVED_SENT
-    {
-        deliver(&mut receipt);
-    }
 }
 
 /// GetMessageA: the next message the filter takes, waiting for one, into the caller's MSG (the
@@ -237,19 +153,12 @@ fn read_as(msg: Msg, ansi: bool) -> Msg {
 
 /// GetMessage's core, for a caller of the narrow (`ansi`) or wide form.
 fn get_message(out: &mut Out<'_, Msg>, window: usize, min: u32, max: u32, ansi: bool) -> i32 {
-    let mut receipt = Receipt::zeroed();
-    loop {
-        if answered(imports::get_message(&mut receipt, window, min, max)).is_none() {
-            return -1;
-        }
-        match receipt.kind {
-            RECEIVED_SENT => deliver(&mut receipt),
-            kind => {
-                out.set(read_as(receipt.msg, ansi));
-                return (kind != RECEIVED_QUIT) as i32;
-            }
-        }
+    let mut receipt = Receipt::default();
+    if answered(imports::get_message(&mut receipt, window, min, max)).is_none() {
+        return -1;
     }
+    out.set(read_as(receipt.msg, ansi));
+    (receipt.kind != RECEIVED_QUIT) as i32
 }
 
 /// PeekMessageA: the next message the filter and the PM_ flags take, without waiting, into the
@@ -300,53 +209,32 @@ fn peek_message(
     flags: u32,
     ansi: bool,
 ) -> u32 {
-    let mut receipt = Receipt::zeroed();
-    loop {
-        if answered(imports::peek_message(&mut receipt, window, min, max, flags)).is_none() {
-            return 0;
-        }
-        match receipt.kind {
-            RECEIVED_SENT => deliver(&mut receipt),
-            RECEIVED_NONE => return 0,
-            _ => {
-                msg.set(read_as(receipt.msg, ansi));
-                return 1;
-            }
-        }
+    let mut receipt = Receipt::default();
+    if answered(imports::peek_message(&mut receipt, window, min, max, flags)).is_none()
+        || receipt.kind == RECEIVED_NONE
+    {
+        return 0;
     }
+    msg.set(read_as(receipt.msg, ansi));
+    1
 }
 
 /// The next message of the calling thread's queue into `msg`, waiting for one (the sent messages
 /// found first delivered), as GetMessage takes it with no filter: whether it is not WM_QUIT; none,
 /// with the last error, for a failure. The dialog manager's modal loop reads with it.
 pub fn next_message(msg: &mut Msg) -> Option<bool> {
-    let mut receipt = Receipt::zeroed();
-    loop {
-        answered(imports::get_message(&mut receipt, 0, 0, 0))?;
-        match receipt.kind {
-            RECEIVED_SENT => deliver(&mut receipt),
-            kind => {
-                *msg = receipt.msg;
-                return Some(kind != RECEIVED_QUIT);
-            }
-        }
-    }
+    let mut receipt = Receipt::default();
+    answered(imports::get_message(&mut receipt, 0, 0, 0))?;
+    *msg = receipt.msg;
+    Some(receipt.kind != RECEIVED_QUIT)
 }
 
 /// Whether the calling thread's queue holds a message PeekMessage would find with no filter (the
 /// sent messages found first delivered), leaving it there: the modal loop's test for idleness.
 pub fn queue_holds_message() -> bool {
-    let mut receipt = Receipt::zeroed();
-    loop {
-        if imports::peek_message(&mut receipt, 0, 0, 0, PM_NOREMOVE).is_err() {
-            return false;
-        }
-        match receipt.kind {
-            RECEIVED_SENT => deliver(&mut receipt),
-            RECEIVED_NONE => return false,
-            _ => return true,
-        }
-    }
+    let mut receipt = Receipt::default();
+    imports::peek_message(&mut receipt, 0, 0, 0, PM_NOREMOVE).is_ok()
+        && receipt.kind != RECEIVED_NONE
 }
 
 /// PostMessageA: PostMessageW's, a character message's character converted to the wide form the
@@ -489,23 +377,10 @@ fn send_within(
         return reached.then_some(answer);
     }
     // While it waits for another thread's answer, the thread handles the messages sent to it, as
-    // Windows 2000's SendMessage does: the kernel hands the wait back for each batch, and it
-    // resumes once they are delivered.
-    let mut limit = timeout;
-    let (proc, answer) = loop {
-        match answered(imports::message_call_timeout(
-            window, message, wparam, lparam, limit,
-        ))? {
-            imports::Called::Done(proc, answer) => break (proc, answer),
-            imports::Called::Received(token) => {
-                receive_sent();
-                limit = Some(SendTimeout {
-                    resume: token,
-                    ..timeout.unwrap_or_default()
-                });
-            }
-        }
-    };
+    // Windows 2000's SendMessage does: the kernel delivers them by callback.
+    let (proc, answer) = answered(imports::message_call_timeout(
+        window, message, wparam, lparam, timeout,
+    ))?;
     Some(if proc == 0 {
         answer
     } else {
@@ -609,11 +484,7 @@ fn send_timeout(
     mut result: Option<Out<'_, u32>>,
     ansi: bool,
 ) -> i32 {
-    let limit = SendTimeout {
-        flags,
-        timeout,
-        resume: 0,
-    };
+    let limit = SendTimeout { flags, timeout };
     let answer = send_within(window, message, wparam, lparam, ansi, Some(limit));
     if let Some(result) = result.as_mut() {
         result.set(answer.unwrap_or(0) as u32);
@@ -791,7 +662,6 @@ pub extern "system" fn wait_message() -> u32 {
     if answered(imports::wait_message()).is_none() {
         return 0;
     }
-    receive_sent();
     1
 }
 
@@ -2142,18 +2012,6 @@ mod tests {
             crate::imports::host::SERVICES.with(|count| count.get()),
             services
         );
-    }
-
-    /// guimsg `copydata`: a received WM_COPYDATA's lpData points at the bytes after its
-    /// structure, in the receiver's own buffer; with no bytes it stays NULL.
-    #[test]
-    fn received_copy_data_points_at_its_bytes() {
-        let mut buffer = [0x4B1D, 0, 3, 0, 0, 0, 0x6261, 0x0063];
-        point_copy_data(&mut buffer, 0x0012_3450);
-        assert_eq!(buffer[4..6], [0x345C, 0x0012]);
-        let mut empty = [7, 0, 0, 0, 0, 0];
-        point_copy_data(&mut empty, 0x0012_3450);
-        assert_eq!(empty[4..6], [0, 0]);
     }
 
     /// guimsg `quota`: a post a full queue refuses fails with the last error as it was; another
