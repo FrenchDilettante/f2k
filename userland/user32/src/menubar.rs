@@ -12,7 +12,8 @@
 //!
 //! The loop, as the public documentation gives it (the menus fixture's capture decides the order
 //! once it is taken):
-//! - entered: WM_ENTERMENULOOP (FALSE), then WM_INITMENU (the bar) to the owner;
+//! - entered: the owner takes the mouse capture, then WM_ENTERMENULOOP (FALSE) and WM_INITMENU (the
+//!   bar) to the owner;
 //! - Alt or F10 alone selects the bar's first item; Alt with a letter (SC_KEYMENU's character)
 //!   selects the bar item whose mnemonic it is and opens its popup;
 //! - a selection sends WM_MENUSELECT (the item's id, or its position for a popup; its flags with
@@ -23,13 +24,15 @@
 //!   Up and Down move in a popup, past separators, wrapping, and open the bar item's popup; a
 //!   letter selects the item whose mnemonic it is, carrying it out (or opening its popup) — a
 //!   letter no item has sends WM_MENUCHAR, whose answer is followed (MNC_IGNORE beeps);
-//! - Enter carries the selected item out, or opens its popup; a grayed or disabled item stays
-//!   selected, nothing carried out (an assumption);
+//! - Enter carries the selected item out, or opens its popup; on a grayed or disabled popup item it
+//!   ends the loop, nothing carried out (menus `keychar`), on such a bar item it does nothing (an
+//!   assumption); Enter, Esc and the arrows make no character (no WM_MENUCHAR);
 //! - Esc closes the innermost popup, and at the bar ends the loop; Alt or F10 again ends it, and so
 //!   does EndMenu;
-//! - the end: the popups closed (innermost first), WM_MENUSELECT with 0xFFFF and no menu (the
-//!   documented "menu closed"), WM_EXITMENULOOP (FALSE); a command chosen is then posted to the
-//!   owner as WM_COMMAND (its id, lParam 0).
+//! - the end: the popups closed (innermost first), the capture released (the owner's
+//!   WM_CAPTURECHANGED, lParam NULL: the menus capture's keyloop, keyesc and keychar),
+//!   WM_MENUSELECT with 0xFFFF and no menu (the documented "menu closed"), WM_EXITMENULOOP (FALSE);
+//!   a command chosen is then posted to the owner as WM_COMMAND (its id, lParam 0).
 //! - The loop sends WM_ENTERIDLE (MSGF_MENU, the innermost popup's window) as the queue runs dry.
 //!
 //! The bar is one row of the menu font (Tahoma, 8 points): each item its text with [`BAR_PAD`]
@@ -660,6 +663,11 @@ fn select_word(answer: &MenuItemAnswer, position: u32) -> u32 {
     }
 }
 
+/// The keys the menu loop acts on itself ([`Tracker::key`]).
+const LOOP_KEYS: [u32; 8] = [
+    VK_ESCAPE, VK_RETURN, VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN, VK_MENU, VK_F10,
+];
+
 impl Tracker {
     /// The menu the keys move in: the innermost popup's, or the bar.
     fn current(&self) -> usize {
@@ -685,8 +693,18 @@ impl Tracker {
         redraw_bar(self.owner);
     }
 
-    /// The bar item `index` selected: WM_MENUSELECT, the bar redrawn.
+    /// The bar item `index` selected: WM_MENUSELECT, the bar redrawn; nothing when it is selected
+    /// already (menus `keychar`: Alt then F, File's mnemonic, selects File once).
     fn select_bar(&mut self, index: u32) {
+        if self.bar_selected == Some(index) {
+            return;
+        }
+        self.reselect_bar(index);
+    }
+
+    /// The bar item `index` selected, WM_MENUSELECT sent even when it was already (a popup closed
+    /// back onto it: menus `keyesc`).
+    fn reselect_bar(&mut self, index: u32) {
         self.bar_selected = Some(index);
         self.show_bar();
         if let Some(answer) = item(self.bar, index) {
@@ -924,7 +942,8 @@ impl Tracker {
     }
 
     /// The selected item of the current menu carried out: its popup opened, or its command the
-    /// loop's end; a dimmed item stays selected.
+    /// loop's end; a dimmed popup item ends the loop with no command (menus `keychar`: Enter on the
+    /// grayed Open ends it), a dimmed bar item stays selected (an assumption).
     fn choose(&mut self) {
         let (menu, selected) = if self.depth == 0 {
             (self.bar, self.bar_selected)
@@ -937,8 +956,12 @@ impl Tracker {
         };
         if answer.submenu != 0 {
             self.open();
-        } else if !is_dimmed(&answer) && !is_separator(&answer) {
+        } else if is_separator(&answer) {
+            // Nothing to carry out.
+        } else if !is_dimmed(&answer) {
             self.end = End::Command(answer.id);
+        } else if self.depth > 0 {
+            self.end = End::Cancelled;
         }
     }
 
@@ -950,7 +973,7 @@ impl Tracker {
                     self.close();
                     if self.depth == 0 && !self.tracks_popup() {
                         if let Some(index) = self.bar_selected {
-                            self.select_bar(index);
+                            self.reselect_bar(index);
                         }
                     }
                 } else {
@@ -1052,6 +1075,7 @@ impl Tracker {
         while self.depth > 0 {
             self.close();
         }
+        crate::mouse::cancel_capture(self.owner);
         let _ = message::send(self.owner, WM_MENUSELECT, 0xFFFF << 16, 0);
         OWNER.store(0, Ordering::Release);
         BAR_SELECTED.store(u32::MAX, Ordering::Release);
@@ -1094,7 +1118,11 @@ impl Tracker {
                 }
                 Some(true) => match msg.message {
                     WM_KEYDOWN | WM_SYSKEYDOWN => {
-                        message::translate(&msg);
+                        // The keys the loop moves on make no character: Enter and Esc send no
+                        // WM_MENUCHAR (menus `keyesc`, `keychar`).
+                        if !LOOP_KEYS.contains(&msg.wparam) {
+                            message::translate(&msg);
+                        }
                         self.key(msg.wparam);
                     }
                     WM_CHAR | WM_SYSCHAR => self.character(msg.wparam as u16),
@@ -1135,6 +1163,7 @@ pub fn track_keyboard(owner: usize, character: u32) {
         depth: 0,
         end: End::Running,
     };
+    crate::mouse::set_capture(owner);
     let _ = message::send(owner, WM_ENTERMENULOOP, 0, 0);
     let _ = message::send(owner, WM_INITMENU, framed.menu as u32, 0);
     if character == 0 {
@@ -1219,6 +1248,7 @@ fn track_popup(menu: usize, flags: u32, x: i32, y: i32, owner: usize) -> i32 {
         depth: 0,
         end: End::Running,
     };
+    crate::mouse::set_capture(owner);
     let _ = message::send(owner, WM_ENTERMENULOOP, 1, 0);
     let _ = message::send(owner, WM_INITMENU, menu as u32, 0);
     let _ = message::send(owner, WM_INITMENUPOPUP, menu as u32, 0);
