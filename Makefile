@@ -243,6 +243,14 @@ disk: kernel limine
 	mcopy -s -i $(DISK_IMG)@@1M $(call fixture_dir,files)/DATA ::/CORPUS/
 	mattrib -i $(DISK_IMG)@@1M +r ::/CORPUS/DATA/RDONLY.TXT
 	mattrib -i $(DISK_IMG)@@1M +h ::/CORPUS/DATA/HIDDEN.TXT
+	# The paging file, as Windows 2000's setup leaves one: hidden and system, at the boot's 8 MiB
+	# (kernel/src/mem/pagingfile.rs's BOOT_MAX_PAGES). The boot takes it over as it is, contents
+	# and all, rather than allocating its 16384 clusters at every boot; a boot that finds it
+	# missing, or of another size, makes it or sizes it itself.
+	$(DD) if=/dev/zero of=$(OUT_DIR)/pagefile.sys bs=4096 count=2048 2>/dev/null
+	mcopy -i $(DISK_IMG)@@1M $(OUT_DIR)/pagefile.sys ::/pagefile.sys
+	mattrib -i $(DISK_IMG)@@1M -a +h +s ::/pagefile.sys
+	rm -f $(OUT_DIR)/pagefile.sys
 	$(LIMINE_BIN) bios-install $(DISK_IMG)
 	cp $(KERNEL_STAMP) $(DISK_STAMP)
 	@echo "Disk image created: $(DISK_IMG)"
