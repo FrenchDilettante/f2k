@@ -262,8 +262,8 @@ pub const fn apply_rop(rop: u32, pattern: u32, destination: u32) -> u32 {
 
 /// The DC attributes win32k's NtGdiGetDCDword reads and NtGdiGetAndSetDCDword sets (F2K's own
 /// indexes): the text color, the background color, the background mode, the stretch mode, the
-/// brush origin's two coordinates; and one NtGdiGetDCDword alone reads, the DC's kind
-/// (GetObjectType's OBJ_DC or OBJ_MEMDC).
+/// brush origin's two coordinates, the window origin's two (SetWindowOrgEx's); and one
+/// NtGdiGetDCDword alone reads, the DC's kind (GetObjectType's OBJ_DC or OBJ_MEMDC).
 pub const DC_TEXT_COLOR: u32 = 0;
 pub const DC_BK_COLOR: u32 = 1;
 pub const DC_BK_MODE: u32 = 2;
@@ -271,6 +271,8 @@ pub const DC_STRETCH_MODE: u32 = 3;
 pub const DC_BRUSH_ORG_X: u32 = 4;
 pub const DC_BRUSH_ORG_Y: u32 = 5;
 pub const DC_OBJECT_TYPE: u32 = 6;
+pub const DC_WINDOW_ORG_X: u32 = 7;
+pub const DC_WINDOW_ORG_Y: u32 = 8;
 
 /// A DC's stretch mode as it starts: BLACKONWHITE.
 pub const DEFAULT_STRETCH_MODE: u32 = crate::dib::BLACKONWHITE;

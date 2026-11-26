@@ -1470,7 +1470,7 @@ fails = "FALSE"
 name = "GetWindowOrgEx"
 group = "coordinates"
 args = ["handle hdc", "ptr lpPoint"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetWindowOrgEx" }
 ordinal = 390
 fails = "FALSE"
 
@@ -1486,7 +1486,7 @@ fails = "FALSE"
 name = "SetWindowOrgEx"
 group = "coordinates"
 args = ["handle hdc", "i32 X", "i32 Y", "ptr lpPoint"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetWindowOrgEx" }
 ordinal = 514
 fails = "FALSE"
 

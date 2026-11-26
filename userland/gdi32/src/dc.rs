@@ -295,6 +295,63 @@ pub extern "system" fn get_device_caps(dc: usize, index: i32) -> i32 {
     }
 }
 
+// --- The window origin
+// ----------------------------------------------------------------------------
+
+/// SetWindowOrgEx: the DC's window origin set (the logical point that lands on the DC's origin,
+/// in MM_TEXT, the one mapping mode F2K has), the one it had into `previous` (when given); FALSE
+/// with the last error for a DC that is none.
+///
+/// # Safety
+///
+/// `previous`, when not null, a POINT's room.
+#[unsafe(export_name = "f2k_export_SetWindowOrgEx")]
+pub unsafe extern "system" fn set_window_org_ex(
+    dc: usize,
+    x: i32,
+    y: i32,
+    previous: *mut Point,
+) -> u32 {
+    let Some(old_x) = answered(imports::set_dc_dword(dc, DC_WINDOW_ORG_X, x as u32)) else {
+        return 0;
+    };
+    let Some(old_y) = answered(imports::set_dc_dword(dc, DC_WINDOW_ORG_Y, y as u32)) else {
+        return 0;
+    };
+    // SAFETY: the caller's POINT.
+    if let Some(mut out) = unsafe { crate::Out::optional(previous) } {
+        out.set(Point {
+            x: old_x as i32,
+            y: old_y as i32,
+        });
+    }
+    1
+}
+
+/// GetWindowOrgEx: the DC's window origin into `point`; FALSE with the last error for a DC that
+/// is none.
+///
+/// # Safety
+///
+/// `point`, when not null, a POINT's room.
+#[unsafe(export_name = "f2k_export_GetWindowOrgEx")]
+pub unsafe extern "system" fn get_window_org_ex(dc: usize, point: *mut Point) -> u32 {
+    let Some(x) = answered(imports::dc_dword(dc, DC_WINDOW_ORG_X)) else {
+        return 0;
+    };
+    let Some(y) = answered(imports::dc_dword(dc, DC_WINDOW_ORG_Y)) else {
+        return 0;
+    };
+    // SAFETY: the caller's POINT.
+    if let Some(mut out) = unsafe { crate::Out::optional(point) } {
+        out.set(Point {
+            x: x as i32,
+            y: y as i32,
+        });
+    }
+    1
+}
+
 #[cfg(test)]
 mod tests {
     use rtl::testing::wide_z;

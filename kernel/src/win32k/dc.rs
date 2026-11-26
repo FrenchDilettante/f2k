@@ -23,8 +23,9 @@
 //!   area's top left, its clipping region the area (on the screen). A window's DC is not clipped by
 //!   the windows above it or by its children, whatever WS_CLIPCHILDREN says: there are no visible
 //!   regions yet;
-//! - the coordinates a drawing service takes are logical, the DC's origin added (the mapping mode
-//!   is MM_TEXT, its window and viewport origins zero);
+//! - the coordinates a drawing service takes are logical, the window origin taken off and the DC's
+//!   origin added (the mapping mode is MM_TEXT, its viewport origin zero; the window origin is
+//!   SetWindowOrgEx's, an attribute);
 //! - the stock objects as constant handles ([`rtl::gdi::stock_handle`]), which a DC selects by
 //!   kind; brushes as objects and global brushes ([`super::brush`]), the DC keeping the selected
 //!   brush's fill beside its handle; font objects ([`super::fonts`]), the DC keeping the selected
@@ -67,8 +68,8 @@
 //!   STATUS_INVALID_HANDLE for a handle that names none;
 //! - NtGdiGetDCDword(handle Dc, u32 Index, ptr<u32> Value) and NtGdiGetAndSetDCDword(handle Dc, u32
 //!   Index, u32 Value, ptr<u32> Previous): the text color, the background color, the background
-//!   mode, the stretch mode, the brush origin's coordinates, and (read alone) the DC's kind, OBJ_DC
-//!   or OBJ_MEMDC ([`rtl::gdi`]'s DC_ indexes);
+//!   mode, the stretch mode, the brush origin's coordinates, the window origin's, and (read alone)
+//!   the DC's kind, OBJ_DC or OBJ_MEMDC ([`rtl::gdi`]'s DC_ indexes);
 //! - NtGdiExtTextOutW(handle Dc, i32 X, i32 Y, u32 Options, ptr Rect, ptr String, u32 Count, ptr
 //!   Dx): the text drawn (`Dx`, when given, the advance of each character), and NtGdiEngTextOut,
 //!   the engine's entry, the same;
@@ -124,8 +125,12 @@ pub struct Dc {
     pub bitmap_object: Option<crate::ob::ObjectId>,
     /// The stretch mode (SetStretchBltMode's value, as set: any value is taken).
     pub stretch_mode: u32,
-    /// The brush origin, in the DC's logical coordinates (SetBrushOrgEx's).
+    /// The brush origin, from the DC's origin (SetBrushOrgEx's, in device units: the window
+    /// origin does not move it).
     pub brush_org: (i32, i32),
+    /// The window origin (SetWindowOrgEx's): the logical point that lands on the DC's origin, in
+    /// MM_TEXT, the one mapping mode F2K has.
+    pub window_org: (i32, i32),
 }
 
 impl Dc {
@@ -152,6 +157,7 @@ impl Dc {
             bitmap_object: None,
             stretch_mode: 0,
             brush_org: (0, 0),
+            window_org: (0, 0),
         }
     }
 
@@ -181,6 +187,7 @@ impl Dc {
             bitmap_object: None,
             stretch_mode: DEFAULT_STRETCH_MODE,
             brush_org: (0, 0),
+            window_org: (0, 0),
         }
     }
 
@@ -215,7 +222,18 @@ impl Dc {
 
     /// The brush origin on the surface: the DC's origin and its brush origin.
     pub fn pattern_origin(&self) -> (i32, i32) {
-        self.screen_point(self.brush_org.0, self.brush_org.1)
+        (
+            self.brush_org.0.saturating_add(self.origin.0),
+            self.brush_org.1.saturating_add(self.origin.1),
+        )
+    }
+
+    /// Where the logical (0, 0) lands on the surface: the DC's origin, less the window origin.
+    pub fn logical_origin(&self) -> (i32, i32) {
+        (
+            self.origin.0.saturating_sub(self.window_org.0),
+            self.origin.1.saturating_sub(self.window_org.1),
+        )
     }
 
     /// A DC of the area `area` (screen coordinates: a window's client area or rectangle) of a
@@ -230,15 +248,14 @@ impl Dc {
 
     /// The screen's point for the logical point (`x`, `y`).
     pub fn screen_point(&self, x: i32, y: i32) -> (i32, i32) {
-        (
-            x.saturating_add(self.origin.0),
-            y.saturating_add(self.origin.1),
-        )
+        let (left, top) = self.logical_origin();
+        (x.saturating_add(left), y.saturating_add(top))
     }
 
     /// The screen's rectangle for the logical rectangle `rect`.
     pub fn screen_rect(&self, rect: Rect) -> Rect {
-        rect.saturating_offset(self.origin.0, self.origin.1)
+        let (left, top) = self.logical_origin();
+        rect.saturating_offset(left, top)
     }
 
     /// The attribute at `index` (the DC_ indexes); none for another index.
@@ -250,6 +267,8 @@ impl Dc {
             DC_STRETCH_MODE => Some(self.stretch_mode),
             DC_BRUSH_ORG_X => Some(self.brush_org.0 as u32),
             DC_BRUSH_ORG_Y => Some(self.brush_org.1 as u32),
+            DC_WINDOW_ORG_X => Some(self.window_org.0 as u32),
+            DC_WINDOW_ORG_Y => Some(self.window_org.1 as u32),
             DC_OBJECT_TYPE => Some(if self.memory {
                 rtl::dib::OBJ_MEMDC
             } else {
@@ -283,6 +302,12 @@ impl Dc {
             }
             DC_BRUSH_ORG_Y => {
                 return Some(core::mem::replace(&mut self.brush_org.1, value as i32) as u32)
+            }
+            DC_WINDOW_ORG_X => {
+                return Some(core::mem::replace(&mut self.window_org.0, value as i32) as u32)
+            }
+            DC_WINDOW_ORG_Y => {
+                return Some(core::mem::replace(&mut self.window_org.1, value as i32) as u32)
             }
             _ => return None,
         };
@@ -899,7 +924,7 @@ mod tests {
         let before = dc;
         assert_eq!(dc.set_attribute(DC_BK_MODE, 3), None);
         assert_eq!(dc.set_attribute(DC_BK_MODE, 0), None);
-        assert_eq!(dc.set_attribute(7, 1), None);
+        assert_eq!(dc.set_attribute(9, 1), None);
         assert_eq!(dc, before);
         assert_eq!(dc.attribute(DC_TEXT_COLOR), Some(0x00_00FF));
         assert_eq!(dc.attribute(DC_BK_COLOR), Some(0xFF_0000));
@@ -923,6 +948,23 @@ mod tests {
         assert_eq!(dc.attribute(DC_OBJECT_TYPE), Some(rtl::dib::OBJ_MEMDC));
         assert_eq!(Dc::screen(640, 480).attribute(DC_OBJECT_TYPE), Some(OBJ_DC));
         assert_eq!(dc.set_attribute(DC_OBJECT_TYPE, 3), None, "read alone");
+    }
+
+    /// The window origin moves the logical coordinates (the regions capture's FillRgn through
+    /// the window origin -1,-1 paints one pixel right and down), not the brush origin.
+    #[test]
+    fn the_window_origin_moves_the_logical_coordinates() {
+        let mut dc = Dc::window(640, 480, Rect::new(100, 50, 300, 250));
+        assert_eq!(dc.set_attribute(DC_WINDOW_ORG_X, -1i32 as u32), Some(0));
+        assert_eq!(dc.set_attribute(DC_WINDOW_ORG_Y, -1i32 as u32), Some(0));
+        assert_eq!(dc.attribute(DC_WINDOW_ORG_X), Some(-1i32 as u32));
+        assert_eq!(dc.screen_point(0, 0), (101, 51));
+        assert_eq!(
+            dc.screen_rect(Rect::new(0, 0, 6, 3)),
+            Rect::new(101, 51, 107, 54)
+        );
+        assert_eq!(dc.logical_origin(), (101, 51));
+        assert_eq!(dc.pattern_origin(), (100, 50));
     }
 
     /// A memory DC holds the default bitmap, its clipping region that bitmap's 1 by 1; a bitmap

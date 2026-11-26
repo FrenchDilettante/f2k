@@ -193,7 +193,7 @@ pub fn pat_blt(
         return Err(STATUS_INVALID_PARAMETER);
     }
     let (_reference, dc) = super::dc::dc_of(call, dc)?;
-    let rect = pat_blt_rect(x, y, width, height, dc.origin);
+    let rect = pat_blt_rect(x, y, width, height, dc.logical_origin());
     let pattern = dc.brush_fill.pattern(
         dc.text_color,
         dc.bk_color,
