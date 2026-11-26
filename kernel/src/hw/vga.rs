@@ -98,13 +98,36 @@ impl<M: CellMemory, P: Io> TextScreen<M, P> {
 }
 
 /// The screen's memory: the kernel window's view of the text page.
+///
+/// A cell already showing the word stored is left alone: the page is device memory, each store
+/// slow (an emulator's trap per byte), and a console's presentation stores every row of its
+/// window at each scroll, where many cells keep their word (the blanks past both lines' ends, a
+/// repeated prefix). What each cell shows is kept beside the page ([`SHOWN`]); every store to the
+/// page comes through here (the console's presentation, the shutdown screen), so it holds.
 #[cfg(target_arch = "x86")]
 pub struct VgaMemory;
+
+/// What the text page's cells show, by cell index: [`KNOWN`] with the word last stored there; 0 for
+/// a cell nothing has stored to yet (the boot loader's screen), whatever it holds.
+#[cfg(target_arch = "x86")]
+static SHOWN: [core::sync::atomic::AtomicU32; COLUMNS * ROWS] =
+    [const { core::sync::atomic::AtomicU32::new(0) }; COLUMNS * ROWS];
+
+/// The mark of a [`SHOWN`] entry naming its cell's word.
+#[cfg(target_arch = "x86")]
+const KNOWN: u32 = 1 << 16;
 
 #[cfg(target_arch = "x86")]
 impl CellMemory for VgaMemory {
     fn store(&mut self, index: usize, word: u16) {
+        use core::sync::atomic::Ordering::Relaxed;
         assert!(index < COLUMNS * ROWS);
+        // The stores are serialized (the console server's level, or the shutdown's masked
+        // interrupts), so the entry and the cell change together.
+        let shown = KNOWN | word as u32;
+        if SHOWN[index].swap(shown, Relaxed) == shown {
+            return;
+        }
         // SAFETY: the text page is mapped in the kernel window for the kernel's lifetime; the
         // assertion above keeps the cell index inside mode 3's grid. The store is device memory:
         // volatile.
