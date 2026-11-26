@@ -156,6 +156,52 @@ mod raw {
         pub fn NtGdiGetPixel(dc: usize, x: i32, y: i32, color: *mut u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtGdiCreateSolidBrush"]
         pub fn NtGdiCreateSolidBrush(color: u32, brush: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiCreateRectRgn"]
+        pub fn NtGdiCreateRectRgn(
+            left: i32,
+            top: i32,
+            right: i32,
+            bottom: i32,
+            region: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiPolyPolyDraw"]
+        pub fn NtGdiPolyPolyDraw(
+            dc: u32,
+            points: *const u8,
+            counts: *const u32,
+            count: u32,
+            function: u32,
+            result: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiSetRectRgn"]
+        pub fn NtGdiSetRectRgn(region: usize, left: i32, top: i32, right: i32, bottom: i32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiCombineRgn"]
+        pub fn NtGdiCombineRgn(
+            dest: usize,
+            first: usize,
+            second: usize,
+            mode: u32,
+            complexity: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiOffsetRgn"]
+        pub fn NtGdiOffsetRgn(region: usize, x: i32, y: i32, complexity: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiGetRgnBox"]
+        pub fn NtGdiGetRgnBox(region: usize, rect: *mut Rect, complexity: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiEqualRgn"]
+        pub fn NtGdiEqualRgn(first: usize, second: usize, equal: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiPtInRegion"]
+        pub fn NtGdiPtInRegion(region: usize, x: i32, y: i32, inside: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiGetRegionData"]
+        pub fn NtGdiGetRegionData(
+            region: usize,
+            count: u32,
+            buffer: *mut u8,
+            size: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiFillRgn"]
+        pub fn NtGdiFillRgn(dc: usize, region: usize, brush: usize, result: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiFlush"]
+        pub fn NtGdiFlush() -> u32;
         #[link_name = "\u{1}_f2k_nt_NtGdiPatBlt"]
         pub fn NtGdiPatBlt(dc: usize, x: i32, y: i32, width: i32, height: i32, rop: u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtGdiCreateCompatibleDC"]
@@ -511,6 +557,114 @@ pub fn pat_blt(
 ) -> Result<(), NtStatus> {
     // SAFETY: no pointers.
     checked(unsafe { raw::NtGdiPatBlt(dc, x, y, width, height, rop) })
+}
+
+// --- win32k's regions ----------------------------------------------------------------------------
+
+/// NtGdiCreateRectRgn: a region of the rectangle, its handle.
+pub fn create_rect_rgn(left: i32, top: i32, right: i32, bottom: i32) -> Result<u32, NtStatus> {
+    let mut region = 0u32;
+    // SAFETY: the service writes the handle into the local.
+    checked(unsafe { raw::NtGdiCreateRectRgn(left, top, right, bottom, &mut region) })?;
+    Ok(region)
+}
+
+/// NtGdiPolyPolyDraw's I_POLYPOLYRGN: a region of the polygons whose point counts are at
+/// `counts` (`count` of them), their points at `points`, under the fill `mode`; its handle.
+pub fn create_poly_polygon_rgn(points: Caller, counts: &[u32], mode: u32) -> Result<u32, NtStatus> {
+    /// NtGdiPolyPolyDraw's function that makes a region.
+    const I_POLYPOLYRGN: u32 = 6;
+    let mut region = 0u32;
+    // SAFETY: the kernel reads the points through its fault-tolerant copies, the counts from the
+    // slice, and writes the handle into the local.
+    checked(unsafe {
+        raw::NtGdiPolyPolyDraw(
+            mode,
+            points.0 as *const u8,
+            counts.as_ptr(),
+            counts.len() as u32,
+            I_POLYPOLYRGN,
+            &mut region,
+        )
+    })?;
+    Ok(region)
+}
+
+/// NtGdiSetRectRgn: `region` made the rectangle.
+pub fn set_rect_rgn(
+    region: usize,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+) -> Result<(), NtStatus> {
+    // SAFETY: no memory changes hands.
+    checked(unsafe { raw::NtGdiSetRectRgn(region, left, top, right, bottom) })
+}
+
+/// NtGdiCombineRgn: `dest` made `mode`'s combination of `first` and `second`; its complexity.
+pub fn combine_rgn(dest: usize, first: usize, second: usize, mode: u32) -> Result<i32, NtStatus> {
+    let mut complexity = 0u32;
+    // SAFETY: the service writes the complexity into the local.
+    checked(unsafe { raw::NtGdiCombineRgn(dest, first, second, mode, &mut complexity) })?;
+    Ok(complexity as i32)
+}
+
+/// NtGdiOffsetRgn: `region` moved; its complexity.
+pub fn offset_rgn(region: usize, x: i32, y: i32) -> Result<i32, NtStatus> {
+    let mut complexity = 0u32;
+    // SAFETY: the service writes the complexity into the local.
+    checked(unsafe { raw::NtGdiOffsetRgn(region, x, y, &mut complexity) })?;
+    Ok(complexity as i32)
+}
+
+/// NtGdiGetRgnBox: `region`'s complexity and box.
+pub fn rgn_box(region: usize) -> Result<(i32, rtl::gdi::Rect), NtStatus> {
+    let (mut complexity, mut rect) = (0u32, rtl::gdi::Rect::EMPTY);
+    // SAFETY: the service writes the locals.
+    checked(unsafe { raw::NtGdiGetRgnBox(region, &mut rect, &mut complexity) })?;
+    Ok((complexity as i32, rect))
+}
+
+/// NtGdiEqualRgn: whether the two regions hold the same rectangles.
+pub fn equal_rgn(first: usize, second: usize) -> Result<bool, NtStatus> {
+    let mut equal = 0u32;
+    // SAFETY: the service writes the local.
+    checked(unsafe { raw::NtGdiEqualRgn(first, second, &mut equal) })?;
+    Ok(equal != 0)
+}
+
+/// NtGdiPtInRegion: whether the point lies in `region`.
+pub fn pt_in_region(region: usize, x: i32, y: i32) -> Result<bool, NtStatus> {
+    let mut inside = 0u32;
+    // SAFETY: the service writes the local.
+    checked(unsafe { raw::NtGdiPtInRegion(region, x, y, &mut inside) })?;
+    Ok(inside != 0)
+}
+
+/// NtGdiGetRegionData: `region`'s RGNDATA into the `count` bytes at `buffer` (none: its size
+/// alone); its size.
+pub fn region_data(region: usize, count: u32, buffer: Caller) -> Result<u32, NtStatus> {
+    let mut size = 0u32;
+    // SAFETY: the kernel writes at most `count` bytes at `buffer` through its fault-tolerant
+    // copies, and the size into the local.
+    checked(unsafe { raw::NtGdiGetRegionData(region, count, buffer.0 as *mut u8, &mut size) })?;
+    Ok(size)
+}
+
+/// NtGdiFillRgn: `region` painted with `brush` on `dc`; whether it painted (the null brush does
+/// not).
+pub fn fill_rgn(dc: usize, region: usize, brush: usize) -> Result<bool, NtStatus> {
+    let mut painted = 0u32;
+    // SAFETY: the service writes the local.
+    checked(unsafe { raw::NtGdiFillRgn(dc, region, brush, &mut painted) })?;
+    Ok(painted != 0)
+}
+
+/// NtGdiFlush: nothing but the win32k service the dispatcher runs the GDI batch before.
+pub fn flush() {
+    // SAFETY: no memory changes hands.
+    unsafe { raw::NtGdiFlush() };
 }
 
 // --- win32k's bitmaps ----------------------------------------------------------------------------
@@ -1183,6 +1337,87 @@ pub mod host {
     pub unsafe extern "system" fn NtGdiCreatePatternBrushInternal(_: usize, _: *mut u32) -> u32 {
         served();
         STATUS_NOT_IMPLEMENTED
+    }
+
+    // The region services: none on the host (the kernel's tests drive the algebra).
+
+    pub unsafe extern "system" fn NtGdiCreateRectRgn(
+        _: i32,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: *mut u32,
+    ) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiPolyPolyDraw(
+        _: u32,
+        _: *const u8,
+        _: *const u32,
+        _: u32,
+        _: u32,
+        _: *mut u32,
+    ) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiSetRectRgn(_: usize, _: i32, _: i32, _: i32, _: i32) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiCombineRgn(
+        _: usize,
+        _: usize,
+        _: usize,
+        _: u32,
+        _: *mut u32,
+    ) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiOffsetRgn(_: usize, _: i32, _: i32, _: *mut u32) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiGetRgnBox(_: usize, _: *mut Rect, _: *mut u32) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiEqualRgn(_: usize, _: usize, _: *mut u32) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiPtInRegion(_: usize, _: i32, _: i32, _: *mut u32) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiGetRegionData(
+        _: usize,
+        _: u32,
+        _: *mut u8,
+        _: *mut u32,
+    ) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiFillRgn(_: usize, _: usize, _: usize, _: *mut u32) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiFlush() -> u32 {
+        served();
+        0
     }
 
     pub unsafe extern "system" fn NtGdiPatBlt(

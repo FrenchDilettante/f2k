@@ -6,15 +6,15 @@
 # and background colors and the background mode, text drawn with the built-in font or a TrueType
 # font and its metrics, the TrueType fonts themselves (loading, font objects, their metrics, data,
 # glyphs and enumeration), single pixels, memory DCs, bitmaps and DIB sections, the blits and
-# pattern brushes; and stubs for what the corpus fixtures import beyond it (pens, regions, mapping
-# modes). Its own code runs over ntdll, kernel32 and user32 as Windows 2000's gdi32 imports
-# them, and enters the kernel itself, as Windows 2000's does: through win32k's services (`impl = {
-# syscall = "<the kernel's typed handler>" }`, `internal = true`: its own calls, never exported;
-# see userland/user32/exports.toml for the stubs' shape). Their argument lists are F2K's own (only
-# gdi32 calls them; the kernel's handlers in kernel/src/win32k/dc.rs, brush.rs, bitmap.rs and
-# fonts describe them). The rest of the records are catalogued from GDI32.dll 5.0.2195.6660's export table
-# (scripts/catalogue_exports.py): their name and ordinal. Implementing one gives it its group,
-# prototype and implementation.
+# pattern brushes, region objects and FillRgn; and stubs for what the corpus fixtures import beyond
+# it (pens, clipping, mapping modes). Its own code runs over ntdll, kernel32 and user32 as Windows
+# 2000's gdi32 imports them, and enters the kernel itself, as Windows 2000's does: through win32k's
+# services (`impl = { syscall = "<the kernel's typed handler>" }`, `internal = true`: its own calls,
+# never exported; see userland/user32/exports.toml for the stubs' shape). Their argument lists are
+# F2K's own (only gdi32 calls them; the kernel's handlers in kernel/src/win32k/dc.rs, brush.rs,
+# bitmap.rs, region.rs and fonts describe them). The rest of the records are catalogued from
+# GDI32.dll 5.0.2195.6660's export table (scripts/catalogue_exports.py): their name and ordinal.
+# Implementing one gives it its group, prototype and implementation.
 
 [[group]]
 key = "dc"
@@ -1046,7 +1046,7 @@ fails = "FALSE"
 name = "CreateRectRgn"
 group = "regions"
 args = ["i32 nLeftRect", "i32 nTopRect", "i32 nRightRect", "i32 nBottomRect"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CreateRectRgn" }
 ordinal = 74
 fails = "NULL"
 
@@ -1054,7 +1054,7 @@ fails = "NULL"
 name = "GetRgnBox"
 group = "regions"
 args = ["handle hrgn", "ptr lprc"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetRgnBox" }
 ordinal = 359
 fails = "0"
 note = "the region's complexity, 0 (ERROR) failing"
@@ -1063,7 +1063,7 @@ note = "the region's complexity, 0 (ERROR) failing"
 name = "CombineRgn"
 group = "regions"
 args = ["handle hrgnDest", "handle hrgnSrc1", "handle hrgnSrc2", "i32 fnCombineMode"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CombineRgn" }
 ordinal = 32
 fails = "0"
 note = "the region's complexity, 0 (ERROR) failing"
@@ -1072,7 +1072,7 @@ note = "the region's complexity, 0 (ERROR) failing"
 name = "CreatePolygonRgn"
 group = "regions"
 args = ["ptr lppt", "i32 cPoints", "i32 fnPolyFillMode"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CreatePolygonRgn" }
 ordinal = 73
 fails = "NULL"
 
@@ -1080,7 +1080,7 @@ fails = "NULL"
 name = "CreateRectRgnIndirect"
 group = "regions"
 args = ["ptr lprc"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CreateRectRgnIndirect" }
 ordinal = 75
 fails = "NULL"
 
@@ -1088,7 +1088,7 @@ fails = "NULL"
 name = "EqualRgn"
 group = "regions"
 args = ["handle hSrcRgn1", "handle hSrcRgn2"]
-impl = { stub = "not yet implemented" }
+impl = { native = "EqualRgn" }
 ordinal = 153
 fails = "0"
 note = "0 (ERROR) as well for a region that is not one"
@@ -1115,7 +1115,7 @@ note = "the clipping region's complexity, 0 (ERROR) failing"
 name = "FillRgn"
 group = "regions"
 args = ["handle hdc", "handle hrgn", "handle hbr"]
-impl = { stub = "not yet implemented" }
+impl = { native = "FillRgn" }
 ordinal = 174
 fails = "FALSE"
 
@@ -1141,7 +1141,7 @@ note = "1 with a clipping region, 0 without one"
 name = "GetRegionData"
 group = "regions"
 args = ["handle hRgn", "u32 dwCount", "ptr lpRgnData"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetRegionData" }
 ordinal = 357
 fails = "0"
 
@@ -1167,7 +1167,7 @@ note = "the clipping region's complexity, 0 (ERROR) failing"
 name = "OffsetRgn"
 group = "regions"
 args = ["handle hrgn", "i32 nXOffset", "i32 nYOffset"]
-impl = { stub = "not yet implemented" }
+impl = { native = "OffsetRgn" }
 ordinal = 405
 fails = "0"
 note = "the region's complexity, 0 (ERROR) failing"
@@ -1176,7 +1176,7 @@ note = "the region's complexity, 0 (ERROR) failing"
 name = "PtInRegion"
 group = "regions"
 args = ["handle hrgn", "i32 X", "i32 Y"]
-impl = { stub = "not yet implemented" }
+impl = { native = "PtInRegion" }
 ordinal = 433
 fails = "FALSE"
 
@@ -1210,7 +1210,7 @@ note = "the clipping region's complexity, 0 (ERROR) failing"
 name = "SetRectRgn"
 group = "regions"
 args = ["handle hrgn", "i32 nLeftRect", "i32 nTopRect", "i32 nRightRect", "i32 nBottomRect"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetRectRgn" }
 ordinal = 501
 fails = "FALSE"
 

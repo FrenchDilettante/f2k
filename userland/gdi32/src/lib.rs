@@ -27,6 +27,7 @@ pub mod brush;
 pub mod dc;
 pub mod font;
 pub mod imports;
+pub mod region;
 pub mod stock;
 pub mod stub;
 pub mod text;

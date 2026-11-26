@@ -391,9 +391,11 @@ pub extern "system" fn create_compatible_dc(dc: usize) -> usize {
     answered(imports::create_compatible_dc(dc)).map_or(0, |dc| dc as usize)
 }
 
-/// GdiFlush: TRUE (F2K batches no drawing: every call has drawn when it returns).
+/// GdiFlush: the calling thread's GDI batch run (the region deletions DeleteObject queued:
+/// [`crate::region`]); TRUE. F2K batches no drawing: every call has drawn when it returns.
 #[unsafe(export_name = "f2k_export_GdiFlush")]
 pub extern "system" fn gdi_flush() -> u32 {
+    crate::region::flush_batch();
     1
 }
 
@@ -1043,6 +1045,7 @@ pub extern "system" fn get_object_type(object: usize) -> u32 {
         return kind;
     }
     match object_of(handle) {
+        Some((OBJ_REGION, _)) => crate::region::object_type(object),
         Some((kind, _)) => match imports::object(object, 0, Caller::NONE) {
             Ok(_) => kind,
             Err(_) => 0,

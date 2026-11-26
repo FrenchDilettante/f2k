@@ -128,9 +128,13 @@ pub extern "system" fn delete_dc(dc: usize) -> u32 {
 
 /// DeleteObject: the object deleted, a DC, a brush, a font or a bitmap (a global object, a stock
 /// one, a global brush or the default bitmap, is never deleted: TRUE all the same). A bitmap's
-/// memory goes with it ([`crate::bitmap`]); a bitmap a DC holds is not deleted (FALSE).
+/// memory goes with it ([`crate::bitmap`]); a bitmap a DC holds is not deleted (FALSE). A region's
+/// deletion is queued in the thread's GDI batch ([`crate::region::delete_region`]).
 #[unsafe(export_name = "f2k_export_DeleteObject")]
 pub extern "system" fn delete_object(object: usize) -> u32 {
+    if matches!(object_of(object as u32), Some((OBJ_REGION, _))) {
+        return crate::region::delete_region(object);
+    }
     let block = match object_of(object as u32) {
         Some((rtl::dib::OBJ_BITMAP, _)) => crate::bitmap::describe(object).map(|desc| desc.block),
         _ => None,
