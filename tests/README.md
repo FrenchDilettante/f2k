@@ -325,7 +325,7 @@ The fixtures:
   Gated.
 - `scroll` (user32) - scroll bars: `SetScrollInfo` and `GetScrollInfo` on a window's `WS_VSCROLL` and `WS_HSCROLL` bars, their returns, the range, the page, the position clamped to `nMax - nPage + 1`, a range the page covers with and without `SIF_DISABLENOSCROLL`, and bad arguments (`info`); a window given bars by `SetScrollInfo` (`added`); `ScrollBar` controls and their `SBM_*` messages (`control`); `SetScrollPos`, `SetScrollRange`, `GetScrollPos` and `GetScrollRange` (`posrange`); `ShowScrollBar` (`show`); `EnableScrollBar` with each `ESB_*` flag, the arrows' state probed through its return (`enable`); and `ScrollWindowEx` and `ScrollWindow`, their returns and the regions left to repaint, with `prcScroll`, `prcClip`, `SW_INVALIDATE`, `SW_ERASE` and `SW_SCROLLCHILDREN` (`scrollex`).
   A bar shows as the borderless window's client area narrower or shorter by a bar's width, never as a size; `scrollex` scrolls a topmost, borderless 200x100 window, so its rectangles, in client coordinates, print as relations to the rectangle each scroll uncovers.
-  Gated; `scrollex` stays pending while F2K's gdi32 has no region objects: `CreateRectRgn` answers NULL, so the `hrgnUpdate` it prints reads `ERROR`, where everything else of the block (the returns, `prcUpdate`, the update region, the children's moves, `ScrollWindow`) matches.
+  Gated.
 - `caret` (user32) - the caret: `CreateCaret` (solid, gray, the default size), `DestroyCaret`, `SetCaretPos` and `GetCaretPos`, and the calls with no caret (`create`); `ShowCaret` and `HideCaret`'s hide count, `NULL` and a window not owning the caret (`show`); and the caret as the focus moves, on `CreateCaret` by another window, on its owner's destruction, in a window procedure making it on `WM_SETFOCUS` and destroying it on `WM_KILLFOCUS`, and against another thread's caret calls (`focus`).
   Whether the caret shows, its window and its rectangle come from `GetGUIThreadInfo` (through `GetProcAddress`), read at once after each call with no message retrieved between, so the caret's blink cannot turn them.
   Gated.
@@ -345,7 +345,7 @@ The fixtures:
   Then `LoadBitmapW`/`A(NULL, ...)` of `OBM_CHECK`, `OBM_CLOSE`, `OBM_CHECKBOXES`, `OBM_UPARROW`, `OBM_DNARROW`, `OBM_LFARROW` and `OBM_RGARROW`: each one's size and its pixels read back through `GetDIBits` as a 24-bit DIB, one character a pixel (`#` black, `+` dark gray, `-` light gray, `.` white, `?` not gray), fixed resources the same on any machine with the default metrics and colors (`obm`).
   Every pixel it prints is read from a DIB section or a bitmap of an explicit format, as hex values or rows of letters; a bitmap of the screen's format (`CreateCompatibleBitmap` and `CreateDIBitmap` of the screen DC, `LoadBitmap`'s) prints its size, and its depth and pixels only as relations (the screen's depth, read back as written).
   Built with `/MD`.
-  Gated; `objtype` stays pending while F2K's gdi32 has no pens, hatch brushes or regions (`GetObjectType` of `CreatePen`'s, `ExtCreatePen`'s, `CreateHatchBrush`'s and `CreateRectRgn`'s answers 0).
+  Gated; `objtype` stays pending while F2K's gdi32 has no pens or hatch brushes (`GetObjectType` of `CreatePen`'s, `ExtCreatePen`'s and `CreateHatchBrush`'s answers 0).
 - `mapmode` (gdi32) - a memory DC's coordinate spaces and saved states: `SetMapMode`/`GetMapMode` across every mode and two invalid ones (`modes`); `SetWindowExtEx`, `SetViewportExtEx`, `SetWindowOrgEx` and `SetViewportOrgEx` with their `Get` forms in `MM_TEXT` and `MM_ANISOTROPIC`, and `LPtoDP` and `DPtoLP` of points whose mapping falls on halves (`extorg`); `OffsetViewportOrgEx`, `OffsetWindowOrgEx`, `ScaleViewportExtEx` and `ScaleWindowExtEx` (`offset`); `MM_ISOTROPIC`'s adjustment of the viewport (`isotropic`); `PatBlt` and `Rectangle` through a window origin and a scaling mapping into a DIB section, upright and flipped (`drawing`); and `SaveDC`/`RestoreDC`, relative and absolute, over the mapping, the colors, the modes and the selected objects (`savedc`).
   The metric modes' extents and `MM_ISOTROPIC`'s adjusted viewport follow the screen's size in millimeters and in pixels, which differ between machines: they print only as relations (their signs, the units per pixel the mode means within 1%, the same as another mode's).
   Built with `/MD`.
@@ -357,7 +357,7 @@ The fixtures:
   A region prints as its type, its box, its rectangles or a grid of `PtInRegion` answers.
   The `update` window is a topmost 64x48 popup at the screen's corner, shown, since a hidden window keeps no update region; its update region prints as its type and as the same as a region the program built or not.
   Built with `/MD`.
-  Not gated: F2K's gdi32 has no regions or clipping yet.
+  Gated; `clip` and `extclip` stay pending while a DC's clipping is one rectangle and F2K's gdi32 has no clipping calls (`SelectClipRgn`, `ExtSelectClipRgn`, `GetClipRgn` and the rest are stubs), and `update` while the update region is a bounding rectangle and `InvalidateRgn` and `GetUpdateRgn` are stubs.
 
 The `crt` fixtures (msvcrt.dll's) are built with `/MD`: their C runtime is msvcrt.dll's rather than a static copy linked into the program.
 

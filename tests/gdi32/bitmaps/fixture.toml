@@ -7,7 +7,7 @@ kind = "sectioned"
 gate = true
 
 [pending]
-objtype = "F2K's gdi32 has no pens (CreatePen, ExtCreatePen), hatch brushes (CreateHatchBrush) or regions (CreateRectRgn) yet: GetObjectType of each answers 0 with ERROR_INVALID_HANDLE; every other object's line matches"
+objtype = "F2K's gdi32 has no pens (CreatePen, ExtCreatePen) or hatch brushes (CreateHatchBrush) yet: GetObjectType of each answers 0 with ERROR_INVALID_HANDLE; every other object's line matches"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

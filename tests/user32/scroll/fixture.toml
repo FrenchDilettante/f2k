@@ -8,9 +8,6 @@ description = "scroll - scroll bars: SetScrollInfo and GetScrollInfo on a window
 kind = "sectioned"
 gate = true
 
-[pending]
-scrollex = "F2K's gdi32 has no region objects yet: CreateRectRgn answers NULL, so hrgnUpdate's GetRgnBox reads ERROR and its box is not prcUpdate; ScrollWindowEx's return, prcUpdate, the window's update region, SW_SCROLLCHILDREN and ScrollWindow match the capture"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only the scroll-bar calls a section observes, not the helpers around them (the class and

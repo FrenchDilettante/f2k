@@ -5,6 +5,12 @@
 # a region the program built or not. No handle or address prints.
 description = "regions - CreateRectRgn(Indirect), CreatePolygonRgn under both fill modes, CombineRgn in each mode with its region type, OffsetRgn, SetRectRgn, GetRgnBox, PtInRegion, EqualRgn and GetRegionData; FillRgn; SelectClipRgn, ExtSelectClipRgn in each mode, IntersectClipRect, ExcludeClipRect, OffsetClipRgn, GetClipBox, GetClipRgn, PtVisible and RectVisible, with clipped drawing read back from a DIB section; user32's InvalidateRgn and GetUpdateRgn on the program's own window."
 kind = "sectioned"
+gate = true
+
+[pending]
+clip = "a DC's clipping region is one rectangle (kernel/src/win32k/dc.rs's Dc::clip) and F2K's gdi32 has no clipping calls yet: SelectClipRgn, IntersectClipRect, ExcludeClipRect, OffsetClipRgn, GetClipBox, GetClipRgn, PtVisible and RectVisible are stubs (GetClipRgn answers -1 with ERROR_CALL_NOT_IMPLEMENTED); the regions themselves (CreateRectRgn, GetRgnBox, GetRegionData) are served"
+extclip = "as clip: ExtSelectClipRgn, ExcludeClipRect, IntersectClipRect, GetClipBox and GetClipRgn are stubs (the first ExtSelectClipRgn answers ERROR with ERROR_CALL_NOT_IMPLEMENTED), and no drawing is clipped to a region; FillRgn itself is served"
+update = "a window's update region is a bounding rectangle (kernel/src/win32k/paint.rs), not a region, and user32's InvalidateRgn and GetUpdateRgn are stubs (GetUpdateRgn answers ERROR with ERROR_CALL_NOT_IMPLEMENTED)"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
