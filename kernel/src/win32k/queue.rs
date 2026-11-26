@@ -122,6 +122,8 @@ use rtl::user::{
     QS_INPUT,
     QS_KEY,
     QS_MOUSE,
+    QS_MOUSEBUTTON,
+    QS_MOUSEMOVE,
     QS_PAINT,
     QS_POSTMESSAGE,
     QS_SENDMESSAGE,
@@ -360,6 +362,9 @@ struct Queue {
     /// GetMessagePos).
     message_time: u32,
     message_pos: Point,
+    /// The last button press a read took out, for the next one's double-click
+    /// ([`super::mouse::Click`]).
+    click: Option<super::mouse::Click>,
 }
 
 impl Queue {
@@ -378,6 +383,7 @@ impl Queue {
         idle: true,
         message_time: 0,
         message_pos: Point { x: 0, y: 0 },
+        click: None,
     };
 }
 
@@ -386,8 +392,11 @@ impl Queue {
 struct Posted {
     msg: Msg,
     /// An input message's key, as the key state names it (the side's key for Shift, Ctrl and Alt,
-    /// where the message names the generic one); 0 for a message posted to the thread.
+    /// where the message names the generic one; a mouse button's key for its message, 0 for a
+    /// move); 0 for a message posted to the thread.
     key: u8,
+    /// What a read learned of a mouse message's window ([`super::mouse::Prepared`]).
+    prepared: Option<super::mouse::Prepared>,
     next: Option<u32>,
 }
 
@@ -636,6 +645,7 @@ impl Queues {
             .allocate(Posted {
                 msg,
                 key,
+                prepared: None,
                 next: None,
             })
             .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
@@ -648,7 +658,7 @@ impl Queues {
         list.count += 1;
         let kind = match lane {
             Lane::Posted => QS_POSTMESSAGE,
-            Lane::Input => QS_KEY,
+            Lane::Input => input_kind(msg.message),
         };
         self.change(id, kind);
         Ok(())
@@ -1053,6 +1063,68 @@ pub fn post_input(windows: &mut Windows, thread: ThreadId, msg: Msg, key: u8, re
     let _ = queues.push(id, Lane::Input, msg, key);
 }
 
+/// The kind of input message `message` is (a queue-status bit): a mouse move, a mouse button's,
+/// or a key's.
+fn input_kind(message: u32) -> u32 {
+    match message {
+        rtl::user::WM_MOUSEMOVE => QS_MOUSEMOVE,
+        m if super::mouse::is_mouse(m) => QS_MOUSEBUTTON,
+        _ => QS_KEY,
+    }
+}
+
+/// A mouse message for the thread record `thread`'s queue, as the input path posts it
+/// ([`super::mouse`]): `msg`, its window bound, its lParam and pt the screen point, of the button
+/// `key` (0 for a move). A WM_MOUSEMOVE while the queue's last input message, not read yet, is a
+/// WM_MOUSEMOVE takes that message's place instead (the one pending move Windows 2000 keeps a
+/// queue: what the read learned of its window is forgotten). Nothing when the thread has no
+/// queue; the message is lost when the pool cannot grow.
+pub fn post_mouse(windows: &mut Windows, thread: ThreadId, msg: Msg, key: u8) {
+    let queues = &mut windows.queues;
+    let Some(id) = queues.queue_of(thread) else {
+        return;
+    };
+    if msg.message == rtl::user::WM_MOUSEMOVE {
+        if let Some(tail) = queues.queues[id.index as usize].input.tail {
+            let last = queues.posted.get_mut(tail);
+            if last.msg.message == rtl::user::WM_MOUSEMOVE {
+                last.msg = msg;
+                last.prepared = None;
+                queues.change(id, QS_MOUSEMOVE);
+                return;
+            }
+        }
+    }
+    let _ = queues.push(id, Lane::Input, msg, key);
+}
+
+/// What a read learned of the window of the mouse message the input entry `entry` of `caller`'s
+/// queue holds ([`Taken::Prepare`]), kept with it: when the entry still holds a mouse message at
+/// the point the read asked about (the thread may have moved it on meanwhile, its pending move
+/// folding a newer one in).
+pub fn keep_prepared(
+    windows: &mut Windows,
+    caller: ThreadId,
+    entry: u32,
+    prepared: super::mouse::Prepared,
+) {
+    let queues = &mut windows.queues;
+    let Some(id) = queues.queue_of(caller) else {
+        return;
+    };
+    let mut at = queues.queues[id.index as usize].input.head;
+    while let Some(index) = at {
+        let posted = queues.posted.get_mut(index);
+        if index == entry {
+            if super::mouse::is_mouse(posted.msg.message) && posted.msg.pt == prepared.pt {
+                posted.prepared = Some(prepared);
+            }
+            return;
+        }
+        at = posted.next;
+    }
+}
+
 /// PostQuitMessage: the caller's next read that finds nothing posted before it makes a WM_QUIT
 /// with the exit code `code`.
 pub fn post_quit(windows: &mut Windows, caller: ThreadId, code: u32) {
@@ -1169,6 +1241,19 @@ pub enum Taken {
     Sent(SentId),
     /// A posted message, or one the queue made (WM_QUIT, WM_PAINT, WM_TIMER).
     Message(Msg),
+    /// A mouse message whose window the read has to ask where the point is first: the input
+    /// entry, the window it goes to, the screen point, whether the thread's capture has it. The
+    /// caller learns it ([`super::mouse::hit_test`], [`super::mouse::prepared`]), keeps it with
+    /// the entry ([`keep_prepared`]) and reads again.
+    Prepare {
+        entry: u32,
+        window: WindowId,
+        pt: Point,
+        captured: bool,
+    },
+    /// A mouse message, converted for the thread ([`super::mouse::convert`]): what follows it
+    /// before the thread has it is the caller's ([`super::mouse::after_read`]).
+    Mouse(super::mouse::MouseRead),
     /// Nothing for the filter; the thread's next timer's due (interrupt time), if it has timers.
     Nothing { due: Option<u64> },
 }
@@ -1208,7 +1293,7 @@ pub fn take(
     let queue = &mut windows.queues.queues[id.index as usize];
     queue.last_read = time;
     queue.idle = matches!(taken, Taken::Nothing { .. });
-    if let Taken::Message(msg) = taken {
+    if let Taken::Message(msg) | Taken::Mouse(super::mouse::MouseRead { msg, .. }) = taken {
         queue.message_time = msg.time;
         queue.message_pos = msg.pt;
     }
@@ -1257,16 +1342,32 @@ fn read_queue(
         }
     }
 
-    // The input messages: the keyboard's (there is no mouse yet), each bound to its window as it
-    // is read (the thread's focus window now, or its active window), so the filter judges the
-    // bound window and message. A key message taken out is the next step of the thread's key
-    // state; one with no window to go to is discarded, still a step of the key state, so that no
-    // key stays down for the thread.
-    if filter.looks_at(QS_KEY) {
+    // The input messages, the keyboard's and the mouse's, in the order they came. A key message is
+    // bound to its window as it is read (the thread's focus window now, or its active window), so
+    // the filter judges the bound window and message. A key message taken out is the next step of
+    // the thread's key state; one with no window to go to is discarded, still a step of the key
+    // state, so that no key stays down for the thread. A mouse message is converted for its
+    // window first ([`read_mouse`]).
+    if filter.looks_at(QS_INPUT) {
         let mut previous = None;
         let mut at = windows.queues.queues[id.index as usize].input.head;
         while let Some(entry) = at {
-            let Posted { msg, key, next } = *windows.queues.posted.get(entry);
+            let Posted { msg, key, next, .. } = *windows.queues.posted.get(entry);
+            if super::mouse::is_mouse(msg.message) {
+                match read_mouse(windows, caller, id, filter, remove, previous, entry) {
+                    MouseStep::Found(taken) => return Ok(taken),
+                    MouseStep::Again => continue,
+                    MouseStep::Skipped => previous = Some(entry),
+                    MouseStep::Dropped => {}
+                }
+                at = next;
+                continue;
+            }
+            if !filter.looks_at(QS_KEY) {
+                previous = Some(entry);
+                at = next;
+                continue;
+            }
             match super::input::bind(windows, caller, msg) {
                 None => {
                     windows
@@ -1332,6 +1433,104 @@ fn read_queue(
         (timer, caret) => timer.or(caret),
     };
     Ok(Taken::Nothing { due })
+}
+
+/// What [`read_mouse`] did with a mouse message's entry.
+enum MouseStep {
+    /// The read's answer: the message, or its preparation.
+    Found(Taken),
+    /// The entry changed in place (a window that lets the point through gave it to its parent):
+    /// look at it again.
+    Again,
+    /// The filter does not take it: it stays.
+    Skipped,
+    /// It is gone: its window is, or no window would have it.
+    Dropped,
+}
+
+/// The read's look at the mouse message in the input entry `entry` of the queue `id` (`previous`
+/// the entry before it), for `caller` (see [`super::mouse`]): its window, the capture window when
+/// the thread has the capture; what the read learned of it, or the preparation that learns it; its
+/// conversion, judged by the filter; taken out when `remove`, the thread's key state and its last
+/// press moving with it.
+fn read_mouse(
+    windows: &mut Windows,
+    caller: ThreadId,
+    id: QueueId,
+    filter: &Filter,
+    remove: bool,
+    previous: Option<u32>,
+    entry: u32,
+) -> MouseStep {
+    let Posted {
+        msg, key, prepared, ..
+    } = *windows.queues.posted.get(entry);
+    if !filter.looks_at(input_kind(msg.message)) {
+        return MouseStep::Skipped;
+    }
+    let discard = |windows: &mut Windows| {
+        windows
+            .queues
+            .unlink_posted(id.index, Lane::Input, previous, entry);
+        super::input::read_button(windows, caller, msg.message, key);
+        MouseStep::Dropped
+    };
+    let capture = super::mouse::capture_of(windows, caller);
+    let Some(window) = capture.or_else(|| windows.window_from_handle(msg.hwnd)) else {
+        return discard(windows);
+    };
+    let hwnd = windows.handle_of(window);
+    if !filter.takes_window(hwnd) {
+        return MouseStep::Skipped;
+    }
+    let prepared = match prepared {
+        Some(p) if p.hwnd == hwnd && p.pt == msg.pt => p,
+        _ => {
+            return MouseStep::Found(Taken::Prepare {
+                entry,
+                window,
+                pt: msg.pt,
+                captured: capture.is_some(),
+            })
+        }
+    };
+    if super::mouse::lets_through(prepared.hit) {
+        // HTTRANSPARENT: the point goes through to the parent, when it is the thread's.
+        let parent = windows
+            .parent_of(window)
+            .filter(|_| windows.window_style(window) & rtl::user::WS_CHILD != 0)
+            .filter(|&p| windows.window_thread(p) == caller);
+        let Some(parent) = parent else {
+            return discard(windows);
+        };
+        let parent = windows.handle_of(parent);
+        let posted = windows.queues.posted.get_mut(entry);
+        posted.msg.hwnd = parent;
+        posted.prepared = None;
+        return MouseStep::Again;
+    }
+    let click = windows.queues.queues[id.index as usize].click;
+    let (converted, client_message) =
+        super::mouse::convert(windows, window, &msg, &prepared, click);
+    if !filter.in_range(converted.message) {
+        return MouseStep::Skipped;
+    }
+    if remove {
+        windows
+            .queues
+            .unlink_posted(id.index, Lane::Input, previous, entry);
+        super::input::read_button(windows, caller, client_message, key);
+        let queue = &mut windows.queues.queues[id.index as usize];
+        queue.click =
+            super::mouse::next_click(click, client_message, hwnd, converted.time, converted.pt);
+    }
+    MouseStep::Found(Taken::Mouse(super::mouse::MouseRead {
+        msg: converted,
+        client_message,
+        hit: prepared.hit,
+        captured: capture.is_some(),
+        removed: remove,
+    }))
 }
 
 /// A message the queue makes, stamped `time`.
@@ -3085,7 +3284,11 @@ mod services {
 
     /// A read of the caller's queue ([`take`]) at `now`, each sent message it hands out delivered
     /// by callback before it reads on ([`receive_by_callback`]), as Windows 2000's reads receive
-    /// the sent messages first: what it took, never a sent message.
+    /// the sent messages first; a mouse message's window asked where its point is
+    /// (WM_NCHITTEST, [`crate::win32k::mouse::hit_test`]) before the read goes on, and a mouse
+    /// message read out followed by its WM_MOUSEACTIVATE and WM_SETCURSOR
+    /// ([`crate::win32k::mouse::after_read`]), the message eaten as they say. What it took: a
+    /// message, or nothing.
     fn read_delivering(
         call: &mut NtCall,
         caller: ThreadId,
@@ -3093,15 +3296,36 @@ mod services {
         remove: bool,
         now: u64,
     ) -> Result<Taken, NtStatus> {
+        use crate::win32k::mouse;
         loop {
             let taken = with_session(call.passive(), |s| {
                 let taken = take(s.windows(), caller, filter, remove, now)?;
-                if let Taken::Sent(id) = taken {
-                    receive_by_callback(&mut s.hold, caller, id);
-                }
-                Ok::<_, NtStatus>(taken)
+                Ok::<_, NtStatus>(match taken {
+                    Taken::Sent(id) => {
+                        receive_by_callback(&mut s.hold, caller, id);
+                        None
+                    }
+                    Taken::Prepare {
+                        entry,
+                        window,
+                        pt,
+                        captured,
+                    } => {
+                        let hit = mouse::hit_test(s, window, pt, captured);
+                        let (windows, classes) = s.parts();
+                        if windows.is_live(window) {
+                            let prepared = mouse::prepared(windows, classes, window, pt, hit);
+                            keep_prepared(windows, caller, entry, prepared);
+                        }
+                        None
+                    }
+                    Taken::Mouse(read) => {
+                        mouse::after_read(s, caller, &read).then_some(Taken::Message(read.msg))
+                    }
+                    other => Some(other),
+                })
             })?;
-            if !matches!(taken, Taken::Sent(_)) {
+            if let Some(taken) = taken {
                 return Ok(taken);
             }
         }
@@ -3123,7 +3347,11 @@ mod services {
                 kind: Taken::kind_of(&msg),
                 msg,
             },
-            Taken::Nothing { .. } | Taken::Sent(_) => Receipt {
+            Taken::Mouse(read) => Receipt {
+                kind: RECEIVED_MESSAGE,
+                msg: read.msg,
+            },
+            Taken::Nothing { .. } | Taken::Sent(_) | Taken::Prepare { .. } => Receipt {
                 kind: RECEIVED_NONE,
                 msg: Msg::default(),
             },

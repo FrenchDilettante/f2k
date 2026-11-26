@@ -44,7 +44,7 @@
 //! - NtUserGetGUIThreadInfo (0x118B)(u32 ThreadId, ptr Info): the GUITHREADINFO of the thread (its
 //!   client id; 0 for the foreground thread);
 //! - NtUserCallTwoParam (0x113A)(u32 Param1, u32 Param2, u32 Routine, ptr<u32> Result): SetCaretPos
-//!   (rtl::user's TWO_PARAM_SET_CARET_POS);
+//!   (rtl::user's TWO_PARAM_SET_CARET_POS), and SetCursorPos ([`super::mouse`]);
 //! - NtUserCallNoParam's DestroyCaret routine ([`super::menu`]'s service serves the others).
 
 use rtl::gdi::{Rect, DSTINVERT, HALFTONE_ROWS, PATINVERT};
@@ -410,7 +410,7 @@ pub fn gui_thread_info(windows: &Windows, thread: ThreadId) -> GuiThreadInfo {
 
 #[cfg(target_arch = "x86")]
 mod services {
-    use rtl::user::{Point, TWO_PARAM_SET_CARET_POS};
+    use rtl::user::{Point, TWO_PARAM_SET_CARET_POS, TWO_PARAM_SET_CURSOR_POS};
 
     use super::*;
     use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
@@ -511,9 +511,10 @@ mod services {
     }
 
     /// NtUserCallTwoParam(Param1, Param2, Routine, Result): SetCaretPos ([`set_pos`], the place
-    /// the two parameters), 1 into `result`; MsgWaitForMultipleObjects' wait (the queue's
-    /// [`super::super::queue::msg_wait`]), its answer into `result`; STATUS_INVALID_PARAMETER for
-    /// another routine.
+    /// the two parameters), 1 into `result`; SetCursorPos
+    /// ([`crate::win32k::mouse::set_cursor_pos`], the screen point the two parameters), 1;
+    /// MsgWaitForMultipleObjects' wait (the queue's [`super::super::queue::msg_wait`]), its answer
+    /// into `result`; STATUS_INVALID_PARAMETER for another routine.
     pub fn call_two_param(
         call: &mut NtCall,
         param1: u32,
@@ -528,9 +529,16 @@ mod services {
         }
         let caller = gui_thread(call)?.thread;
         let at = now();
+        let screen = crate::win32k::display::screen_rect();
         with_manager(call.passive(), |m| match routine {
             TWO_PARAM_SET_CARET_POS => {
                 set_pos(&mut m.windows, caller, param1 as i32, param2 as i32, at)
+            }
+            TWO_PARAM_SET_CURSOR_POS => {
+                let time = crate::win32k::queue::millis(at);
+                let (x, y) = (param1 as i32, param2 as i32);
+                crate::win32k::mouse::set_cursor_pos(&mut m.windows, x, y, screen, time);
+                Ok(())
             }
             _ => Err(STATUS_INVALID_PARAMETER),
         })?;

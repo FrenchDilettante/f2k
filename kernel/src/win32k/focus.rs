@@ -2,6 +2,8 @@
 //! foreground thread, and the decisions that move them — SetFocus, SetActiveWindow,
 //! SetForegroundWindow, EnableWindow, the activation the show, position and destroy paths ask for
 //! ([`Session::activate`]), and the focus check of the destroy cascade ([`Session::check_focus`]).
+//! The mouse capture is each thread's too: SetCapture and ReleaseCapture ([`set_capture`]); where
+//! the mouse's messages go is [`super::mouse`]'s.
 //!
 //! The state lives in the window registry's thread records ([`super::window::Thread`]'s `active`
 //! and `focus`, one queue a thread: F2K shares no input state between threads yet) and in the
@@ -36,9 +38,11 @@
 //!
 //! - NtUserSetFocus (0x11F0) and NtUserSetActiveWindow (0x11E4): the window (0 for none), the
 //!   window that had the focus or was active through the last pointer;
+//! - NtUserSetCapture (0x11E6): the window (0 for none, ReleaseCapture's), the window that had the
+//!   capture through the last pointer;
 //! - NtUserGetForegroundWindow (0x1189): the foreground window through its pointer;
-//! - NtUserGetThreadState (0x11A3): the calling thread's focus or active window, by rtl::user's
-//!   THREAD_STATE_* routine;
+//! - NtUserGetThreadState (0x11A3): the calling thread's focus, active or capture window, or the
+//!   cursor's place or shape, by rtl::user's THREAD_STATE_* routine;
 //! - NtUserCallHwndParamLock (0x1135): EnableWindow, DefWindowProc's WM_SETREDRAW and its
 //!   WM_WINDOWPOSCHANGING clamp, by rtl::user's HWND_PARAM_LOCK_* routine;
 //! - NtUserCallHwndLock's SetForegroundWindow and DefWindowProc's WM_ACTIVATE routines
@@ -486,10 +490,23 @@ pub fn set_active_window(
 /// not take the foreground (see [`may_take_foreground`]). A window that is the foreground already
 /// is left as it is, in its place in the z-order.
 pub fn set_foreground_window(s: &mut dyn Session, caller: ThreadId, window: WindowId) -> bool {
-    let windows = s.windows();
-    if !may_take_foreground(windows, caller) {
+    if !may_take_foreground(s.windows(), caller) {
         return false;
     }
+    foreground_to(s, window)
+}
+
+/// A click's activation (WM_MOUSEACTIVATE answered MA_ACTIVATE or MA_ACTIVATEANDEAT): the
+/// window's top-level window made its thread's active window and its thread the foreground one,
+/// as SetForegroundWindow does, the user's input needing no leave.
+pub fn activate_by_mouse(s: &mut dyn Session, window: WindowId) -> bool {
+    foreground_to(s, window)
+}
+
+/// The window's top-level window made its thread's active window, and its thread the foreground
+/// one: [`set_foreground_window`]'s, once it may.
+fn foreground_to(s: &mut dyn Session, window: WindowId) -> bool {
+    let windows = s.windows();
     let top = top_level(windows, window);
     let thread = windows.window_thread(top);
     if windows.foreground_thread != Some(thread) {
@@ -502,6 +519,33 @@ pub fn set_foreground_window(s: &mut dyn Session, caller: ThreadId, window: Wind
         windows.foreground_thread = Some(thread);
     }
     activate_this(s, thread, Some(top))
+}
+
+// --- The mouse capture ---------------------------------------------------------------------------
+
+/// SetCapture's decision for the calling thread `caller` (ReleaseCapture's with none): the mouse
+/// capture to `target`, its messages all going to it ([`super::mouse`]). The answer is the window
+/// that had the capture, or none when the call failed: a window of another thread's (Windows 2000's
+/// capture is its queue's). The window that loses the capture is sent WM_CAPTURECHANGED, lParam
+/// the window gaining it (the mousein capture: SetCapture from the window to the button, back,
+/// and ReleaseCapture send it each time, to the window losing the capture); nothing is sent when
+/// the capture stays where it is.
+pub fn set_capture(
+    s: &mut dyn Session,
+    caller: ThreadId,
+    target: Option<WindowId>,
+) -> Option<WindowId> {
+    let windows = s.windows();
+    if target.is_some_and(|w| windows.window_thread(w) != caller) {
+        return None;
+    }
+    let previous = super::mouse::capture_of(windows, caller);
+    windows.thread_mut(caller).capture = target;
+    if let Some(old) = previous.filter(|&old| Some(old) != target) {
+        let to = handle(windows, target);
+        send(s, old, rtl::user::WM_CAPTURECHANGED, 0, to);
+    }
+    previous
 }
 
 // --- The services --------------------------------------------------------------------------------
@@ -538,6 +582,9 @@ mod services {
         HWND_PARAM_LOCK_SET_REDRAW,
         HWND_PARAM_LOCK_WINDOW_POS_CHANGING,
         THREAD_STATE_ACTIVE_WINDOW,
+        THREAD_STATE_CAPTURE_WINDOW,
+        THREAD_STATE_CURSOR,
+        THREAD_STATE_CURSOR_POS,
         THREAD_STATE_FOCUS_WINDOW,
         THREAD_STATE_MESSAGE_POS,
         THREAD_STATE_MESSAGE_TIME,
@@ -590,6 +637,23 @@ mod services {
         Ok(STATUS_SUCCESS)
     }
 
+    /// NtUserSetCapture(Window, Previous): [`set_capture`] (0: ReleaseCapture's); the window that
+    /// had the capture (0 for none, or for a refusal) into `previous`.
+    pub fn set_capture_service(
+        call: &mut NtCall,
+        window: Handle,
+        previous: UserPtr<u32>,
+    ) -> NtResult {
+        let caller = gui_thread(call)?.thread;
+        let answer = with_session(call.passive(), |s| {
+            let target = optional_window(s.windows(), window)?;
+            let had = super::set_capture(s, caller, target);
+            Ok::<_, NtStatus>(handle(s.windows(), had))
+        })?;
+        previous.write(answer)?;
+        Ok(STATUS_SUCCESS)
+    }
+
     /// NtUserGetForegroundWindow(Window): the foreground window (0 for none) into `window`.
     pub fn get_foreground_window(call: &mut NtCall, window: UserPtr<u32>) -> NtResult {
         gui_thread(call)?;
@@ -600,16 +664,24 @@ mod services {
         Ok(STATUS_SUCCESS)
     }
 
-    /// NtUserGetThreadState(Routine, Result): the calling thread's focus window or active window
-    /// (0 for none), or the time or the position of the last message its reads retrieved
-    /// (`crate::win32k::queue::message_time`, `message_pos`), into `result`;
+    /// NtUserGetThreadState(Routine, Result): the calling thread's focus, active or capture window
+    /// (0 for none), the time or the position of the last message its reads retrieved
+    /// (`crate::win32k::queue::message_time`, `message_pos`), or the cursor's place (x in the low
+    /// word, y in the high) or shape ([`crate::win32k::mouse`]), into `result`;
     /// STATUS_INVALID_PARAMETER for another routine.
     pub fn get_thread_state(call: &mut NtCall, routine: u32, result: UserPtr<u32>) -> NtResult {
         let caller = gui_thread(call)?.thread;
+        let screen = crate::win32k::display::screen_rect();
         let answer = with_manager(call.passive(), |m| {
             let window = match routine {
                 THREAD_STATE_FOCUS_WINDOW => focus_window(&m.windows, caller),
                 THREAD_STATE_ACTIVE_WINDOW => active_window(&m.windows, caller),
+                THREAD_STATE_CAPTURE_WINDOW => crate::win32k::mouse::capture_of(&m.windows, caller),
+                THREAD_STATE_CURSOR => return Ok(m.windows.input.cursor.shape),
+                THREAD_STATE_CURSOR_POS => {
+                    let at = crate::win32k::mouse::position(&m.windows, screen);
+                    return Ok(at.x as u16 as u32 | (at.y as u16 as u32) << 16);
+                }
                 THREAD_STATE_MESSAGE_TIME => return Ok(queue::message_time(&m.windows, caller)),
                 THREAD_STATE_MESSAGE_POS => return Ok(queue::message_pos(&m.windows, caller)),
                 _ => return Err(STATUS_INVALID_PARAMETER),
@@ -682,6 +754,7 @@ pub use services::{
     get_foreground_window,
     get_thread_state,
     set_active_window as set_active_window_service,
+    set_capture_service,
     set_focus as set_focus_service,
 };
 
@@ -697,6 +770,10 @@ mod services {
     }
 
     pub fn set_active_window(_: &mut NtCall, _: Handle, _: UserPtr<u32>) -> NtResult {
+        Err(STATUS_NOT_IMPLEMENTED)
+    }
+
+    pub fn set_capture_service(_: &mut NtCall, _: Handle, _: UserPtr<u32>) -> NtResult {
         Err(STATUS_NOT_IMPLEMENTED)
     }
 
@@ -725,6 +802,7 @@ pub use services::{
     get_foreground_window,
     get_thread_state,
     set_active_window as set_active_window_service,
+    set_capture_service,
     set_focus as set_focus_service,
 };
 

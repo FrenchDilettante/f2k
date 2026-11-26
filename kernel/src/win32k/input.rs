@@ -44,8 +44,8 @@
 //! numbers):
 //!
 //! - NtUserSendInput (0x11E1): `Count` INPUT records at `Inputs`, each `Size` bytes (an INPUT's,
-//!   28, or STATUS_INVALID_PARAMETER); the keyboard's run, the count run into `Sent`. The first
-//!   that is not a keyboard event (the mouse's, deferred) stops the run;
+//!   28, or STATUS_INVALID_PARAMETER); the keyboard's and the mouse's ([`super::mouse`]) run, the
+//!   count run into `Sent`. The first that is neither (a hardware event) stops the run;
 //! - NtUserGetKeyState (0x1195) and NtUserGetAsyncKeyState (0x1175): a key's state, the thread's or
 //!   the system's, as GetKeyState and GetAsyncKeyState answer it, into `State`;
 //! - NtUserGetKeyboardState (0x1193) and NtUserSetKeyboardState (0x11F7): the thread's state of the
@@ -244,6 +244,8 @@ pub struct RawInput {
     recent: [u32; 8],
     alt_alone: bool,
     decoder: Decoder,
+    /// The cursor ([`super::mouse`]).
+    pub cursor: super::mouse::Cursor,
 }
 
 impl RawInput {
@@ -252,7 +254,18 @@ impl RawInput {
         recent: [0; 8],
         alt_alone: false,
         decoder: Decoder::new(),
+        cursor: super::mouse::Cursor::EMPTY,
     };
+
+    /// A mouse button's key (VK_LBUTTON, VK_RBUTTON, VK_MBUTTON) down or up, as a mouse event
+    /// moves it: a press is noted for GetAsyncKeyState, and ends Alt's being alone.
+    pub fn button(&mut self, vk: u8, down: bool) {
+        self.keys.press(vk, down);
+        if down {
+            KeyState::set(&mut self.recent, vk, true);
+            self.alt_alone = false;
+        }
+    }
 
     /// GetAsyncKeyState's answer for the key: 0x8000 while it is down, the low bit when it went
     /// down since the last answer for it, which clears that.
@@ -467,6 +480,17 @@ pub fn read(windows: &mut Windows, thread: ThreadId, msg: &Msg, key: u8) {
     }
 }
 
+/// The thread `thread` read a mouse button's message out of its queue, of the button's key `key`
+/// (0 for a move), its client form `message`: its key state moves with it.
+pub fn read_button(windows: &mut Windows, thread: ThreadId, message: u32, key: u8) {
+    if key != 0 {
+        let down = super::mouse::is_press(message);
+        if down || super::mouse::is_release(message) {
+            windows.thread_mut(thread).keys.press(key, down);
+        }
+    }
+}
+
 /// TranslateMessage for the thread `thread`: the character a key-down message makes, under the
 /// thread's key state, posted to the message's window as WM_CHAR (WM_SYSCHAR for a
 /// WM_SYSKEYDOWN, its character the key's without Alt), with the key-down's lParam, stamped
@@ -637,9 +661,10 @@ mod services {
     /// The keys a keyboard state holds: GetKeyboardState's and SetKeyboardState's array.
     const KEYS: usize = 256;
 
-    /// NtUserSendInput(Count, Inputs, Size, Sent): the INPUT records' keystrokes run in order (see
-    /// [`key_event`]), until one that is not a keyboard event; how many ran into `sent`.
-    /// STATUS_INVALID_PARAMETER for a size other than an INPUT's.
+    /// NtUserSendInput(Count, Inputs, Size, Sent): the INPUT records' keystrokes and mouse events
+    /// run in order (see [`key_event`] and [`crate::win32k::mouse::mouse_event`]), until one that
+    /// is neither (a hardware event); how many ran into `sent`. STATUS_INVALID_PARAMETER for a size
+    /// other than an INPUT's.
     pub fn send_input(
         call: &mut NtCall,
         count: u32,
@@ -657,17 +682,32 @@ mod services {
                 .offset(done.wrapping_mul(size as u32))
                 .cast::<Input>()
                 .read()?;
-            if input.kind != rtl::user::INPUT_KEYBOARD {
-                log_unhandled_input(call, count, inputs, size, input.kind);
-                break;
-            }
             let time = millis(now());
-            let lights = with_manager(call.passive(), |m| {
-                let stroke = Keystroke::of_input(&input, &m.windows.input.keys)?;
-                key_event(&mut m.windows, stroke, time)
-            });
-            if let Some(toggles) = lights {
-                crate::hw::kbd::show_toggles(toggles);
+            match input.kind {
+                rtl::user::INPUT_KEYBOARD => {
+                    let lights = with_manager(call.passive(), |m| {
+                        let stroke = Keystroke::of_input(&input, &m.windows.input.keys)?;
+                        key_event(&mut m.windows, stroke, time)
+                    });
+                    if let Some(toggles) = lights {
+                        crate::hw::kbd::show_toggles(toggles);
+                    }
+                }
+                rtl::user::INPUT_MOUSE => {
+                    let screen = crate::win32k::display::screen_rect();
+                    with_manager(call.passive(), |m| {
+                        crate::win32k::mouse::mouse_event(
+                            &mut m.windows,
+                            &input.mouse(),
+                            screen,
+                            time,
+                        );
+                    });
+                }
+                kind => {
+                    log_unhandled_input(call, count, inputs, size, kind);
+                    break;
+                }
             }
             done += 1;
         }
@@ -676,11 +716,8 @@ mod services {
     }
 
     /// The INPUT records' kinds SendInput does not inject yet, and what each is: the run stops at
-    /// one (INPUT_KEYBOARD is 1).
-    const UNHANDLED_INPUTS: [(u32, &str); 2] = [
-        (0, "INPUT_MOUSE records (there is no mouse yet)"),
-        (2, "INPUT_HARDWARE records"),
-    ];
+    /// one (INPUT_MOUSE is 0, INPUT_KEYBOARD 1).
+    const UNHANDLED_INPUTS: [(u32, &str); 1] = [(2, "INPUT_HARDWARE records")];
 
     /// The record kinds logged: each process's ([`crate::dbgprint::unhandled_once`]).
     static INPUTS_LOGGED: rtl::stub::Logged<64> = rtl::stub::Logged::new();

@@ -85,6 +85,7 @@ impl Rig {
                     translate(&mut self.m.windows, self.t, &msg, 0).unwrap();
                 }
                 Taken::Nothing { .. } => return got,
+                Taken::Prepare { .. } | Taken::Mouse(_) => unreachable!("no mouse here"),
             }
         }
     }
@@ -154,6 +155,7 @@ impl Rig {
                     translate(&mut self.m.windows, self.t, &msg, 0).unwrap();
                 }
                 Taken::Nothing { .. } => return got,
+                Taken::Prepare { .. } | Taken::Mouse(_) => unreachable!("no mouse here"),
             }
         }
     }

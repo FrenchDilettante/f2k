@@ -10,7 +10,8 @@
 //! [`blit`]), the region objects ([`region`]), what is drawn through the DCs ([`raster`], in the
 //! built-in font, [`font`], or a TrueType font, [`fonts`], which holds the faces loaded and the
 //! font objects too), the clipboard ([`clipboard`]), the windows' texts ([`text`]), and the second
-//! service table their services come through.
+//! service table their services come through. Mouse input, the cursor and the capture are
+//! [`mouse`]'s.
 //!
 //! On Windows 2000, user32 and gdi32 enter the kernel themselves, not through ntdll: their own
 //! `NtUser*` and `NtGdi*` stubs raise the gate with win32k's numbers, table 1 in the number's bits
@@ -50,6 +51,7 @@ pub mod handle;
 pub mod icon;
 pub mod input;
 pub mod menu;
+pub mod mouse;
 pub mod paint;
 pub mod posted;
 pub mod prop;

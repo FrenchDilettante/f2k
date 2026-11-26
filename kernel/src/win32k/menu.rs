@@ -27,8 +27,8 @@
 //! The services (F2K's argument lists, see [`crate::win32k`]; Windows 2000's numbers):
 //!
 //! - NtUserCallNoParam (0x1138): CreateMenu and CreatePopupMenu (rtl::user's NO_PARAM_* routines),
-//!   the empty cursor object LoadIcon fills in ([`super::icon`]), and DestroyCaret
-//!   ([`super::caret`]);
+//!   the empty cursor object LoadIcon fills in ([`super::icon`]), DestroyCaret ([`super::caret`])
+//!   and ReleaseCapture ([`super::focus`]);
 //! - NtUserThunkedMenuItemInfo (0x121F): an item inserted (InsertMenuItem) or changed
 //!   (SetMenuItemInfo) from a MENUITEMINFOW; and, by an operation of F2K's own, an item or the menu
 //!   answered as rtl::menu's MenuItemAnswer — what Windows 2000's user32 reads from the menu's
@@ -868,6 +868,7 @@ mod services {
         NO_PARAM_CREATE_MENU,
         NO_PARAM_CREATE_POPUP_MENU,
         NO_PARAM_DESTROY_CARET,
+        NO_PARAM_RELEASE_CAPTURE,
     };
     use rtl::window::{SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER};
 
@@ -879,9 +880,17 @@ mod services {
 
     /// NtUserCallNoParam(Routine, Result): CreateMenu, CreatePopupMenu (the new menu's handle),
     /// the empty cursor object LoadIcon fills in (its handle), DestroyCaret (1;
-    /// [`crate::win32k::caret::destroy`]'s failure); STATUS_INVALID_PARAMETER for another routine.
+    /// [`crate::win32k::caret::destroy`]'s failure), ReleaseCapture (1;
+    /// [`crate::win32k::focus::set_capture`]); STATUS_INVALID_PARAMETER for another routine.
     pub fn call_no_param(call: &mut NtCall, routine: u32, result: UserPtr<u32>) -> NtResult {
         let caller = gui_thread(call)?;
+        if routine == NO_PARAM_RELEASE_CAPTURE {
+            with_session(call.passive(), |s| {
+                crate::win32k::focus::set_capture(s, caller.thread, None);
+            });
+            result.write(1)?;
+            return Ok(STATUS_SUCCESS);
+        }
         let answer = with_manager(call.passive(), |m| match routine {
             NO_PARAM_CREATE_MENU | NO_PARAM_CREATE_POPUP_MENU => {
                 let windows = &mut m.windows;
