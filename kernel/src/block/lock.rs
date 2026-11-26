@@ -43,8 +43,9 @@ pub struct DeviceLock<T = ()> {
     value: UnsafeCell<T>,
 }
 
-// SAFETY: one processor; every access to the event runs with interrupts masked or inside the wait
-// discipline, which serializes it, and the value is reached only by the thread holding the lock,
+// SAFETY: one processor; every access to the event runs with interrupts masked or with the
+// dispatcher borrowed at the dispatch level (`acquire_for`, `release_with`), which serializes it,
+// and the value is reached only by the thread holding the lock,
 // which the event grants to one thread at a time. `T: Send`: the value is reached from whichever
 // thread holds the lock.
 unsafe impl<T: Send> Sync for DeviceLock<T> {}
@@ -80,8 +81,12 @@ impl<T> DeviceLock<T> {
         f(unsafe { &mut *self.event.get() })
     }
 
-    /// Whether nobody holds the lock.
+    /// Whether nobody holds the lock. Masked, as every reach into the event outside the dispatcher
+    /// is (see the `Sync` impl): a caller at the passive level (the idle thread's check before a
+    /// load) would otherwise hold the event's reference where an interrupt's deferred work can
+    /// reach the header through the dispatcher.
     pub fn is_free(&self) -> bool {
+        let _masked = crate::pcr::pcr().mask_guard();
         self.with_event(|event| event.signaled())
     }
 
