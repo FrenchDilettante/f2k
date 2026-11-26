@@ -95,19 +95,31 @@ use rtl::user::{
     CreateStructW,
     Msg,
     WM_CHAR,
+    WM_CLEAR,
+    WM_COMMAND,
+    WM_COPY,
     WM_CREATE,
+    WM_CTLCOLOREDIT,
+    WM_CTLCOLORSTATIC,
+    WM_CUT,
     WM_ENABLE,
     WM_ERASEBKGND,
+    WM_GETDLGCODE,
+    WM_GETFONT,
     WM_GETTEXT,
     WM_GETTEXTLENGTH,
     WM_KEYDOWN,
     WM_KILLFOCUS,
     WM_NCCREATE,
     WM_NCDESTROY,
+    WM_NEXTDLGCTL,
     WM_PAINT,
+    WM_PASTE,
     WM_SETFOCUS,
+    WM_SETFONT,
     WM_SETTEXT,
     WM_SIZE,
+    WM_UNDO,
 };
 use rtl::window::{GWL_EXSTYLE, GWL_STYLE};
 
@@ -118,16 +130,10 @@ use crate::dialog::{
     DLGC_WANTARROWS,
     DLGC_WANTCHARS,
     DM_GETDEFID,
-    WM_COMMAND,
-    WM_GETDLGCODE,
-    WM_GETFONT,
-    WM_NEXTDLGCTL,
-    WM_SETFONT,
     WS_CHILD,
     WS_DISABLED,
 };
 use crate::imports::{self, LocalFixed, LocalLocked, LMEM_FIXED, LMEM_MOVEABLE, LMEM_ZEROINIT};
-use crate::message::{WM_CTLCOLOREDIT, WM_CTLCOLORSTATIC};
 use crate::{caret, clipboard, message, paint, procedure, window};
 
 /// The edit messages (winuser.h's EM_*).
@@ -185,13 +191,6 @@ pub const EN_CHANGE: u32 = 0x0300;
 pub const EN_UPDATE: u32 = 0x0400;
 pub const EN_ERRSPACE: u32 = 0x0500;
 pub const EN_MAXTEXT: u32 = 0x0501;
-
-/// The clipboard messages and WM_CLEAR, WM_UNDO (winuser.h).
-pub const WM_CUT: u32 = 0x0300;
-pub const WM_COPY: u32 = 0x0301;
-pub const WM_PASTE: u32 = 0x0302;
-pub const WM_CLEAR: u32 = 0x0303;
-pub const WM_UNDO: u32 = 0x0304;
 
 /// The window styles an edit's scroll bars would take (winuser.h).
 const WS_HSCROLL: u32 = 0x0010_0000;

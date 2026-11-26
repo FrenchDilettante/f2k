@@ -56,6 +56,7 @@ use core::ptr::NonNull;
 
 use rtl::accel::{Accel, Modifiers, ACCEL_BITS};
 use rtl::menu::{MF_DISABLED, MF_GRAYED};
+use rtl::user::{WM_COMMAND, WM_INITMENU, WM_INITMENUPOPUP};
 use rtl::winerror::{
     ERROR_INVALID_ACCEL_HANDLE,
     ERROR_INVALID_PARAMETER,
@@ -76,11 +77,6 @@ pub const INLINE: usize = 32;
 
 /// An ACCEL's bytes.
 const ACCEL_BYTES: usize = core::mem::size_of::<Accel>();
-
-/// The messages a translation sends (winuser.h).
-pub const WM_COMMAND: u32 = 0x0111;
-pub const WM_INITMENU: u32 = 0x0116;
-pub const WM_INITMENUPOPUP: u32 = 0x0117;
 
 /// WS_DISABLED: the window takes no input.
 const WS_DISABLED: u32 = 0x0800_0000;
@@ -750,6 +746,8 @@ pub use services::{
 mod tests {
     use std::boxed::Box;
 
+    use rtl::user::WM_KEYDOWN;
+
     use super::*;
 
     const OWNER: Owner = 3;
@@ -958,12 +956,7 @@ mod tests {
             cmd: 4242,
         };
         a.append(id, &entries).unwrap();
-        let found = rtl::accel::find(
-            a.entries(id),
-            rtl::accel::WM_KEYDOWN,
-            0x74,
-            Modifiers::default(),
-        );
+        let found = rtl::accel::find(a.entries(id), WM_KEYDOWN, 0x74, Modifiers::default());
         assert_eq!(found.map(|entry| entry.cmd), Some(4242));
     }
 

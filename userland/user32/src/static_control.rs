@@ -28,7 +28,7 @@ use rtl::nonclient::WS_EX_STATICEDGE;
 use rtl::user::*;
 use rtl::window::{WindowLinks, GWL_EXSTYLE, QUERY_WINDOW_EXTRA};
 
-use crate::dialog::{DLGC_STATIC, WM_GETDLGCODE, WM_GETFONT, WM_SETFONT, WS_CHILD, WS_DISABLED};
+use crate::dialog::{DLGC_STATIC, WS_CHILD, WS_DISABLED};
 use crate::draw::{self, BF_LEFT, BF_RECT, BF_TOP};
 use crate::{imports, message, paint, window};
 
@@ -229,7 +229,7 @@ fn static_control(window: usize, message: u32, wparam: u32, lparam: i32, ansi: b
         WM_GETDLGCODE => DLGC_STATIC as i32,
         // A static lets the mouse through to the window under it unless SS_NOTIFY asks for its
         // clicks (controls `edges`: WindowFromPoint finds a plain static's parent).
-        crate::nonclient::WM_NCHITTEST if style_of(window) & SS_NOTIFY == 0 => -1,
+        WM_NCHITTEST if style_of(window) & SS_NOTIFY == 0 => -1,
         WM_LBUTTONDOWN | WM_LBUTTONDBLCLK if style_of(window) & SS_NOTIFY != 0 => {
             notify(
                 window,
@@ -317,7 +317,7 @@ fn notify(window: usize, code: u32) {
     let id = window::window_data(window).map_or(0, |data| data.id);
     let _ = message::send(
         parent,
-        crate::dialog::WM_COMMAND,
+        WM_COMMAND,
         code << 16 | (id & 0xFFFF),
         window as i32,
     );
@@ -394,8 +394,8 @@ fn draw_static(window: usize, dc: usize) {
         kind => {
             let parent = parent_of(window);
             let brush = if parent != 0 {
-                message::send(parent, message::WM_CTLCOLORSTATIC, dc as u32, window as i32)
-                    .unwrap_or(0) as usize
+                message::send(parent, WM_CTLCOLORSTATIC, dc as u32, window as i32).unwrap_or(0)
+                    as usize
             } else {
                 0
             };

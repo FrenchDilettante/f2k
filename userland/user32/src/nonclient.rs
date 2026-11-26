@@ -61,12 +61,6 @@ use crate::frame_control::{
 };
 use crate::{imports, menubar, message, window};
 
-/// The non-client messages the default procedure answers (winuser.h's WM_*).
-pub const WM_NCCALCSIZE: u32 = 0x0083;
-pub const WM_NCHITTEST: u32 = 0x0084;
-pub const WM_NCPAINT: u32 = 0x0085;
-pub const WM_NCACTIVATE: u32 = 0x0086;
-
 /// The system colors the frame is drawn in (winuser.h's COLOR_*).
 const COLOR_ACTIVECAPTION: u32 = 2;
 const COLOR_INACTIVECAPTION: u32 = 3;
@@ -607,6 +601,8 @@ pub fn draw_glyph(dc: usize, glyph: Glyph, rect: Rect, enabled: bool, ink: u32) 
 
 #[cfg(test)]
 mod tests {
+    use rtl::user::WM_NCHITTEST;
+
     use super::*;
     use crate::class::{register_class_a, WndClass};
     use crate::imports::host::procedure;

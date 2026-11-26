@@ -47,17 +47,6 @@ pub const DWL_DLGPROC: i32 = 4;
 pub const DWL_USER: i32 = 8;
 pub const DLGWINDOWEXTRA: i32 = 30;
 
-/// The messages the dialog manager sends and answers.
-pub const WM_NEXTDLGCTL: u32 = 0x0028;
-pub const WM_SETFONT: u32 = 0x0030;
-pub const WM_GETFONT: u32 = 0x0031;
-pub const WM_QUERYDRAGICON: u32 = 0x0037;
-pub const WM_COMPAREITEM: u32 = 0x0039;
-pub const WM_VKEYTOITEM: u32 = 0x002E;
-pub const WM_CHARTOITEM: u32 = 0x002F;
-pub const WM_GETDLGCODE: u32 = 0x0087;
-pub const WM_INITDIALOG: u32 = 0x0110;
-pub const WM_COMMAND: u32 = 0x0111;
 pub const DM_GETDEFID: u32 = WM_USER;
 pub const DM_SETDEFID: u32 = WM_USER + 1;
 pub const DM_REPOSITION: u32 = WM_USER + 2;
@@ -1371,7 +1360,7 @@ fn answers_directly(message: u32) -> bool {
             | WM_VKEYTOITEM
             | WM_CHARTOITEM
             | WM_QUERYDRAGICON
-            | message::WM_CTLCOLORMSGBOX..=message::WM_CTLCOLORSTATIC
+            | WM_CTLCOLORMSGBOX..=WM_CTLCOLORSTATIC
     )
 }
 
@@ -1408,8 +1397,7 @@ fn default_dialog(dialog: usize, message: u32, wparam: u32, lparam: i32, ansi: b
     match message {
         WM_ERASEBKGND => {
             let dc = wparam as usize;
-            let brush =
-                message::send(dialog, message::WM_CTLCOLORDLG, wparam, dialog as i32).unwrap_or(0);
+            let brush = message::send(dialog, WM_CTLCOLORDLG, wparam, dialog as i32).unwrap_or(0);
             if let Some(client) = window::client_rect(dialog) {
                 crate::draw::fill(dc, client, brush as usize);
             }

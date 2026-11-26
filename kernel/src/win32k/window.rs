@@ -94,6 +94,25 @@
 
 use rtl::gdi::Rect;
 pub use rtl::user::StyleStruct;
+use rtl::user::{
+    WM_CREATE,
+    WM_DESTROY,
+    WM_GETMINMAXINFO,
+    WM_MOVE,
+    WM_NCCALCSIZE,
+    WM_NCCREATE,
+    WM_NCDESTROY,
+    WM_NCPAINT,
+    WM_PARENTNOTIFY,
+    WM_QUERYENDSESSION,
+    WM_SETHOTKEY,
+    WM_SHOWWINDOW,
+    WM_SIZE,
+    WM_STYLECHANGED,
+    WM_STYLECHANGING,
+    WM_WINDOWPOSCHANGED,
+    WM_WINDOWPOSCHANGING,
+};
 pub use rtl::window::{WindowData, WindowInfo, WindowPos};
 use rtl::winerror::{
     ERROR_ACCESS_DENIED,
@@ -166,23 +185,6 @@ pub const ANSI_CREATOR_BIT: u32 = 0x8000_0000;
 pub const CW_USEDEFAULT: i32 = 0x8000_0000u32 as i32;
 /// The second default marker the create path honors alongside CW_USEDEFAULT.
 const CW_USEDEFAULT_ALT: i32 = 0x8000;
-
-/// The messages the create/destroy logic sends (winuser.h's WM_*).
-pub const WM_CREATE: u32 = 0x0001;
-pub const WM_DESTROY: u32 = 0x0002;
-pub const WM_MOVE: u32 = 0x0003;
-pub const WM_SIZE: u32 = 0x0005;
-pub const WM_SETHOTKEY: u32 = 0x0032;
-pub const WM_NCCREATE: u32 = 0x0081;
-pub const WM_NCDESTROY: u32 = 0x0082;
-pub const WM_NCCALCSIZE: u32 = 0x0083;
-/// The frame's painting: the position path sends it when a framed window's frame shows anew.
-pub const WM_NCPAINT: u32 = 0x0085;
-pub const WM_PARENTNOTIFY: u32 = 0x0210;
-/// The messages the show and position decisions send.
-pub const WM_SHOWWINDOW: u32 = 0x0018;
-pub const WM_WINDOWPOSCHANGING: u32 = 0x0046;
-pub const WM_WINDOWPOSCHANGED: u32 = 0x0047;
 
 /// The show commands (winuser.h's SW_*).
 pub const SW_HIDE: i32 = 0;
@@ -604,7 +606,7 @@ pub fn default_procedure(windows: &Windows, target: WindowId, message: &mut Mess
         }
     }
     match message.message {
-        WM_NCCREATE | rtl::user::WM_QUERYENDSESSION => 1,
+        WM_NCCREATE | WM_QUERYENDSESSION => 1,
         _ => 0,
     }
 }
@@ -818,7 +820,7 @@ pub trait Session {
     fn min_max_info(&mut self, target: WindowId) -> MinMaxInfo {
         let defaults = self.windows().default_min_max_info(target);
         let mut message = Message {
-            message: rtl::user::WM_GETMINMAXINFO,
+            message: WM_GETMINMAXINFO,
             wparam: 0,
             lparam: 0,
             payload: Payload::MinMax(defaults),
@@ -4968,7 +4970,7 @@ impl Windows {
             value
         };
         let mut changing = Message {
-            message: rtl::user::WM_STYLECHANGING,
+            message: WM_STYLECHANGING,
             wparam: index as WParam,
             lparam: 0,
             payload: Payload::Style(StyleStruct {
@@ -4995,7 +4997,7 @@ impl Windows {
         s.send(
             window,
             &mut Message {
-                message: rtl::user::WM_STYLECHANGED,
+                message: WM_STYLECHANGED,
                 wparam: index as WParam,
                 lparam: 0,
                 payload: Payload::Style(StyleStruct {
@@ -6644,7 +6646,7 @@ mod tests {
                 }
             }
             if let Payload::Style(ref mut style) = message.payload {
-                if message.message == rtl::user::WM_STYLECHANGING {
+                if message.message == WM_STYLECHANGING {
                     if let Some(answer) = self.rec.style_answer {
                         style.style_new = answer;
                     }
@@ -9465,8 +9467,8 @@ mod tests {
         assert_eq!(
             pump.events,
             [
-                Ev::Send(id, rtl::user::WM_STYLECHANGING, -16i32 as u32, 0),
-                Ev::Send(id, rtl::user::WM_STYLECHANGED, -16i32 as u32, 0),
+                Ev::Send(id, WM_STYLECHANGING, -16i32 as u32, 0),
+                Ev::Send(id, WM_STYLECHANGED, -16i32 as u32, 0),
             ]
         );
         let ex = w.at(id).ex_style;
@@ -10204,7 +10206,7 @@ mod tests {
             }
 
             fn send(&mut self, target: WindowId, message: &mut Message) -> LResult {
-                if message.message == rtl::user::WM_GETMINMAXINFO {
+                if message.message == WM_GETMINMAXINFO {
                     let caller = self.1;
                     let _ = Windows::destroy_window(self, caller, target);
                     return 0;

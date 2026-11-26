@@ -58,28 +58,24 @@ use rtl::edge::{In, InStr, InWStr, OutBuf};
 use rtl::user::{
     CreateStructW,
     WM_CHAR,
+    WM_CHARTOITEM,
     WM_CREATE,
     WM_DEADCHAR,
+    WM_DEVMODECHANGE,
     WM_GETTEXT,
     WM_GETTEXTLENGTH,
+    WM_IME_CHAR,
+    WM_MENUCHAR,
     WM_NCCREATE,
     WM_SETTEXT,
+    WM_SETTINGCHANGE,
     WM_SYSCHAR,
     WM_SYSDEADCHAR,
 };
 
-use crate::dialog::WM_CHARTOITEM;
 use crate::edit::{EM_GETLINE, EM_REPLACESEL, EM_SETPASSWORDCHAR};
 use crate::imports;
-use crate::menubar::WM_MENUCHAR;
 use crate::records::Table;
-
-/// The messages whose lParam is a string (or none) of the caller's form, as WM_SETTEXT's: a
-/// setting's section, a device's name (winuser.h).
-const WM_SETTINGCHANGE: u32 = 0x001A;
-const WM_DEVMODECHANGE: u32 = 0x001B;
-/// An input method's character: a double-byte one whole (winuser.h).
-pub const WM_IME_CHAR: u32 = 0x0286;
 
 /// A window procedure, and whether it takes the narrow forms of the messages.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -621,6 +617,8 @@ pub extern "system" fn call_window_proc_w(
 
 #[cfg(test)]
 mod tests {
+    use rtl::user::{WM_KEYDOWN, WM_USER};
+
     use super::*;
 
     /// The handles name as many procedures as a process has, far past the 128 of each form a
@@ -705,7 +703,7 @@ mod tests {
         assert_eq!(got_text(&[1u8, 2, 3], 2), &[1, 2]);
         assert_eq!(got_text(&[1u8, 2, 3], -1), &[] as &[u8]);
         assert_eq!(narrow_length(&text), 4);
-        assert!(translates(WM_GETTEXTLENGTH) && !translates(rtl::user::WM_USER));
+        assert!(translates(WM_GETTEXTLENGTH) && !translates(WM_USER));
         assert!(translates(WM_SETTINGCHANGE) && translates(WM_DEVMODECHANGE));
     }
 
@@ -760,9 +758,9 @@ mod tests {
                 );
             }
         }
-        assert!(!char_message(rtl::user::WM_KEYDOWN));
-        assert_eq!(char_to_wide(rtl::user::WM_KEYDOWN, 0x80), 0x80);
-        assert_eq!(char_to_narrow(rtl::user::WM_USER, 0x20AC), 0x20AC);
+        assert!(!char_message(WM_KEYDOWN));
+        assert_eq!(char_to_wide(WM_KEYDOWN, 0x80), 0x80);
+        assert_eq!(char_to_narrow(WM_USER, 0x20AC), 0x20AC);
     }
 
     /// A character message crossing between the forms: a narrow caller's 0x80 reaches a wide

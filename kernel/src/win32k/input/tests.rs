@@ -2,7 +2,7 @@
 //! (each case's expected records are the capture's), the keyboard's bytes, the key states, and the
 //! window a key message is bound to as it is read.
 
-use rtl::user::{INPUT_KEYBOARD, WM_USER};
+use rtl::user::{INPUT_KEYBOARD, WM_KEYFIRST, WM_KEYLAST, WM_USER};
 
 use super::*;
 use crate::win32k::class;
@@ -534,10 +534,6 @@ fn no_focus_makes_system_keys() {
 
 /// 'X' pressed and released.
 const KEY_X: [(u16, u16, u32); 2] = [(0x58, 0x2D, DOWN), (0x58, 0x2D, UP)];
-
-/// The first and last key messages: a filter's range over them all.
-const WM_KEYFIRST: u32 = 0x0100;
-const WM_KEYLAST: u32 = 0x0108;
 
 /// Keys typed with the focus on A and read once it has moved to B go to B: the window is the
 /// focus window as the thread reads, not as the key went down.

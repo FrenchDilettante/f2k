@@ -33,6 +33,7 @@ pub const WM_ACTIVATE: u32 = 0x0006;
 pub const WM_SETFOCUS: u32 = 0x0007;
 pub const WM_KILLFOCUS: u32 = 0x0008;
 pub const WM_ENABLE: u32 = 0x000A;
+pub const WM_SETREDRAW: u32 = 0x000B;
 pub const WM_SETTEXT: u32 = 0x000C;
 pub const WM_GETTEXT: u32 = 0x000D;
 pub const WM_GETTEXTLENGTH: u32 = 0x000E;
@@ -42,16 +43,36 @@ pub const WM_QUERYENDSESSION: u32 = 0x0011;
 pub const WM_QUIT: u32 = 0x0012;
 pub const WM_ERASEBKGND: u32 = 0x0014;
 pub const WM_ENDSESSION: u32 = 0x0016;
+pub const WM_SHOWWINDOW: u32 = 0x0018;
+pub const WM_SETTINGCHANGE: u32 = 0x001A;
+pub const WM_DEVMODECHANGE: u32 = 0x001B;
 pub const WM_ACTIVATEAPP: u32 = 0x001C;
 pub const WM_CANCELMODE: u32 = 0x001F;
+pub const WM_GETMINMAXINFO: u32 = 0x0024;
+pub const WM_NEXTDLGCTL: u32 = 0x0028;
+pub const WM_DRAWITEM: u32 = 0x002B;
+pub const WM_VKEYTOITEM: u32 = 0x002E;
+pub const WM_CHARTOITEM: u32 = 0x002F;
+pub const WM_SETFONT: u32 = 0x0030;
+pub const WM_GETFONT: u32 = 0x0031;
+pub const WM_SETHOTKEY: u32 = 0x0032;
+pub const WM_QUERYDRAGICON: u32 = 0x0037;
+pub const WM_COMPAREITEM: u32 = 0x0039;
+pub const WM_WINDOWPOSCHANGING: u32 = 0x0046;
 pub const WM_WINDOWPOSCHANGED: u32 = 0x0047;
 pub const WM_COPYDATA: u32 = 0x004A;
+pub const WM_CONTEXTMENU: u32 = 0x007B;
 pub const WM_STYLECHANGING: u32 = 0x007C;
 pub const WM_STYLECHANGED: u32 = 0x007D;
+pub const WM_GETICON: u32 = 0x007F;
+pub const WM_SETICON: u32 = 0x0080;
 pub const WM_NCCREATE: u32 = 0x0081;
 pub const WM_NCDESTROY: u32 = 0x0082;
 pub const WM_NCCALCSIZE: u32 = 0x0083;
+pub const WM_NCHITTEST: u32 = 0x0084;
+pub const WM_NCPAINT: u32 = 0x0085;
 pub const WM_NCACTIVATE: u32 = 0x0086;
+pub const WM_GETDLGCODE: u32 = 0x0087;
 pub const WM_KEYFIRST: u32 = 0x0100;
 pub const WM_KEYDOWN: u32 = 0x0100;
 pub const WM_KEYUP: u32 = 0x0101;
@@ -62,13 +83,43 @@ pub const WM_SYSKEYUP: u32 = 0x0105;
 pub const WM_SYSCHAR: u32 = 0x0106;
 pub const WM_SYSDEADCHAR: u32 = 0x0107;
 pub const WM_KEYLAST: u32 = 0x0108;
+pub const WM_INITDIALOG: u32 = 0x0110;
+pub const WM_COMMAND: u32 = 0x0111;
+pub const WM_SYSCOMMAND: u32 = 0x0112;
 pub const WM_TIMER: u32 = 0x0113;
+pub const WM_INITMENU: u32 = 0x0116;
+pub const WM_INITMENUPOPUP: u32 = 0x0117;
 pub const WM_SYSTIMER: u32 = 0x0118;
+pub const WM_MENUSELECT: u32 = 0x011F;
+pub const WM_MENUCHAR: u32 = 0x0120;
+pub const WM_ENTERIDLE: u32 = 0x0121;
+pub const WM_UNINITMENUPOPUP: u32 = 0x0125;
+pub const WM_CHANGEUISTATE: u32 = 0x0127;
+pub const WM_UPDATEUISTATE: u32 = 0x0128;
+pub const WM_QUERYUISTATE: u32 = 0x0129;
+pub const WM_CTLCOLORMSGBOX: u32 = 0x0132;
+pub const WM_CTLCOLOREDIT: u32 = 0x0133;
+pub const WM_CTLCOLORLISTBOX: u32 = 0x0134;
+pub const WM_CTLCOLORBTN: u32 = 0x0135;
+pub const WM_CTLCOLORDLG: u32 = 0x0136;
+pub const WM_CTLCOLORSCROLLBAR: u32 = 0x0137;
+pub const WM_CTLCOLORSTATIC: u32 = 0x0138;
 pub const WM_MOUSEFIRST: u32 = 0x0200;
 pub const WM_LBUTTONDOWN: u32 = 0x0201;
 pub const WM_LBUTTONUP: u32 = 0x0202;
 pub const WM_LBUTTONDBLCLK: u32 = 0x0203;
 pub const WM_MOUSELAST: u32 = 0x020D;
+pub const WM_PARENTNOTIFY: u32 = 0x0210;
+pub const WM_ENTERMENULOOP: u32 = 0x0211;
+pub const WM_EXITMENULOOP: u32 = 0x0212;
+pub const WM_IME_CHAR: u32 = 0x0286;
+pub const WM_CUT: u32 = 0x0300;
+pub const WM_COPY: u32 = 0x0301;
+pub const WM_PASTE: u32 = 0x0302;
+pub const WM_CLEAR: u32 = 0x0303;
+pub const WM_UNDO: u32 = 0x0304;
+pub const WM_RENDERALLFORMATS: u32 = 0x0306;
+pub const WM_DESTROYCLIPBOARD: u32 = 0x0307;
 pub const WM_USER: u32 = 0x0400;
 
 /// WM_QUERYENDSESSION's and WM_ENDSESSION's lParam for a logoff (winuser.h's ENDSESSION_LOGOFF): 0
@@ -138,13 +189,13 @@ pub fn sync_only(message: u32) -> bool {
             | WM_SETTEXT
             | WM_GETTEXT
             | WM_GETMINMAXINFO
-            | 0x002B // WM_DRAWITEM
+            | WM_DRAWITEM
             | 0x002C // WM_MEASUREITEM
             | 0x002D // WM_DELETEITEM
-            | 0x0039 // WM_COMPAREITEM
+            | WM_COMPAREITEM
             | WM_WINDOWPOSCHANGING
             | WM_WINDOWPOSCHANGED
-            | 0x004A // WM_COPYDATA
+            | WM_COPYDATA
             | 0x004E // WM_NOTIFY
             | 0x0053 // WM_HELP
             | WM_STYLECHANGING
@@ -228,11 +279,6 @@ pub struct StyleStruct {
 
 // SAFETY: integers only.
 unsafe impl Pod for StyleStruct {}
-
-/// WM_GETMINMAXINFO.
-pub const WM_GETMINMAXINFO: u32 = 0x0024;
-/// WM_WINDOWPOSCHANGING.
-pub const WM_WINDOWPOSCHANGING: u32 = 0x0046;
 
 /// MINMAXINFO (40 bytes): WM_GETMINMAXINFO's lParam, the sizes and the place a window may take,
 /// which the window manager fills with its defaults before it sends the message and the procedure

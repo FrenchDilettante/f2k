@@ -48,6 +48,7 @@
 //! EnumClipboardFormats comes through NtUserCallOneParam ([`super::queue`]).
 
 use rtl::codepage::{decode_byte, encode_unit, CodePage};
+use rtl::user::{WM_DESTROYCLIPBOARD, WM_RENDERALLFORMATS};
 use rtl::winerror::{
     ERROR_ACCESS_DENIED,
     ERROR_CLIPBOARD_NOT_OPEN,
@@ -71,10 +72,6 @@ const TEXT_FORMATS: [u32; 3] = [CF_TEXT, CF_OEMTEXT, CF_UNICODETEXT];
 
 /// The first registered format: registered names are string atoms (0xC000..=0xFFFF).
 pub const FIRST_REGISTERED: u32 = 0xC000;
-
-/// The messages the clipboard sends its owner (winuser.h).
-pub const WM_RENDERALLFORMATS: u32 = 0x0306;
-pub const WM_DESTROYCLIPBOARD: u32 = 0x0307;
 
 /// How many formats the clipboard holds at once.
 const FORMATS: usize = 32;

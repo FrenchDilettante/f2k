@@ -17,9 +17,9 @@
 //! message's character from the ANSI code page first; CreateAcceleratorTableA converts a character
 //! entry's key from it, and CopyAcceleratorTableA converts one back.
 
-use rtl::accel::{Accel, AccelTableEntry, FVIRTKEY, WM_CHAR, WM_SYSCHAR};
+use rtl::accel::{Accel, AccelTableEntry, FVIRTKEY};
 use rtl::edge::{InBuf, OutBuf};
-use rtl::user::Msg;
+use rtl::user::{Msg, WM_CHAR, WM_SYSCHAR};
 
 use crate::imports::{self, HeapBlock, ResourceName};
 use crate::{failed, failed_with, window_error, ERROR_INVALID_PARAMETER, ERROR_NOT_ENOUGH_MEMORY};

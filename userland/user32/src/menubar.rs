@@ -61,12 +61,23 @@ use rtl::nonclient::{MENU, WS_CHILD};
 use rtl::user::{
     Msg,
     WM_CHAR,
+    WM_COMMAND,
+    WM_ENTERIDLE,
+    WM_ENTERMENULOOP,
+    WM_ERASEBKGND,
+    WM_EXITMENULOOP,
+    WM_INITMENU,
+    WM_INITMENUPOPUP,
     WM_KEYDOWN,
     WM_KEYUP,
+    WM_MENUCHAR,
+    WM_MENUSELECT,
     WM_NULL,
+    WM_PAINT,
     WM_SYSCHAR,
     WM_SYSKEYDOWN,
     WM_SYSKEYUP,
+    WM_UNINITMENUPOPUP,
 };
 
 use crate::draw::{
@@ -84,18 +95,6 @@ use crate::draw::{
 use crate::imports::{self, Creation};
 use crate::nonclient::{self, color, Framed, Glyph};
 use crate::{message, paint, window};
-
-/// The menu messages (winuser.h's WM_*).
-pub const WM_COMMAND: u32 = 0x0111;
-pub const WM_SYSCOMMAND: u32 = 0x0112;
-pub const WM_INITMENU: u32 = 0x0116;
-pub const WM_INITMENUPOPUP: u32 = 0x0117;
-pub const WM_MENUSELECT: u32 = 0x011F;
-pub const WM_MENUCHAR: u32 = 0x0120;
-pub const WM_ENTERIDLE: u32 = 0x0121;
-pub const WM_UNINITMENUPOPUP: u32 = 0x0125;
-pub const WM_ENTERMENULOOP: u32 = 0x0211;
-pub const WM_EXITMENULOOP: u32 = 0x0212;
 
 /// WM_SYSCOMMAND's commands (winuser.h's SC_*).
 pub const SC_KEYMENU: u32 = 0xF100;
@@ -595,7 +594,7 @@ fn redraw_popup(window: usize) {
 /// the menu's color; the rest the default procedure's.
 pub fn menu_proc(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> i32 {
     match message {
-        rtl::user::WM_PAINT => {
+        WM_PAINT => {
             if let Some(painting) = paint::Painting::begin(window) {
                 let (menu, selected) = popup_state(window);
                 if let Some(client) = window::client_rect(window) {
@@ -604,7 +603,7 @@ pub fn menu_proc(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bo
             }
             0
         }
-        rtl::user::WM_ERASEBKGND => {
+        WM_ERASEBKGND => {
             if let Some(client) = window::client_rect(window) {
                 draw::fill(wparam as usize, client, color(COLOR_MENU));
             }
@@ -1316,6 +1315,7 @@ mod tests {
     use core::cell::RefCell;
 
     use rtl::testing::wide_z;
+    use rtl::user::WM_CANCELMODE;
 
     use super::*;
     use crate::class::{register_class_a, WndClass, SYSTEM_CLASSES_WANTED};
@@ -1470,7 +1470,7 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let (window, _, view) = window_with_menu();
-        let _ = imports::post_message(window, rtl::user::WM_CANCELMODE, 0, 0);
+        let _ = imports::post_message(window, WM_CANCELMODE, 0, 0);
         SEEN.with(|seen| seen.borrow_mut().clear());
         assert_eq!(
             track_popup_menu(view, TPM_RETURNCMD, 10, 10, 0, window, 0),

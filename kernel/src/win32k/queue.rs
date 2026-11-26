@@ -142,6 +142,7 @@ use rtl::user::{
     WM_SETTEXT,
     WM_SYSTIMER,
     WM_TIMER,
+    WM_WINDOWPOSCHANGING,
 };
 
 use super::class;
@@ -164,7 +165,6 @@ use super::window::{
     WindowPos,
     Windows,
     THREADS,
-    WM_WINDOWPOSCHANGING,
 };
 use crate::sched::thread::ThreadId;
 use crate::slots::{self, Codec, Match, Record, Reuse, Slots};
@@ -3765,12 +3765,15 @@ mod tests {
         PM_QS_POSTMESSAGE,
         PM_QS_SENDMESSAGE,
         WM_DESTROY,
+        WM_GETMINMAXINFO,
+        WM_KEYDOWN,
         WM_MOVE,
         WM_NCCALCSIZE,
         WM_NCDESTROY,
         WM_SIZE,
         WM_STYLECHANGING,
         WM_USER,
+        WM_WINDOWPOSCHANGED,
     };
 
     use super::rig::*;
@@ -3903,7 +3906,7 @@ mod tests {
             (input.api, input.length)
         };
         assert_eq!(slot(WM_WINDOWPOSCHANGING), (FN_INOUTLPWINDOWPOS, 28));
-        assert_eq!(slot(window::WM_WINDOWPOSCHANGED), (FN_INLPWINDOWPOS, 28));
+        assert_eq!(slot(WM_WINDOWPOSCHANGED), (FN_INLPWINDOWPOS, 28));
 
         // WM_GETMINMAXINFO's MINMAXINFO, five POINTs, in and out.
         let mmi = window::MinMaxInfo {
@@ -3918,7 +3921,7 @@ mod tests {
             &m.classes,
             w,
             PROC,
-            &message(rtl::user::WM_GETMINMAXINFO, Payload::MinMax(mmi)),
+            &message(WM_GETMINMAXINFO, Payload::MinMax(mmi)),
         );
         assert_eq!((input.api, input.length), (FN_INOUTLPPOINT5, 40));
         let words: Vec<i32> = input.carried[..40]
@@ -4010,7 +4013,7 @@ mod tests {
             min_track: (300, 250),
             max_track: (400, 300),
         };
-        let mut m = message(rtl::user::WM_GETMINMAXINFO, 0, Payload::MinMax(defaults));
+        let mut m = message(WM_GETMINMAXINFO, 0, Payload::MinMax(defaults));
         read_back(FN_INOUTLPPOINT5, &mut m, &out(answered.raw().as_bytes()));
         assert_eq!(m.payload, Payload::MinMax(answered));
     }
@@ -4061,7 +4064,7 @@ mod tests {
         };
         let edited = WindowPos { cx: 250, ..pos };
         let mut m = Message {
-            message: window::WM_WINDOWPOSCHANGED,
+            message: WM_WINDOWPOSCHANGED,
             wparam: 0,
             lparam: 0,
             payload: Payload::WindowPos(pos),
@@ -4078,7 +4081,7 @@ mod tests {
             ..defaults
         };
         let mut m = Message {
-            message: rtl::user::WM_GETMINMAXINFO,
+            message: WM_GETMINMAXINFO,
             wparam: 0,
             lparam: 0,
             payload: Payload::MinMax(defaults),
@@ -4175,12 +4178,12 @@ mod tests {
         while let Taken::Sent(id) = read(m, t, &only_sent, 0) {
             let head = head_of(&m.windows, id).unwrap();
             let payload = payload_of(m, id);
-            if head.msg.message == window::WM_WINDOWPOSCHANGED {
+            if head.msg.message == WM_WINDOWPOSCHANGED {
                 let Payload::WindowPos(pos) = payload else {
                     panic!("a WINDOWPOS");
                 };
                 changed = Some(pos);
-            } else if head.msg.message != window::WM_WINDOWPOSCHANGING {
+            } else if head.msg.message != WM_WINDOWPOSCHANGING {
                 assert!(!matches!(payload, Payload::WindowPos(_)));
             }
             assert!(end_sent(&mut m.windows, t, 0));
@@ -5010,7 +5013,7 @@ mod tests {
         );
         post_thread(&mut m.windows, other, WM_USER, 0, 0, 0).unwrap();
         let key = Msg {
-            message: rtl::user::WM_KEYDOWN,
+            message: WM_KEYDOWN,
             wparam: 0x41,
             ..Msg::default()
         };
@@ -5507,13 +5510,13 @@ mod tests {
                 }),
             ),
             (
-                decision_message(rtl::user::WM_GETMINMAXINFO, 0, Payload::MinMax(mmi)),
+                decision_message(WM_GETMINMAXINFO, 0, Payload::MinMax(mmi)),
                 FN_INOUTLPPOINT5,
                 edited_mmi.raw().as_bytes().to_vec(),
                 Payload::MinMax(edited_mmi),
             ),
             (
-                decision_message(rtl::user::WM_GETMINMAXINFO, 0, Payload::MinMax(mmi)),
+                decision_message(WM_GETMINMAXINFO, 0, Payload::MinMax(mmi)),
                 FN_INOUTLPPOINT5,
                 edited_mmi.raw().as_bytes()[..8].to_vec(),
                 Payload::MinMax(mmi),
@@ -5548,7 +5551,7 @@ mod tests {
             );
         }
 
-        let changed = decision_message(window::WM_WINDOWPOSCHANGED, 0, Payload::WindowPos(pos));
+        let changed = decision_message(WM_WINDOWPOSCHANGED, 0, Payload::WindowPos(pos));
         let id = send_for_decision(&mut m.windows, a, wb, PROC, &changed).unwrap();
         let Taken::Sent(got) = read(m, b, &all(), 0) else {
             panic!("B reads it");

@@ -41,8 +41,8 @@ use rtl::user::*;
 use rtl::window::{WindowLinks, GWL_STYLE};
 
 use crate::dialog::{self, BN_CLICKED, DLGC_BUTTON, DLGC_DEFPUSHBUTTON, DLGC_RADIOBUTTON};
-use crate::dialog::{DLGC_STATIC, DLGC_UNDEFPUSHBUTTON, WM_COMMAND, WM_GETDLGCODE, WM_GETFONT};
-use crate::dialog::{WM_SETFONT, WS_CHILD, WS_DISABLED, WS_TABSTOP, WS_VISIBLE};
+use crate::dialog::{DLGC_STATIC, DLGC_UNDEFPUSHBUTTON};
+use crate::dialog::{WS_CHILD, WS_DISABLED, WS_TABSTOP, WS_VISIBLE};
 use crate::draw::{self, BF_RECT, BF_SOFT, DT_CENTER, DT_LEFT, DT_SINGLELINE, DT_VCENTER};
 use crate::{focus, imports, message, paint, window};
 
@@ -76,8 +76,7 @@ const UNDRAWN_KINDS: [(u32, &str); 2] =
 /// BS_OWNERDRAW, the kind whose paint goes to the parent as WM_DRAWITEM.
 const BS_OWNERDRAW: u32 = 0xB;
 
-/// WM_DRAWITEM, and DRAWITEMSTRUCT's fields' values for a button drawn whole (winuser.h's).
-const WM_DRAWITEM: u32 = 0x002B;
+/// DRAWITEMSTRUCT's fields' values for a button drawn whole (winuser.h's).
 const ODT_BUTTON: u32 = 4;
 const ODA_DRAWENTIRE: u32 = 0x0001;
 const ODA_SELECT: u32 = 0x0002;
@@ -587,8 +586,8 @@ fn draw_item(window: usize, dc: usize, action: u32) {
     }
     let mut brush = 0;
     for _ in 0..2 {
-        brush = message::send(parent, message::WM_CTLCOLORBTN, dc as u32, window as i32)
-            .unwrap_or(0) as usize;
+        brush =
+            message::send(parent, WM_CTLCOLORBTN, dc as u32, window as i32).unwrap_or(0) as usize;
     }
     if brush != 0 {
         let _ = imports::select_object(dc, brush);
@@ -651,8 +650,7 @@ fn draw_button(window: usize, dc: usize) {
         .flatten();
     let parent = parent_of(window);
     let brush = if parent != 0 {
-        message::send(parent, message::WM_CTLCOLORBTN, dc as u32, window as i32).unwrap_or(0)
-            as usize
+        message::send(parent, WM_CTLCOLORBTN, dc as u32, window as i32).unwrap_or(0) as usize
     } else {
         0
     };
@@ -884,7 +882,7 @@ mod tests {
 
     /// A dialog procedure recording the WM_DRAWITEMs' wParams; every other message to the default.
     fn recorder(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
-        if matches!(message, WM_DRAWITEM | message::WM_CTLCOLORBTN) {
+        if matches!(message, WM_DRAWITEM | WM_CTLCOLORBTN) {
             SEQUENCE.with(|sequence| sequence.borrow_mut().push(message));
         }
         if message == WM_DRAWITEM {
@@ -947,11 +945,7 @@ mod tests {
         assert_eq!(DRAWN.with(|drawn| drawn.borrow().clone()), [7]);
         assert_eq!(
             SEQUENCE.with(|sequence| sequence.borrow().clone()),
-            [
-                message::WM_CTLCOLORBTN,
-                message::WM_CTLCOLORBTN,
-                WM_DRAWITEM
-            ]
+            [WM_CTLCOLORBTN, WM_CTLCOLORBTN, WM_DRAWITEM]
         );
         let item = item_struct(button, 0x1234, ODA_DRAWENTIRE);
         let client = window::client_rect(button).unwrap();

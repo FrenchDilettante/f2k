@@ -9,12 +9,9 @@ use std::cell::RefCell;
 use std::vec::Vec;
 
 use rtl::status::*;
-use rtl::user::ONE_PARAM_ENUM_CLIPBOARD_FORMATS;
+use rtl::user::{ONE_PARAM_ENUM_CLIPBOARD_FORMATS, WM_DESTROYCLIPBOARD};
 
 use super::{wm, HostSent};
-
-/// WM_DESTROYCLIPBOARD, which an empty sends the owner.
-pub const WM_DESTROYCLIPBOARD: u32 = 0x0307;
 
 /// The first global memory handle; each block's is 8 on from the one before.
 const FIRST_GLOBAL: usize = 0x0010_0008;

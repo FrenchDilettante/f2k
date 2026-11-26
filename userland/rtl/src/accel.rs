@@ -6,6 +6,7 @@
 use core::mem::size_of;
 
 use crate::pod::Pod;
+use crate::user::{WM_CHAR, WM_KEYDOWN, WM_SYSCHAR, WM_SYSKEYDOWN};
 
 /// ACCEL's fVirt bits (winuser.h's F*): the key is a virtual key (a character code otherwise); the
 /// top-level menu item is not highlighted; Shift, Ctrl, Alt must be down.
@@ -20,12 +21,6 @@ pub const ACCEL_BITS: u8 = FVIRTKEY | FNOINVERT | FSHIFT | FCONTROL | FALT;
 
 /// ACCELTABLEENTRY's fFlags bit marking a table's last entry.
 pub const ACCEL_LAST: u16 = 0x80;
-
-/// The keyboard messages TranslateAccelerator looks at (winuser.h).
-pub const WM_KEYDOWN: u32 = 0x0100;
-pub const WM_CHAR: u32 = 0x0102;
-pub const WM_SYSKEYDOWN: u32 = 0x0104;
-pub const WM_SYSCHAR: u32 = 0x0106;
 
 /// ACCEL (6 bytes): an accelerator, its key a virtual key or a character code.
 #[repr(C)]

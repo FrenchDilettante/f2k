@@ -32,7 +32,14 @@ use core::sync::atomic::{AtomicU32, Ordering};
 use rtl::edge::OutBuf;
 use rtl::gdi::Rect;
 use rtl::status::NtStatus;
-use rtl::user::{Point, HWND_LOCK_UPDATE_WINDOW, WM_GETTEXT, WM_GETTEXTLENGTH, WM_SETTEXT};
+use rtl::user::{
+    Point,
+    HWND_LOCK_UPDATE_WINDOW,
+    WM_GETTEXT,
+    WM_GETTEXTLENGTH,
+    WM_NCHITTEST,
+    WM_SETTEXT,
+};
 use rtl::window::*;
 
 use crate::imports::{self, Creation};
@@ -590,7 +597,7 @@ fn lets_through(window: usize, x: i32, y: i32) -> bool {
         return false;
     }
     let at = ((y as u16 as u32) << 16) | x as u16 as u32;
-    message::send(window, crate::nonclient::WM_NCHITTEST, 0, at as i32) == Some(HTTRANSPARENT)
+    message::send(window, WM_NCHITTEST, 0, at as i32) == Some(HTTRANSPARENT)
 }
 
 /// The window's parent (QUERY_WINDOW_PARENT): the desktop window for a top-level window, 0 for
@@ -2010,7 +2017,7 @@ mod tests {
         let window = data_window("F2KText", narrow_default, 0, true);
         wm(|wm| wm.windows.last_mut().unwrap().text = "hello".encode_utf16().collect());
         assert_eq!(get_window_text_length_a(window), 5);
-        assert_eq!(seen(), [rtl::user::WM_GETTEXTLENGTH]);
+        assert_eq!(seen(), [WM_GETTEXTLENGTH]);
         let mut narrow = [b'#'; 4];
         // SAFETY: the tests' own buffer, of the length given.
         assert_eq!(

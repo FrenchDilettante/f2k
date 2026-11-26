@@ -18,8 +18,9 @@
 
 use rtl::edge::InStr;
 use rtl::gdi::{LogFontW, Rect, DEFAULT_CHARSET, FW_NORMAL};
+use rtl::user::{WM_COMMAND, WM_INITDIALOG};
 
-use crate::dialog::{self, Call, Reader, Request, IDCANCEL, IDOK, WM_COMMAND, WM_INITDIALOG};
+use crate::dialog::{self, Call, Reader, Request, IDCANCEL, IDOK};
 use crate::procedure::Procedure;
 use crate::{draw, focus, imports, window};
 

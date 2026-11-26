@@ -882,15 +882,15 @@ pub fn default_procedure(window: usize, message: u32, wparam: u32, lparam: i32, 
             }
             0
         }
-        nonclient::WM_NCCALCSIZE => nonclient::calc_size(window, wparam, lparam),
-        nonclient::WM_NCHITTEST => nonclient::hit_test(window, lparam),
-        nonclient::WM_NCPAINT => nonclient::paint(window),
+        WM_NCCALCSIZE => nonclient::calc_size(window, wparam, lparam),
+        WM_NCHITTEST => nonclient::hit_test(window, lparam),
+        WM_NCPAINT => nonclient::paint(window),
         WM_NCACTIVATE => nonclient::activate(window, wparam),
         WM_SYSKEYDOWN | WM_SYSKEYUP | WM_KEYDOWN | WM_KEYUP | WM_SYSCHAR => {
             system_key(window, message, wparam, lparam, ansi);
             0
         }
-        menubar::WM_SYSCOMMAND => {
+        WM_SYSCOMMAND => {
             system_command(window, wparam, lparam, ansi);
             0
         }
@@ -929,11 +929,7 @@ pub fn default_procedure(window: usize, message: u32, wparam: u32, lparam: i32, 
 
 // --- The UI state (the keyboard cues) ------------------------------------------------------------
 
-/// The UI state messages (winuser.h's).
-const WM_CHANGEUISTATE: u32 = 0x0127;
-const WM_UPDATEUISTATE: u32 = 0x0128;
-const WM_QUERYUISTATE: u32 = 0x0129;
-/// Their actions (wParam's low word) and flags (its high word).
+/// The UI state messages' actions (wParam's low word) and flags (its high word).
 const UIS_SET: u32 = 1;
 const UIS_CLEAR: u32 = 2;
 const UIS_INITIALIZE: u32 = 3;
@@ -1080,11 +1076,6 @@ const UNHANDLED_MESSAGES: [(u32, &str); 6] = [
 
 // --- WM_SETREDRAW, WM_CONTEXTMENU, and the window's icons ----------------------------------------
 
-/// The messages (winuser.h's).
-const WM_SETREDRAW: u32 = 0x000B;
-const WM_CONTEXTMENU: u32 = 0x007B;
-const WM_GETICON: u32 = 0x007F;
-const WM_SETICON: u32 = 0x0080;
 /// WM_SETICON's and WM_GETICON's wParam: the small icon (the caption's) and the big one
 /// (Alt+Tab's).
 const ICON_SMALL: u32 = 0;
@@ -1189,16 +1180,6 @@ fn erase_background(window: usize, dc: usize) -> bool {
     true
 }
 
-/// The WM_CTLCOLOR* messages (winuser.h): a control asks its parent the colors and the brush it
-/// draws with.
-pub const WM_CTLCOLORMSGBOX: u32 = 0x0132;
-pub const WM_CTLCOLOREDIT: u32 = 0x0133;
-pub const WM_CTLCOLORLISTBOX: u32 = 0x0134;
-pub const WM_CTLCOLORBTN: u32 = 0x0135;
-pub const WM_CTLCOLORDLG: u32 = 0x0136;
-pub const WM_CTLCOLORSCROLLBAR: u32 = 0x0137;
-pub const WM_CTLCOLORSTATIC: u32 = 0x0138;
-
 /// The system colors the default colors are (winuser.h's COLOR_*).
 const COLOR_SCROLLBAR: u32 = 0;
 const COLOR_WINDOW: u32 = 5;
@@ -1259,12 +1240,7 @@ fn top_level(window: usize) -> usize {
 /// (Alt+Space, the system menu's, is not served: F2K has no system menu), Alt+F4 SC_CLOSE.
 fn system_key(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) {
     let send_command = |command: u32, parameter: i32| {
-        let _ = send(
-            top_level(window),
-            menubar::WM_SYSCOMMAND,
-            command,
-            parameter,
-        );
+        let _ = send(top_level(window), WM_SYSCOMMAND, command, parameter);
     };
     match message {
         WM_SYSKEYDOWN if wparam == VK_MENU || wparam == VK_F10 => {
@@ -1343,7 +1319,7 @@ fn system_command(window: usize, wparam: u32, lparam: i32, ansi: bool) {
                 command,
                 default_entry(ansi),
                 format_args!("{name} is not yet implemented"),
-                (window, menubar::WM_SYSCOMMAND, wparam, lparam),
+                (window, WM_SYSCOMMAND, wparam, lparam),
             );
         }
         _ => {}
