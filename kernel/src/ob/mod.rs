@@ -219,6 +219,26 @@ pub const SEGMENTS: usize = 2 * PROCESSES;
 /// numbering, which places its TEB: see [`crate::process::ordinals`]). Room for two processes at
 /// nearly their full thread counts.
 pub const THREADS: usize = 128;
+
+/// A set of thread records, by index: a bit each.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct ThreadRecordSet([u32; THREADS.div_ceil(32)]);
+
+impl ThreadRecordSet {
+    /// No record.
+    const EMPTY: ThreadRecordSet = ThreadRecordSet([0; THREADS.div_ceil(32)]);
+
+    /// Add record `index`.
+    fn insert(&mut self, index: u16) {
+        self.0[index as usize / 32] |= 1 << (index % 32);
+    }
+
+    /// The records in the set, lowest first.
+    fn iter(self) -> impl Iterator<Item = u16> {
+        (0..THREADS as u16)
+            .filter(move |&index| self.0[index as usize / 32] & (1 << (index % 32)) != 0)
+    }
+}
 /// How many processes can exist at once: the process pool's records ([`crate::process::pool`]),
 /// one process object each.
 pub const PROCESSES: usize = crate::process::MAX_PROCESSES;
@@ -782,6 +802,9 @@ macro_rules! pools {
             segments: ObSlots<ImageSegment, { per_page::<ObRecord<ImageSegment>>() }>,
             names: Names,
             waits: [WaitReferences; THREADS],
+            /// The thread records handed to a thread object since the last sweep's end (a bit per
+            /// record): the only ones the sweep's end starts over (see [`Directory::sweep_end`]).
+            used_threads: ThreadRecordSet,
         }
 
         impl Directory {
@@ -803,6 +826,7 @@ macro_rules! pools {
                     for index in 0..THREADS {
                         waits.add(index).write(WaitReferences::none());
                     }
+                    addr_of_mut!((*directory).used_threads).write(ThreadRecordSet::EMPTY);
                 }
             }
 
@@ -1072,6 +1096,7 @@ impl Directory {
     /// released when the thread ends.
     pub fn create_thread_in(&mut self, range: core::ops::Range<usize>) -> Option<ObjectId> {
         let index = self.threads.allocate_in(range)?;
+        self.used_threads.insert(index);
         Some(self.id(ObjectType::Thread, index))
     }
 
@@ -1852,11 +1877,18 @@ impl Directory {
 
     /// The sweep's end: every thread record starts over, and every wait's references and every
     /// name are freed.
+    ///
+    /// Only the records a thread object was handed since the last sweep's end are renewed: the
+    /// others have had no thread since that renewal (or the boot's empty pool), so they are as it
+    /// left them, and only a thread's wait holds references. A renewal rewrites a whole record
+    /// (its wait blocks, its floating-point state), so renewing all of them took about 4 ms under
+    /// QEMU at every quiescent reap, most of a small process's teardown.
     pub fn sweep_end(&mut self) {
+        let used = core::mem::replace(&mut self.used_threads, ThreadRecordSet::EMPTY);
         with_bodies(|bodies| {
-            for (index, waits) in self.waits.iter_mut().enumerate() {
-                bodies.renew_thread(ThreadId(index as u16));
-                *waits = WaitReferences::none();
+            for index in used.iter() {
+                bodies.renew_thread(ThreadId(index));
+                self.waits[index as usize] = WaitReferences::none();
             }
         });
         self.names.drain(|_, _| ());
@@ -3251,6 +3283,35 @@ mod tests {
             0,
             "records start over"
         );
+    }
+
+    /// The sweep's end starts over the records thread objects were handed since the last one,
+    /// and only those: a record no thread had since is as that sweep left it.
+    #[test]
+    fn the_sweep_renews_the_records_handed_out_since_the_last() {
+        let directory = directory();
+        let first = directory.create_thread_in(0..1).unwrap();
+        record(ThreadId(first.index)).teb_va = 0x7FFD_E000;
+        assert_eq!(directory.dereference(first), None);
+        // A record no thread object was handed: written here as nothing in the kernel would.
+        record(ThreadId(5)).teb_va = 0x7FFD_D000;
+        assert_eq!(sweep(directory).0, 0);
+        assert_eq!(record(ThreadId(first.index)).teb_va(), 0, "renewed");
+        assert_eq!(record(ThreadId(5)).teb_va(), 0x7FFD_D000, "not renewed");
+
+        // The next sweep renews only what was handed out after this one: the first record again,
+        // and none other.
+        let again = directory.create_thread_in(0..1).unwrap();
+        assert_eq!(again.index, first.index);
+        record(ThreadId(again.index)).teb_va = 0x7FFD_C000;
+        assert_eq!(directory.dereference(again), None);
+        let other = directory.create_thread_in(2..3).unwrap();
+        record(ThreadId(other.index)).teb_va = 0x7FFD_B000;
+        assert_eq!(sweep(directory).0, 1, "the thread object still held");
+        assert_eq!(record(ThreadId(again.index)).teb_va(), 0);
+        assert_eq!(record(ThreadId(other.index)).teb_va(), 0);
+        assert_eq!(record(ThreadId(5)).teb_va(), 0x7FFD_D000);
+        assert_eq!(sweep(directory).0, 0);
     }
 
     /// A process for the two-process tests: its scheduling record at its final address.
