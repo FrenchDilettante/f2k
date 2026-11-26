@@ -522,16 +522,18 @@ const RESERVE: usize = 32;
 
 /// Directory pages taken ahead and handed out one at a time, so a publication draws on these
 /// alone: where taking pages is not legal (inside a `LevelCell<High>`), and so a publication that
-/// would fail for want of pages fails before it changes anything.
+/// would fail for want of pages fails before it changes anything. The pages are linked through
+/// their first word (zeroed again as each is handed out), so a reserve is two words however many
+/// it holds, and a [`Chunk`] carrying one is small enough to hand back by value.
 struct Reserve {
-    pages: [Cell<*mut u8>; RESERVE],
+    head: Cell<*mut u8>,
     count: Cell<usize>,
 }
 
 impl Reserve {
     const fn new() -> Self {
         Reserve {
-            pages: [const { Cell::new(null_mut()) }; RESERVE],
+            head: Cell::new(null_mut()),
             count: Cell::new(0),
         }
     }
@@ -549,11 +551,19 @@ impl Reserve {
         Some(reserve)
     }
 
+    /// Add `page`, a zeroed page of ours, linking it ahead of the others.
     fn push(&self, page: *mut u8) {
         let count = self.count.get();
         assert!(count < RESERVE, "a reserve within its capacity");
-        self.pages[count].set(page);
+        // SAFETY: a whole page, ours alone and aligned for a pointer, until it is handed out.
+        unsafe { page.cast::<*mut u8>().write(self.head.get()) };
+        self.head.set(page);
         self.count.set(count + 1);
+    }
+
+    /// The pages it holds.
+    fn len(&self) -> usize {
+        self.count.get()
     }
 
     /// Give every page left back to `pages`, where they came from.
@@ -571,8 +581,13 @@ impl Pages for Reserve {
         if pages != 1 || count == 0 {
             return None;
         }
+        let page = self.head.get();
+        // SAFETY: the head of the reserve's list, a page of ours whose first word links the next;
+        // zeroed again, as `take` hands pages out.
+        let next = unsafe { page.cast::<*mut u8>().replace(null_mut()) };
+        self.head.set(next);
         self.count.set(count - 1);
-        NonNull::new(self.pages[count - 1].get())
+        NonNull::new(page)
     }
 
     unsafe fn give(&self, at: NonNull<u8>, pages: usize) {
@@ -884,7 +899,11 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
             return Err(Full::Limit);
         }
         let chunk = Chunk::<T, PER, D>::make(self.made, pages).ok_or(Full::NoChunk)?;
-        self.adopt(chunk, pages)
+        self.adopt(chunk).map_err(|refused| {
+            let why = refused.why;
+            refused.chunk.give_back(pages);
+            why
+        })
     }
 
     /// Whether the next allocation of `lane` needs a chunk made first.
@@ -895,36 +914,45 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
     }
 
     /// Publish a chunk made outside the owner's lock ([`Chunk::make`]) as the next one, with the
-    /// directory pages it carries: takes no page. A chunk not the next one (another took its
-    /// place meanwhile, or the pool is at its limit) is given back to `pages`, and the pool is as
-    /// it was.
-    pub fn adopt(&mut self, chunk: Chunk<T, PER, D>, pages: &impl Pages) -> Result<(), Full> {
-        let Chunk {
-            number,
-            at,
-            directory,
-            ..
-        } = chunk;
-        let published = if self.at_limit() {
-            Err(Full::Limit)
-        } else if number != self.made {
-            Err(Full::NoChunk)
+    /// directory pages it carries: takes no page and gives none back, so it is legal where neither
+    /// is (inside a `LevelCell<High>`). A chunk not the next one (another took its place meanwhile,
+    /// or the pool is at its limit) is handed back whole, the pool as it was, for its maker to give
+    /// back where that is legal ([`Chunk::give_back`]).
+    pub fn adopt(&mut self, chunk: Chunk<T, PER, D>) -> Result<(), Refused<T, PER, D>> {
+        let refused = if self.at_limit() {
+            Some(Full::Limit)
+        } else if chunk.number != self.made {
+            Some(Full::NoChunk)
         } else {
-            self.chunks
-                .publish(number, at, &directory)
-                .map_err(|unpublished| match unpublished {
+            None
+        };
+        if let Some(why) = refused {
+            return Err(Refused { why, chunk });
+        }
+        // A failed publication puts back every directory page it took, so the chunk goes back
+        // as it came.
+        match self
+            .chunks
+            .publish(chunk.number, chunk.at, &chunk.directory)
+        {
+            Ok(()) => {
+                // The chunk carried exactly the pages the publication took.
+                assert_eq!(
+                    chunk.directory.len(),
+                    0,
+                    "a chunk's directory pages, all used"
+                );
+                self.made += 1;
+                Ok(())
+            }
+            Err(unpublished) => Err(Refused {
+                why: match unpublished {
                     Unpublished::Capacity => Full::Limit,
                     Unpublished::Raced | Unpublished::NoPage => Full::NoChunk,
-                })
-        };
-        // None is left after a publication: the chunk carried exactly the pages it needed.
-        directory.give_back(pages);
-        match published {
-            Ok(()) => self.made += 1,
-            // SAFETY: made from `pages` by `Chunk::make`, never published.
-            Err(_) => unsafe { pages.give(at, Self::CHUNK_PAGES) },
+                },
+                chunk,
+            }),
         }
-        published
     }
 
     /// The live record `id` names; none for a stale, forged or reserved id.
@@ -1141,7 +1169,7 @@ impl<T: Record, C: Codec, const PER: usize, D: EmptyDir> Default for Slots<T, C,
 
 /// A chunk of `PER` fresh slots with the directory pages its publication needs, made outside its
 /// pool's owner's lock (where taking pages is not legal inside it) and handed to
-/// [`Slots::adopt`], which publishes it or gives it back.
+/// [`Slots::adopt`], which publishes it or hands it back.
 #[must_use = "a chunk not adopted holds its pages"]
 pub struct Chunk<T: Record, const PER: usize, D: ChunkDir = Paged> {
     number: u32,
@@ -1178,6 +1206,28 @@ impl<T: Record, const PER: usize, D: ChunkDir> Chunk<T, PER, D> {
             directory,
             _records: PhantomData,
         })
+    }
+
+    /// Give a chunk no pool adopted back to `pages`, the ones it was made from: its slots' pages
+    /// and the directory pages it carries. Only where giving pages back is legal.
+    pub fn give_back(self, pages: &impl Pages) {
+        self.directory.give_back(pages);
+        // SAFETY: made from `pages` by `make`, never published, referred to by nothing.
+        unsafe { pages.give(self.at, pages_of::<Slot<T>>(PER)) };
+    }
+}
+
+/// A chunk [`Slots::adopt`] did not publish, and why: its maker gives it back
+/// ([`Chunk::give_back`]).
+#[must_use = "a refused chunk holds its pages"]
+pub struct Refused<T: Record, const PER: usize, D: ChunkDir = Paged> {
+    pub why: Full,
+    pub chunk: Chunk<T, PER, D>,
+}
+
+impl<T: Record, const PER: usize, D: ChunkDir> core::fmt::Debug for Refused<T, PER, D> {
+    fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(out, "Refused({:?}, chunk {})", self.why, self.chunk.number)
     }
 }
 
@@ -2125,7 +2175,8 @@ mod tests {
         assert_eq!(t.get(22).unwrap().index, 22);
     }
 
-    /// A chunk made outside the owner's lock and adopted in it; one not the next is given back.
+    /// A chunk made outside the owner's lock and adopted in it; one not the next is handed back
+    /// whole, holding its pages until its maker gives them back.
     #[test]
     fn two_phase_growth() {
         let pages = HostPages::new();
@@ -2133,10 +2184,13 @@ mod tests {
         assert!(t.needs_chunk(0));
         let chunk = Chunk::make(t.next_chunk(), &pages).unwrap();
         let stale = Chunk::make(t.next_chunk(), &pages).unwrap();
-        t.adopt(chunk, &pages).unwrap();
+        t.adopt(chunk).unwrap();
         assert!(!t.needs_chunk(0));
         assert_eq!(pages.held(), 2);
-        assert_eq!(t.adopt(stale, &pages), Err(Full::NoChunk));
+        let refused = t.adopt(stale).unwrap_err();
+        assert_eq!(refused.why, Full::NoChunk);
+        assert_eq!(pages.held(), 2, "adopting gives nothing back");
+        refused.chunk.give_back(&pages);
         assert_eq!(pages.held(), 1, "the stale chunk given back");
         assert_eq!(t.allocate(0).unwrap().1.index, 0);
     }
@@ -2320,16 +2374,18 @@ mod tests {
         let mut t = boxed(Slots::<Rec, Small<0xFFFE, false>, 1, Four>::new());
         for _ in 0..4 {
             let chunk = Chunk::make(t.next_chunk(), &pages).unwrap();
-            t.adopt(chunk, &pages).unwrap();
+            t.adopt(chunk).unwrap();
         }
         let chunk = Chunk::make(t.next_chunk(), &pages).unwrap();
         let stale = Chunk::make(t.next_chunk(), &pages).unwrap();
         let held = pages.held();
         pages.set_budget(0);
-        t.adopt(chunk, &pages).unwrap();
+        t.adopt(chunk).unwrap();
         assert_eq!(pages.held(), held, "adopting took no page");
         assert_eq!(height(&t.chunks), 2);
-        assert_eq!(t.adopt(stale, &pages), Err(Full::NoChunk));
+        let refused = t.adopt(stale).unwrap_err();
+        assert_eq!((refused.why, pages.held()), (Full::NoChunk, held));
+        refused.chunk.give_back(&pages);
         assert_eq!(
             pages.held(),
             held - 3,

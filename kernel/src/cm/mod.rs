@@ -7,10 +7,12 @@
 //! subkeys are listed in their folded names' order, as Windows 2000's hives index them; its values
 //! in the order they were first set.
 //!
-//! Keys and values are records in fixed pools, as the object manager's objects are, and a key is
-//! named by its record and the record's generation ([`Key`]): a deleted key's record moves on to a
-//! new generation, so a key object still naming it ([`KeyBody`]) finds it gone
-//! (STATUS_KEY_DELETED) rather than whatever reuses the record.
+//! Keys and values are records in slot pools ([`Slots`]) that grow a chunk at a time, as the
+//! object manager's objects are, and a key is named by its record and the record's generation
+//! ([`Key`]): a deleted key's record moves on to a new generation, so a key object still naming it
+//! ([`KeyBody`]) finds it gone (STATUS_KEY_DELETED) rather than whatever reuses the record. What
+//! bounds them is the u16 record index (65,535 keys, 65,535 values) and memory; the storage quota
+//! below runs out long before either, since every key and value has a name.
 //!
 //! Names, classes and value data live in the registry's storage, taken from the nonpaged pool
 //! ([`crate::mem::pool`]) as it grows, as Windows 2000 keeps its hives in pool memory: chunks of
@@ -29,9 +31,10 @@
 //!   no such reserve; it shows only in a registry some 4 MiB full.
 //!
 //! The registry's steps run at the high level, where the pool, high-level state of its own, is out
-//! of reach: memory comes and goes between the steps. A store that finds no room in the chunks
-//! says so ([`Registry::needs_chunk`]), and its caller ([`storing`]) takes a chunk from the pool
-//! and runs it again. A large value's data comes on the pages the service copied it into from its
+//! of reach: memory comes and goes between the steps. A store that finds no room in the chunks, or
+//! no record left in its pool's chunks, says so ([`Registry::need`]), and its caller ([`storing`])
+//! makes what it needs from the pool ([`Need::make`]), hands it in ([`Registry::supply`]) and runs
+//! it again. A large value's data comes on the pages the service copied it into from its
 //! caller, which become the value's; pages a value lets go wait ([`Registry::take_released`]) for
 //! the caller to give them back after the step ([`settle`]). Chunks are kept for the kernel's life.
 //! What a service copies in from its caller or out to it (a name, a class, an answer) is staged on
@@ -65,12 +68,9 @@ use crate::level::{self, High, LevelCell};
 use crate::mem::heap::KernelHeap;
 use crate::mem::paging::PAGE_SIZE;
 use crate::mem::pool::pages_for;
+use crate::slots::{per_page, Chunk, Codec, Match, Record, Reuse, Slots, KERNEL_PAGES};
 use crate::status::*;
 
-/// How many keys can exist at once.
-pub const KEYS: usize = 512;
-/// How many values can exist at once.
-pub const VALUES: usize = 1024;
 /// A chunk of the storage, in bytes: room for the longest name (32 KiB) with the largest small
 /// data, so a fresh chunk holds what any one store puts in chunks.
 pub const CHUNK: usize = 64 * 1024;
@@ -226,9 +226,11 @@ enum Home {
 
 /// A block of the storage (none for an empty one): where a name, a class or a value's data lives.
 /// The registry reads a live one's bytes through itself ([`Registry::bytes`]), so they are borrowed
-/// for no longer than the registry is.
+/// for no longer than the registry is. A large value's data is named by its slot alone, its bytes
+/// found through the pages the slot holds.
 #[derive(Clone, Copy)]
 struct Blob {
+    /// A chunk's block's first byte; none for an empty blob or a large value's data.
     at: Option<NonNull<u8>>,
     bytes: u32,
     home: Home,
@@ -241,8 +243,8 @@ impl Blob {
         home: Home::Chunk(0),
     };
 
-    /// Its first byte; for an empty blob a dangling one, never read (the slices made of it are
-    /// empty), aligned as a storage block is.
+    /// A chunk's block's first byte; for an empty blob a dangling one, never read (the slices
+    /// made of it are empty), aligned as a storage block is.
     fn start(self) -> *mut u8 {
         self.at
             .unwrap_or(NonNull::<u64>::dangling().cast())
@@ -264,10 +266,35 @@ impl Large {
     };
 }
 
-/// One key's record.
+/// The registry's records' ids: a slot's index alone, every lookup matching whatever lives there.
+/// A key carries its own 32-bit generation ([`Key`]), which its record keeps; a value is found by
+/// its key and its name, and no id of one outlives a step.
+enum ByIndex {}
+
+impl Codec for ByIndex {
+    type Id = u32;
+
+    const LANES: usize = 1;
+    /// The u16 record index of [`Key`] and [`Value::key`]: 65,535 records of each kind, far more
+    /// than the storage's quota names.
+    const MAX_INDEX: u32 = 0xFFFE;
+    const MAX_UNIQ: u16 = 0xFFFE;
+    const RESERVED_LOW: u32 = 0;
+    const REUSE: Reuse = Reuse::Fifo;
+
+    fn encode(index: u32, _: u16) -> u32 {
+        index
+    }
+
+    fn decode(id: u32) -> Option<(u32, Match)> {
+        Some((id, Match::Any))
+    }
+}
+
+/// One key's record. Its pool's slot says whether it lives; the generation stays across the
+/// record's reuses.
 #[derive(Clone, Copy)]
 struct Node {
-    live: bool,
     generation: u32,
     /// The parent key's record (the root's is its own).
     parent: u16,
@@ -282,8 +309,7 @@ struct Node {
 }
 
 impl Node {
-    const DEAD: Node = Node {
-        live: false,
+    const FRESH: Node = Node {
         generation: 0,
         parent: 0,
         permanent: false,
@@ -294,10 +320,17 @@ impl Node {
     };
 }
 
+// SAFETY: `write_fresh` writes a whole record.
+unsafe impl Record for Node {
+    unsafe fn write_fresh(at: *mut Self, _: u32) {
+        // SAFETY: the caller's contract.
+        unsafe { at.write(Self::FRESH) };
+    }
+}
+
 /// One value's record.
 #[derive(Clone, Copy)]
 struct Value {
-    live: bool,
     /// Its key's record.
     key: u16,
     /// When it was first set, among every value (the key lists its values in that order).
@@ -308,14 +341,96 @@ struct Value {
 }
 
 impl Value {
-    const DEAD: Value = Value {
-        live: false,
+    const FRESH: Value = Value {
         key: 0,
         order: 0,
         kind: 0,
         name: Blob::EMPTY,
         data: Blob::EMPTY,
     };
+}
+
+// SAFETY: `write_fresh` writes a whole record.
+unsafe impl Record for Value {
+    unsafe fn write_fresh(at: *mut Self, _: u32) {
+        // SAFETY: the caller's contract.
+        unsafe { at.write(Self::FRESH) };
+    }
+}
+
+/// Keys to a chunk, and values: one page's worth each.
+const NODES_PER_CHUNK: usize = per_page::<Node>();
+const VALUES_PER_CHUNK: usize = per_page::<Value>();
+
+type Nodes = Slots<Node, ByIndex, NODES_PER_CHUNK>;
+type Values = Slots<Value, ByIndex, VALUES_PER_CHUNK>;
+
+// Measured: 40-byte keys and 36-byte values on target, 85 and 93 to a page (the host's pointer is
+// 8 bytes, its counts not pinned).
+#[cfg(target_arch = "x86")]
+const _: () = assert!(NODES_PER_CHUNK == 85 && VALUES_PER_CHUNK == 93);
+const _: () = assert!(Nodes::CHUNK_PAGES == 1 && Values::CHUNK_PAGES == 1);
+
+/// What a step found missing, for its caller to make outside the registry ([`Need::make`]) and
+/// hand in ([`Registry::supply`]) before running it again.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Need {
+    /// A chunk of the storage ([`CHUNK`] bytes): the quota has room for one.
+    Storage,
+    /// The key records' next chunk, by its number.
+    Keys(u32),
+    /// The value records' next chunk, by its number.
+    Values(u32),
+}
+
+/// What [`Need::make`] made: a chunk of the storage, or a chunk of records with the directory pages
+/// its publication takes.
+pub struct Made(Supply);
+
+enum Supply {
+    Storage(Pages),
+    Keys(Chunk<Node, NODES_PER_CHUNK>),
+    Values(Chunk<Value, VALUES_PER_CHUNK>),
+}
+
+impl Need {
+    /// Make what is needed, from the pool: outside the registry's steps. None when the pool has
+    /// no room.
+    pub fn make(self) -> Option<Made> {
+        let supply = match self {
+            Need::Storage => Supply::Storage(allocate(CHUNK)?),
+            Need::Keys(number) => Supply::Keys(Chunk::make(number, &KERNEL_PAGES)?),
+            Need::Values(number) => Supply::Values(Chunk::make(number, &KERNEL_PAGES)?),
+        };
+        Some(Made(supply))
+    }
+}
+
+impl Made {
+    /// What a registry starts with: its first chunk of the storage, and its first chunks of key
+    /// and value records. None when the pool has no room (what was made given back).
+    pub fn first() -> Option<[Made; 3]> {
+        let storage = Need::Storage.make()?;
+        let Some(keys) = Need::Keys(0).make() else {
+            storage.give_back();
+            return None;
+        };
+        let Some(values) = Need::Values(0).make() else {
+            storage.give_back();
+            keys.give_back();
+            return None;
+        };
+        Some([storage, keys, values])
+    }
+
+    /// Give back what the registry refused ([`Registry::supply`]): outside the registry's steps.
+    pub fn give_back(self) {
+        match self.0 {
+            Supply::Storage(pages) => drop(pages),
+            Supply::Keys(chunk) => chunk.give_back(&KERNEL_PAGES),
+            Supply::Values(chunk) => chunk.give_back(&KERNEL_PAGES),
+        }
+    }
 }
 
 /// What a key's information classes report about it (sizes in bytes). The name and the class are
@@ -392,23 +507,25 @@ impl<'a> Iterator for Components<'a> {
 
 /// The registry: its keys, its values and their storage.
 pub struct Registry {
-    nodes: [Node; KEYS],
-    values: [Value; VALUES],
+    nodes: Nodes,
+    values: Values,
     /// The storage's chunks, as they were added.
     chunks: [Option<KernelHeap>; CHUNKS],
     /// The large values' data, by slot.
     large: [Large; LARGE],
     /// The pages the storage holds: its chunks', and its large data's, let go or not.
     pages: usize,
-    /// The last store found no room in the chunks, and the quota has room for another.
-    short: bool,
+    /// What the last step found missing: room in the chunks while the quota has room for
+    /// another, or a chunk of records.
+    need: Option<Need>,
     /// The next value's place in its key's order.
     next_order: u32,
 }
 
 // SAFETY: the registry owns what its blobs point at: the blocks of its own chunks, whose heaps were
-// handed the only reference to their pages, and its large values' pages. Moving the registry to
-// another thread moves that ownership with it; the pointers are just how the blobs name them.
+// handed the only reference to their pages, and its records' chunks. Moving the registry to
+// another thread moves that ownership with it; the pointers are just how the blobs and the pools
+// name them.
 unsafe impl Send for Registry {}
 
 impl Registry {
@@ -416,28 +533,49 @@ impl Registry {
     /// time, never on a stack ([`Registry::start`] makes it usable).
     pub const fn empty() -> Self {
         Registry {
-            nodes: [Node::DEAD; KEYS],
-            values: [Value::DEAD; VALUES],
+            nodes: Slots::new(),
+            values: Slots::new(),
             chunks: [const { None }; CHUNKS],
             large: [const { Large::NONE }; LARGE],
             pages: 0,
-            short: false,
+            need: None,
             next_order: 0,
         }
     }
 
-    /// Give the registry its first chunk, `chunk` ([`CHUNK`] bytes of fresh pages), and the keys
-    /// and the value it starts with (see the module notes).
+    /// Give the registry its first chunks ([`Made::first`]), and the keys and the values it
+    /// starts with (see the module notes).
     ///
     /// # Panics
     ///
     /// It was started already.
-    pub fn start(&mut self, chunk: Pages) {
+    pub fn start(&mut self, first: [Made; 3]) {
         assert!(self.pages == 0, "the registry started twice");
-        if self.add_chunk(chunk).is_err() {
-            unreachable!("an empty storage takes a chunk");
+        for made in first {
+            if self.supply(made).is_err() {
+                unreachable!("an empty registry takes its first chunks");
+            }
         }
         self.seed();
+    }
+
+    /// Take what a step needed ([`Registry::need`], [`Need::make`]); handed back when it is
+    /// needed no more (another step took the room meanwhile, or the storage's quota has none),
+    /// for the caller to give back outside the step ([`Made::give_back`]).
+    pub fn supply(&mut self, made: Made) -> Result<(), Made> {
+        match made.0 {
+            Supply::Storage(pages) => self
+                .add_chunk(pages)
+                .map_err(|pages| Made(Supply::Storage(pages))),
+            Supply::Keys(chunk) => self
+                .nodes
+                .adopt(chunk)
+                .map_err(|refused| Made(Supply::Keys(refused.chunk))),
+            Supply::Values(chunk) => self
+                .values
+                .adopt(chunk)
+                .map_err(|refused| Made(Supply::Values(refused.chunk))),
+        }
     }
 
     /// Take `chunk`, [`CHUNK`] bytes of fresh pages, into the storage for the kernel's life;
@@ -457,10 +595,25 @@ impl Registry {
         Ok(())
     }
 
-    /// Whether the last store found no room in the chunks while the quota has room for another
-    /// ([`Registry::add_chunk`]); asking clears it.
-    pub fn needs_chunk(&mut self) -> bool {
-        core::mem::take(&mut self.short)
+    /// What the last step found missing, if anything: room in the storage's chunks while the
+    /// quota has room for another ([`Registry::add_chunk`]), or a chunk of records. Asking clears
+    /// it.
+    pub fn need(&mut self) -> Option<Need> {
+        self.need.take()
+    }
+
+    /// Whether `pool` has a record to hand out without a chunk made first; noting the chunk it
+    /// needs ([`Registry::need`]) when it has not, as `need` names it.
+    fn room<T: Record, const PER: usize>(
+        pool: &Slots<T, ByIndex, PER>,
+        need: &mut Option<Need>,
+        wanted: fn(u32) -> Need,
+    ) -> Result<(), NtStatus> {
+        if pool.needs_chunk(0) {
+            *need = Some(wanted(pool.next_chunk()));
+            return Err(STATUS_INSUFFICIENT_RESOURCES);
+        }
+        Ok(())
     }
 
     /// Pages a large value's data held and let go since (the value deleted, or set anew), for the
@@ -484,19 +637,14 @@ impl Registry {
     /// The keys and the value the registry starts with.
     fn seed(&mut self) {
         let name = ascii_units::<8>("REGISTRY");
-        let node = &mut self.nodes[0];
-        *node = Node {
-            live: true,
-            generation: 0,
-            parent: 0,
-            permanent: true,
-            volatile: false,
-            name: Blob::EMPTY,
-            class: Blob::EMPTY,
-            last_write: 0,
-        };
         let blob = self.store_units(&name).expect("the storage holds the seed");
-        self.nodes[0].name = blob;
+        let (index, node) = self.nodes.allocate(0).expect("a chunk of key records");
+        assert_eq!(index, 0, "the root's record");
+        *node = Node {
+            permanent: true,
+            name: blob,
+            ..Node::FRESH
+        };
         let root = self.root();
         // Each key of the path, made in turn below the root.
         let make = |registry: &mut Registry, path: &str, permanent: bool| {
@@ -512,7 +660,7 @@ impl Registry {
                     .expect("the registry holds the seed")
                     .0;
             }
-            registry.nodes[key.index as usize].permanent = permanent;
+            registry.node_mut(key.index).permanent = permanent;
             key
         };
         make(self, "MACHINE", true);
@@ -615,39 +763,55 @@ impl Registry {
     pub fn root(&self) -> Key {
         Key {
             index: 0,
-            generation: self.nodes[0].generation,
+            generation: self.nodes.get(0).map_or(0, |node| node.generation),
         }
+    }
+
+    /// The live record `index`.
+    ///
+    /// # Panics
+    ///
+    /// No key lives there.
+    fn node(&self, index: u16) -> &Node {
+        self.nodes.get(index.into()).expect("a live key's record")
+    }
+
+    /// [`Registry::node`], to change.
+    fn node_mut(&mut self, index: u16) -> &mut Node {
+        self.nodes
+            .get_mut(index.into())
+            .expect("a live key's record")
     }
 
     fn key(&self, index: u16) -> Key {
         Key {
             index,
-            generation: self.nodes[index as usize].generation,
+            generation: self.node(index).generation,
         }
     }
 
     /// The record of `key`, while it lives; STATUS_KEY_DELETED once it is gone.
     pub fn check(&self, key: Key) -> Result<u16, NtStatus> {
-        let node = self
-            .nodes
-            .get(key.index as usize)
-            .ok_or(STATUS_KEY_DELETED)?;
-        if node.live && node.generation == key.generation {
-            Ok(key.index)
-        } else {
-            Err(STATUS_KEY_DELETED)
+        match self.nodes.get(key.index.into()) {
+            Some(node) if node.generation == key.generation => Ok(key.index),
+            _ => Err(STATUS_KEY_DELETED),
         }
     }
 
     /// The bytes of `blob`, one of this registry's live blocks.
     fn bytes(&self, blob: Blob) -> &[u8] {
-        // SAFETY: a live block of this registry's storage, `bytes` bytes long (or an empty slice):
+        if let Home::Large(slot) = blob.home {
+            let pages = self.large[slot as usize].pages.as_ref();
+            return &pages.expect("a large value's pages").as_ref()[..blob.bytes as usize];
+        }
+        // SAFETY: a live block of this registry's chunks, `bytes` bytes long (or an empty slice):
         // the registry owns the storage, and its blocks change only through `&mut self`, so
         // they hold still for the borrow of `self` the slice keeps.
         unsafe { core::slice::from_raw_parts(blob.start(), blob.bytes as usize) }
     }
 
-    /// The units of `blob`, one of this registry's live blocks holding a name or a class.
+    /// The units of `blob`, one of this registry's live blocks of a chunk holding a name or a
+    /// class.
     fn units(&self, blob: Blob) -> &[u16] {
         // SAFETY: as in `bytes`; a chunk's block is 8-aligned, so aligned for units, and holds
         // `bytes / 2` of them.
@@ -658,7 +822,7 @@ impl Registry {
     /// when no chunk has room, noting whether the quota has room for another
     /// ([`Registry::needs_chunk`]).
     fn reserve(&mut self, bytes: usize) -> Result<Blob, NtStatus> {
-        self.short = false;
+        self.need = None;
         if bytes == 0 {
             return Ok(Blob::EMPTY);
         }
@@ -673,8 +837,9 @@ impl Registry {
                 });
             }
         }
-        self.short =
-            self.chunks.iter().any(Option::is_none) && self.pages + CHUNK_PAGES <= QUOTA_PAGES;
+        if self.chunks.iter().any(Option::is_none) && self.pages + CHUNK_PAGES <= QUOTA_PAGES {
+            self.need = Some(Need::Storage);
+        }
         Err(STATUS_INSUFFICIENT_RESOURCES)
     }
 
@@ -702,29 +867,27 @@ impl Registry {
     /// Give a block back: to its chunk, or a large value's pages to the ones waiting to go back to
     /// the pool ([`Registry::take_released`]).
     fn free(&mut self, blob: Blob) {
-        let Some(at) = blob.at else {
-            return;
-        };
-        match blob.home {
-            Home::Chunk(index) => self.chunks[index as usize]
+        match (blob.home, blob.at) {
+            (Home::Chunk(index), Some(at)) => self.chunks[index as usize]
                 .as_mut()
                 .expect("a chunk the registry holds")
                 .dealloc(at),
-            Home::Large(slot) => self.large[slot as usize].held = false,
+            (Home::Chunk(_), None) => {}
+            (Home::Large(slot), _) => self.large[slot as usize].held = false,
         }
     }
 
     /// The live subkeys of record `parent`, in their records' order.
     fn children(&self, parent: u16) -> impl Iterator<Item = u16> + '_ {
-        (1..KEYS as u16).filter(move |&index| {
-            let node = &self.nodes[index as usize];
-            node.live && node.parent == parent
-        })
+        self.nodes
+            .iter()
+            .filter(move |&(index, node)| index != 0 && node.parent == parent)
+            .map(|(index, _)| index as u16)
     }
 
     /// The name of record `index`.
     fn name(&self, index: u16) -> &[u16] {
-        self.units(self.nodes[index as usize].name)
+        self.units(self.node(index).name)
     }
 
     /// The live subkey of record `parent` named `name`.
@@ -763,7 +926,7 @@ impl Registry {
             match self.child(index, name) {
                 Some(child) => index = child,
                 None if names.peek().is_none() => {
-                    if self.nodes[index as usize].volatile && !volatile {
+                    if self.node(index).volatile && !volatile {
                         return Err(STATUS_CHILD_MUST_BE_VOLATILE);
                     }
                     return self
@@ -785,9 +948,7 @@ impl Registry {
         volatile: bool,
         now: u64,
     ) -> Result<Key, NtStatus> {
-        let index = (1..KEYS)
-            .find(|&index| !self.nodes[index].live)
-            .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+        Self::room(&self.nodes, &mut self.need, Need::Keys)?;
         let name = self.store_units(name)?;
         let class = match self.store_units(class) {
             Ok(class) => class,
@@ -796,9 +957,13 @@ impl Registry {
                 return Err(status);
             }
         };
-        let node = &mut self.nodes[index];
+        // A chunk is made (`room`), so only the records' limit refuses.
+        let Ok((index, node)) = self.nodes.allocate(0) else {
+            self.free(name);
+            self.free(class);
+            return Err(STATUS_INSUFFICIENT_RESOURCES);
+        };
         *node = Node {
-            live: true,
             generation: node.generation,
             parent,
             permanent: false,
@@ -807,7 +972,7 @@ impl Registry {
             class,
             last_write: now,
         };
-        self.nodes[parent as usize].last_write = now;
+        self.node_mut(parent).last_write = now;
         Ok(self.key(index as u16))
     }
 
@@ -815,22 +980,27 @@ impl Registry {
     /// hive's root. Its record moves on to a new generation, so its key objects find it gone.
     pub fn delete(&mut self, key: Key, now: u64) -> Result<(), NtStatus> {
         let index = self.check(key)?;
-        let node = self.nodes[index as usize];
+        let node = *self.node(index);
         if node.permanent || self.children(index).next().is_some() {
             return Err(STATUS_CANNOT_DELETE);
         }
-        for slot in 0..VALUES {
-            if self.values[slot].live && self.values[slot].key == index {
+        for slot in 0..self.values.high_water() {
+            if self
+                .values
+                .get(slot)
+                .is_some_and(|value| value.key == index)
+            {
                 self.drop_value(slot);
             }
         }
         self.free(node.name);
         self.free(node.class);
-        self.nodes[index as usize] = Node {
+        *self.node_mut(index) = Node {
             generation: node.generation.wrapping_add(1),
-            ..Node::DEAD
+            ..Node::FRESH
         };
-        self.nodes[node.parent as usize].last_write = now;
+        self.nodes.free(index.into());
+        self.node_mut(node.parent).last_write = now;
         Ok(())
     }
 
@@ -853,7 +1023,7 @@ impl Registry {
     /// What the information classes report about `key`.
     pub fn info(&self, key: Key) -> Result<KeyInfo<'_>, NtStatus> {
         let index = self.check(key)?;
-        let node = &self.nodes[index as usize];
+        let node = self.node(index);
         let mut info = KeyInfo {
             last_write: node.last_write,
             name: self.bytes(node.name),
@@ -866,16 +1036,12 @@ impl Registry {
             max_value_data: 0,
         };
         for child in self.children(index) {
-            let child = &self.nodes[child as usize];
+            let child = self.node(child);
             info.subkeys += 1;
             info.max_subkey_name = info.max_subkey_name.max(child.name.bytes);
             info.max_subkey_class = info.max_subkey_class.max(child.class.bytes);
         }
-        for value in self
-            .values
-            .iter()
-            .filter(|value| value.live && value.key == index)
-        {
+        for (_, value) in self.values.iter().filter(|(_, value)| value.key == index) {
             info.values += 1;
             info.max_value_name = info.max_value_name.max(value.name.bytes);
             info.max_value_data = info.max_value_data.max(value.data.bytes);
@@ -884,15 +1050,25 @@ impl Registry {
     }
 
     /// The live value of record `key` named `name`.
-    fn find_value(&self, key: u16, name: &[u16]) -> Option<usize> {
-        (0..VALUES).find(|&slot| {
-            let value = &self.values[slot];
-            value.live && value.key == key && same_name(self.units(value.name), name)
-        })
+    fn find_value(&self, key: u16, name: &[u16]) -> Option<u32> {
+        self.values
+            .iter()
+            .find(|(_, value)| value.key == key && same_name(self.units(value.name), name))
+            .map(|(slot, _)| slot)
     }
 
-    fn value_info(&self, slot: usize) -> ValueInfo<'_> {
-        let value = &self.values[slot];
+    /// The live value record `slot`.
+    fn value(&self, slot: u32) -> &Value {
+        self.values.get(slot).expect("a live value's record")
+    }
+
+    /// [`Registry::value`], to change.
+    fn value_mut(&mut self, slot: u32) -> &mut Value {
+        self.values.get_mut(slot).expect("a live value's record")
+    }
+
+    fn value_info(&self, slot: u32) -> ValueInfo<'_> {
+        let value = self.value(slot);
         ValueInfo {
             kind: value.kind,
             name: self.bytes(value.name),
@@ -916,20 +1092,20 @@ impl Registry {
         let mut after = None;
         let mut slot = None;
         for _ in 0..=position {
-            slot = (0..VALUES)
-                .filter(|&slot| {
-                    let value = &self.values[slot];
-                    value.live
-                        && value.key == index
-                        && after.is_none_or(|after| value.order > after)
+            slot = self
+                .values
+                .iter()
+                .filter(|(_, value)| {
+                    value.key == index && after.is_none_or(|after| value.order > after)
                 })
-                .min_by_key(|&slot| self.values[slot].order);
+                .min_by_key(|(_, value)| value.order)
+                .map(|(slot, value)| (slot, value.order));
             match slot {
-                Some(found) => after = Some(self.values[found].order),
+                Some((_, order)) => after = Some(order),
                 None => return Ok(None),
             }
         }
-        Ok(slot.map(|slot| self.value_info(slot)))
+        Ok(slot.map(|(slot, _)| self.value_info(slot)))
     }
 
     /// Set `key`'s value `name` to `data`'s bytes (none: no bytes), of type `kind` (at `now`): an
@@ -963,15 +1139,13 @@ impl Registry {
             .filter(|_| self.pages + pages <= QUOTA_PAGES - RESERVE_PAGES)
             .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
         self.place_value(key, name, kind, now, |registry| {
-            let mut taken = data.take().expect("the large data's pages");
-            let at = NonNull::from(taken.as_mut()).cast();
             registry.large[slot] = Large {
-                pages: Some(taken),
+                pages: Some(data.take().expect("the large data's pages")),
                 held: true,
             };
             registry.pages += pages;
             Ok(Blob {
-                at: Some(at),
+                at: None,
                 bytes: length as u32,
                 home: Home::Large(slot as u16),
             })
@@ -1005,13 +1179,26 @@ impl Registry {
         data: impl FnOnce(&mut Self) -> Result<Blob, NtStatus>,
     ) -> Result<(), NtStatus> {
         let index = self.check(key)?;
+        // The value's record, and its name if it is new: a new record is live from here on, its
+        // data still empty.
         let (slot, fresh) = match self.find_value(index, name) {
             Some(slot) => (slot, None),
             None => {
-                let slot = (0..VALUES)
-                    .find(|&slot| !self.values[slot].live)
-                    .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-                (slot, Some(self.store_units(name)?))
+                Self::room(&self.values, &mut self.need, Need::Values)?;
+                let name = self.store_units(name)?;
+                // A chunk is made (`room`), so only the records' limit refuses.
+                let Ok((slot, value)) = self.values.allocate(0) else {
+                    self.free(name);
+                    return Err(STATUS_INSUFFICIENT_RESOURCES);
+                };
+                *value = Value {
+                    key: index,
+                    order: self.next_order,
+                    kind,
+                    name,
+                    data: Blob::EMPTY,
+                };
+                (slot, Some(name))
             }
         };
         let data = match data(self) {
@@ -1019,30 +1206,20 @@ impl Registry {
             Err(status) => {
                 if let Some(name) = fresh {
                     self.free(name);
+                    self.values.free(slot);
                 }
                 return Err(status);
             }
         };
-        match fresh {
-            Some(name) => {
-                self.values[slot] = Value {
-                    live: true,
-                    key: index,
-                    order: self.next_order,
-                    kind,
-                    name,
-                    data: Blob::EMPTY,
-                };
-                self.next_order = self.next_order.wrapping_add(1);
-            }
-            None => {
-                let old = self.values[slot].data;
-                self.free(old);
-            }
+        if fresh.is_some() {
+            self.next_order = self.next_order.wrapping_add(1);
         }
-        self.values[slot].kind = kind;
-        self.values[slot].data = data;
-        self.nodes[index as usize].last_write = now;
+        let old = self.value(slot).data;
+        self.free(old);
+        let value = self.value_mut(slot);
+        value.kind = kind;
+        value.data = data;
+        self.node_mut(index).last_write = now;
         Ok(())
     }
 
@@ -1053,15 +1230,15 @@ impl Registry {
             .find_value(index, name)
             .ok_or(STATUS_OBJECT_NAME_NOT_FOUND)?;
         self.drop_value(slot);
-        self.nodes[index as usize].last_write = now;
+        self.node_mut(index).last_write = now;
         Ok(())
     }
 
-    fn drop_value(&mut self, slot: usize) {
-        let value = self.values[slot];
+    fn drop_value(&mut self, slot: u32) {
+        let value = *self.value(slot);
         self.free(value.name);
         self.free(value.data);
-        self.values[slot] = Value::DEAD;
+        self.values.free(slot);
     }
 }
 
@@ -1083,7 +1260,8 @@ pub fn put_units(out: &mut [u8], units: &[u16]) {
 /// clock's reading included). So it runs at the high level, through the bridge: each step masks
 /// interrupts for its own length, as its callers have already, which keeps the interrupt exposure
 /// as it was, and a step reaching the registry from inside another's borrow is refused. The pool
-/// is such other state: the storage grows and shrinks between steps ([`storing`], [`settle`]).
+/// is such other state: the storage and the records' pools grow, and the storage shrinks, between
+/// steps ([`storing`], [`settle`]).
 // Note: Windows 2000 guards the registry with a passive-level lock of its own (an ERESOURCE, taken
 // for the length of a registry call). That is the faithful protection, to adopt together with the
 // object directory's lock.
@@ -1094,16 +1272,16 @@ static REGISTRY: LevelCell<High, Registry> = LevelCell::new(Registry::empty());
 #[cfg(target_arch = "x86")]
 static HELD: AtomicU32 = AtomicU32::new(0);
 
-/// Start the kernel's registry: its first chunk, and the keys and the value it has from its boot
+/// Start the kernel's registry: its first chunks, and the keys and the values it has from its boot
 /// on. Once, at boot.
 ///
 /// # Panics
 ///
-/// The nonpaged pool has no room for a chunk.
+/// The nonpaged pool has no room for the first chunks.
 #[cfg(target_arch = "x86")]
 pub fn init() {
-    let chunk = allocate(CHUNK).expect("the nonpaged pool holds the registry's first chunk");
-    with_registry(|registry| registry.start(chunk));
+    let first = Made::first().expect("the nonpaged pool holds the registry's first chunks");
+    with_registry(|registry| registry.start(first));
     settle();
     if let Some(wait) = crate::session::option_wait() {
         storing(|registry| registry.set_decimal(DESKTOP, WAIT_TO_KILL_APP_TIMEOUT, wait))
@@ -1118,24 +1296,62 @@ pub fn wait_to_kill_app_timeout() -> Option<u32> {
     with_registry(|registry| registry.decimal(DESKTOP, WAIT_TO_KILL_APP_TIMEOUT))
 }
 
-/// Run `step`, a change to the kernel's registry, as a step: when it finds no room in the
-/// storage's chunks and the quota has room for another, a chunk is taken from the pool between
-/// steps and `step` runs again (a fresh chunk holds what one store puts in chunks). Then
-/// [`settle`].
+/// Run `step`, a change to the kernel's registry, as a step: when it finds something missing (no
+/// room in the storage's chunks while the quota has room for another, or no record left in its
+/// pool's chunks), that is made from the pool between steps and `step` runs again (a fresh chunk
+/// holds what one store puts in chunks). Then [`settle`].
 #[cfg(target_arch = "x86")]
-pub fn storing<R>(
+pub fn storing<R>(step: impl FnMut(&mut Registry) -> Result<R, NtStatus>) -> Result<R, NtStatus> {
+    let result = supplied(&mut Kernel, step);
+    settle();
+    result
+}
+
+/// A way to a registry, one step at a time: the kernel's through the bridge ([`Kernel`]), or a
+/// test's own.
+#[cfg(any(target_arch = "x86", test))]
+trait Reach {
+    fn reach<R>(&mut self, step: impl FnOnce(&mut Registry) -> R) -> R;
+}
+
+/// The kernel's registry, through [`with_registry`].
+#[cfg(target_arch = "x86")]
+struct Kernel;
+
+#[cfg(target_arch = "x86")]
+impl Reach for Kernel {
+    fn reach<R>(&mut self, step: impl FnOnce(&mut Registry) -> R) -> R {
+        with_registry(step)
+    }
+}
+
+/// How many times a step runs again for what it found missing: a step takes at most one record
+/// and room in the storage, so it needs at most a chunk of records, then a chunk of the storage.
+#[cfg(any(target_arch = "x86", test))]
+const SUPPLIES: usize = 2;
+
+/// `step` run on the registry `registry` reaches, and run again (at most [`SUPPLIES`] times) once
+/// what it found missing is made outside it and handed in: [`storing`]'s work. What the registry
+/// refuses (another step took the room meanwhile, or the quota has none) is given back outside it.
+#[cfg(any(target_arch = "x86", test))]
+fn supplied<R>(
+    registry: &mut impl Reach,
     mut step: impl FnMut(&mut Registry) -> Result<R, NtStatus>,
 ) -> Result<R, NtStatus> {
-    let mut result = with_registry(&mut step);
-    if result.is_err() && with_registry(Registry::needs_chunk) {
-        if let Some(chunk) = allocate(CHUNK) {
-            // A chunk the quota refuses (another store took the room meanwhile) goes back.
-            if with_registry(|registry| registry.add_chunk(chunk)).is_ok() {
-                result = with_registry(&mut step);
-            }
+    let mut result = registry.reach(&mut step);
+    for _ in 0..SUPPLIES {
+        if result.is_ok() {
+            break;
         }
+        let Some(made) = registry.reach(Registry::need).and_then(Need::make) else {
+            break;
+        };
+        if let Err(made) = registry.reach(|registry| registry.supply(made)) {
+            made.give_back();
+            break;
+        }
+        result = registry.reach(&mut step);
     }
-    settle();
     result
 }
 
@@ -1195,7 +1411,7 @@ mod tests {
 
     fn registry() -> &'static mut Registry {
         let registry = Box::leak(Box::new(Registry::empty()));
-        registry.start(allocate(CHUNK).unwrap());
+        registry.start(Made::first().unwrap());
         registry
     }
 
@@ -1208,18 +1424,28 @@ mod tests {
         })
     }
 
-    /// `step` as the kernel's `storing` runs it: once more with a chunk added when the storage
-    /// asks for one; the pages let go taken back after.
-    fn storing<R>(
-        r: &mut Registry,
-        mut step: impl FnMut(&mut Registry) -> Result<R, NtStatus>,
-    ) -> Result<R, NtStatus> {
-        let mut result = step(r);
-        if result.is_err() && r.needs_chunk() && r.add_chunk(allocate(CHUNK).unwrap()).is_ok() {
-            result = step(r);
+    /// The tests' registry, reached directly.
+    impl Reach for &mut Registry {
+        fn reach<R>(&mut self, step: impl FnOnce(&mut Registry) -> R) -> R {
+            step(self)
         }
+    }
+
+    /// `step` as the kernel's `storing` runs it: again with what it found missing; the pages let
+    /// go taken back after.
+    fn storing<R>(
+        mut r: &mut Registry,
+        step: impl FnMut(&mut Registry) -> Result<R, NtStatus>,
+    ) -> Result<R, NtStatus> {
+        let result = supplied(&mut r, step);
         while r.take_released().is_some() {}
         result
+    }
+
+    impl Made {
+        fn is_keys(&self) -> bool {
+            matches!(self.0, Supply::Keys(_))
+        }
     }
 
     impl Registry {
@@ -1543,8 +1769,8 @@ mod tests {
             }
         };
         assert_eq!(refused, STATUS_INSUFFICIENT_RESOURCES);
-        assert!(r.needs_chunk());
-        assert!(!r.needs_chunk(), "asking clears it");
+        assert_eq!(r.need(), Some(Need::Storage));
+        assert_eq!(r.need(), None, "asking clears it");
         assert!(r.add_chunk(allocate(CHUNK).unwrap()).is_ok());
         r.set_value(
             user,
@@ -1607,7 +1833,88 @@ mod tests {
         };
         assert_eq!(refused, STATUS_INSUFFICIENT_RESOURCES);
         assert!(r.pages() <= QUOTA_PAGES);
-        assert!(!r.needs_chunk(), "no room for another chunk");
+        assert_eq!(r.need(), None, "no room for another chunk");
+        assert!(r.audit());
+    }
+
+    /// Keys and values have no cap but their u16 index and memory: a step finding no record left
+    /// in its pool's chunks names the chunk it needs, changes nothing, and runs again once the
+    /// chunk is handed in, past the 512 keys and 1,024 values the fixed pools held.
+    #[test]
+    fn keys_and_values_grow_a_chunk_at_a_time() {
+        let r = registry();
+        let jeb = r.open(r.root(), &wide("USER\\jeb")).unwrap();
+        let (many, _) = r.create(jeb, &wide("Many"), &[], false, 0).unwrap();
+        // Fill the key records' chunks made so far.
+        let mut n = 0;
+        while !r.nodes.needs_chunk(0) {
+            r.create(many, &wide(&format!("k{n}")), &[], false, 0)
+                .unwrap();
+            n += 1;
+        }
+        let pages = r.pages();
+        let name = wide(&format!("k{n}"));
+        assert_eq!(
+            r.create(many, &name, &[], false, 0),
+            Err(STATUS_INSUFFICIENT_RESOURCES)
+        );
+        assert_eq!(r.need(), Some(Need::Keys(r.nodes.next_chunk())));
+        assert_eq!(r.open(many, &name), Err(STATUS_OBJECT_NAME_NOT_FOUND));
+        assert_eq!(r.pages(), pages, "no name stored");
+        // A chunk not the next one goes back whole.
+        let stale = Need::Keys(r.nodes.next_chunk() + 1).make().unwrap();
+        let refused = r.supply(stale).unwrap_err();
+        assert!(refused.is_keys());
+        refused.give_back();
+        assert!(
+            storing(r, |r| r.create(many, &name, &[], false, 0))
+                .unwrap()
+                .1
+        );
+        // The values' pool the same way, a large value's pages staying the caller's while its
+        // record waits for a chunk.
+        while !r.values.needs_chunk(0) {
+            n += 1;
+            r.set_value(many, &wide(&format!("v{n}")), 3, &mut data(&[1]), 0)
+                .unwrap();
+        }
+        let mut large = data(&[7; SMALL_DATA + 1]);
+        assert_eq!(
+            r.set_value(many, &wide("large"), 3, &mut large, 0),
+            Err(STATUS_INSUFFICIENT_RESOURCES)
+        );
+        assert!(large.is_some(), "the pages stay the caller's");
+        assert_eq!(r.need(), Some(Need::Values(r.values.next_chunk())));
+        storing(r, |r| r.set_value(many, &wide("large"), 3, &mut large, 0)).unwrap();
+        assert!(large.is_none());
+        // Past the old caps, through `storing`.
+        for k in 0..600 {
+            storing(r, |r| {
+                r.create(many, &wide(&format!("x{k}")), &[], false, 0)
+            })
+            .unwrap();
+        }
+        for v in 0..1100 {
+            let name = wide(&format!("y{v}"));
+            storing(r, |r| {
+                r.set_value(many, &name, 4, &mut data(&[1, 0, 0, 0]), 0)
+            })
+            .unwrap();
+        }
+        assert!(r.nodes.live() > 600 && r.values.live() > 1100);
+        let info = r.info(many).unwrap();
+        assert!(info.subkeys > 600 && info.values > 1100);
+        assert_eq!(
+            r.query_value(many, &wide("LARGE")).unwrap().data,
+            &[7; SMALL_DATA + 1][..]
+        );
+        // Deleting the subkeys and the key frees their records for the next.
+        let live = r.nodes.live();
+        for k in 0..600 {
+            let key = r.open(many, &wide(&format!("x{k}"))).unwrap();
+            r.delete(key, 0).unwrap();
+        }
+        assert_eq!(r.nodes.live(), live - 600);
         assert!(r.audit());
     }
 

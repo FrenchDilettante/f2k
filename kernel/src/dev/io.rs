@@ -390,13 +390,12 @@ impl Default for Namespace {
 
 // --- The file objects' handles ------------------------------------------------------------------
 
+/// The device opens' kind of id.
+pub enum DeviceFileTag {}
+
 /// An open of a device, as the file object's context names it ([`crate::fs::file::Context`]): the
-/// I/O manager's record of its FILE_OBJECT, and the record's generation.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct DeviceFile {
-    index: u16,
-    generation: u16,
-}
+/// I/O manager's record of its FILE_OBJECT, and the record's uniqueness count.
+pub type DeviceFile = crate::slots::Id<DeviceFileTag>;
 
 /// NT_ERROR: a status of the error severity.
 pub fn nt_error(status: NtStatus) -> bool {
@@ -834,14 +833,13 @@ mod target {
     use crate::mem::pool::Block;
     use crate::sched::event::{Event, EventKind, EVENT_WAKE_INCREMENT};
     use crate::sched::wait::{WaitMode, WaitReason, WaitableId};
+    use crate::slots::{per_page, Chunk, KernelId, Record, Slots, KERNEL_PAGES};
     use crate::sync::{StaticBuf, SyncCell};
 
     /// The arena's size: every driver's, device's, file object's and IRP's block.
     const ARENA: usize = 256 * 1024;
     /// How many drivers can be loaded at once.
     const DRIVERS: usize = 16;
-    /// How many device opens can exist at once.
-    const FILES: usize = 64;
 
     /// A loaded driver: its block (the DRIVER_OBJECT at its start), its image, and its name.
     #[derive(Clone, Copy)]
@@ -855,19 +853,44 @@ mod target {
     /// their driver's hands, and whether its close waits for them.
     #[derive(Clone, Copy)]
     struct FileSlot {
-        live: bool,
-        generation: u16,
         file_object: u32,
         device: u32,
         in_flight: u16,
         closing: bool,
     }
 
+    impl FileSlot {
+        const FRESH: FileSlot = FileSlot {
+            file_object: 0,
+            device: 0,
+            in_flight: 0,
+            closing: false,
+        };
+    }
+
+    // SAFETY: `write_fresh` writes a whole record.
+    unsafe impl Record for FileSlot {
+        unsafe fn write_fresh(at: *mut Self, _: u32) {
+            // SAFETY: the caller's contract.
+            unsafe { at.write(Self::FRESH) };
+        }
+    }
+
+    /// Device opens to a chunk: one page's worth.
+    const FILES_PER_CHUNK: usize = per_page::<FileSlot>();
+
+    type Files = Slots<FileSlot, KernelId<DeviceFileTag>, FILES_PER_CHUNK>;
+
+    // Measured: 12-byte records, 20-byte slots, 204 to a page.
+    const _: () = assert!(FILES_PER_CHUNK == 204 && Files::CHUNK_PAGES == 1);
+
     struct IoManager {
         heap: Option<KernelHeap>,
         names: Namespace,
         drivers: [Option<DriverSlot>; DRIVERS],
-        files: [FileSlot; FILES],
+        /// The device opens: no cap but the u16 index (65,535) and memory, a chunk made outside
+        /// the I/O manager's state as the opens need it ([`record_open`]).
+        files: Files,
         stacks: Stacks,
     }
 
@@ -877,14 +900,7 @@ mod target {
         heap: None,
         names: Namespace::new(),
         drivers: [None; DRIVERS],
-        files: [FileSlot {
-            live: false,
-            generation: 0,
-            file_object: 0,
-            device: 0,
-            in_flight: 0,
-            closing: false,
-        }; FILES],
+        files: Slots::new(),
         stacks: Stacks::new(),
     });
 
@@ -1417,7 +1433,7 @@ mod target {
         }
         if let Some(file) = file {
             with_io(|io| {
-                if let Some(slot) = io.files.get_mut(usize::from(file.index)) {
+                if let Some(slot) = io.files.get_mut(file) {
                     slot.in_flight += 1;
                 }
             });
@@ -1497,7 +1513,7 @@ mod target {
         release(irp - TAIL);
         if let Some(file) = file {
             let close = with_io(|io| {
-                let slot = io.files.get_mut(usize::from(file.index))?;
+                let slot = io.files.get_mut(file)?;
                 slot.in_flight -= 1;
                 Some(slot.in_flight == 0 && slot.closing)
             });
@@ -1847,31 +1863,44 @@ mod target {
             Ok((outcome, _)) => return Err(refuse_open(file, device, outcome.status)),
             Err(status) => return Err(refuse_open(file, device, status)),
         };
-        let recorded = with_io(|io| {
-            let (index, slot) = io
-                .files
-                .iter_mut()
-                .enumerate()
-                .find(|(_, slot)| !slot.live)?;
-            *slot = FileSlot {
-                live: true,
-                generation: slot.generation.wrapping_add(1),
-                file_object: file,
-                device,
-                in_flight: 0,
-                closing: false,
-            };
-            Some(DeviceFile {
-                index: index as u16,
-                generation: slot.generation,
-            })
-        });
-        match recorded {
-            Some(handle) => Ok((handle, information)),
-            None => {
+        match record_open(file, device) {
+            Ok(handle) => Ok((handle, information)),
+            Err(status) => {
                 send_close(device, file, crate::dev::irp::IRP_MJ_CLEANUP);
                 send_close(device, file, crate::dev::irp::IRP_MJ_CLOSE);
-                Err(refuse_open(file, device, STATUS_TOO_MANY_OPENED_FILES))
+                Err(refuse_open(file, device, status))
+            }
+        }
+    }
+
+    /// Record an open of `device` through the FILE_OBJECT `file`: its id. A chunk of records the
+    /// open needs is made outside the I/O manager's state, where taking pages is legal, then
+    /// adopted inside; one another open adopted first goes back outside.
+    /// STATUS_TOO_MANY_OPENED_FILES past the u16 index, STATUS_INSUFFICIENT_RESOURCES when the pool
+    /// has no room.
+    fn record_open(file: u32, device: u32) -> Result<DeviceFile, NtStatus> {
+        loop {
+            let recorded = with_io(|io| {
+                if io.files.needs_chunk(0) {
+                    return Err(Some(io.files.next_chunk()));
+                }
+                let (id, slot) = io.files.allocate(0).map_err(|_| None)?;
+                *slot = FileSlot {
+                    file_object: file,
+                    device,
+                    in_flight: 0,
+                    closing: false,
+                };
+                Ok(id)
+            });
+            let number = match recorded {
+                Ok(id) => return Ok(id),
+                Err(None) => return Err(STATUS_TOO_MANY_OPENED_FILES),
+                Err(Some(number)) => number,
+            };
+            let chunk = Chunk::make(number, &KERNEL_PAGES).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+            if let Err(refused) = with_io(|io| io.files.adopt(chunk)) {
+                refused.chunk.give_back(&KERNEL_PAGES);
             }
         }
     }
@@ -1925,9 +1954,8 @@ mod target {
     /// The open `file` names: its FILE_OBJECT and its device; none for a record gone.
     fn open_of(file: DeviceFile) -> Option<(u32, u32)> {
         with_io(|io| {
-            let slot = io.files.get(usize::from(file.index))?;
-            (slot.live && slot.generation == file.generation)
-                .then_some((slot.file_object, slot.device))
+            let slot = io.files.get(file)?;
+            Some((slot.file_object, slot.device))
         })
     }
 
@@ -1962,12 +1990,9 @@ mod target {
     /// completion, as Windows 2000's IRP holds its file object.
     pub fn close(file: DeviceFile) {
         let now = with_io(|io| {
-            let Some(slot) = io.files.get_mut(usize::from(file.index)) else {
+            let Some(slot) = io.files.get_mut(file) else {
                 return false;
             };
-            if !slot.live || slot.generation != file.generation {
-                return false;
-            }
             slot.closing = slot.in_flight > 0;
             !slot.closing
         });
@@ -1982,7 +2007,7 @@ mod target {
             return;
         };
         send_close(device, object, crate::dev::irp::IRP_MJ_CLOSE);
-        with_io(|io| io.files[usize::from(file.index)].live = false);
+        with_io(|io| io.files.free(file));
         free_file_object(object);
         dereference_device(device);
     }
