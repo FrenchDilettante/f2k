@@ -196,7 +196,7 @@ mod tests {
     use crate::sched::event::Event;
     use crate::sched::testkit::{self, Rec};
     use crate::sched::thread::{Thread, ThreadState};
-    use crate::sched::wait::{ClockStamp, WaitDisposition, WaitMode, WaitReason, Waitable};
+    use crate::sched::wait::{ClockStamp, WaitDisposition, WaitMode, WaitReason, WaitableId};
 
     const STAMP: ClockStamp = ClockStamp {
         interrupt_time: 10_000,
@@ -207,7 +207,7 @@ mod tests {
     fn wait(
         mut d: crate::sched::testkit::Disp,
         thread: Rec<Thread>,
-        object: *mut Waitable,
+        object: impl Into<WaitableId>,
     ) -> WaitDisposition {
         d.wait_single(
             thread,
@@ -375,24 +375,24 @@ mod tests {
             testkit::thread(p),
         );
 
-        let manual: &mut Event = testkit::event(EventKind::Notification, false);
-        assert_eq!(wait(d, a, manual.waitable()), WaitDisposition::Yield);
-        assert_eq!(wait(d, b, manual.waitable()), WaitDisposition::Yield);
+        let manual: &Event = testkit::event(EventKind::Notification, false);
+        assert_eq!(wait(d, a, manual), WaitDisposition::Yield);
+        assert_eq!(wait(d, b, manual), WaitDisposition::Yield);
         assert_eq!(pulse_event(&mut d, manual.id()), 0);
         assert_eq!(a.state(), ThreadState::Ready);
         assert_eq!(b.state(), ThreadState::Ready);
         assert_eq!(manual.signal_state(), 0, "left cleared");
 
-        let auto: &mut Event = testkit::event(EventKind::Synchronization, false);
-        assert_eq!(wait(d, c, auto.waitable()), WaitDisposition::Yield);
-        assert_eq!(wait(d, e, auto.waitable()), WaitDisposition::Yield);
+        let auto: &Event = testkit::event(EventKind::Synchronization, false);
+        assert_eq!(wait(d, c, auto), WaitDisposition::Yield);
+        assert_eq!(wait(d, e, auto), WaitDisposition::Yield);
         assert_eq!(pulse_event(&mut d, auto.id()), 0);
         assert_eq!(c.state(), ThreadState::Ready, "the oldest");
         assert_eq!(e.state(), ThreadState::Waiting, "the other stays");
         assert_eq!(auto.signal_state(), 0);
 
         // With nobody waiting a pulse signals no one and leaves the event as cleared as a reset.
-        let signaled: &mut Event = testkit::event(EventKind::Notification, true);
+        let signaled: &Event = testkit::event(EventKind::Notification, true);
         assert_eq!(pulse_event(&mut d, signaled.id()), 1, "the state before");
         assert_eq!(signaled.signal_state(), 0);
     }
@@ -431,7 +431,7 @@ mod tests {
         let p = testkit::process(8);
         let (owner, other) = (testkit::thread(p), testkit::thread(p));
 
-        let event: &mut Event = testkit::event(EventKind::Synchronization, false);
+        let event: &Event = testkit::event(EventKind::Synchronization, false);
         assert_eq!(
             signal(&mut d, Signal::Event(event.id()), owner.id()),
             Ok(())
@@ -456,14 +456,14 @@ mod tests {
         );
         assert_eq!(d.waitable(semaphore).signal_state(), 1);
 
-        let mut mutant = testkit::mutex();
+        let mutant = testkit::mutex();
         assert_eq!(
             signal(&mut d, Signal::Mutant(mutant.id()), owner.id()),
             Err(STATUS_MUTANT_NOT_OWNED),
             "a free mutant is no one's"
         );
         assert_eq!(
-            wait(d, owner, mutant.waitable()),
+            wait(d, owner, mutant),
             WaitDisposition::Complete(STATUS_SUCCESS)
         );
         assert_eq!(

@@ -208,7 +208,7 @@ impl Dispatcher {
     /// reading and the link (the dispatch level alone would not hold the clock off), and the entry
     /// check is exact.
     pub fn insert_timer(&mut self, timer: TimerId, due: u64, now: u64) -> bool {
-        self.timer_mut(timer).waitable.signal_state = 0;
+        self.timer_mut(timer).waitable.get_mut().signal_state = 0;
         self.link_timer(timer, due, now)
     }
 
@@ -319,7 +319,7 @@ impl Dispatcher {
                 }
                 // A periodic timer re-arms with its signal standing; every other entry was reset
                 // by its insert.
-                if record.waitable.signal_state != 0 && record.period == 0 {
+                if record.waitable.signal_state() != 0 && record.period == 0 {
                     return Err("a bucket entry is signaled");
                 }
                 if self.timer_table.bucket_of(record.due_time) != index {
@@ -394,7 +394,7 @@ impl Dispatcher {
         if let Some(apc) = record.apc.take() {
             self.remove_apc(apc);
         }
-        self.timer(timer).waitable.signal_state > 0
+        self.timer(timer).waitable.signal_state() > 0
     }
 }
 
@@ -469,7 +469,7 @@ mod tests {
         crate::sched::testkit::thread(process)
     }
 
-    fn event(kind: EventKind, signaled: bool) -> &'static mut Event {
+    fn event(kind: EventKind, signaled: bool) -> &'static Event {
         let event = Box::leak(Box::new(Event::new(kind, signaled)));
         event.init();
         event
@@ -485,7 +485,7 @@ mod tests {
     fn block_on(
         mut dispatcher: crate::sched::testkit::Disp,
         thread: crate::sched::testkit::Rec<Thread>,
-        object: *mut crate::sched::wait::Waitable,
+        object: impl Into<WaitableId>,
         timeout: Option<i64>,
         at: ClockStamp,
     ) {
@@ -830,11 +830,11 @@ mod tests {
     #[test]
     fn the_audit_rejects_a_signaled_bucket_entry() {
         let mut table = fresh_table();
-        let mut timer = fresh_timer();
+        let timer = fresh_timer();
         assert!(table.insert(timer, tick(1000) + 50_000, tick(1000)));
         assert_eq!(table.audit_timers(), Ok(()));
         // A linked timer must not be signaled.
-        timer.waitable.signal_state = 1;
+        timer.waitable.set_signal_state(1);
         assert_ne!(table.audit_timers(), Ok(()));
     }
 
@@ -880,7 +880,7 @@ mod tests {
         block_on(
             dispatcher,
             waiter,
-            ev.waitable(),
+            ev,
             Some(2_000_000),
             stamp(tick(1000), 1000),
         );
@@ -965,7 +965,7 @@ mod tests {
         block_on(
             dispatcher,
             waiter,
-            ev.waitable(),
+            ev,
             Some(1_000_000),
             stamp(tick(1000), 1000),
         );

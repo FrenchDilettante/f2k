@@ -23,7 +23,7 @@ use super::process::{ProcessObject, ProcessThreads};
 use super::semaphore::Semaphore;
 use super::thread::{Thread, ThreadId};
 use super::timer::{TimerId, TimerList};
-use super::wait::{BlockId, Timer, WaitBlock, Waitable, WaitableId, Waiters, WaitingList};
+use super::wait::{BlockId, Header, Timer, WaitBlock, Waitable, WaitableId, Waiters, WaitingList};
 use super::waitable_timer::WaitableTimer;
 use crate::ob::{EVENTS, MUTEXES, PROCESSES, SEMAPHORES, THREADS, TIMERS};
 
@@ -144,28 +144,31 @@ impl Dispatcher {
             WaitableId::Thread(thread) => &self.thread(thread).waitable,
             WaitableId::ThreadTimer(thread) => &self.thread(thread).timer.waitable,
             WaitableId::Suspend(thread) => &self.thread(thread).suspend_semaphore.waitable,
-            // SAFETY: an embedded header's embedder keeps it at the address its init named, alive,
-            // while anything waits on it or signals it — the only times its name is resolved —
-            // and the dispatcher reaches it serialized.
+            // SAFETY: an embedded header's embedder keeps it at the address its name carries,
+            // alive, while anything waits on it or signals it — the only times its name is
+            // resolved — and reaches it through shared borrows only meanwhile; a shared reference
+            // to the header is a shared reference to its cell (see `Waitable`).
             WaitableId::Embedded(header) => unsafe { header.as_ref() },
         }
     }
 
-    /// The waitable header `object` names, to change.
-    pub fn waitable_mut(&mut self, object: WaitableId) -> &mut Waitable {
-        match object {
-            WaitableId::Event(index) => &mut self.db.events.get_mut(index).waitable,
-            WaitableId::Semaphore(index) => &mut self.db.semaphores.get_mut(index).waitable,
-            WaitableId::Mutex(index) => &mut self.db.mutexes.get_mut(index).waitable,
-            WaitableId::Timer(index) => &mut self.db.timers.get_mut(index).timer.waitable,
-            WaitableId::Process(index) => &mut self.db.processes.get_mut(index).waitable,
-            WaitableId::Thread(thread) => &mut self.thread_mut(thread).waitable,
-            WaitableId::ThreadTimer(thread) => &mut self.thread_mut(thread).timer.waitable,
-            WaitableId::Suspend(thread) => &mut self.thread_mut(thread).suspend_semaphore.waitable,
-            // SAFETY: as in `waitable`; the serialized dispatcher makes this the header's only use
-            // while the reference lives.
-            WaitableId::Embedded(mut header) => unsafe { header.as_mut() },
-        }
+    /// The contents of the waitable header `object` names, for the dispatcher to read: reached
+    /// through the header's cell, for no longer than this borrow of the dispatcher (see
+    /// [`Waitable`]).
+    pub fn header(&self, object: WaitableId) -> &Header {
+        // SAFETY: the header is live (as in `waitable`), and the serialized dispatcher is the only
+        // one to form references to a header's contents: none to change them is live while this
+        // borrow of the dispatcher is.
+        unsafe { &*self.waitable(object).as_ptr() }
+    }
+
+    /// The contents of the waitable header `object` names, to change: reached through the
+    /// header's cell, for no longer than this exclusive borrow of the dispatcher, the dispatcher
+    /// lock's hold (see [`Waitable`]).
+    pub fn header_mut(&mut self, object: WaitableId) -> &mut Header {
+        // SAFETY: as in `header`; the exclusive borrow of the dispatcher makes this the only
+        // reference to the contents while it lives: owners touch a header by value only.
+        unsafe { &mut *self.waitable(object).as_ptr() }
     }
 
     /// The wait block `block` names.
@@ -262,7 +265,7 @@ impl Dispatcher {
     pub fn renew_semaphore(&mut self, index: u16, initial: i32, limit: i32) -> &mut Semaphore {
         let semaphore = self.db.semaphores.get_mut(index);
         *semaphore = Semaphore::with_id(limit, WaitableId::Semaphore(index));
-        semaphore.waitable.signal_state = initial;
+        semaphore.waitable.get_mut().signal_state = initial;
         semaphore
     }
 
@@ -349,11 +352,11 @@ impl Arena<ProcessThreads> for Dispatcher {
 
 impl Arena<Waiters> for Dispatcher {
     fn list(&self, list: Waiters) -> &IndexList<Waiters> {
-        &self.waitable(list.0).waiters
+        &self.header(list.0).waiters
     }
 
     fn list_mut(&mut self, list: Waiters) -> &mut IndexList<Waiters> {
-        &mut self.waitable_mut(list.0).waiters
+        &mut self.header_mut(list.0).waiters
     }
 
     fn link(&self, entry: BlockId) -> &Link<Waiters> {

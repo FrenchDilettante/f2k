@@ -914,7 +914,7 @@ impl Dispatcher {
         // own waiters wake.
         self.abandon_mutexes(thread);
         let record = self.thread_mut(thread);
-        record.waitable.signal_state = 1;
+        record.waitable.get_mut().signal_state = 1;
         if record.waitable.has_waiters() {
             self.satisfy_waiters(super::wait::WaitableId::Thread(thread), 0);
         }

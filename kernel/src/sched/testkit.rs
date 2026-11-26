@@ -21,7 +21,7 @@ use super::mutex::{Mutex, MutexId};
 use super::process::SchedProcess;
 use super::thread::{Thread, ThreadId};
 use super::timer::TimerId;
-use super::wait::Timer;
+use super::wait::{Timer, WaitableId};
 use super::waitable_timer::WaitableTimer;
 use crate::level::{Dispatch, LevelCell};
 
@@ -138,6 +138,24 @@ impl<T: Record> core::ops::DerefMut for Rec<T> {
 impl From<Rec<Thread>> for ThreadId {
     fn from(thread: Rec<Thread>) -> Self {
         thread.id()
+    }
+}
+
+impl From<Rec<Thread>> for WaitableId {
+    fn from(thread: Rec<Thread>) -> Self {
+        WaitableId::Thread(thread.id())
+    }
+}
+
+impl From<Rec<Mutex>> for WaitableId {
+    fn from(mutex: Rec<Mutex>) -> Self {
+        WaitableId::Mutex(mutex.id().0)
+    }
+}
+
+impl From<Rec<WaitableTimer>> for WaitableId {
+    fn from(timer: Rec<WaitableTimer>) -> Self {
+        timer.id().waitable()
     }
 }
 
@@ -286,7 +304,7 @@ fn attached(id: ThreadId, process: *mut SchedProcess) -> Rec<Thread> {
 }
 
 /// An event to embed, leaked at its final address and named there.
-pub fn event(kind: EventKind, signaled: bool) -> &'static mut Event {
+pub fn event(kind: EventKind, signaled: bool) -> &'static Event {
     let event = Box::leak(Box::new(Event::new(kind, signaled)));
     event.init();
     event

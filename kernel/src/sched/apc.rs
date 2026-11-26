@@ -470,7 +470,7 @@ impl Dispatcher {
             // the thread ever delivered it: that resume released a count with nobody parked. The
             // queued APC serves this suspend; the count it would find must go, or its wait would
             // be satisfied at once and the thread would run on.
-            let semaphore = &mut self.thread_mut(thread).suspend_semaphore.waitable;
+            let semaphore = self.thread_mut(thread).suspend_semaphore.waitable.get_mut();
             if semaphore.signal_state > 0 {
                 semaphore.signal_state -= 1;
             }
@@ -709,7 +709,7 @@ mod tests {
     use crate::sched::process::SchedProcess;
     use crate::sched::testkit::Rec;
     use crate::sched::thread::Thread;
-    use crate::sched::wait::{ClockStamp, WaitDisposition, WaitMode, WaitReason, Waitable};
+    use crate::sched::wait::{ClockStamp, WaitDisposition, WaitMode, WaitReason, WaitableId};
 
     // --- The rig ------------------------------------------------------------
     //
@@ -748,7 +748,7 @@ mod tests {
     fn block_on(
         d: crate::sched::testkit::Disp,
         t: Rec<Thread>,
-        object: *mut Waitable,
+        object: impl Into<WaitableId>,
         timeout: Option<i64>,
     ) {
         block_on_as(d, t, object, WaitMode::Kernel, false, timeout);
@@ -758,7 +758,7 @@ mod tests {
     fn block_on_as(
         mut d: crate::sched::testkit::Disp,
         t: Rec<Thread>,
-        object: *mut Waitable,
+        object: impl Into<WaitableId>,
         mode: WaitMode,
         alertable: bool,
         timeout: Option<i64>,
@@ -777,7 +777,7 @@ mod tests {
         }
     }
 
-    fn event(kind: EventKind, signaled: bool) -> &'static mut Event {
+    fn event(kind: EventKind, signaled: bool) -> &'static Event {
         let ev = Box::leak(Box::new(Event::new(kind, signaled)));
         ev.init();
         ev
@@ -1106,14 +1106,14 @@ mod tests {
         let t = thread(p);
         run(d, t);
         let ev = event(EventKind::Notification, false);
-        block_on(d, t, ev.waitable(), Some(1_000_000));
+        block_on(d, t, ev, Some(1_000_000));
         let apc = special(t);
 
         assert!(d.queue_apc(apc, 0, 0, 0));
         assert_eq!(t.state(), ThreadState::Ready, "the wait exit readied it");
         assert_eq!(t.wait_status(), STATUS_KERNEL_APC);
         assert!(
-            ev.waitable.waiters.is_empty(),
+            ev.waitable.waiters().is_empty(),
             "the wake unlinked the block"
         );
         assert!(!t.timer.inserted(), "the wake cancelled the wait's timer");
@@ -1130,16 +1130,16 @@ mod tests {
         let mut t1 = thread(p);
         run(d, t1);
         t1.kernel_apc_disable = 1;
-        block_on(d, t1, ev.waitable(), None);
+        block_on(d, t1, ev, None);
 
         let t2 = thread(p);
         run(d, t2);
-        block_on(d, t2, ev.waitable(), None);
+        block_on(d, t2, ev, None);
 
         let mut t3 = thread(p);
         run(d, t3);
         t3.kernel_apc_in_progress = true;
-        block_on(d, t3, ev.waitable(), None);
+        block_on(d, t3, ev, None);
 
         for (i, parked) in [t1, t2, t3].into_iter().enumerate() {
             let apc = normal(parked);
@@ -1170,7 +1170,7 @@ mod tests {
         let mut t = thread(p);
         run(d, t);
         let ev = event(EventKind::Notification, false);
-        block_on(d, t, ev.waitable(), None);
+        block_on(d, t, ev, None);
         // The rig-only raised-level wait.
         t.wait_irql = irql::APC;
         let apc = special(t);
@@ -1210,15 +1210,15 @@ mod tests {
 
         let t1 = thread(p);
         run(d, t1);
-        block_on_as(d, t1, ev.waitable(), WaitMode::User, true, None);
+        block_on_as(d, t1, ev, WaitMode::User, true, None);
 
         let t2 = thread(p);
         run(d, t2);
-        block_on_as(d, t2, ev.waitable(), WaitMode::User, false, None);
+        block_on_as(d, t2, ev, WaitMode::User, false, None);
 
         let t3 = thread(p);
         run(d, t3);
-        block_on_as(d, t3, ev.waitable(), WaitMode::Kernel, true, None);
+        block_on_as(d, t3, ev, WaitMode::Kernel, true, None);
 
         let t4 = thread(p);
         run(d, t4);
@@ -1740,7 +1740,7 @@ mod tests {
             "the force-resume woke it"
         );
         assert_eq!(suspended.suspend_count, 0);
-        assert!(suspended.suspend_semaphore.waitable.waiters.is_empty());
+        assert!(suspended.suspend_semaphore.waitable.waiters().is_empty());
         assert_eq!(queued(suspended), vec![ApcId::Exit(suspended.id())]);
         assert_eq!(d.select_next(), Some(suspended.id()));
         run(d, suspended);

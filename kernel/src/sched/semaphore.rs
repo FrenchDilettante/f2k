@@ -37,18 +37,13 @@ impl Semaphore {
     }
 
     /// Name an embedded semaphore by its address; call once at its final address.
-    pub fn init(&mut self) {
+    pub fn init(&self) {
         self.waitable.init();
-    }
-
-    /// The waitable header, as the wait entry takes it.
-    pub(crate) fn waitable(&mut self) -> *mut Waitable {
-        &mut self.waitable
     }
 
     /// The current count.
     pub fn count(&self) -> i32 {
-        self.waitable.signal_state
+        self.waitable.signal_state()
     }
 }
 
@@ -71,7 +66,7 @@ impl Dispatcher {
             panic!("a released semaphore is a semaphore object, not {semaphore:?}");
         };
         let limit = self.semaphore_mut(index).limit;
-        let header = self.waitable_mut(semaphore);
+        let header = self.header_mut(semaphore);
         let old = header.signal_state;
         let new = old.wrapping_add(adjustment);
         if new > limit || new < old {
@@ -80,7 +75,7 @@ impl Dispatcher {
         header.signal_state = new;
         // Waiters can only be parked while the count is zero, so a release from zero is the only
         // one that can satisfy anyone.
-        if old == 0 && header.has_waiters() {
+        if old == 0 && !header.waiters.is_empty() {
             self.satisfy_waiters(semaphore, increment);
         }
         Ok(old)
@@ -91,10 +86,7 @@ impl Dispatcher {
     /// release with nobody parked, and the count it leaves is the residue the next suspend's
     /// satisfied wait consumes. This is the wake half of resume.
     pub(crate) fn release_suspend_semaphore(&mut self, thread: ThreadId) {
-        self.thread_mut(thread)
-            .suspend_semaphore
-            .waitable
-            .signal_state += 1;
+        self.header_mut(WaitableId::Suspend(thread)).signal_state += 1;
         self.satisfy_waiters(
             WaitableId::Suspend(thread),
             super::apc::SUSPEND_WAKE_INCREMENT,
@@ -226,7 +218,7 @@ mod tests {
         let t = thread(p);
         park_on(d, t, semaphore);
 
-        d.waitable_mut(semaphore).signal_state = 2;
+        d.header_mut(semaphore).signal_state = 2;
         assert_eq!(
             d.release_semaphore(semaphore, 1, 0),
             Err(crate::status::STATUS_SEMAPHORE_LIMIT_EXCEEDED)
@@ -238,7 +230,7 @@ mod tests {
             "nobody woken"
         );
 
-        d.waitable_mut(semaphore).signal_state = 1;
+        d.header_mut(semaphore).signal_state = 1;
         assert_eq!(
             d.release_semaphore(semaphore, 2, 0),
             Err(crate::status::STATUS_SEMAPHORE_LIMIT_EXCEEDED),

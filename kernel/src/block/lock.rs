@@ -72,13 +72,13 @@ impl<T> DeviceLock<T> {
     }
 
     /// Run `f` on the event, once the lock is initialized.
-    fn with_event<R>(&self, f: impl FnOnce(&mut Event) -> R) -> R {
+    fn with_event<R>(&self, f: impl FnOnce(&Event) -> R) -> R {
         assert!(
             self.initialized.load(Ordering::SeqCst),
             "device lock used before init"
         );
         // SAFETY: see the Sync impl: accesses are serialized, and the reference ends with `f`.
-        f(unsafe { &mut *self.event.get() })
+        f(unsafe { &*self.event.get() })
     }
 
     /// Whether nobody holds the lock. Masked, as every reach into the event outside the dispatcher
@@ -109,10 +109,10 @@ impl<T> DeviceLock<T> {
             taker,
             "a wait lock taken again by its owner"
         );
-        let waitable = self.with_event(|event| event.waitable());
+        let event = self.with_event(|event| event.id());
         let disposition = dispatcher.wait_single(
             thread,
-            waitable,
+            event,
             WaitReason::Executive,
             WaitMode::Kernel,
             false,
@@ -230,7 +230,7 @@ impl<T> DeviceLock<T> {
                 }
                 assert!(!event.signaled(), "releasing a device lock nobody holds");
                 self.owner.store(0, Ordering::SeqCst);
-                event.waitable.signal_state = 1;
+                event.waitable.set_signal_state(1);
                 false
             })
         });

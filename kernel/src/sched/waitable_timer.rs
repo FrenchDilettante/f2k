@@ -22,7 +22,7 @@ use super::apc::{Apc, ApcId};
 use super::dispatcher::Dispatcher;
 use super::thread::ThreadId;
 use super::timer::TimerId;
-use super::wait::{Timer, WaitKind, Waitable, WaitableId};
+use super::wait::{Timer, WaitKind, WaitableId};
 
 /// A waitable timer record: the timer, then the APC record its expiries queue.
 pub struct WaitableTimer {
@@ -53,11 +53,6 @@ impl WaitableTimer {
             ),
             apc: Apc::new(ApcId::Timer(index)),
         }
-    }
-
-    /// The waitable header, as the wait entries take it.
-    pub fn waitable(&mut self) -> *mut Waitable {
-        &mut self.timer.waitable
     }
 
     /// Whether the timer is armed (the table holds it).
@@ -152,7 +147,7 @@ mod tests {
     fn wait(
         mut d: crate::sched::testkit::Disp,
         t: crate::sched::testkit::Rec<Thread>,
-        object: *mut Waitable,
+        object: impl Into<WaitableId>,
         now: u64,
     ) -> WaitDisposition {
         d.wait_single(
@@ -179,22 +174,19 @@ mod tests {
     fn a_manual_timer_stays_signaled_until_set_again() {
         let mut d = dispatcher();
         let t = thread(process());
-        let mut m = timer(true);
+        let m = timer(true);
         assert!(!d.set_waitable_timer(m, 10 * INCREMENT, 0, 0, false, SIGNALED_AT));
         assert!(m.armed());
-        assert_eq!(
-            wait(d, t, m.waitable(), 0),
-            WaitDisposition::Complete(STATUS_TIMEOUT)
-        );
+        assert_eq!(wait(d, t, m, 0), WaitDisposition::Complete(STATUS_TIMEOUT));
         expire_at(d, 10);
         assert!(!m.armed());
         let now = 10 * INCREMENT;
         assert_eq!(
-            wait(d, t, m.waitable(), now),
+            wait(d, t, m, now),
             WaitDisposition::Complete(STATUS_SUCCESS)
         );
         assert_eq!(
-            wait(d, t, m.waitable(), now),
+            wait(d, t, m, now),
             WaitDisposition::Complete(STATUS_SUCCESS),
             "still signaled"
         );
@@ -203,7 +195,7 @@ mod tests {
             "was signaled"
         );
         assert_eq!(
-            wait(d, t, m.waitable(), now),
+            wait(d, t, m, now),
             WaitDisposition::Complete(STATUS_TIMEOUT)
         );
     }
@@ -214,7 +206,7 @@ mod tests {
     fn an_auto_reset_periodic_timer_rearms_and_cancels() {
         let mut d = dispatcher();
         let t = thread(process());
-        let mut a = timer(false);
+        let a = timer(false);
         d.set_waitable_timer(a, 5 * INCREMENT, 0, 5 * INCREMENT, false, SIGNALED_AT);
         for period in 1..=3u64 {
             let n = 5 * period;
@@ -223,11 +215,11 @@ mod tests {
             assert_eq!(a.timer.due_time, (n + 5) * INCREMENT);
             let now = n * INCREMENT;
             assert_eq!(
-                wait(d, t, a.waitable(), now),
+                wait(d, t, a, now),
                 WaitDisposition::Complete(STATUS_SUCCESS)
             );
             assert_eq!(
-                wait(d, t, a.waitable(), now),
+                wait(d, t, a, now),
                 WaitDisposition::Complete(STATUS_TIMEOUT),
                 "consumed"
             );
@@ -236,7 +228,8 @@ mod tests {
         assert!(!a.armed());
         expire_at(d, 20);
         assert_eq!(
-            a.timer.waitable.signal_state, 0,
+            a.timer.waitable.signal_state(),
+            0,
             "a cancelled timer never fires"
         );
     }
@@ -248,7 +241,7 @@ mod tests {
         let m = timer(true);
         d.set_waitable_timer(m, 100, 200, 0, false, SIGNALED_AT);
         assert!(!m.armed());
-        assert_eq!(m.timer.waitable.signal_state, 1);
+        assert_eq!(m.timer.waitable.signal_state(), 1);
     }
 
     /// A due time already past with a completion routine queues the APC at the set itself, the

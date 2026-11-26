@@ -1878,7 +1878,7 @@ fn signal_process_body(index: u16, exit_status: u32) {
     with_bodies(|bodies| {
         let process = bodies.process_object_mut(index);
         process.exit_status = exit_status;
-        process.waitable.signal_state = 1;
+        process.waitable.get_mut().signal_state = 1;
         if process.waitable.has_waiters() {
             let waitable = process.waitable.id();
             bodies.satisfy_waiters(waitable, 0);

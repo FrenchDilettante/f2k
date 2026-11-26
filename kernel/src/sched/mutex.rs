@@ -66,11 +66,6 @@ impl Mutex {
         }
     }
 
-    /// The waitable header, as the wait entries take it.
-    pub fn waitable(&mut self) -> *mut Waitable {
-        &mut self.waitable
-    }
-
     /// The owning thread, none while free.
     pub fn owner(&self) -> Option<ThreadId> {
         self.owner
@@ -79,7 +74,7 @@ impl Mutex {
 
 /// Whether `thread` may take `mutex` now: it is free, or `thread` already owns it.
 pub(crate) fn available_to(mutex: &Mutex, thread: ThreadId) -> bool {
-    mutex.waitable.signal_state > 0 || mutex.owner == Some(thread)
+    mutex.waitable.signal_state() > 0 || mutex.owner == Some(thread)
 }
 
 impl Dispatcher {
@@ -88,8 +83,8 @@ impl Dispatcher {
     /// abandonment once, as the status the take returns (success otherwise).
     pub(crate) fn acquire_mutex(&mut self, mutex: MutexId, thread: ThreadId) -> NtStatus {
         let record = self.mutex_mut(mutex);
-        record.waitable.signal_state -= 1;
-        if record.waitable.signal_state != 0 {
+        record.waitable.get_mut().signal_state -= 1;
+        if record.waitable.signal_state() != 0 {
             return STATUS_SUCCESS;
         }
         record.owner = Some(thread);
@@ -115,7 +110,7 @@ impl Dispatcher {
         if !owned {
             return Err(STATUS_MUTANT_NOT_OWNED);
         }
-        let header = &mut self.mutex_mut(mutex).waitable;
+        let header = self.mutex_mut(mutex).waitable.get_mut();
         let previous = header.signal_state;
         header.signal_state += 1;
         if header.signal_state == 1 {
@@ -129,7 +124,7 @@ impl Dispatcher {
     pub(crate) fn abandon_mutexes(&mut self, thread: ThreadId) {
         while let Some(mutex) = list::first(self, OwnedMutexes(thread)) {
             let record = self.mutex_mut(mutex);
-            record.waitable.signal_state = 1;
+            record.waitable.get_mut().signal_state = 1;
             record.abandoned = true;
             self.free_mutex(mutex);
         }
@@ -144,7 +139,7 @@ impl Dispatcher {
             "a deleted mutex has no waiters"
         );
         if let Some(owner) = record.owner.take() {
-            record.waitable.signal_state = 1;
+            record.waitable.get_mut().signal_state = 1;
             list::remove(self, OwnedMutexes(owner), mutex);
         }
     }
@@ -190,7 +185,7 @@ mod tests {
         crate::sched::testkit::mutex()
     }
 
-    fn event(kind: EventKind, signaled: bool) -> &'static mut Event {
+    fn event(kind: EventKind, signaled: bool) -> &'static Event {
         let e = Box::leak(Box::new(Event::new(kind, signaled)));
         e.init();
         e
@@ -204,7 +199,7 @@ mod tests {
     fn wait(
         mut d: crate::sched::testkit::Disp,
         t: crate::sched::testkit::Rec<Thread>,
-        object: *mut Waitable,
+        object: impl Into<WaitableId>,
     ) -> WaitDisposition {
         d.wait_single(
             t,
@@ -224,20 +219,14 @@ mod tests {
         let mut d = dispatcher();
         let p = process();
         let (owner, other) = (thread(p), thread(p));
-        let mut m = mutex();
+        let m = mutex();
 
-        assert_eq!(
-            wait(d, owner, m.waitable()),
-            WaitDisposition::Complete(STATUS_SUCCESS)
-        );
-        assert_eq!(
-            wait(d, owner, m.waitable()),
-            WaitDisposition::Complete(STATUS_SUCCESS)
-        );
-        assert_eq!(m.waitable.signal_state, -1, "held twice");
+        assert_eq!(wait(d, owner, m), WaitDisposition::Complete(STATUS_SUCCESS));
+        assert_eq!(wait(d, owner, m), WaitDisposition::Complete(STATUS_SUCCESS));
+        assert_eq!(m.waitable.signal_state(), -1, "held twice");
         assert_eq!(m.owner(), Some(owner.id()));
 
-        assert_eq!(wait(d, other, m.waitable()), WaitDisposition::Yield);
+        assert_eq!(wait(d, other, m), WaitDisposition::Yield);
         assert_eq!(
             d.release_mutex(m, other),
             Err(STATUS_MUTANT_NOT_OWNED),
@@ -248,7 +237,7 @@ mod tests {
         assert_eq!(d.release_mutex(m, owner), Ok(0));
         assert_eq!(other.state(), ThreadState::Ready, "the waiter took it");
         assert_eq!(m.owner(), Some(other.id()));
-        assert_eq!(m.waitable.signal_state, 0);
+        assert_eq!(m.waitable.signal_state(), 0);
         assert!(owner.owned_mutexes.is_empty());
         assert_eq!(
             d.release_mutex(m, owner),
@@ -264,16 +253,16 @@ mod tests {
         let mut d = dispatcher();
         let p = process();
         let (owner, waiter, late) = (thread(p), thread(p), thread(p));
-        let (mut m1, mut m2) = (mutex(), mutex());
+        let (m1, m2) = (mutex(), mutex());
         assert_eq!(
-            wait(d, owner, m1.waitable()),
+            wait(d, owner, m1),
             WaitDisposition::Complete(STATUS_SUCCESS)
         );
         assert_eq!(
-            wait(d, owner, m2.waitable()),
+            wait(d, owner, m2),
             WaitDisposition::Complete(STATUS_SUCCESS)
         );
-        assert_eq!(wait(d, waiter, m1.waitable()), WaitDisposition::Yield);
+        assert_eq!(wait(d, waiter, m1), WaitDisposition::Yield);
 
         // The owner's own exit retires it, on the processor.
         d.enter(owner.id());
@@ -289,12 +278,12 @@ mod tests {
 
         assert!(m2.owner().is_none());
         assert_eq!(
-            wait(d, late, m2.waitable()),
+            wait(d, late, m2),
             WaitDisposition::Complete(STATUS_ABANDONED)
         );
         assert_eq!(d.release_mutex(m2, late), Ok(0));
         assert_eq!(
-            wait(d, late, m2.waitable()),
+            wait(d, late, m2),
             WaitDisposition::Complete(STATUS_SUCCESS),
             "reported once"
         );
@@ -307,12 +296,12 @@ mod tests {
         let mut d = dispatcher();
         let p = process();
         let t = thread(p);
-        let mut events = [
+        let events = [
             event(EventKind::Synchronization, false),
             event(EventKind::Synchronization, true),
             event(EventKind::Synchronization, true),
         ];
-        let objects: Vec<*mut Waitable> = events.iter_mut().map(|e| e.waitable()).collect();
+        let objects: Vec<WaitableId> = events.iter().map(|e| e.id()).collect();
         let any =
             |mut d: crate::sched::testkit::Disp, t: crate::sched::testkit::Rec<Thread>, timeout| {
                 d.wait_multiple(
@@ -338,7 +327,7 @@ mod tests {
         assert_eq!(t.state(), ThreadState::Ready);
         assert_eq!(t.wait_status(), NtStatus(2));
         for e in events.iter() {
-            assert!(e.waitable.waiters.is_empty(), "every block unwound");
+            assert!(e.waitable.waiters().is_empty(), "every block unwound");
         }
     }
 
@@ -353,12 +342,9 @@ mod tests {
             event(EventKind::Synchronization, true),
             event(EventKind::Synchronization, false),
         );
-        let mut m = mutex();
-        assert_eq!(
-            wait(d, t, m.waitable()),
-            WaitDisposition::Complete(STATUS_SUCCESS)
-        );
-        let objects = [e0.waitable(), e1.waitable(), m.waitable()];
+        let m = mutex();
+        assert_eq!(wait(d, t, m), WaitDisposition::Complete(STATUS_SUCCESS));
+        let objects = [e0.id(), e1.id(), WaitableId::from(m)];
         let all =
             |mut d: crate::sched::testkit::Disp, t: crate::sched::testkit::Rec<Thread>, timeout| {
                 d.wait_multiple(
@@ -383,7 +369,7 @@ mod tests {
         assert_eq!(t.state(), ThreadState::Ready);
         assert_eq!(t.wait_status(), STATUS_SUCCESS);
         assert!(!e0.signaled() && !e1.signaled(), "both taken");
-        assert_eq!(m.waitable.signal_state, -1, "the mutex taken again");
+        assert_eq!(m.waitable.signal_state(), -1, "the mutex taken again");
     }
 
     /// The alert test: an alertable user wait with a user APC queued completes at once with the
@@ -408,7 +394,7 @@ mod tests {
 
         let alertable = d.wait_single(
             t,
-            e.waitable(),
+            e,
             WaitReason::UserRequest,
             WaitMode::User,
             true,
@@ -417,7 +403,7 @@ mod tests {
         );
         assert_eq!(alertable, WaitDisposition::Complete(STATUS_USER_APC));
         assert!(t.user_apc_pending);
-        assert!(e.waitable.waiters.is_empty(), "nothing parked");
+        assert!(e.waitable.waiters().is_empty(), "nothing parked");
 
         t.user_apc_pending = false;
         assert_eq!(
@@ -427,15 +413,11 @@ mod tests {
         // A delivery armed already completes any user-mode wait (a terminated thread's exit APC);
         // with none armed, a non-alertable wait parks whatever is queued.
         assert_eq!(
-            wait(d, t, e.waitable()),
+            wait(d, t, e),
             WaitDisposition::Complete(STATUS_USER_APC),
             "armed"
         );
         t.user_apc_pending = false;
-        assert_eq!(
-            wait(d, t, e.waitable()),
-            WaitDisposition::Yield,
-            "non-alertable"
-        );
+        assert_eq!(wait(d, t, e), WaitDisposition::Yield, "non-alertable");
     }
 }

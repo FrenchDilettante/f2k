@@ -64,13 +64,13 @@ impl Event {
 
     /// Name an embedded event by its address; call once at its final address, before anything
     /// waits on it.
-    pub fn init(&mut self) {
+    pub fn init(&self) {
         self.waitable.init();
     }
 
     /// The event's flavor.
     pub fn kind(&self) -> EventKind {
-        match self.waitable.kind {
+        match self.waitable.kind() {
             WaitKind::SynchronizationEvent => EventKind::Synchronization,
             _ => EventKind::Notification,
         }
@@ -78,29 +78,24 @@ impl Event {
 
     /// The signal state: positive means signaled.
     pub fn signal_state(&self) -> i32 {
-        self.waitable.signal_state
+        self.waitable.signal_state()
     }
 
     /// Whether the event is signaled.
     pub fn signaled(&self) -> bool {
-        self.waitable.signal_state > 0
-    }
-
-    /// The event's waitable header, as the wait entry takes it.
-    pub fn waitable(&mut self) -> *mut Waitable {
-        &mut self.waitable
+        self.waitable.signal_state() > 0
     }
 
     /// Clear the event: the write-only fast form. Clearing wakes nobody — a waiter parked on the
     /// event stays parked until a later signal or its own timeout.
-    pub fn clear(&mut self) {
-        self.waitable.signal_state = 0;
+    pub fn clear(&self) {
+        self.waitable.set_signal_state(0);
     }
 
     /// Reset the event, returning its previous signal state.
-    pub fn reset(&mut self) -> i32 {
-        let previous = self.waitable.signal_state;
-        self.waitable.signal_state = 0;
+    pub fn reset(&self) -> i32 {
+        let previous = self.waitable.signal_state();
+        self.waitable.set_signal_state(0);
         previous
     }
 
@@ -111,10 +106,17 @@ impl Event {
     }
 }
 
+impl From<&Event> for WaitableId {
+    /// The event's name ([`Event::id`]).
+    fn from(event: &Event) -> Self {
+        event.id()
+    }
+}
+
 impl Dispatcher {
     /// Reset the event `event`, returning its previous signal state. Resetting wakes nobody.
     pub fn reset_event(&mut self, event: WaitableId) -> i32 {
-        let header = self.waitable_mut(event);
+        let header = self.header_mut(event);
         core::mem::replace(&mut header.signal_state, 0)
     }
 
@@ -127,18 +129,18 @@ impl Dispatcher {
     /// directly, leaving the signal state unwritten (it stays clear, which a one-waiter walk would
     /// have produced anyway).
     pub fn set_event(&mut self, event: WaitableId, increment: i8) -> i32 {
-        let header = self.waitable_mut(event);
+        let header = self.header_mut(event);
         let previous = header.signal_state;
         let kind = header.kind;
         let Some(head) = list::first(self, Waiters(event)) else {
-            self.waitable_mut(event).signal_state = 1;
+            self.header_mut(event).signal_state = 1;
             return previous;
         };
 
         let block = *self.block(head);
         if kind == WaitKind::NotificationEvent || block.wait_all {
             if previous == 0 {
-                self.waitable_mut(event).signal_state = 1;
+                self.header_mut(event).signal_state = 1;
                 self.satisfy_waiters(event, increment);
             }
         } else {
@@ -158,7 +160,7 @@ mod tests {
         crate::sched::testkit::dispatcher()
     }
 
-    fn event(kind: EventKind, signaled: bool) -> &'static mut Event {
+    fn event(kind: EventKind, signaled: bool) -> &'static Event {
         let ev = Box::leak(Box::new(Event::new(kind, signaled)));
         ev.init();
         ev
@@ -172,7 +174,7 @@ mod tests {
         let notification = event(EventKind::Notification, false);
         assert_eq!(notification.kind(), EventKind::Notification);
         assert_eq!(notification.signal_state(), 0);
-        assert!(notification.waitable.waiters.is_empty());
+        assert!(notification.waitable.waiters().is_empty());
 
         let synchronization = event(EventKind::Synchronization, false);
         assert_eq!(synchronization.kind(), EventKind::Synchronization);
@@ -209,7 +211,7 @@ mod tests {
             0,
             "a second reset reports the already-clear state"
         );
-        assert!(ev.waitable.waiters.is_empty());
+        assert!(ev.waitable.waiters().is_empty());
     }
 
     /// A set with no waiters parks the signal on the event, for both flavors: the reset happens at

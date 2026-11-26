@@ -678,12 +678,7 @@ impl Thread {
 
     /// Whether the thread has exited: its waitable header's signal state, set once at termination.
     pub fn signaled(&self) -> bool {
-        self.waitable.signal_state > 0
-    }
-
-    /// The waitable header, as the wait entry takes it.
-    pub fn waitable(&mut self) -> *mut Waitable {
-        &mut self.waitable
+        self.waitable.signal_state() > 0
     }
 
     /// The completion status of the current or last wait.

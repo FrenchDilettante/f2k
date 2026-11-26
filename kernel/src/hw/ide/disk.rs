@@ -68,7 +68,7 @@ mod target {
     use crate::mem::dma::{scatter_gather, CommonBuffer, PlatformBus, ScatterGatherElement};
     use crate::pcr::pcr;
     use crate::sched::event::{Event, EventKind};
-    use crate::sched::wait::{WaitReason, Waitable};
+    use crate::sched::wait::WaitReason;
     use crate::serial_println;
     use crate::status::{NtStatus, STATUS_SUCCESS};
     use crate::sync::InitOnce;
@@ -484,11 +484,12 @@ mod target {
         }
 
         /// Run `f` on the event with interrupts masked.
-        fn with<R>(&self, f: impl FnOnce(&mut Event) -> R) -> R {
+        fn with<R>(&self, f: impl FnOnce(&Event) -> R) -> R {
             let _masked = pcr().mask_guard();
             // SAFETY: see the `Sync` impl: interrupts stay masked until `_masked` drops, after
-            // `f`, and the reference ends with `f`.
-            f(unsafe { &mut *self.0.get() })
+            // `f`. The reference is shared, as every reference to an embedded header must be
+            // while something may wait on it (see `Waitable`).
+            f(unsafe { &*self.0.get() })
         }
 
         /// Name the event by its address; once, at bring-up, before the interrupt is connected.
@@ -530,15 +531,15 @@ mod target {
             }
         }
 
-        /// A thread's wait: block on the event with the timeout (see [`wait_current`]).
+        /// A thread's wait: block on the event with the timeout (see [`wait_current_for`]).
         ///
-        /// [`wait_current`]: crate::sched::wait::wait_current
+        /// [`wait_current_for`]: crate::sched::wait::wait_current_for
         fn block_until_signaled(&self) -> bool {
             let timeout =
                 COMPLETION_TIMEOUT_TICKS as i64 * crate::interrupt::clock::INTERVAL_100NS as i64;
-            let waitable: *mut Waitable = self.with(Event::waitable);
+            let event = self.with(|event| event.id());
             let status =
-                crate::sched::wait::wait_current(waitable, WaitReason::Executive, Some(timeout));
+                crate::sched::wait::wait_current_for(event, WaitReason::Executive, Some(timeout));
             status == STATUS_SUCCESS
         }
     }
@@ -746,7 +747,7 @@ mod tests {
         assert_eq!(
             dispatcher.wait_single(
                 thread,
-                event.waitable(),
+                event.id(),
                 WaitReason::Executive,
                 WaitMode::Kernel,
                 false,

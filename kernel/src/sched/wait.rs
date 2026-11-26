@@ -29,6 +29,7 @@
 //! no races to arbitrate — which of a wake and an expiry "wins" is decided by which runs first, and
 //! the loser finds its lists already unwound.
 
+use core::cell::UnsafeCell;
 use core::ptr::NonNull;
 
 use super::apc::ApcId;
@@ -109,22 +110,9 @@ pub enum WaitableId {
     /// A thread's builtin suspend semaphore.
     Suspend(ThreadId),
     /// A header embedded in a structure outside the database (a lock's event, a file object's, a
-    /// device's), named by its address: its embedder keeps it there, alive, while anything waits
-    /// on it or signals it.
+    /// device's), named by its address: its embedder keeps it there, alive, and reaches it through
+    /// shared borrows only, while anything waits on it or signals it (see [`Waitable`]).
     Embedded(NonNull<Waitable>),
-}
-
-impl WaitableId {
-    /// The id a waitable header carries.
-    ///
-    /// # Safety
-    ///
-    /// `header` points at a live waitable header: a database record's, or an embedded one after
-    /// its [`Waitable::init`].
-    pub unsafe fn of(header: *const Waitable) -> WaitableId {
-        // SAFETY: the caller's contract.
-        unsafe { (*header).id() }
-    }
 }
 
 /// The waiters of one waitable object: the wait blocks parked on it, oldest first.
@@ -175,40 +163,68 @@ impl BlockId {
 }
 
 /// The header every waitable object carries: what kind it is, whether it is signaled, and which
-/// threads are parked on it.
+/// threads are parked on it — Windows 2000's DISPATCHER_HEADER.
+///
+/// The header is embedded in its object (a database record, or a structure of its own: a lock, a
+/// file object, a device) and lives in a cell: the dispatcher reaches it by its name while the
+/// object's owner may hold a shared borrow of the object, as Windows 2000 touches an embedded
+/// DISPATCHER_HEADER through its address under the dispatcher lock. Nothing hands out a
+/// reference to the cell's contents beyond the dispatcher's own borrow ([`Dispatcher::header`],
+/// [`Dispatcher::header_mut`]): an owner reads and writes it by value, through `&self`, like a
+/// `Cell`. A shared borrow of the owner, live while the dispatcher changes the header, stays valid
+/// across the change, and the address an embedded header's name carries is taken from such a
+/// shared borrow ([`Waitable::id`]), so the owner's later reads do not invalidate it either.
+///
+/// The owner's part of the contract: once something may wait on an embedded header or signal it,
+/// the owner reaches the header through shared borrows only (no `&mut` to the owner covering the
+/// header), and keeps it at its address.
+#[repr(transparent)]
+pub struct Waitable(UnsafeCell<Header>);
+
+/// The contents of a waitable header (see [`Waitable`]).
 #[repr(C)]
-pub struct Waitable {
+pub struct Header {
     /// The object's kind.
     pub(crate) kind: WaitKind,
     /// The signal state: positive means signaled.
     pub(crate) signal_state: i32,
     /// The wait blocks parked on this object.
     pub(crate) waiters: IndexList<Waiters>,
-    /// The header's own name: a database record's from its building on, an embedded header's
-    /// from its [`Waitable::init`].
-    id: Option<WaitableId>,
+    /// The header's own name.
+    name: Name,
+}
+
+/// How a waitable header is named.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Name {
+    /// An embedded header before its [`Waitable::init`].
+    Unnamed,
+    /// An embedded header after its [`Waitable::init`]: named by its address.
+    Embedded,
+    /// A database record's header, named by its record from its building on.
+    Record(WaitableId),
 }
 
 impl Waitable {
     /// A fresh, unsignaled header to embed; call [`Waitable::init`] once the owning structure is at
     /// its final address.
     pub const fn new(kind: WaitKind, signal_state: i32) -> Self {
-        Waitable {
+        Waitable(UnsafeCell::new(Header {
             kind,
             signal_state,
             waiters: IndexList::new(),
-            id: None,
-        }
+            name: Name::Unnamed,
+        }))
     }
 
     /// A fresh header of the database record `id`.
     pub const fn with_id(kind: WaitKind, signal_state: i32, id: WaitableId) -> Self {
-        Waitable {
+        Waitable(UnsafeCell::new(Header {
             kind,
             signal_state,
             waiters: IndexList::new(),
-            id: Some(id),
-        }
+            name: Name::Record(id),
+        }))
     }
 
     /// A fresh, signaled header to embed.
@@ -216,40 +232,82 @@ impl Waitable {
         Self::new(kind, 1)
     }
 
-    /// Name an embedded header by its address and empty its waiters; call once the owning
-    /// structure is at its final address, before anything waits on it.
-    pub fn init(&mut self) {
-        debug_assert!(
-            matches!(self.id, None | Some(WaitableId::Embedded(_))),
-            "a database record's header is named by its record"
-        );
-        self.waiters = IndexList::new();
-        self.id = Some(WaitableId::Embedded(NonNull::from(&mut *self)));
+    /// The header's address, as the wait entries take it ([`Dispatcher::wait_single`]): taken from
+    /// this shared borrow, as the name of an embedded header is (see [`Waitable::id`]).
+    pub fn address(&self) -> *mut Waitable {
+        core::ptr::from_ref(self).cast_mut()
     }
 
-    /// The header's name.
+    /// The header's contents, by address: what the dispatcher reaches them through.
+    pub(crate) fn as_ptr(&self) -> *mut Header {
+        self.0.get()
+    }
+
+    /// The header's contents, to change, for the owner holding the header exclusively (building
+    /// it, or a test's).
+    pub(crate) fn get_mut(&mut self) -> &mut Header {
+        self.0.get_mut()
+    }
+
+    /// Name an embedded header by its address and empty its waiters; call once the owning
+    /// structure is at its final address, before anything waits on it.
+    pub fn init(&self) {
+        let header = self.as_ptr();
+        // SAFETY: writes by value, as in `set_signal_state`.
+        unsafe {
+            debug_assert!(
+                !matches!((*header).name, Name::Record(_)),
+                "a database record's header is named by its record"
+            );
+            (*header).waiters = IndexList::new();
+            (*header).name = Name::Embedded;
+        }
+    }
+
+    /// The header's name: its record's, or an embedded header's address — taken from this shared
+    /// borrow, so the name stays good while the owner keeps to shared borrows (see [`Waitable`]).
     ///
     /// # Panics
     ///
     /// An embedded header before its [`Waitable::init`].
     pub fn id(&self) -> WaitableId {
-        self.id
-            .expect("a waitable header is named before it is used")
+        // SAFETY: a read of the cell's contents by value; no reference to them is live outside
+        // the dispatcher's own borrow, and the dispatcher runs serialized (see `Waitable`).
+        match unsafe { (*self.as_ptr()).name } {
+            Name::Record(id) => id,
+            Name::Embedded => WaitableId::Embedded(NonNull::from(self)),
+            Name::Unnamed => panic!("a waitable header is named before it is used"),
+        }
     }
 
     /// The object's kind.
     pub fn kind(&self) -> WaitKind {
-        self.kind
+        // SAFETY: as in `id`: a read by value.
+        unsafe { (*self.as_ptr()).kind }
     }
 
     /// The signal state: positive means signaled.
     pub fn signal_state(&self) -> i32 {
-        self.signal_state
+        // SAFETY: as in `id`: a read by value.
+        unsafe { (*self.as_ptr()).signal_state }
+    }
+
+    /// Set the signal state, waking nobody: the owner's direct write (a clear, a reset, a set
+    /// with no waiter to wake), serialized with the dispatcher as every touch of the header is.
+    pub fn set_signal_state(&self, signal_state: i32) {
+        // SAFETY: as in `id`: a write by value, no reference to the contents live.
+        unsafe { (*self.as_ptr()).signal_state = signal_state }
+    }
+
+    /// The waiters list's head.
+    pub fn waiters(&self) -> IndexList<Waiters> {
+        // SAFETY: as in `id`: a read by value.
+        unsafe { (*self.as_ptr()).waiters }
     }
 
     /// Whether a wait block is parked on the object.
     pub fn has_waiters(&self) -> bool {
-        !self.waiters.is_empty()
+        !self.waiters().is_empty()
     }
 }
 
@@ -423,7 +481,7 @@ impl Dispatcher {
             WaitableId::Mutex(index) => {
                 super::mutex::available_to(self.mutex(MutexId(index)), thread)
             }
-            _ => self.waitable(object).signal_state > 0,
+            _ => self.waitable(object).signal_state() > 0,
         }
     }
 
@@ -436,7 +494,7 @@ impl Dispatcher {
         if let WaitableId::Mutex(index) = object {
             return self.acquire_mutex(MutexId(index), thread);
         }
-        let waitable = self.waitable_mut(object);
+        let waitable = self.header_mut(object);
         match waitable.kind {
             WaitKind::Semaphore => waitable.signal_state -= 1,
             kind if kind.consumes_signal() => waitable.signal_state = 0,
@@ -445,13 +503,14 @@ impl Dispatcher {
         STATUS_SUCCESS
     }
 
-    /// Wait on the single object at `object` (a header a waitable record or an embedder hands
-    /// out): [`Dispatcher::wait_for`] on the object it names.
+    /// Wait on the single object `object` names, the thread and the object as their holders name
+    /// them: [`Dispatcher::wait_for`]. The names convert inside the dispatcher's borrow, so a
+    /// conversion reads no record of the dispatcher's (see the test rig's `Rec`).
     #[allow(clippy::too_many_arguments)]
     pub fn wait_single(
         &mut self,
         thread: impl Into<ThreadId>,
-        object: *mut Waitable,
+        object: impl Into<WaitableId>,
         reason: WaitReason,
         mode: WaitMode,
         alertable: bool,
@@ -459,9 +518,7 @@ impl Dispatcher {
         stamp: ClockStamp,
     ) -> WaitDisposition {
         let thread = thread.into();
-        // SAFETY: the callers hand out the headers of live objects only: a record the directory
-        // names, held for the wait, or a header embedded in a pinned structure and initialized.
-        let object = unsafe { WaitableId::of(object) };
+        let object = object.into();
         self.wait_for(thread, object, reason, mode, alertable, timeout, stamp)
     }
 
@@ -532,13 +589,13 @@ impl Dispatcher {
         WaitDisposition::Yield
     }
 
-    /// Wait on several objects at once (headers, as [`Dispatcher::wait_single`] takes one):
-    /// [`Dispatcher::wait_for_multiple`] on the objects they name.
+    /// Wait on several objects at once, the thread as its holder names it:
+    /// [`Dispatcher::wait_for_multiple`].
     #[allow(clippy::too_many_arguments)]
     pub fn wait_multiple(
         &mut self,
         thread: impl Into<ThreadId>,
-        objects: &[*mut Waitable],
+        objects: &[WaitableId],
         wait_all: bool,
         reason: WaitReason,
         mode: WaitMode,
@@ -547,14 +604,8 @@ impl Dispatcher {
         stamp: ClockStamp,
     ) -> WaitDisposition {
         let thread = thread.into();
-        let mut ids = [WaitableId::Thread(thread); MAXIMUM_WAIT_OBJECTS];
-        for (id, &object) in ids.iter_mut().zip(objects) {
-            // SAFETY: as in `wait_single`: each header is a live object's the caller holds.
-            *id = unsafe { WaitableId::of(object) };
-        }
-        let ids = &ids[..objects.len()];
         self.wait_for_multiple(
-            thread, ids, wait_all, reason, mode, alertable, timeout, stamp,
+            thread, objects, wait_all, reason, mode, alertable, timeout, stamp,
         )
     }
 
@@ -809,7 +860,7 @@ impl Dispatcher {
     pub fn satisfy_waiters(&mut self, object: WaitableId, increment: i8) {
         let waiters = Waiters(object);
         let mut entry = list::first(self, waiters);
-        while self.waitable(object).signal_state > 0 {
+        while self.header(object).signal_state > 0 {
             let Some(block) = entry else {
                 break;
             };
@@ -847,7 +898,7 @@ impl Dispatcher {
         if self.timer(timer).inserted {
             self.remove_timer(timer);
         }
-        self.timer_mut(timer).waitable.signal_state = 1;
+        self.timer_mut(timer).waitable.get_mut().signal_state = 1;
         self.satisfy_waiters(timer.waitable(), TIMER_WAKE_INCREMENT);
     }
 
@@ -974,19 +1025,6 @@ impl Dispatcher {
             }
         }
     }
-}
-
-/// Block the running thread from kernel code on the object at `object` (a header, see
-/// [`Dispatcher::wait_single`]), with an optional timeout (100 ns units, relative), and return the
-/// wait's status (see [`wait_current_with`]).
-#[cfg(target_arch = "x86")]
-pub fn wait_current(
-    object: *mut Waitable,
-    reason: WaitReason,
-    timeout: Option<i64>,
-) -> crate::status::NtStatus {
-    // SAFETY: the caller's header is a live, pinned object's (the disk's completion event).
-    wait_current_for(unsafe { WaitableId::of(object) }, reason, timeout)
 }
 
 /// Block the running thread from kernel code on `object`, with an optional timeout (100 ns units,
@@ -1291,7 +1329,7 @@ mod tests {
         assert!(now.wrapping_add(wait_interval(1, wall) as u64) <= now);
     }
 
-    fn event(kind: EventKind, signaled: bool) -> &'static mut Event {
+    fn event(kind: EventKind, signaled: bool) -> &'static Event {
         let ev = Box::leak(Box::new(Event::new(kind, signaled)));
         ev.init();
         ev
@@ -1302,7 +1340,7 @@ mod tests {
     fn block_on(
         mut d: crate::sched::testkit::Disp,
         t: Rec<Thread>,
-        object: *mut Waitable,
+        object: impl Into<WaitableId>,
         timeout: Option<i64>,
     ) {
         match d.wait_single(
@@ -1345,7 +1383,7 @@ mod tests {
 
         assert_eq!(t.waitable.kind(), WaitKind::Thread);
         assert_eq!(t.waitable.signal_state(), 0);
-        assert!(t.waitable.waiters.is_empty());
+        assert!(t.waitable.waiters().is_empty());
         assert!(t.wait_blocks.iter().all(|b| b.thread == t.id()));
 
         let timer_block = &t.wait_blocks[TIMER_BLOCK];
@@ -1368,7 +1406,7 @@ mod tests {
         let ev = event(EventKind::Notification, false);
 
         let t1 = thread(p);
-        block_on(d, t1, ev.waitable(), None);
+        block_on(d, t1, ev, None);
         let head = t1.wait_block_head.expect("parked");
         let block = d.block(head);
         assert_eq!(
@@ -1380,7 +1418,7 @@ mod tests {
         assert!(!block.wait_all);
 
         let t2 = thread(p);
-        block_on(d, t2, ev.waitable(), Some(1_000_000));
+        block_on(d, t2, ev, Some(1_000_000));
         let head = t2.wait_block_head.expect("parked");
         let timer_block = d.block(head).next_block;
         assert_eq!(timer_block, BlockId::timer(t2.id()));
@@ -1403,9 +1441,9 @@ mod tests {
         let t3 = thread(p);
         let ev = event(EventKind::Notification, false);
 
-        block_on(d, t1, ev.waitable(), None);
-        block_on(d, t2, ev.waitable(), None);
-        block_on(d, t3, ev.waitable(), None);
+        block_on(d, t1, ev, None);
+        block_on(d, t2, ev, None);
+        block_on(d, t3, ev, None);
 
         assert_eq!(waiters(ev), vec![t1.id(), t2.id(), t3.id()]);
     }
@@ -1421,7 +1459,7 @@ mod tests {
 
         match d.wait_single(
             t,
-            ev.waitable(),
+            ev,
             WaitReason::UserRequest,
             WaitMode::User,
             true,
@@ -1458,7 +1496,7 @@ mod tests {
         assert_eq!(
             d.wait_single(
                 t,
-                ev.waitable(),
+                ev,
                 WaitReason::Executive,
                 WaitMode::Kernel,
                 false,
@@ -1495,7 +1533,7 @@ mod tests {
         assert_eq!(
             d.wait_single(
                 t,
-                ev.waitable(),
+                ev,
                 WaitReason::Executive,
                 WaitMode::Kernel,
                 false,
@@ -1510,7 +1548,7 @@ mod tests {
         assert_eq!(
             d.wait_single(
                 t,
-                ev.waitable(),
+                ev,
                 WaitReason::Executive,
                 WaitMode::Kernel,
                 false,
@@ -1528,12 +1566,12 @@ mod tests {
         let mut d = dispatcher();
         let p = process(8);
         let t = thread(p);
-        let mut other = thread(p);
+        let other = thread(p);
 
-        block_on(d, t, other.waitable(), None);
+        block_on(d, t, other, None);
         assert_eq!(t.state(), ThreadState::Waiting);
 
-        other.waitable.signal_state = 1;
+        other.waitable.set_signal_state(1);
         d.satisfy_waiters(other.waitable.id(), 0);
         assert_eq!(t.state(), ThreadState::Ready);
         assert_eq!(t.wait_status(), STATUS_SUCCESS);
@@ -1553,7 +1591,7 @@ mod tests {
         assert_eq!(
             d.wait_single(
                 t,
-                ev.waitable(),
+                ev,
                 WaitReason::Executive,
                 WaitMode::Kernel,
                 false,
@@ -1580,7 +1618,7 @@ mod tests {
         assert_eq!(
             d.wait_single(
                 t,
-                ev.waitable(),
+                ev,
                 WaitReason::Executive,
                 WaitMode::Kernel,
                 false,
@@ -1607,7 +1645,7 @@ mod tests {
         assert_eq!(
             d.wait_single(
                 t,
-                ev.waitable(),
+                ev,
                 WaitReason::Executive,
                 WaitMode::Kernel,
                 false,
@@ -1645,7 +1683,7 @@ mod tests {
         assert_eq!(
             d.wait_single(
                 t,
-                signaled.waitable(),
+                signaled,
                 WaitReason::Executive,
                 WaitMode::Kernel,
                 false,
@@ -1670,7 +1708,7 @@ mod tests {
         assert_eq!(
             d.wait_single(
                 t2,
-                signaled.waitable(),
+                signaled,
                 WaitReason::Executive,
                 WaitMode::Kernel,
                 false,
@@ -1690,7 +1728,7 @@ mod tests {
         assert_eq!(
             d.wait_single(
                 t3,
-                signaled.waitable(),
+                signaled,
                 WaitReason::Executive,
                 WaitMode::Kernel,
                 false,
@@ -1713,7 +1751,7 @@ mod tests {
         assert_eq!(
             d2.wait_single(
                 t4,
-                signaled.waitable(),
+                signaled,
                 WaitReason::Executive,
                 WaitMode::Kernel,
                 false,
@@ -1747,7 +1785,7 @@ mod tests {
         assert_eq!(
             d3.wait_single(
                 t5,
-                signaled.waitable(),
+                signaled,
                 WaitReason::Executive,
                 WaitMode::Kernel,
                 false,
@@ -1776,9 +1814,9 @@ mod tests {
         let t3 = thread(p);
         let ev = event(EventKind::Notification, false);
 
-        block_on(d, t1, ev.waitable(), None);
-        block_on(d, t2, ev.waitable(), None);
-        block_on(d, t3, ev.waitable(), None);
+        block_on(d, t1, ev, None);
+        block_on(d, t2, ev, None);
+        block_on(d, t3, ev, None);
 
         assert_eq!(d.set_event(ev.id(), EVENT_WAKE_INCREMENT), 0);
         assert_eq!(
@@ -1809,9 +1847,9 @@ mod tests {
         let t3 = thread(p);
         let ev = event(EventKind::Synchronization, false);
 
-        block_on(d, t1, ev.waitable(), None);
-        block_on(d, t2, ev.waitable(), None);
-        block_on(d, t3, ev.waitable(), None);
+        block_on(d, t1, ev, None);
+        block_on(d, t2, ev, None);
+        block_on(d, t3, ev, None);
 
         d.set_event(ev.id(), EVENT_WAKE_INCREMENT);
         assert_eq!(t1.state(), ThreadState::Ready);
@@ -1841,7 +1879,7 @@ mod tests {
         let t = thread(p);
         let ev = event(EventKind::Synchronization, false);
 
-        block_on(d, t, ev.waitable(), None);
+        block_on(d, t, ev, None);
         assert_eq!(d.set_event(ev.id(), EVENT_WAKE_INCREMENT), 0);
         assert_eq!(
             ev.signal_state(),
@@ -1866,7 +1904,7 @@ mod tests {
         // A hand-wired wait-all claim: block on A, then grow the chain to a second object block on
         // B (the multiple-object wait that would construct this is not built; the branch it drives
         // is).
-        block_on(d, t, a.waitable(), None);
+        block_on(d, t, a, None);
         let head = t.wait_block_head.expect("parked");
         let second = BlockId::builtin(t.id(), 1);
         d.block_mut(head).wait_all = true;
@@ -1904,13 +1942,13 @@ mod tests {
         let t = thread(p);
         let ev = event(EventKind::Notification, false);
 
-        block_on(d, t, ev.waitable(), Some(1_000_000));
+        block_on(d, t, ev, Some(1_000_000));
         d.unwait(t, STATUS_SUCCESS, EVENT_WAKE_INCREMENT);
 
         assert_eq!(t.wait_status(), STATUS_SUCCESS);
         assert!(waiters(ev).is_empty());
         assert!(
-            t.timer.waitable.waiters.is_empty(),
+            t.timer.waitable.waiters().is_empty(),
             "the timer block left the timer's list"
         );
         assert!(!t.timer.inserted(), "the wake cancelled the timer");
@@ -1930,7 +1968,7 @@ mod tests {
         // The status is OR'd in, not assigned: a pre-set status survives the wake. The entry always
         // zeroes the field, so only a wake-time pre-set status can observe the distinction here.
         let mut t2 = thread(p);
-        block_on(d, t2, ev.waitable(), None);
+        block_on(d, t2, ev, None);
         t2.wait_status = NtStatus(0x80);
         d.unwait(t2, STATUS_SUCCESS, 0);
         assert_eq!(t2.wait_status(), NtStatus(0x80));
@@ -1943,10 +1981,10 @@ mod tests {
         let mut d = dispatcher();
         let p = process(8);
         let main = thread(p);
-        let mut child = thread(p);
+        let child = thread(p);
         run(d, child);
 
-        block_on(d, main, child.waitable(), None);
+        block_on(d, main, child, None);
         let selected = d.terminate();
 
         assert!(child.signaled(), "the thread object signals at exit");
@@ -1970,15 +2008,15 @@ mod tests {
         let mut d = dispatcher();
         let ending = process(8);
         let other = process(8);
-        let mut last = thread(ending);
+        let last = thread(ending);
         let thread_waiter = thread(other);
         let mut process_waiter = thread(other);
         process_waiter.priority = 10;
         run(d, last);
         // The process object's stand-in: a notification object, as the process object's is.
         let process_object = event(EventKind::Notification, false);
-        block_on(d, thread_waiter, last.waitable(), None);
-        block_on(d, process_waiter, process_object.waitable(), None);
+        block_on(d, thread_waiter, last, None);
+        block_on(d, process_waiter, process_object, None);
 
         d.retire_current();
         assert!(last.signaled());
@@ -1990,7 +2028,7 @@ mod tests {
         );
         assert_eq!(unsafe { (*ending).stack_count() }, 0);
 
-        process_object.waitable.signal_state = 1;
+        process_object.waitable.set_signal_state(1);
         d.satisfy_waiters(process_object.waitable.id(), 0);
         assert_eq!(process_waiter.wait_status(), STATUS_SUCCESS);
         assert_eq!(
@@ -2017,7 +2055,7 @@ mod tests {
         let parked = thread(p);
         let ev = event(EventKind::Synchronization, false);
         run(d, running);
-        block_on(d, parked, ev.waitable(), Some(1_000_000));
+        block_on(d, parked, ev, Some(1_000_000));
         assert!(parked.timer.inserted);
 
         assert!(d.request_termination(parked, exit_normal, 9));
@@ -2037,7 +2075,7 @@ mod tests {
         assert_eq!(d.audit_timers(), Ok(()));
 
         // The event's signal has no one left to wake: it stays signaled.
-        ev.waitable.signal_state = 1;
+        ev.waitable.set_signal_state(1);
         d.satisfy_waiters(ev.waitable.id(), 0);
         assert_eq!(ev.signal_state(), 1);
     }
@@ -2053,10 +2091,10 @@ mod tests {
             let p = process(8);
             let running = thread(p);
             let waiter = thread(p);
-            let mut target = thread(p);
+            let target = thread(p);
             run(d, running);
             d.make_ready(target);
-            block_on(d, waiter, target.waitable(), None);
+            block_on(d, waiter, target, None);
 
             let order = if waited_on_first {
                 [target, waiter]
@@ -2066,7 +2104,7 @@ mod tests {
             for t in order {
                 assert!(d.request_termination(t, exit_normal, 1));
             }
-            assert!(target.waitable.waiters.is_empty());
+            assert!(target.waitable.waiters().is_empty());
             assert_eq!(waiter.wait_status(), STATUS_KERNEL_APC);
 
             // The running thread leaves the processor, then each terminated thread runs its exit
@@ -2100,8 +2138,8 @@ mod tests {
         let other = event(EventKind::Synchronization, false);
         run(d, running);
         inside.enter_critical_region();
-        block_on(d, inside, ev.waitable(), Some(1_000_000));
-        block_on(d, outside, other.waitable(), None);
+        block_on(d, inside, ev, Some(1_000_000));
+        block_on(d, outside, other, None);
 
         // A suspend queued inside the region is gated: the wait stays parked.
         assert_eq!(d.suspend_thread(inside), Ok(0));
@@ -2158,7 +2196,7 @@ mod tests {
         let ev = event(EventKind::Synchronization, false);
         run(d, running);
         assert!(d.attach_space(attached.id(), target).is_some());
-        block_on(d, attached, ev.waitable(), None);
+        block_on(d, attached, ev, None);
 
         assert!(d.request_termination(attached, exit_normal, 1));
         assert_eq!(
@@ -2192,7 +2230,7 @@ mod tests {
 
         match d.wait_single(
             t,
-            ev.waitable(),
+            ev,
             WaitReason::Executive,
             WaitMode::Kernel,
             false,
@@ -2211,7 +2249,7 @@ mod tests {
         assert_eq!(
             d.wait_single(
                 t2,
-                ev.waitable(),
+                ev,
                 WaitReason::Executive,
                 WaitMode::Kernel,
                 false,
@@ -2234,7 +2272,7 @@ mod tests {
         let t = thread(p);
         let ev = event(EventKind::Notification, false);
 
-        block_on(d, t, ev.waitable(), Some(1_000_000));
+        block_on(d, t, ev, Some(1_000_000));
         d.expire_timer(t.timer.id());
 
         assert_eq!(t.timer.waitable.signal_state(), 1);
@@ -2256,7 +2294,7 @@ mod tests {
         let t = thread(p);
         let ev = event(EventKind::Notification, false);
 
-        block_on(d, t, ev.waitable(), Some(1_000_000));
+        block_on(d, t, ev, Some(1_000_000));
         d.set_event(ev.id(), EVENT_WAKE_INCREMENT);
         assert_eq!(t.wait_status(), STATUS_SUCCESS);
         assert!(!t.timer.inserted());
@@ -2280,7 +2318,7 @@ mod tests {
         let t = thread(p);
         let ev = event(EventKind::Notification, false);
 
-        block_on(d, t, ev.waitable(), Some(1_000_000));
+        block_on(d, t, ev, Some(1_000_000));
         d.expire_timer(t.timer.id());
         assert_eq!(t.wait_status(), STATUS_TIMEOUT);
 
@@ -2377,7 +2415,7 @@ mod tests {
         let t = thread(p);
         let ev = event(EventKind::Notification, false);
 
-        block_on(d, t, ev.waitable(), None);
+        block_on(d, t, ev, None);
         d.unwait(t, STATUS_SUCCESS, 0);
         assert!(
             t.state() == ThreadState::Ready || t.state() == ThreadState::Standby,
@@ -2412,7 +2450,7 @@ mod tests {
         let p = process(8);
         let t = thread(p);
         let ev = event(EventKind::Notification, false);
-        block_on(d, t, ev.waitable(), None);
+        block_on(d, t, ev, None);
         d.make_ready(t);
     }
 
@@ -2428,9 +2466,9 @@ mod tests {
         let t1 = thread(p);
         let t2 = thread(p);
         let t3 = thread(p);
-        block_on(d, t1, ev_a.waitable(), Some(1_000_000));
-        block_on(d, t2, ev_a.waitable(), None);
-        block_on(d, t3, ev_b.waitable(), None);
+        block_on(d, t1, ev_a, Some(1_000_000));
+        block_on(d, t2, ev_a, None);
+        block_on(d, t3, ev_b, None);
         assert_eq!(d.audit_waits(), Ok(()), "mid-flight");
 
         d.set_event(ev_a.id(), EVENT_WAKE_INCREMENT);
@@ -2451,12 +2489,7 @@ mod tests {
         let p15 = process(15);
         let mut capped = thread(p15);
         capped.priority = 15;
-        block_on(
-            d,
-            capped,
-            event(EventKind::Notification, false).waitable(),
-            None,
-        );
+        block_on(d, capped, event(EventKind::Notification, false), None);
         d.unwait(capped, STATUS_SUCCESS, EVENT_WAKE_INCREMENT);
         assert_eq!(capped.priority(), 15, "computed 16 lands capped at 15");
         assert_eq!(
@@ -2469,12 +2502,7 @@ mod tests {
         let mut rt = thread(p);
         rt.priority = 16;
         rt.set_quantum(2);
-        block_on(
-            d,
-            rt,
-            event(EventKind::Notification, false).waitable(),
-            None,
-        );
+        block_on(d, rt, event(EventKind::Notification, false), None);
         d.unwait(rt, STATUS_SUCCESS, EVENT_WAKE_INCREMENT);
         assert_eq!(rt.priority(), 16, "realtime: no boost");
         assert_eq!(rt.quantum(), 6, "realtime: full replenish");
@@ -2482,12 +2510,7 @@ mod tests {
         let mut gated = thread(p);
         gated.disable_boost = true;
         gated.set_quantum(6);
-        block_on(
-            d,
-            gated,
-            event(EventKind::Notification, false).waitable(),
-            None,
-        );
+        block_on(d, gated, event(EventKind::Notification, false), None);
         d.unwait(gated, STATUS_SUCCESS, EVENT_WAKE_INCREMENT);
         assert_eq!(gated.priority(), 8, "the policy gate refuses the boost");
         assert_eq!(gated.quantum(), 5, "the charge is unconditional");
@@ -2495,12 +2518,7 @@ mod tests {
         let mut indebted = thread(p);
         indebted.priority_decrement = 2;
         indebted.set_quantum(6);
-        block_on(
-            d,
-            indebted,
-            event(EventKind::Notification, false).waitable(),
-            None,
-        );
+        block_on(d, indebted, event(EventKind::Notification, false), None);
         d.unwait(indebted, STATUS_SUCCESS, EVENT_WAKE_INCREMENT);
         assert_eq!(
             indebted.priority(),
@@ -2544,7 +2562,7 @@ mod tests {
                     replay_timeout(d.thread(t), replay, Some(1_000), stamp.interrupt_time);
                 d.wait_single(
                     t,
-                    ev.waitable(),
+                    ev,
                     WaitReason::Executive,
                     WaitMode::User,
                     false,
@@ -2586,7 +2604,7 @@ mod tests {
             let t = thread(p);
             run(d, t);
             let ev = event(EventKind::Notification, false);
-            block_on(d, t, ev.waitable(), Some(1_000_000));
+            block_on(d, t, ev, Some(1_000_000));
             if woken == STATUS_KERNEL_APC {
                 d.unwait(t, STATUS_KERNEL_APC, 0);
             } else {
@@ -2600,7 +2618,7 @@ mod tests {
                 let t = d.current().expect("the running thread");
                 let nested = d.wait_single(
                     t,
-                    inner.waitable(),
+                    inner,
                     WaitReason::Suspension,
                     WaitMode::Kernel,
                     false,
@@ -2644,7 +2662,7 @@ mod tests {
                     replay_timeout(d.thread(t), replay, Some(1_000), stamp.interrupt_time);
                 d.wait_single(
                     t,
-                    ev.waitable(),
+                    ev,
                     WaitReason::Executive,
                     WaitMode::User,
                     false,
@@ -2672,7 +2690,7 @@ mod tests {
                     let t = d.current().expect("the running thread");
                     let _ = d.wait_single(
                         t,
-                        inner.waitable(),
+                        inner,
                         WaitReason::Suspension,
                         WaitMode::Kernel,
                         false,
@@ -2695,7 +2713,7 @@ mod tests {
         let t = thread(p);
         run(d, t);
         let ev = event(EventKind::Synchronization, false);
-        let waitable = ev.waitable();
+        let waitable = ev;
 
         let status = wait_with_replay(
             |_| stamp(10_000, 5),
@@ -2755,7 +2773,7 @@ mod tests {
                     replay_timeout(d.thread(t), replay, Some(1_000), stamp.interrupt_time);
                 d.wait_single(
                     t,
-                    ev.waitable(),
+                    ev,
                     WaitReason::Executive,
                     WaitMode::User,
                     false,
@@ -2838,7 +2856,7 @@ mod tests {
         let t = thread(p);
         run(d, t);
         let ev = event(EventKind::Notification, false);
-        let waitable = ev.waitable();
+        let waitable = ev;
 
         let stamps = [stamp(10_000, 5), stamp(10_500, 6)];
         let mut step = 0;
