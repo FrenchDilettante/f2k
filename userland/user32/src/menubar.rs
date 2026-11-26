@@ -118,9 +118,6 @@ use crate::imports::{self, Creation};
 use crate::nonclient::{self, color, Framed, Glyph};
 use crate::{message, paint, window};
 
-/// WM_SYSCOMMAND's commands (winuser.h's SC_*).
-pub const SC_KEYMENU: u32 = 0xF100;
-
 /// TrackPopupMenu's flags (winuser.h's TPM_*): the popup's alignment on its point, and the
 /// command answered rather than posted.
 pub const TPM_CENTERALIGN: u32 = 0x0004;

@@ -293,13 +293,11 @@ pub unsafe extern "system" fn get_clipboard_format_name_a(
 
 #[cfg(test)]
 mod tests {
+    use rtl::user::{CF_TEXT, CF_UNICODETEXT};
     use rtl::winerror::ERROR_CLIPBOARD_NOT_OPEN;
 
     use super::*;
     use crate::imports::host::{live_globals, LAST_ERROR};
-
-    const CF_TEXT: u32 = 1;
-    const CF_UNICODETEXT: u32 = 13;
 
     fn last_error() -> u32 {
         LAST_ERROR.with(|error| error.get())

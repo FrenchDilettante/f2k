@@ -1205,12 +1205,6 @@ static MENU_KEY_ALONE: AtomicU32 = AtomicU32::new(0);
 const KEY_CONTEXT: i32 = 1 << 29;
 const KEY_PREVIOUS: i32 = 1 << 30;
 
-/// WM_SYSCOMMAND's SC_CLOSE, SC_MINIMIZE, SC_MAXIMIZE and SC_RESTORE.
-const SC_CLOSE: u32 = 0xF060;
-const SC_MINIMIZE: u32 = 0xF020;
-const SC_MAXIMIZE: u32 = 0xF030;
-const SC_RESTORE: u32 = 0xF120;
-
 /// The top-level window `window` is in: itself, or its first ancestor that is not a child.
 fn top_level(window: usize) -> usize {
     let mut at = window;
@@ -1249,18 +1243,18 @@ fn system_key(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool)
             menubar::alt_held(top_level(window), false);
             let alone = MENU_KEY_ALONE.swap(0, Ordering::Relaxed) == wparam;
             if message == WM_SYSKEYUP && alone {
-                send_command(menubar::SC_KEYMENU, 0);
+                send_command(SC_KEYMENU, 0);
             }
         }
         WM_SYSKEYUP if wparam == VK_F10 => {
             if MENU_KEY_ALONE.swap(0, Ordering::Relaxed) == wparam {
-                send_command(menubar::SC_KEYMENU, 0);
+                send_command(SC_KEYMENU, 0);
             }
         }
         WM_SYSCHAR => {
             MENU_KEY_ALONE.store(0, Ordering::Relaxed);
             if lparam & KEY_CONTEXT != 0 && wparam != VK_SPACE {
-                send_command(menubar::SC_KEYMENU, wparam as i32);
+                send_command(SC_KEYMENU, wparam as i32);
             } else if lparam & KEY_CONTEXT != 0 {
                 crate::stub::message_once(
                     &DEFAULT_LOGGED,
@@ -1284,7 +1278,7 @@ fn system_key(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool)
 /// (an application's own commands, below 0xF000, are not the default procedure's).
 fn system_command(window: usize, wparam: u32, lparam: i32, ansi: bool) {
     match wparam & 0xFFF0 {
-        menubar::SC_KEYMENU => menubar::track_keyboard(window, lparam as u32),
+        SC_KEYMENU => menubar::track_keyboard(window, lparam as u32),
         SC_CLOSE => {
             let _ = send(window, WM_CLOSE, 0, 0);
         }

@@ -94,6 +94,7 @@ use rtl::pod::Pod;
 use rtl::user::{
     CreateStructW,
     Msg,
+    CF_UNICODETEXT,
     VK_CONTROL,
     VK_DELETE,
     VK_DOWN,
@@ -239,7 +240,6 @@ const TAB: u16 = 0x09;
 const SPACE: u16 = 0x20;
 
 /// The clipboard's Unicode text format, and the global memory it is handed in.
-const CF_UNICODETEXT: u32 = 13;
 const GMEM_MOVEABLE: u32 = 0x0002;
 
 /// SetWindowPos's flags for a frame change alone.

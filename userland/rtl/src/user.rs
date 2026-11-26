@@ -280,6 +280,96 @@ pub const CS_BYTEALIGNWINDOW: u32 = 0x2000;
 pub const CS_GLOBALCLASS: u32 = 0x4000;
 pub const CS_IME: u32 = 0x0001_0000;
 
+// --- The controls' messages and styles (winuser.h's BM_*, BS_*, STM_*, SS_*) ---------------------
+
+pub const BM_GETCHECK: u32 = 0x00F0;
+pub const BM_SETCHECK: u32 = 0x00F1;
+pub const BM_GETSTATE: u32 = 0x00F2;
+pub const BM_SETSTATE: u32 = 0x00F3;
+pub const BM_SETSTYLE: u32 = 0x00F4;
+pub const BM_CLICK: u32 = 0x00F5;
+pub const BM_GETIMAGE: u32 = 0x00F6;
+pub const BM_SETIMAGE: u32 = 0x00F7;
+
+/// The button kinds (the style's low four bits).
+pub const BS_PUSHBUTTON: u32 = 0x0;
+pub const BS_DEFPUSHBUTTON: u32 = 0x1;
+pub const BS_CHECKBOX: u32 = 0x2;
+pub const BS_AUTOCHECKBOX: u32 = 0x3;
+pub const BS_RADIOBUTTON: u32 = 0x4;
+pub const BS_3STATE: u32 = 0x5;
+pub const BS_AUTO3STATE: u32 = 0x6;
+pub const BS_GROUPBOX: u32 = 0x7;
+pub const BS_AUTORADIOBUTTON: u32 = 0x9;
+/// The kind whose paint goes to the parent as WM_DRAWITEM.
+pub const BS_OWNERDRAW: u32 = 0xB;
+pub const BS_TYPEMASK: u32 = 0xF;
+/// The text alignment bits.
+pub const BS_LEFT: u32 = 0x0100;
+pub const BS_CENTER: u32 = 0x0300;
+pub const BS_VCENTER: u32 = 0x0C00;
+/// The button sends BN_SETFOCUS, BN_KILLFOCUS and BN_DBLCLK too.
+pub const BS_NOTIFY: u32 = 0x4000;
+
+pub const STM_SETICON: u32 = 0x0170;
+pub const STM_GETICON: u32 = 0x0171;
+pub const STM_SETIMAGE: u32 = 0x0172;
+pub const STM_GETIMAGE: u32 = 0x0173;
+
+/// The image kinds of LoadImage and of STM_SETIMAGE and STM_GETIMAGE (winuser.h's IMAGE_*).
+pub const IMAGE_BITMAP: u32 = 0;
+pub const IMAGE_ICON: u32 = 1;
+pub const IMAGE_CURSOR: u32 = 2;
+pub const IMAGE_ENHMETAFILE: u32 = 3;
+
+/// The static kinds (the style's low five bits).
+pub const SS_LEFT: u32 = 0x00;
+pub const SS_CENTER: u32 = 0x01;
+pub const SS_RIGHT: u32 = 0x02;
+pub const SS_ICON: u32 = 0x03;
+pub const SS_BLACKRECT: u32 = 0x04;
+pub const SS_GRAYRECT: u32 = 0x05;
+pub const SS_WHITERECT: u32 = 0x06;
+pub const SS_BLACKFRAME: u32 = 0x07;
+pub const SS_GRAYFRAME: u32 = 0x08;
+pub const SS_WHITEFRAME: u32 = 0x09;
+pub const SS_USERITEM: u32 = 0x0A;
+pub const SS_SIMPLE: u32 = 0x0B;
+pub const SS_LEFTNOWORDWRAP: u32 = 0x0C;
+pub const SS_OWNERDRAW: u32 = 0x0D;
+pub const SS_BITMAP: u32 = 0x0E;
+pub const SS_ENHMETAFILE: u32 = 0x0F;
+pub const SS_ETCHEDHORZ: u32 = 0x10;
+pub const SS_ETCHEDVERT: u32 = 0x11;
+pub const SS_ETCHEDFRAME: u32 = 0x12;
+pub const SS_TYPEMASK: u32 = 0x1F;
+pub const SS_NOPREFIX: u32 = 0x80;
+/// The static notifies its parent of clicks (and is found under the mouse).
+pub const SS_NOTIFY: u32 = 0x0100;
+/// A text static's line centred vertically (one line: DrawText's DT_SINGLELINE | DT_VCENTER).
+pub const SS_CENTERIMAGE: u32 = 0x0200;
+/// A sunken border: WS_EX_STATICEDGE, given at creation.
+pub const SS_SUNKEN: u32 = 0x1000;
+/// The ellipsis styles, one field of two bits.
+pub const SS_ELLIPSISMASK: u32 = 0xC000;
+
+// --- WM_SYSCOMMAND's commands (winuser.h's SC_*) -------------------------------------------------
+
+pub const SC_SIZE: u32 = 0xF000;
+pub const SC_MOVE: u32 = 0xF010;
+pub const SC_MINIMIZE: u32 = 0xF020;
+pub const SC_MAXIMIZE: u32 = 0xF030;
+pub const SC_CLOSE: u32 = 0xF060;
+pub const SC_KEYMENU: u32 = 0xF100;
+pub const SC_RESTORE: u32 = 0xF120;
+
+// --- The clipboard's predefined formats (winuser.h's CF_*) ---------------------------------------
+
+pub const CF_TEXT: u32 = 1;
+pub const CF_OEMTEXT: u32 = 7;
+pub const CF_UNICODETEXT: u32 = 13;
+pub const CF_LOCALE: u32 = 16;
+
 // --- The structures (winuser.h) ------------------------------------------------------------------
 
 /// POINT: GDI's, one type for both headers' uses.

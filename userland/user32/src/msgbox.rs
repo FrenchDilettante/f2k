@@ -19,6 +19,12 @@
 use rtl::edge::InStr;
 use rtl::gdi::{LogFontW, Rect, DEFAULT_CHARSET, FW_NORMAL};
 use rtl::user::{
+    BS_DEFPUSHBUTTON,
+    BS_PUSHBUTTON,
+    SS_ICON,
+    SS_LEFT,
+    SS_NOPREFIX,
+    STM_SETICON,
     WM_COMMAND,
     WM_INITDIALOG,
     WS_CAPTION,
@@ -112,13 +118,6 @@ const IDNO: u32 = 7;
 const ICON_ID: u16 = 20;
 /// The text static's id: 0xFFFF, as the dialog capture shows.
 const TEXT_ID: u16 = 0xFFFF;
-
-/// The styles of the box and its controls.
-const BS_PUSHBUTTON: u32 = 0x0;
-const BS_DEFPUSHBUTTON: u32 = 0x1;
-const SS_LEFT: u32 = 0x00;
-const SS_ICON: u32 = 0x03;
-const SS_NOPREFIX: u32 = 0x80;
 
 /// The stock icons an MB_ICON flag shows (IDI_HAND, IDI_QUESTION, IDI_EXCLAMATION,
 /// IDI_ASTERISK), by the flag's nibble.
@@ -388,12 +387,7 @@ extern "system" fn box_procedure(window: usize, message: u32, wparam: u32, lpara
                 let control = dialog::child_by_id(window, u32::from(ICON_ID));
                 let handle = crate::class::stock(icon, rtl::icon::RT_ICON);
                 if control != 0 && handle != 0 {
-                    let _ = crate::message::send(
-                        control,
-                        crate::static_control::STM_SETICON,
-                        handle as u32,
-                        0,
-                    );
+                    let _ = crate::message::send(control, STM_SETICON, handle as u32, 0);
                 }
             }
             0

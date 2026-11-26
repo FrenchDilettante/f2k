@@ -41,15 +41,13 @@ use rtl::dib::{
     MONO_COLORS,
 };
 use rtl::pod::Pod;
+use rtl::user::IMAGE_BITMAP;
 
 use crate::imports::{self, HeapBlock, ResourceName};
 use crate::{failed, spec};
 
 /// RT_BITMAP: the resource type of a module's bitmaps.
 const RT_BITMAP: u16 = 2;
-
-/// LoadImage's image types: a bitmap (the one served here).
-const IMAGE_BITMAP: u32 = 0;
 
 /// LoadImage's flags (winuser.h's LR_*): a monochrome bitmap, the image read from a file, a DIB
 /// section.

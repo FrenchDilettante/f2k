@@ -50,48 +50,9 @@ use crate::dialog::DLGC_STATIC;
 use crate::draw::{self, BF_LEFT, BF_RECT, BF_TOP};
 use crate::{imports, message, paint, window};
 
-/// The static messages (winuser.h's STM_*).
-pub const STM_SETICON: u32 = 0x0170;
-pub const STM_GETICON: u32 = 0x0171;
-pub const STM_SETIMAGE: u32 = 0x0172;
-pub const STM_GETIMAGE: u32 = 0x0173;
-
-/// STM_SETIMAGE's and STM_GETIMAGE's image kinds.
-const IMAGE_BITMAP: u32 = 0;
-const IMAGE_ICON: u32 = 1;
-const IMAGE_CURSOR: u32 = 2;
-const IMAGE_ENHMETAFILE: u32 = 3;
-
-/// The static kinds (the style's low five bits, winuser.h's SS_*).
-const SS_CENTER: u32 = 0x01;
-const SS_RIGHT: u32 = 0x02;
-const SS_ICON: u32 = 0x03;
-const SS_BLACKRECT: u32 = 0x04;
-const SS_GRAYRECT: u32 = 0x05;
-const SS_WHITERECT: u32 = 0x06;
-const SS_BLACKFRAME: u32 = 0x07;
-const SS_GRAYFRAME: u32 = 0x08;
-const SS_WHITEFRAME: u32 = 0x09;
-const SS_USERITEM: u32 = 0x0A;
-const SS_SIMPLE: u32 = 0x0B;
-const SS_LEFTNOWORDWRAP: u32 = 0x0C;
-const SS_OWNERDRAW: u32 = 0x0D;
-const SS_BITMAP: u32 = 0x0E;
-const SS_ENHMETAFILE: u32 = 0x0F;
-const SS_ETCHEDHORZ: u32 = 0x10;
-const SS_ETCHEDVERT: u32 = 0x11;
-const SS_ETCHEDFRAME: u32 = 0x12;
-const SS_TYPEMASK: u32 = 0x1F;
-const SS_NOPREFIX: u32 = 0x80;
-/// The static notifies its parent of clicks (and is found under the mouse).
-const SS_NOTIFY: u32 = 0x0100;
 /// The notifications an SS_NOTIFY static sends (winuser.h's STN_*).
 const STN_CLICKED: u32 = 0;
 const STN_DBLCLK: u32 = 1;
-/// A text static's line centred vertically (one line: DrawText's DT_SINGLELINE | DT_VCENTER).
-const SS_CENTERIMAGE: u32 = 0x0200;
-/// A sunken border: WS_EX_STATICEDGE, given at creation.
-const SS_SUNKEN: u32 = 0x1000;
 
 /// A static's extra bytes: its image, then its font.
 pub const STATIC_EXTRA: i32 = 8;
@@ -136,7 +97,6 @@ const UNDRAWN_STYLES: [(u32, &str); 1] =
     [(0x2000, "SS_EDITCONTROL (an edit control's line breaks)")];
 
 /// The ellipsis styles (one field of two bits), and what each does.
-const SS_ELLIPSISMASK: u32 = 0xC000;
 const ELLIPSES: [(u32, &str); 3] = [
     (
         0x4000,

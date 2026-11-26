@@ -57,35 +57,10 @@ use crate::dialog::{DLGC_STATIC, DLGC_UNDEFPUSHBUTTON};
 use crate::draw::{self, BF_RECT, BF_SOFT, DT_CENTER, DT_LEFT, DT_SINGLELINE, DT_VCENTER};
 use crate::{focus, imports, message, paint, window};
 
-/// The button messages (winuser.h's BM_*).
-pub const BM_GETCHECK: u32 = 0x00F0;
-pub const BM_SETCHECK: u32 = 0x00F1;
-pub const BM_GETSTATE: u32 = 0x00F2;
-pub const BM_SETSTATE: u32 = 0x00F3;
-pub const BM_SETSTYLE: u32 = 0x00F4;
-pub const BM_CLICK: u32 = 0x00F5;
-const BM_GETIMAGE: u32 = 0x00F6;
-const BM_SETIMAGE: u32 = 0x00F7;
-
-/// The button kinds (the style's low four bits, winuser.h's BS_*).
-pub const BS_PUSHBUTTON: u32 = 0x0;
-pub const BS_DEFPUSHBUTTON: u32 = 0x1;
-pub const BS_CHECKBOX: u32 = 0x2;
-pub const BS_AUTOCHECKBOX: u32 = 0x3;
-pub const BS_RADIOBUTTON: u32 = 0x4;
-pub const BS_3STATE: u32 = 0x5;
-pub const BS_AUTO3STATE: u32 = 0x6;
-pub const BS_GROUPBOX: u32 = 0x7;
-pub const BS_AUTORADIOBUTTON: u32 = 0x9;
-const BS_TYPEMASK: u32 = 0xF;
-
 /// The button kinds the procedure does not draw yet (drawn as a check box), and what Windows 2000
 /// draws for each.
 const UNDRAWN_KINDS: [(u32, &str); 2] =
     [(0x8, "BS_USERBUTTON buttons"), (0xA, "BS_PUSHBOX buttons")];
-
-/// BS_OWNERDRAW, the kind whose paint goes to the parent as WM_DRAWITEM.
-const BS_OWNERDRAW: u32 = 0xB;
 
 /// DRAWITEMSTRUCT's fields' values for a button drawn whole (winuser.h's).
 const ODT_BUTTON: u32 = 4;
@@ -127,12 +102,7 @@ const UNDRAWN_STYLES: [(u32, &str); 6] = [
 /// The text alignment bits: horizontal (BS_LEFT, BS_RIGHT, both BS_CENTER) and vertical (BS_TOP,
 /// BS_BOTTOM, both BS_VCENTER).
 const BS_HORIZONTAL: u32 = 0x0300;
-const BS_CENTER: u32 = 0x0300;
-const BS_LEFT: u32 = 0x0100;
 const BS_VERTICAL: u32 = 0x0C00;
-const BS_VCENTER: u32 = 0x0C00;
-/// BS_NOTIFY: the button sends BN_SETFOCUS, BN_KILLFOCUS and BN_DBLCLK too.
-const BS_NOTIFY: u32 = 0x4000;
 
 /// The notifications beyond BN_CLICKED (winuser.h's BN_*).
 const BN_DBLCLK: u32 = 5;

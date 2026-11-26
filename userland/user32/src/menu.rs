@@ -30,7 +30,17 @@
 use rtl::edge::OutBuf;
 use rtl::menu::*;
 use rtl::status::NtStatus;
-use rtl::user::{NO_PARAM_CREATE_MENU, NO_PARAM_CREATE_POPUP_MENU, WS_SYSMENU};
+use rtl::user::{
+    NO_PARAM_CREATE_MENU,
+    NO_PARAM_CREATE_POPUP_MENU,
+    SC_CLOSE,
+    SC_MAXIMIZE,
+    SC_MINIMIZE,
+    SC_MOVE,
+    SC_RESTORE,
+    SC_SIZE,
+    WS_SYSMENU,
+};
 use rtl::window::QUERY_WINDOW_MENU;
 
 use crate::imports::{self, ResourceName};
@@ -832,14 +842,6 @@ fn default_item(menu: usize, by_position: bool, flags: u32, depth: u32) -> u32 {
 
 // --- The system menu
 // ------------------------------------------------------------------------------
-
-/// The system commands (winuser.h's SC_*) the system menu's items carry.
-pub const SC_SIZE: u32 = 0xF000;
-pub const SC_MOVE: u32 = 0xF010;
-pub const SC_MINIMIZE: u32 = 0xF020;
-pub const SC_MAXIMIZE: u32 = 0xF030;
-pub const SC_CLOSE: u32 = 0xF060;
-pub const SC_RESTORE: u32 = 0xF120;
 
 /// The system menu's items, as the menus fixture's `sysmenu` capture shows Windows 2000's for every
 /// window that has one (its style changes none of them: Windows enables and grays them as the menu

@@ -689,12 +689,6 @@ const UNHANDLED_DIALOG_STYLES: [(u32, &str); 3] = [
 /// The dialog styles' cases logged in this process.
 static DIALOG_STYLES_LOGGED: rtl::stub::Logged<8> = rtl::stub::Logged::new();
 
-/// SS_ICON (a Static's type), and the message that gives it its icon.
-const SS_ICON: u32 = 0x0003;
-const SS_BITMAP: u32 = 0x000E;
-const SS_TYPEMASK: u32 = 0x001F;
-const STM_SETICON: u32 = 0x0170;
-
 /// The dialog a template describes, made: the window, its controls, WM_SETFONT and WM_INITDIALOG
 /// sent, the focus to the control WM_INITDIALOG named when it answered TRUE, shown when the
 /// template asks for WS_VISIBLE and `show` lets it; its handle, or none with the last error
@@ -1694,11 +1688,6 @@ pub fn set_dialog_focus(dialog: usize, control: usize) {
     check_default_button(dialog, control);
 }
 
-/// BM_SETSTYLE and the push buttons' styles (button.rs's).
-const BM_SETSTYLE: u32 = 0x00F4;
-const BS_PUSHBUTTON: u32 = 0x0000;
-const BS_DEFPUSHBUTTON: u32 = 0x0001;
-
 /// The default push button's look where the focus is: a push button with the focus looks the
 /// default (Enter presses it), and otherwise the dialog's default button does; every other push
 /// button looks a plain one. DM_GETDEFID's id does not change.
@@ -1959,10 +1948,6 @@ pub unsafe extern "system" fn get_dlg_item_int(
     value
 }
 
-/// BM_SETCHECK and BM_GETCHECK (button.rs's).
-const BM_GETCHECK: u32 = 0x00F0;
-const BM_SETCHECK: u32 = 0x00F1;
-
 /// CheckDlgButton: the control sent BM_SETCHECK with `check`; TRUE (whatever the control does with
 /// it), or FALSE with the last error for no control of that id.
 #[unsafe(export_name = "f2k_export_CheckDlgButton")]
@@ -2057,8 +2042,7 @@ fn key_down(dialog: usize, msg: &Msg) -> bool {
                     // An auto radio button the arrows reach is clicked too, checked or not (dialog
                     // `radiotab`: its focus and this click each send BN_CLICKED).
                     if dialog_code(next, 0) & DLGC_RADIOBUTTON != 0
-                        && window::style_of(next).unwrap_or(0) & 0xF
-                            == crate::button::BS_AUTORADIOBUTTON
+                        && window::style_of(next).unwrap_or(0) & 0xF == BS_AUTORADIOBUTTON
                     {
                         let _ = message::send(next, BM_CLICK, 0, 0);
                     }
@@ -2113,9 +2097,6 @@ fn press(dialog: usize, id: u32, control: usize) {
         control as i32,
     );
 }
-
-/// BM_CLICK (button.rs's).
-const BM_CLICK: u32 = 0x00F5;
 
 /// IsDialogMessage's WM_CHAR and WM_SYSCHAR: whether the dialog handled the character (a control
 /// that wants characters gets them; Tab, Enter and Esc are the keys' own; a mnemonic presses the

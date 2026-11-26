@@ -48,7 +48,14 @@
 //! EnumClipboardFormats comes through NtUserCallOneParam ([`super::queue`]).
 
 use rtl::codepage::{decode_byte, encode_unit, CodePage};
-use rtl::user::{WM_DESTROYCLIPBOARD, WM_RENDERALLFORMATS};
+use rtl::user::{
+    CF_LOCALE,
+    CF_OEMTEXT,
+    CF_TEXT,
+    CF_UNICODETEXT,
+    WM_DESTROYCLIPBOARD,
+    WM_RENDERALLFORMATS,
+};
 use rtl::winerror::{
     ERROR_ACCESS_DENIED,
     ERROR_CLIPBOARD_NOT_OPEN,
@@ -60,12 +67,6 @@ use super::class;
 use super::window::{Message, Payload, Session, WindowId, Windows};
 use crate::sched::thread::ThreadId;
 use crate::status::*;
-
-/// The predefined formats the clipboard synthesises (winuser.h's CF_*).
-pub const CF_TEXT: u32 = 1;
-pub const CF_OEMTEXT: u32 = 7;
-pub const CF_UNICODETEXT: u32 = 13;
-pub const CF_LOCALE: u32 = 16;
 
 /// The text formats, in the order a close adds the missing ones.
 const TEXT_FORMATS: [u32; 3] = [CF_TEXT, CF_OEMTEXT, CF_UNICODETEXT];
