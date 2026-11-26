@@ -87,6 +87,7 @@
 
 use core::ffi::CStr;
 
+use rtl::display::{COLOR_GRAYTEXT, COLOR_HIGHLIGHT, COLOR_HIGHLIGHTTEXT, SM_CXBORDER};
 use rtl::edge::{In, InStr, InWStr, Out, OutBuf};
 use rtl::gdi::{Rect, ETO_OPAQUE, OPAQUE, TRANSPARENT};
 use rtl::pod::Pod;
@@ -238,14 +239,6 @@ const VK_RIGHT: u32 = 0x27;
 const VK_DOWN: u32 = 0x28;
 const VK_INSERT: u32 = 0x2D;
 const VK_DELETE: u32 = 0x2E;
-
-/// The system colors an edit's selection and disabled text take (winuser.h's COLOR_*).
-const COLOR_HIGHLIGHT: i32 = 13;
-const COLOR_HIGHLIGHTTEXT: i32 = 14;
-const COLOR_GRAYTEXT: i32 = 17;
-
-/// GetSystemMetrics' border width: the caret's.
-const SM_CXBORDER: i32 = 5;
 
 /// The clipboard's Unicode text format, and the global memory it is handed in.
 const CF_UNICODETEXT: u32 = 13;
@@ -1567,7 +1560,7 @@ fn draw_edit(window: usize, dc: usize) {
     }
     crate::draw::fill(dc, client, brush);
     if style & WS_DISABLED != 0 {
-        imports::set_text_color(dc, crate::display::get_sys_color(COLOR_GRAYTEXT));
+        imports::set_text_color(dc, crate::display::get_sys_color(COLOR_GRAYTEXT as i32));
     }
     let previous = (s.font != 0)
         .then(|| imports::select_object(dc, s.font))
@@ -1629,8 +1622,11 @@ fn draw_line(
         let width = measure.width(s, part);
         if selected {
             let text = imports::text_color(dc);
-            imports::set_text_color(dc, crate::display::get_sys_color(COLOR_HIGHLIGHTTEXT));
-            imports::set_bk_color(dc, crate::display::get_sys_color(COLOR_HIGHLIGHT));
+            imports::set_text_color(
+                dc,
+                crate::display::get_sys_color(COLOR_HIGHLIGHTTEXT as i32),
+            );
+            imports::set_bk_color(dc, crate::display::get_sys_color(COLOR_HIGHLIGHT as i32));
             imports::set_bk_mode(dc, OPAQUE);
             let rect = Rect {
                 left: pen,

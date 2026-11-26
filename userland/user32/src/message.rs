@@ -35,6 +35,7 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use rtl::display::{COLOR_3DFACE, COLOR_SCROLLBAR, COLOR_WINDOW, COLOR_WINDOWTEXT};
 use rtl::edge::{In, InStr, OutBuf};
 use rtl::status::NtStatus;
 use rtl::user::*;
@@ -1181,12 +1182,6 @@ fn erase_background(window: usize, dc: usize) -> bool {
     crate::draw::fill(dc, client, class.background as usize);
     true
 }
-
-/// The system colors the default colors are (winuser.h's COLOR_*).
-const COLOR_SCROLLBAR: u32 = 0;
-const COLOR_WINDOW: u32 = 5;
-const COLOR_WINDOWTEXT: u32 = 8;
-const COLOR_3DFACE: u32 = 15;
 
 /// DefWindowProc's WM_CTLCOLOR*: the text color COLOR_WINDOWTEXT and the background color of the
 /// control's kind set in its DC `dc`, the brush of that color answered.

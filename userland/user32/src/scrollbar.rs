@@ -40,6 +40,7 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use rtl::display::{COLOR_3DFACE, COLOR_3DHILIGHT, COLOR_3DSHADOW, COLOR_BTNTEXT, COLOR_SCROLLBAR};
 use rtl::edge::{In, InBuf, Out, OutBuf};
 use rtl::gdi::Rect;
 use rtl::nonclient::Frame;
@@ -70,13 +71,6 @@ const POS: i32 = 16;
 
 /// The ScrollBar class's atom in this process, once registered (0 before).
 pub static SCROLLBAR_ATOM: AtomicU32 = AtomicU32::new(0);
-
-/// The system colors a bar is drawn in (winuser.h's COLOR_*).
-const COLOR_SCROLLBAR: u32 = 0;
-const COLOR_BTNTEXT: u32 = 18;
-const COLOR_3DFACE: u32 = 15;
-const COLOR_3DSHADOW: u32 = 16;
-const COLOR_3DHILIGHT: u32 = 20;
 
 /// The cases logged in this process: the control's input, ScrollWindowEx's region.
 static LOGGED: rtl::stub::Logged<4> = rtl::stub::Logged::new();

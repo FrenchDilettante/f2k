@@ -209,15 +209,50 @@ pub const DISPLAY_DEVICE_STATE_END_W: usize = offset_of!(DisplayDeviceW, device_
 /// user handle's shape: the first index, the first generation); the others follow it.
 pub const PRIMARY_MONITOR_HANDLE: u32 = 0x0001_0001;
 
+/// GetSystemMetrics' indexes (winuser.h's SM_*).
+pub const SM_CXSCREEN: i32 = 0;
+pub const SM_CYSCREEN: i32 = 1;
+pub const SM_CXBORDER: i32 = 5;
+pub const SM_CXICON: i32 = 11;
+pub const SM_CYICON: i32 = 12;
+pub const SM_CXFULLSCREEN: i32 = 16;
+pub const SM_CYFULLSCREEN: i32 = 17;
+pub const SM_CXMAXTRACK: i32 = 59;
+pub const SM_CYMAXTRACK: i32 = 60;
+pub const SM_CXVIRTUALSCREEN: i32 = 78;
+pub const SM_CYVIRTUALSCREEN: i32 = 79;
+pub const SM_CMONITORS: i32 = 80;
+
 /// SystemParametersInfo's actions win32k answers.
 ///
 /// SPI_GETWORKAREA: the primary monitor's work area, a RECT into pvParam.
 pub const SPI_GETWORKAREA: u32 = 0x0030;
 
 /// The system colors' indexes (winuser.h's COLOR_*), and how many Windows 2000 has.
+pub const COLOR_SCROLLBAR: u32 = 0;
 pub const COLOR_DESKTOP: u32 = 1;
+pub const COLOR_ACTIVECAPTION: u32 = 2;
+pub const COLOR_INACTIVECAPTION: u32 = 3;
+pub const COLOR_MENU: u32 = 4;
 pub const COLOR_WINDOW: u32 = 5;
+pub const COLOR_WINDOWFRAME: u32 = 6;
+pub const COLOR_MENUTEXT: u32 = 7;
+pub const COLOR_WINDOWTEXT: u32 = 8;
+pub const COLOR_CAPTIONTEXT: u32 = 9;
+pub const COLOR_ACTIVEBORDER: u32 = 10;
+pub const COLOR_INACTIVEBORDER: u32 = 11;
+pub const COLOR_HIGHLIGHT: u32 = 13;
+pub const COLOR_HIGHLIGHTTEXT: u32 = 14;
+pub const COLOR_3DFACE: u32 = 15;
+pub const COLOR_3DSHADOW: u32 = 16;
+pub const COLOR_GRAYTEXT: u32 = 17;
 pub const COLOR_BTNTEXT: u32 = 18;
+pub const COLOR_INACTIVECAPTIONTEXT: u32 = 19;
+pub const COLOR_3DHILIGHT: u32 = 20;
+pub const COLOR_3DDKSHADOW: u32 = 21;
+pub const COLOR_3DLIGHT: u32 = 22;
+pub const COLOR_GRADIENTACTIVECAPTION: u32 = 27;
+pub const COLOR_GRADIENTINACTIVECAPTION: u32 = 28;
 pub const SYSTEM_COLORS: usize = 29;
 
 /// The system colors of Windows 2000's default scheme ("Windows Standard"), by index, as

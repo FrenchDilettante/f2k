@@ -5,6 +5,7 @@
 //! serves is in its DC services' notes (kernel/src/win32k/dc.rs): the screen's and the windows'
 //! DCs, stock objects as constant handles, brushes ([`crate::brush`]), one font.
 
+use rtl::display::{SM_CXSCREEN, SM_CYSCREEN};
 use rtl::edge::{InStr, InWStr};
 use rtl::gdi::*;
 
@@ -255,10 +256,6 @@ const DESKTOPHORZRES: i32 = 118;
 
 /// TECHNOLOGY's answer for the display: a raster display.
 const DT_RASDISPLAY: i32 = 1;
-
-/// GetSystemMetrics' indexes (winuser.h) for the screen's size.
-pub(crate) const SM_CXSCREEN: i32 = 0;
-pub(crate) const SM_CYSCREEN: i32 = 1;
 
 /// GetDeviceCaps: a capability of the screen DC — its size (the screen's, user32's
 /// GetSystemMetrics as Windows 2000's gdi32 imports it: no DC service answers a capability), its

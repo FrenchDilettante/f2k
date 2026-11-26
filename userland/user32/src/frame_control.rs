@@ -22,6 +22,7 @@
 //! DFCS_FLAT and DFCS_MONO draw the edge as DrawEdge's BF_FLAT and BF_MONO do (as 3D);
 //! DFCS_ADJUSTRECT leaves the rectangle as it is.
 
+use rtl::display::{COLOR_3DHILIGHT, COLOR_3DSHADOW, COLOR_BTNTEXT};
 use rtl::edge::In;
 use rtl::gdi::Rect;
 
@@ -46,11 +47,6 @@ pub const DFCS_INACTIVE: u32 = 0x0100;
 pub const DFCS_PUSHED: u32 = 0x0200;
 pub const DFCS_FLAT: u32 = 0x4000;
 pub const DFCS_MONO: u32 = 0x8000;
-
-/// The system colors the glyphs are drawn in (winuser.h's COLOR_*).
-const COLOR_3DSHADOW: u32 = 16;
-const COLOR_BTNTEXT: u32 = 18;
-const COLOR_3DHILIGHT: u32 = 20;
 
 /// The standard caption button the glyphs' places are measured in: SM_CXSIZE - 2 by SM_CYSIZE - 4.
 pub const BUTTON_WIDTH: i32 = rtl::nonclient::SIZE - 2;

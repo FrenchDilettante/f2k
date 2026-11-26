@@ -30,6 +30,15 @@ use rtl::display::{
     DEV_MODE_A_SIZE,
     DISP_CHANGE_BADPARAM,
     PRIMARY_MONITOR_HANDLE,
+    SM_CMONITORS,
+    SM_CXFULLSCREEN,
+    SM_CXMAXTRACK,
+    SM_CXSCREEN,
+    SM_CXVIRTUALSCREEN,
+    SM_CYFULLSCREEN,
+    SM_CYMAXTRACK,
+    SM_CYSCREEN,
+    SM_CYVIRTUALSCREEN,
     SPI_GETWORKAREA,
     SYSTEM_COLORS,
 };
@@ -544,17 +553,6 @@ fn monitor_info_a(monitor: usize, size: u32, out: Option<&mut [u8]>) -> u32 {
 }
 
 // --- The system metrics and parameters -----------------------------------------------------------
-
-/// GetSystemMetrics' indexes (winuser.h's SM_*) the served set names.
-const SM_CXSCREEN: i32 = 0;
-const SM_CYSCREEN: i32 = 1;
-const SM_CXFULLSCREEN: i32 = 16;
-const SM_CYFULLSCREEN: i32 = 17;
-const SM_CXVIRTUALSCREEN: i32 = 78;
-const SM_CYVIRTUALSCREEN: i32 = 79;
-const SM_CMONITORS: i32 = 80;
-const SM_CXMAXTRACK: i32 = 59;
-const SM_CYMAXTRACK: i32 = 60;
 
 /// SM_CXMAXTRACK and SM_CYMAXTRACK past the virtual screen's extent: a sizing border and an edge on
 /// each side (Windows 2000's at 1024x768 is 1036 by 780 by this reckoning; win32k seeds

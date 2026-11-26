@@ -36,6 +36,18 @@
 //! draws the check and radio marks from bitmaps; F2K draws them pixel run by pixel run (a
 //! deviation in look only).
 
+use rtl::display::{
+    COLOR_3DDKSHADOW,
+    COLOR_3DFACE,
+    COLOR_3DHILIGHT,
+    COLOR_3DLIGHT,
+    COLOR_3DSHADOW,
+    COLOR_BTNTEXT,
+    COLOR_GRAYTEXT,
+    COLOR_WINDOW,
+    COLOR_WINDOWFRAME,
+    COLOR_WINDOWTEXT,
+};
 use rtl::gdi::{Rect, TRANSPARENT};
 use rtl::user::*;
 use rtl::window::{WindowLinks, GWL_STYLE};
@@ -183,18 +195,6 @@ const FIELDS: usize = 2;
 
 /// The keys a button takes.
 const VK_SPACE: u32 = 0x20;
-
-/// The system colors a button paints in (winuser.h's COLOR_*).
-const COLOR_WINDOW: u32 = 5;
-const COLOR_WINDOWFRAME: u32 = 6;
-const COLOR_WINDOWTEXT: u32 = 8;
-const COLOR_3DFACE: u32 = 15;
-const COLOR_3DSHADOW: u32 = 16;
-const COLOR_GRAYTEXT: u32 = 17;
-const COLOR_BTNTEXT: u32 = 18;
-const COLOR_3DHILIGHT: u32 = 20;
-const COLOR_3DDKSHADOW: u32 = 21;
-const COLOR_3DLIGHT: u32 = 22;
 
 /// The address of the button's state block, its extra bytes' dword (0 for none yet).
 fn block(window: usize) -> usize {

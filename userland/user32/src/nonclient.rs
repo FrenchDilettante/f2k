@@ -34,6 +34,20 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use rtl::cstr::ascii_into;
+use rtl::display::{
+    COLOR_3DFACE,
+    COLOR_3DHILIGHT,
+    COLOR_3DSHADOW,
+    COLOR_ACTIVEBORDER,
+    COLOR_ACTIVECAPTION,
+    COLOR_CAPTIONTEXT,
+    COLOR_GRADIENTACTIVECAPTION,
+    COLOR_GRADIENTINACTIVECAPTION,
+    COLOR_INACTIVEBORDER,
+    COLOR_INACTIVECAPTION,
+    COLOR_INACTIVECAPTIONTEXT,
+    COLOR_WINDOWFRAME,
+};
 use rtl::edge::Out;
 use rtl::gdi::{LogFontW, Rect, LF_FACESIZE, SYMBOL_CHARSET, TRANSPARENT};
 use rtl::nonclient::{Border, Button, Caption, Frame};
@@ -61,20 +75,6 @@ use crate::frame_control::{
     DFCS_INACTIVE,
 };
 use crate::{imports, menubar, message, window};
-
-/// The system colors the frame is drawn in (winuser.h's COLOR_*).
-const COLOR_ACTIVECAPTION: u32 = 2;
-const COLOR_INACTIVECAPTION: u32 = 3;
-const COLOR_WINDOWFRAME: u32 = 6;
-const COLOR_CAPTIONTEXT: u32 = 9;
-const COLOR_ACTIVEBORDER: u32 = 10;
-const COLOR_INACTIVEBORDER: u32 = 11;
-const COLOR_3DFACE: u32 = 15;
-const COLOR_3DSHADOW: u32 = 16;
-const COLOR_INACTIVECAPTIONTEXT: u32 = 19;
-const COLOR_3DHILIGHT: u32 = 20;
-const COLOR_GRADIENTACTIVECAPTION: u32 = 27;
-const COLOR_GRADIENTINACTIVECAPTION: u32 = 28;
 
 /// The width of the caption gradient's bands, in pixels.
 pub const GRADIENT_BAND: i32 = 4;

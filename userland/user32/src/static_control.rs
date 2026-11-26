@@ -23,6 +23,16 @@
 //! alone. Its WM_NCHITTEST is HTTRANSPARENT unless SS_NOTIFY; an SS_NOTIFY static sends its
 //! parent STN_CLICKED at WM_LBUTTONDOWN and STN_DBLCLK at WM_LBUTTONDBLCLK.
 
+use rtl::display::{
+    COLOR_3DDKSHADOW,
+    COLOR_3DFACE,
+    COLOR_3DHILIGHT,
+    COLOR_3DSHADOW,
+    COLOR_GRAYTEXT,
+    COLOR_WINDOWTEXT,
+    SM_CXICON,
+    SM_CYICON,
+};
 use rtl::gdi::TRANSPARENT;
 use rtl::user::*;
 use rtl::window::{
@@ -87,18 +97,6 @@ const SS_SUNKEN: u32 = 0x1000;
 pub const STATIC_EXTRA: i32 = 8;
 const IMAGE: i32 = 0;
 const FONT: i32 = 4;
-
-/// The system colors a static paints in (winuser.h's COLOR_*).
-const COLOR_3DFACE: u32 = 15;
-const COLOR_3DSHADOW: u32 = 16;
-const COLOR_GRAYTEXT: u32 = 17;
-const COLOR_WINDOWTEXT: u32 = 8;
-const COLOR_3DHILIGHT: u32 = 20;
-const COLOR_3DDKSHADOW: u32 = 21;
-
-/// GetSystemMetrics' icon size.
-const SM_CXICON: i32 = 11;
-const SM_CYICON: i32 = 12;
 
 fn read(window: usize, offset: i32) -> u32 {
     let mut value = 0u32;

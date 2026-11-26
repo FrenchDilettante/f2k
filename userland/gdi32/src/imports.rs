@@ -902,6 +902,7 @@ pub fn enum_font(
 pub mod host {
     use std::cell::{Cell, RefCell};
 
+    use rtl::display::{SM_CXSCREEN, SM_CYSCREEN};
     use rtl::gdi::*;
     use rtl::host::items;
     pub use rtl::host::{
@@ -1036,8 +1037,8 @@ pub mod host {
     /// index.
     pub unsafe extern "system" fn GetSystemMetrics(index: i32) -> i32 {
         match index {
-            crate::dc::SM_CXSCREEN => SCREEN_WIDTH,
-            crate::dc::SM_CYSCREEN => SCREEN_HEIGHT,
+            SM_CXSCREEN => SCREEN_WIDTH,
+            SM_CYSCREEN => SCREEN_HEIGHT,
             _ => 0,
         }
     }

@@ -36,18 +36,18 @@
 //! bottom its last. The answer is the text's height, or, for DT_VCENTER and DT_BOTTOM, the bottom
 //! of the drawn text from the rectangle's top. The ellipsis flags draw as without them.
 
-use rtl::display::SYSTEM_COLORS;
+use rtl::display::{
+    COLOR_3DDKSHADOW,
+    COLOR_3DFACE,
+    COLOR_3DHILIGHT,
+    COLOR_3DLIGHT,
+    COLOR_3DSHADOW,
+    SYSTEM_COLORS,
+};
 use rtl::edge::{In, InBuf, InStr, InWStr, Out};
 use rtl::gdi::*;
 
 use crate::imports;
-
-/// The system colors the drawing calls paint with (winuser.h's COLOR_*).
-pub const COLOR_3DFACE: u32 = 15;
-pub const COLOR_3DSHADOW: u32 = 16;
-pub const COLOR_3DHILIGHT: u32 = 20;
-pub const COLOR_3DDKSHADOW: u32 = 21;
-pub const COLOR_3DLIGHT: u32 = 22;
 
 /// DrawEdge's borders (winuser.h): the outer border raised or sunken, the inner one raised or
 /// sunken, and the edges they make.

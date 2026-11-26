@@ -46,6 +46,15 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use rtl::display::{
+    COLOR_3DHILIGHT,
+    COLOR_3DSHADOW,
+    COLOR_GRAYTEXT,
+    COLOR_HIGHLIGHT,
+    COLOR_HIGHLIGHTTEXT,
+    COLOR_MENU,
+    COLOR_MENUTEXT,
+};
 use rtl::gdi::{Rect, TRANSPARENT};
 use rtl::menu::{
     MenuItemAnswer,
@@ -130,15 +139,6 @@ const VK_UP: u32 = 0x26;
 const VK_RIGHT: u32 = 0x27;
 const VK_DOWN: u32 = 0x28;
 const VK_F10: u32 = 0x79;
-
-/// The system colors the menus are drawn in.
-const COLOR_MENU: u32 = 4;
-const COLOR_MENUTEXT: u32 = 7;
-const COLOR_HIGHLIGHT: u32 = 13;
-const COLOR_HIGHLIGHTTEXT: u32 = 14;
-const COLOR_3DSHADOW: u32 = 16;
-const COLOR_GRAYTEXT: u32 = 17;
-const COLOR_3DHILIGHT: u32 = 20;
 
 /// The menu class's atom: the documented #32768.
 pub const MENU_CLASS_ATOM: u16 = 0x8000;
