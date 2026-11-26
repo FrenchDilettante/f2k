@@ -63,7 +63,6 @@ use rtl::scroll::{
     ScrollArea,
     ScrollBars,
     ScrollInfo,
-    ERROR_NO_SCROLLBARS,
     ESB_DISABLE_BOTH,
     ESB_ENABLE_BOTH,
     SB_BOTH,
@@ -74,6 +73,12 @@ use rtl::scroll::{
     SW_ERASE,
     SW_INVALIDATE,
     SW_SCROLLCHILDREN,
+};
+use rtl::winerror::{
+    ERROR_INVALID_PARAMETER,
+    ERROR_INVALID_WINDOW_HANDLE,
+    ERROR_NOT_ENOUGH_MEMORY,
+    ERROR_NO_SCROLLBARS,
 };
 
 use super::window::{Hwnd, WindowId, Windows, WINDOWS};
@@ -96,9 +101,9 @@ impl Failure {
     /// The Win32 error code the decision reports.
     pub const fn code(self) -> u32 {
         match self {
-            Failure::NoMemory => 8,
-            Failure::InvalidParameter => 87,
-            Failure::InvalidWindowHandle => 1400,
+            Failure::NoMemory => ERROR_NOT_ENOUGH_MEMORY,
+            Failure::InvalidParameter => ERROR_INVALID_PARAMETER,
+            Failure::InvalidWindowHandle => ERROR_INVALID_WINDOW_HANDLE,
             Failure::NoScrollBars => ERROR_NO_SCROLLBARS,
         }
     }

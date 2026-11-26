@@ -1023,7 +1023,7 @@ pub unsafe extern "system" fn NtUserQueryWindow(
         } else if index == QUERY_WINDOW_SCROLL_BARS {
             match host_bars(&w) {
                 Some(bars) => bars.as_bytes().to_vec(),
-                None => return NtStatus::from_win32(rtl::scroll::ERROR_NO_SCROLLBARS).0,
+                None => return NtStatus::from_win32(rtl::winerror::ERROR_NO_SCROLLBARS).0,
             }
         } else if index == QUERY_WINDOW_PARENT {
             w.parent.to_le_bytes().to_vec()
@@ -3024,7 +3024,7 @@ pub unsafe extern "system" fn NtUserSetScrollInfo(
             Err(status) => return status,
         };
         if info.mask & SIF_RANGE == 0 && host_bars(w).is_none() {
-            return NtStatus::from_win32(ERROR_NO_SCROLLBARS).0;
+            return NtStatus::from_win32(rtl::winerror::ERROR_NO_SCROLLBARS).0;
         }
         let mut bars = host_bars(w).unwrap_or(ScrollBars::WINDOW);
         let set = set_parms(bars.bar_mut(bar), &info);

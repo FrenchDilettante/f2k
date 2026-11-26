@@ -84,11 +84,6 @@ pub const NULLREGION: i32 = 1;
 pub const SIMPLEREGION: i32 = 2;
 pub const COMPLEXREGION: i32 = 3;
 
-/// ERROR_NO_SCROLLBARS (1447): the window has no scroll bars to read or set.
-pub const ERROR_NO_SCROLLBARS: u32 = 1447;
-/// ERROR_INVALID_SCROLLBAR_RANGE (1448): SetScrollRange's range is wider than MAXLONG.
-pub const ERROR_INVALID_SCROLLBAR_RANGE: u32 = 1448;
-
 /// The shortest thumb drawn for a bar with a page (SM_CXHTHUMB's half: an assumption).
 pub const MIN_THUMB: i32 = 8;
 

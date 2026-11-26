@@ -83,6 +83,13 @@ use rtl::menu::{
     STATE_BITS,
     TYPE_BITS,
 };
+use rtl::winerror::{
+    ERROR_CHILD_WINDOW_MENU,
+    ERROR_INVALID_MENU_HANDLE,
+    ERROR_INVALID_WINDOW_HANDLE,
+    ERROR_MENU_ITEM_NOT_FOUND,
+    ERROR_NOT_ENOUGH_MEMORY,
+};
 
 use super::class::Owner;
 use super::handle::{UserHandles, UserObject};
@@ -116,11 +123,11 @@ impl Failure {
     /// The Win32 error code (winerror.h) the decision reports.
     pub const fn code(self) -> u32 {
         match self {
-            Failure::NotEnoughMemory => 8,
-            Failure::InvalidWindowHandle => 1400,
-            Failure::InvalidMenuHandle => 1401,
-            Failure::ChildWindowMenu => 1436,
-            Failure::ItemNotFound => 1456,
+            Failure::NotEnoughMemory => ERROR_NOT_ENOUGH_MEMORY,
+            Failure::InvalidWindowHandle => ERROR_INVALID_WINDOW_HANDLE,
+            Failure::InvalidMenuHandle => ERROR_INVALID_MENU_HANDLE,
+            Failure::ChildWindowMenu => ERROR_CHILD_WINDOW_MENU,
+            Failure::ItemNotFound => ERROR_MENU_ITEM_NOT_FOUND,
         }
     }
 

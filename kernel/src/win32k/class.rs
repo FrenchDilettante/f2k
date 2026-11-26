@@ -45,6 +45,18 @@
 #![allow(dead_code)]
 
 use rtl::pod::Pod;
+use rtl::winerror::{
+    ERROR_ACCESS_DENIED,
+    ERROR_CANNOT_FIND_WND_CLASS,
+    ERROR_CLASS_ALREADY_EXISTS,
+    ERROR_CLASS_DOES_NOT_EXIST,
+    ERROR_CLASS_HAS_WINDOWS,
+    ERROR_INVALID_CURSOR_HANDLE,
+    ERROR_INVALID_ICON_HANDLE,
+    ERROR_INVALID_INDEX,
+    ERROR_INVALID_PARAMETER,
+    ERROR_OUTOFMEMORY,
+};
 
 use super::handle::UserHandles;
 pub use super::icon::{CursorId, CursorTable};
@@ -179,16 +191,16 @@ impl Failure {
     /// The Win32 error code (winerror.h) the decision reports.
     pub const fn code(self) -> u32 {
         match self {
-            Failure::AccessDenied => 5,
-            Failure::OutOfMemory => 14,
-            Failure::InvalidParameter => 87,
-            Failure::InvalidCursorHandle => 1402,
-            Failure::CannotFindWindowClass => 1407,
-            Failure::ClassAlreadyExists => 1410,
-            Failure::ClassDoesNotExist => 1411,
-            Failure::ClassHasWindows => 1412,
-            Failure::InvalidIndex => 1413,
-            Failure::InvalidIconHandle => 1414,
+            Failure::AccessDenied => ERROR_ACCESS_DENIED,
+            Failure::OutOfMemory => ERROR_OUTOFMEMORY,
+            Failure::InvalidParameter => ERROR_INVALID_PARAMETER,
+            Failure::InvalidCursorHandle => ERROR_INVALID_CURSOR_HANDLE,
+            Failure::CannotFindWindowClass => ERROR_CANNOT_FIND_WND_CLASS,
+            Failure::ClassAlreadyExists => ERROR_CLASS_ALREADY_EXISTS,
+            Failure::ClassDoesNotExist => ERROR_CLASS_DOES_NOT_EXIST,
+            Failure::ClassHasWindows => ERROR_CLASS_HAS_WINDOWS,
+            Failure::InvalidIndex => ERROR_INVALID_INDEX,
+            Failure::InvalidIconHandle => ERROR_INVALID_ICON_HANDLE,
         }
     }
 

@@ -56,6 +56,12 @@ use core::ptr::NonNull;
 
 use rtl::accel::{Accel, Modifiers, ACCEL_BITS};
 use rtl::menu::{MF_DISABLED, MF_GRAYED};
+use rtl::winerror::{
+    ERROR_INVALID_ACCEL_HANDLE,
+    ERROR_INVALID_PARAMETER,
+    ERROR_INVALID_WINDOW_HANDLE,
+    ERROR_NOT_ENOUGH_MEMORY,
+};
 
 use super::class::Owner;
 use super::handle::{UserHandles, UserObject};
@@ -96,10 +102,10 @@ impl Failure {
     /// The Win32 error code (winerror.h) the decision reports.
     pub const fn code(self) -> u32 {
         match self {
-            Failure::NotEnoughMemory => 8,
-            Failure::InvalidParameter => 87,
-            Failure::InvalidWindowHandle => 1400,
-            Failure::InvalidAccelHandle => 1403,
+            Failure::NotEnoughMemory => ERROR_NOT_ENOUGH_MEMORY,
+            Failure::InvalidParameter => ERROR_INVALID_PARAMETER,
+            Failure::InvalidWindowHandle => ERROR_INVALID_WINDOW_HANDLE,
+            Failure::InvalidAccelHandle => ERROR_INVALID_ACCEL_HANDLE,
         }
     }
 

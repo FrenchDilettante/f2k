@@ -47,6 +47,7 @@ use rtl::pod::Pod;
 use rtl::scroll::*;
 use rtl::user::{WM_ENABLE, WM_ERASEBKGND, WM_KEYDOWN, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_PAINT};
 use rtl::window::{QUERY_WINDOW_EXTRA, QUERY_WINDOW_SCROLL_BARS};
+use rtl::winerror::ERROR_INVALID_SCROLLBAR_RANGE;
 
 use crate::dialog::WS_DISABLED;
 use crate::draw::{self, BF_MIDDLE, BF_RECT, EDGE_RAISED};
@@ -817,6 +818,7 @@ pub extern "system" fn scroll_bar_proc_a(
 #[cfg(test)]
 mod tests {
     use rtl::testing::wide;
+    use rtl::winerror::ERROR_NO_SCROLLBARS;
 
     use super::*;
     use crate::class::SYSTEM_CLASSES_WANTED;

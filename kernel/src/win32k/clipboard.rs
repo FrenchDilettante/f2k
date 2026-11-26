@@ -48,6 +48,12 @@
 //! EnumClipboardFormats comes through NtUserCallOneParam ([`super::queue`]).
 
 use rtl::codepage::{decode_byte, encode_unit, CodePage};
+use rtl::winerror::{
+    ERROR_ACCESS_DENIED,
+    ERROR_CLIPBOARD_NOT_OPEN,
+    ERROR_INVALID_PARAMETER,
+    ERROR_NOT_ENOUGH_MEMORY,
+};
 
 use super::class;
 use super::window::{Message, Payload, Session, WindowId, Windows};
@@ -126,10 +132,10 @@ impl Refusal {
     /// The Win32 error code (winerror.h) the refusal reports.
     pub const fn code(self) -> u32 {
         match self {
-            Refusal::NotOpen => 1418,
-            Refusal::AccessDenied => 5,
-            Refusal::InvalidParameter => 87,
-            Refusal::NoMemory => 8,
+            Refusal::NotOpen => ERROR_CLIPBOARD_NOT_OPEN,
+            Refusal::AccessDenied => ERROR_ACCESS_DENIED,
+            Refusal::InvalidParameter => ERROR_INVALID_PARAMETER,
+            Refusal::NoMemory => ERROR_NOT_ENOUGH_MEMORY,
         }
     }
 

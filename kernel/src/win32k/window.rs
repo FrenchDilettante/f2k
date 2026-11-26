@@ -95,6 +95,15 @@
 use rtl::gdi::Rect;
 pub use rtl::user::StyleStruct;
 pub use rtl::window::{WindowData, WindowInfo, WindowPos};
+use rtl::winerror::{
+    ERROR_ACCESS_DENIED,
+    ERROR_CANNOT_FIND_WND_CLASS,
+    ERROR_INVALID_INDEX,
+    ERROR_INVALID_PARAMETER,
+    ERROR_INVALID_WINDOW_HANDLE,
+    ERROR_OUTOFMEMORY,
+    ERROR_TLW_WITH_WSCHILD,
+};
 
 use super::class;
 use super::handle::{UserHandles, UserObject};
@@ -273,13 +282,13 @@ impl Failure {
     /// The Win32 error code (winerror.h) the decision reports.
     pub const fn code(self) -> u32 {
         match self {
-            Failure::AccessDenied => 5,
-            Failure::OutOfMemory => 14,
-            Failure::InvalidParameter => 87,
-            Failure::InvalidWindowHandle => 1400,
-            Failure::InvalidIndex => 1413,
-            Failure::TlwWithWsChild => 1406,
-            Failure::CannotFindWindowClass => 1407,
+            Failure::AccessDenied => ERROR_ACCESS_DENIED,
+            Failure::OutOfMemory => ERROR_OUTOFMEMORY,
+            Failure::InvalidParameter => ERROR_INVALID_PARAMETER,
+            Failure::InvalidWindowHandle => ERROR_INVALID_WINDOW_HANDLE,
+            Failure::InvalidIndex => ERROR_INVALID_INDEX,
+            Failure::TlwWithWsChild => ERROR_TLW_WITH_WSCHILD,
+            Failure::CannotFindWindowClass => ERROR_CANNOT_FIND_WND_CLASS,
             Failure::Refused => 0,
         }
     }
