@@ -357,9 +357,7 @@ pub fn process_exited(code: u32) -> ! {
 /// main thread through the idle loop. Never returns.
 #[cfg(target_arch = "x86")]
 pub fn run_user_process() -> ! {
-    // ntdll's pages: the kernel's for the boot's life, every process one more holder of them —
-    // made before the teardown audit's baseline, as the boot's other permanent pages are.
-    crate::exec::loader::prepare_system_dlls();
+    // ntdll's pages are made: the boot's last subsystem (`boot::subsys`, SystemDlls).
     #[cfg(any(
         feature = "fault-test-badargs",
         feature = "fault-test-segments",

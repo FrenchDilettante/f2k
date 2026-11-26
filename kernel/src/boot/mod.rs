@@ -1,4 +1,4 @@
-//! Boot entry: the image's entry point, `_start`, and the boot's phases `kmain` runs.
+//! Boot entry: the image's entry point, `_start`, and the boot's subsystems `kmain` starts.
 //!
 //! Any Multiboot 1 loader starts the boot loader (`kernel/loader`) that carries this image: QEMU's
 //! `-kernel`, Limine (`protocol: multiboot1`) and GRUB. The boot loader maps the image at its base,
@@ -18,16 +18,127 @@ pub mod cmdline;
 /// boot sequence.
 pub mod diagnostics;
 
-// --- The boot's phases ------------------------------------------------------
-//
-// `kmain` runs these in order, as Windows 2000's initialization runs its Phase 0 (the processor,
-// memory, the executive's tables) and its Phase 1 (interrupts, the scheduler, the drivers) before
-// its first process.
+/// The subsystem table: each subsystem's descriptor, and the started flags.
+pub mod subsys;
 
-/// The processor: the POST code, the serial line, the CPU tables (so faults print diagnostics on
-/// COM1 instead of triple-faulting) and the floating-point unit.
+// --- The boot's subsystems --------------------------------------------------
+//
+// `kmain` starts the subsystem table's subsystems ([`subsys::SUBSYSTEMS`]) in its order, phase by
+// phase, as Windows 2000's initialization runs its Phase 0 (the processor, memory, the executive's
+// tables) and its Phase 1 (interrupts, the scheduler, the drivers) before its first process; each
+// phase's diagnostic boot runs at its end. [`init`] is each subsystem's start.
+
+/// The Multiboot loader's hand-off, as `kmain` received it: EAX (the magic) and EBX (the
+/// information's physical address), for the memory subsystem's start.
 #[cfg(target_arch = "x86")]
-pub fn early() {
+static HANDOFF: [core::sync::atomic::AtomicU32; 2] = [
+    core::sync::atomic::AtomicU32::new(0),
+    core::sync::atomic::AtomicU32::new(0),
+];
+
+/// Start every subsystem of the table, phase by phase, each phase's diagnostic boot at its end:
+/// the boot up to its first process. `magic` and `multiboot_info` are the Multiboot loader's EAX
+/// and EBX.
+#[cfg(target_arch = "x86")]
+pub fn start_subsystems(magic: u32, multiboot_info: u32) {
+    use core::sync::atomic::Ordering;
+    HANDOFF[0].store(magic, Ordering::Relaxed);
+    HANDOFF[1].store(multiboot_info, Ordering::Relaxed);
+    for phase in subsys::Phase::ALL {
+        for descriptor in subsys::SUBSYSTEMS.iter().filter(|d| d.phase == phase) {
+            subsys::STATE.start(&subsys::SUBSYSTEMS, descriptor.id, &mut init);
+        }
+        diagnostics::after(phase);
+    }
+}
+
+/// Start one subsystem: the descriptor's init. [`subsys::State::start`] calls it once, its
+/// dependencies started.
+#[cfg(target_arch = "x86")]
+fn init(id: subsys::Subsystem) {
+    use subsys::Subsystem as S;
+    match id {
+        S::Com1 => com1(),
+        S::Cpu => cpu(),
+        S::Memory => {
+            use core::sync::atomic::Ordering;
+            memory(
+                HANDOFF[0].load(Ordering::Relaxed),
+                HANDOFF[1].load(Ordering::Relaxed),
+            )
+        }
+        // The console's text screen: the fresh console's blank screen buffer over whatever the
+        // firmware and loader left on it (silently: the serial line carries the boot's report).
+        S::Console => crate::csr::init(),
+        // The registry: its arena, and the keys Windows 2000 has from its boot on.
+        S::Registry => crate::cm::init(),
+        // The scheduler's quantum table, by the registry's priority separation (PspInitPhase0's
+        // PsChangeQuantumTable): before the first process.
+        S::Quantum => {
+            crate::process::foreground::set_priority_separation(crate::cm::priority_separation())
+        }
+        // The I/O manager for the drivers NtLoadDriver loads: its arena, its load lock, and the
+        // System process's stand-in PsInitialSystemProcess names.
+        S::Io => {
+            crate::dev::io::init();
+            crate::dev::ntoskrnl::init();
+        }
+        S::Interrupts => interrupts(),
+        // The scheduler's resting state: the idle thread (nothing is schedulable yet; its loop is
+        // the kernel's resting state once no thread remains). Its install raises to the
+        // dispatcher's level, which enables interrupts, so it waits for the interrupt subsystem: an
+        // interrupt taken before the controllers are remapped would land on an exception's vector.
+        S::Scheduler => crate::sched::idle::boot(),
+        // The interactive window station, WinSta0, and its Default desktop: win32k's objects,
+        // which every process connects to at its first win32k service. Made under the object
+        // directory's lock, whose raise enables interrupts, so it waits for the interrupt
+        // subsystem too.
+        S::WinSta => crate::win32k::winsta::init(),
+        // The PCI bus: enumerate every reachable function through the config address/data ports,
+        // keep the device table and the PIRQ routes for the driver slices that claim these nodes,
+        // and report the enumeration on COM1. The scan needs no interrupts, so it comes first.
+        S::Pci => crate::hw::pci::init(),
+        S::DevTree => device_tree(),
+        // The RAM disk: the disk image a boot loader loaded as the `f2k-disk` module, if it loaded
+        // one (the test boots' disk), over the frames the boot memory plan withheld for it.
+        S::RamDisk => crate::block::ramdisk::init(),
+        // The IDE disk: detect the primary master, connect its interrupt, and IDENTIFY it. It needs
+        // the interrupt core (its reads complete through IRQ 14); the first user process comes
+        // after.
+        S::Ide => crate::hw::ide::disk::init(),
+        // The PS/2 keyboard: reset it, connect IRQ 1, and feed its bytes to the console's input
+        // buffer. Its bring-up waits read the tick, so it comes after the interrupt core too.
+        S::Keyboard => crate::hw::kbd::init(),
+        // The block devices: the RAM disk and the IDE disk, those there are (the IDE disk's only
+        // when it was started), in that order, and a view per primary partition on each.
+        S::Block => crate::block::registry::boot_scan(
+            crate::block::ramdisk::block_device().into_iter().chain(
+                subsys::started(S::Ide)
+                    .then(crate::hw::ide::disk::block_device)
+                    .flatten(),
+            ),
+        ),
+        // The boot volume: the first registered partition (the RAM disk's, when there is one),
+        // mounted as FAT32. Silent — a boot without a volume is normal, and a refused volume is
+        // left unmounted.
+        S::BootVolume => crate::fs::fat32::volume::mount_boot_volume(),
+        // The paging file — after the devices' diagnostics, whose disk smoke counts the disk's
+        // interrupts from the mount on: the boot volume's own, kept from the last boot (made when
+        // there is none), with the system's commit limit set to physical memory plus the file's
+        // size.
+        S::PagingFile => crate::mem::pagingfile::boot_create(),
+        // The fonts the system loads at its start (win32k's built-in list standing in for the
+        // registry's), from the boot volume: silent when it carries none.
+        S::Fonts => crate::win32k::fonts::load_boot_fonts(),
+        // ntdll's pages: the kernel's for the boot's life, every process one more holder of them —
+        // made before the teardown audit's baseline, as the boot's other permanent pages are.
+        S::SystemDlls => crate::exec::loader::prepare_system_dlls(),
+    }
+}
+
+/// COM1, after the POST code.
+#[cfg(target_arch = "x86")]
+fn com1() {
     // Signal that we've started by writing to port 0x80 (POST code port)
     // SAFETY: ring 0; port 0x80 is the POST diagnostic port, which no device claims, so the write
     // has no effect beyond the code a debug card would display.
@@ -37,7 +148,12 @@ pub fn early() {
 
     // Initialize serial port first (for debugging)
     crate::hw::serial::init();
+}
 
+/// The CPU tables (so faults print diagnostics on COM1 instead of triple-faulting) and the
+/// floating-point unit.
+#[cfg(target_arch = "x86")]
+fn cpu() {
     // SAFETY: boot CPU, ring 0, interrupts disabled, before any code that might fault.
     unsafe { crate::cpu::init() };
     crate::serial_println!("F2K: GDT and IDT initialized");
@@ -50,7 +166,7 @@ pub fn early() {
 /// started halts), the boot banner, the kernel command line captured, every usable frame handed to
 /// the frame database, and paging moved onto the kernel's own tables, in frames of their own.
 #[cfg(target_arch = "x86")]
-pub fn memory(magic: u32, multiboot_info: u32) {
+fn memory(magic: u32, multiboot_info: u32) {
     if magic != MULTIBOOT_BOOTLOADER_MAGIC {
         crate::serial_println!(
             "F2K: not started by a Multiboot loader (EAX = {:#010x})",
@@ -122,57 +238,20 @@ pub fn memory(magic: u32, multiboot_info: u32) {
     crate::mem::paging::init_module_tables();
 }
 
-/// The executive's tables: the console and the registry.
+/// The interrupt core.
 #[cfg(target_arch = "x86")]
-pub fn executive() {
-    // The console's text screen: the fresh console's blank screen buffer over whatever the firmware
-    // and loader left on it (silently: the serial line carries the boot's report).
-    crate::csr::init();
-
-    // The registry: its arena, and the keys Windows 2000 has from its boot on.
-    crate::cm::init();
-    // The scheduler's quantum table, by the registry's priority separation (PspInitPhase0's
-    // PsChangeQuantumTable): before the first process.
-    crate::process::foreground::set_priority_separation(crate::cm::priority_separation());
-
-    // The I/O manager for the drivers NtLoadDriver loads: its arena, its load lock, and the
-    // System process's stand-in PsInitialSystemProcess names.
-    crate::dev::io::init();
-    crate::dev::ntoskrnl::init();
-}
-
-/// Interrupts and the scheduler: the interrupt subsystem, the idle thread, then the interactive
-/// window station.
-#[cfg(target_arch = "x86")]
-pub fn interrupts() {
+fn interrupts() {
     // The interrupt subsystem: the remapped controller behind the claim seam, the interval timer at
     // the captured platform rate, the interval clock connected to its vector — and interrupts fly
     // from here on (the idle path and ring 3 both run with them enabled; the gates mask on entry).
     // SAFETY: boot CPU, ring 0, interrupts disabled, sole access to the controllers; the IDT gates
     // (exception, syscall, hardware vectors) are installed.
     unsafe { crate::interrupt::init() };
-
-    // The scheduler's resting state: the idle thread (nothing is schedulable yet; its loop is the
-    // kernel's resting state once no thread remains). Its install raises to the dispatcher's
-    // level, which enables interrupts, so it waits for the interrupt subsystem: an interrupt taken
-    // before the controllers are remapped would land on an exception's vector.
-    crate::sched::idle::boot();
-
-    // The interactive window station, WinSta0, and its Default desktop: win32k's objects, which
-    // every process connects to at its first win32k service. Made under the object directory's
-    // lock, whose raise enables interrupts, so it waits for the interrupt subsystem too.
-    crate::win32k::winsta::init();
 }
 
-/// The devices: the RAM disk, the IDE disk and the keyboard (the last two need the interrupt core),
-/// the block devices, and the boot volume.
+/// The device tree, reported on COM1.
 #[cfg(target_arch = "x86")]
-pub fn devices() {
-    // The PCI bus: enumerate every reachable function through the config address/data ports,
-    // keep the device table and the PIRQ routes for the driver slices that claim these nodes,
-    // and report the enumeration on COM1. The scan needs no interrupts, so it comes first.
-    crate::hw::pci::init();
-
+fn device_tree() {
     // The device tree: the scan's functions as nodes, each interrupt pin routed through the PIRQ
     // table to its ISA line and its vector in the HAL's band. Reported on COM1, one line per
     // routed pin; the firmware routing table's override seam stays with the ACPI slice.
@@ -191,44 +270,6 @@ pub fn devices() {
             );
         }
     }
-
-    // The RAM disk: the disk image a boot loader loaded as the `f2k-disk` module, if it loaded one
-    // (the test boots' disk), over the frames the boot memory plan withheld for it.
-    crate::block::ramdisk::init();
-
-    // The IDE disk: detect the primary master, connect its interrupt, and IDENTIFY it. It needs
-    // the interrupt core (its reads complete through IRQ 14); the first user process comes after.
-    crate::hw::ide::disk::init();
-
-    // The PS/2 keyboard: reset it, connect IRQ 1, and feed its bytes to the console's input
-    // buffer. Its bring-up waits read the tick, so it comes after the interrupt core too.
-    crate::hw::kbd::init();
-
-    // The block devices: the RAM disk and the IDE disk, those there are, in that order, and a view
-    // per primary partition on each.
-    crate::block::registry::boot_scan(
-        crate::block::ramdisk::block_device()
-            .into_iter()
-            .chain(crate::hw::ide::disk::block_device()),
-    );
-
-    // The boot volume: the first registered partition (the RAM disk's, when there is one), mounted
-    // as FAT32. Silent — a boot without a volume is normal, and a refused volume is left unmounted.
-    crate::fs::fat32::volume::mount_boot_volume();
-}
-
-/// The fonts the system loads at its start (win32k's built-in list standing in for the
-/// registry's), from the boot volume: silent when it carries none. After the devices' diagnostics,
-/// whose disk smoke counts the disk's interrupts from the mount on.
-#[cfg(target_arch = "x86")]
-pub fn fonts() {
-    // The paging file is set up in this phase — after the devices' diagnostics, whose disk smoke
-    // counts the disk's interrupts from the mount on: the boot volume's own, kept from the last
-    // boot (made when there is none), with the system's commit limit set to physical memory plus
-    // the file's size.
-    crate::mem::pagingfile::boot_create();
-
-    crate::win32k::fonts::load_boot_fonts();
 }
 
 #[cfg(target_arch = "x86")]

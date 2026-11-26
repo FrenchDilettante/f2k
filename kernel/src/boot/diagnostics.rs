@@ -2,6 +2,20 @@
 //! and is nothing otherwise. The fault tests never return (their faults halt); the smoke runs fall
 //! through to the normal boot, proving it coexists with what they exercised.
 
+/// The diagnostic boot at the end of the boot's `phase`, once its subsystems are started: the CPU
+/// faults' after the processor's, the interrupts' after the interrupts' and the scheduler's, the
+/// devices' after the devices'.
+#[cfg(target_arch = "x86")]
+pub fn after(phase: super::subsys::Phase) {
+    use super::subsys::Phase;
+    match phase {
+        Phase::Processor => cpu_faults(),
+        Phase::Interrupts => interrupts(),
+        Phase::Devices => devices(),
+        Phase::Memory | Phase::Executive | Phase::Late => {}
+    }
+}
+
 /// Test-only fault injection, right after the CPU tables: raise an exception to exercise the stubs
 /// and the COM1 dump on target. The diagnostics prove the CPU did not write to the GDT and pin the
 /// pre-fault ESP.

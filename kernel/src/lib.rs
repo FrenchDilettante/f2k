@@ -167,24 +167,15 @@ pub(crate) fn halt() -> ! {
 /// Kernel entry point
 ///
 /// Called by `_start` (boot/mod.rs) with the values the Multiboot loader left in EAX and EBX,
-/// which the boot loader hands on as it found them. The
-/// boot's phases run in order ([`boot`]), each diagnostic boot at its place in them, then the
-/// boot context becomes the idle thread under the first user process.
+/// which the boot loader hands on as it found them. The boot's subsystems start from the subsystem
+/// table, in its dependency order, phase by phase ([`boot::subsys`]), each diagnostic boot at its
+/// phase's end, then the boot context becomes the idle thread under the first user process.
 #[cfg(target_arch = "x86")]
 #[no_mangle]
 pub extern "C" fn kmain(magic: u32, multiboot_info: u32) -> ! {
-    // Phase 0: the processor, memory, the executive's tables.
-    boot::early();
-    boot::diagnostics::cpu_faults();
-    boot::memory(magic, multiboot_info);
-    boot::executive();
-
-    // Phase 1: interrupts and the scheduler, then the devices.
-    boot::interrupts();
-    boot::diagnostics::interrupts();
-    boot::devices();
-    boot::diagnostics::devices();
-    boot::fonts();
+    // Phase 0 (the processor, memory, the executive's tables), then Phase 1 (interrupts and the
+    // scheduler, the devices, what reads the boot volume, the system DLLs).
+    boot::start_subsystems(magic, multiboot_info);
 
     // The user processes (the programs the kernel command line lists, else exit0, through the PE
     // loader, one after another; the fault-test features substitute their own), each entered as
