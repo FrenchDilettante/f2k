@@ -359,6 +359,11 @@ class Case:
     # The guest memory, QEMU's -m ("512M"; None: the boot's default). A RAM-disk boot always has
     # f2kboot.RAM_MEMORY, so a case declaring memory boots the IDE disk.
     memory: str | None = None
+    # The kernel subsystems the boot starts beside the base profile (`f2kboot.OPTIONAL_SUBSYSTEMS`,
+    # the alias "gui"); None, by default, what the command line's programs import
+    # (`f2kboot.command_needs`). The IDE disk's "ide" and a `press_on` case's "keyboard" come
+    # with the boot. A case whose kernel_options say `subsys=` chooses for itself.
+    needs: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         assert self.image in ("kernel", "disk"), f"{self.name}: image is kernel or disk"
@@ -516,6 +521,8 @@ CASES = (
         ordered=True,
         expects=(*BOOTED, ALL_SUBSYSTEMS, "F2K: image loaded", "F2K: entering ring 3", *EXITED_CLEAN),
         forbids=("F2K: command line:",),
+        # The line naming every subsystem: all of them started.
+        needs=f2kboot.OPTIONAL_SUBSYSTEMS,
     ),
     *program_smoke(
         "ret0",
@@ -541,6 +548,8 @@ CASES = (
         image="kernel",
         storage="ram",
         cmdline="CORPUS\\hellomd.exe",
+        # The IDE probe's report of the empty primary master.
+        needs=("ide",),
         ordered=True,
         expects=(
             *BOOTED,
@@ -557,6 +566,7 @@ CASES = (
         "the boot enumerates the PCI bus through the config ports and reports the development machine's five functions on COM1, the PM function's pin routed to IRQ 10, then a program loads and runs clean",
         cmdline="CORPUS\\hellomd.exe",
         contiguous=PCI_ENUMERATION,
+        needs=("pci",),
         expects=(
             *BOOTED,
             *PCI_ENUMERATION,
@@ -621,6 +631,9 @@ CASES = (
         kernel_options="concurrent",
         ordered=True,
         expects=PROCESS_PS,
+        # The System process's second thread, win32k's raw input thread, comes with the window
+        # station.
+        needs=("winsta",),
     ),
     Case(
         name="session-shutdown",
@@ -889,6 +902,16 @@ class KeyPress:
             f2kboot.qmp_command(socket, [f2kboot.sendkey("a")])
 
 
+def case_needs(case: Case) -> frozenset[str]:
+    """The subsystems a case's boot starts: its `needs`, else its command line's programs'
+    (`f2kboot.command_needs`), and the keyboard a `press_on` case presses."""
+    if case.needs is None:
+        needs = f2kboot.command_needs(case.cmdline)
+    else:
+        needs = f2kboot.subsystem_names(case.needs, case.name)
+    return needs | {"keyboard"} if case.press_on else needs
+
+
 @pytest.mark.parametrize(
     "case",
     [pytest.param(case, id=case.name, marks=getattr(pytest.mark, case.image)) for case in CASES],
@@ -911,6 +934,7 @@ def test_kernel(case, builder, log_path, boot_timeout, write_profile):
         timeout=boot_timeout(case.timeout),
         done=lambda log: expectation.check(log)[0] != "pending",
         during=KeyPress(case.press_on) if case.press_on else None,
+        needs=case_needs(case),
         storage=case.storage,
         **({"memory": case.memory} if case.memory is not None else {}),
     )

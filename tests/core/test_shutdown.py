@@ -100,6 +100,7 @@ def boot_cmd(build: f2kboot.Build, kept: Path, log_path: Path, timeout: float, k
         done=done,
         during=keys,
         observe=observe,
+        needs=f2kboot.command_needs(COMMAND_LINE, "keyboard"),
     )
 
 

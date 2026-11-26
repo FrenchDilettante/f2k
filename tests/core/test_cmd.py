@@ -336,7 +336,7 @@ def type_at_the_prompt(builder, log_path, boot_timeout, steps: list[tuple[str, l
     typist = Typist(steps)
     log, stopped = boot_with_cmd(builder, log_path, boot_timeout, extra or [], cmdline=COMMAND_LINE,
                                  done=lambda log: typist.screen is not None or f2kboot.process_ended(log),
-                                 during=typist)
+                                 during=typist, needs=f2kboot.command_needs(COMMAND_LINE, "keyboard"))
     context = (f"\n--- the screen ---\n{shown(typist.screen or typist.last)}\n"
                f"{f2kboot.failure_context(log_path, log)}")
     if typist.taken == 0:

@@ -83,6 +83,7 @@ def test_the_scroll_bars_on_the_screen(builder, log_path, boot_timeout):
         timeout=boot_timeout(TIMEOUT),
         done=f2kboot.process_ended,
         during=step,
+        needs=f2kboot.command_needs(CMDLINE, "keyboard"),
     )
     context = f"(stopped: {stopped})\n{f2kboot.failure_context(log_path, log)}"
     if not step.done:

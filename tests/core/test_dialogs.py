@@ -85,6 +85,7 @@ def test_the_dialog_takes_typed_keys(builder, log_path, boot_timeout):
         timeout=boot_timeout(TIMEOUT),
         done=f2kboot.process_ended,
         during=typist,
+        needs=f2kboot.command_needs(CMDLINE, "keyboard"),
     )
     context = f"(stopped: {stopped})\n{f2kboot.failure_context(log_path, log)}"
     if not typist.typed:

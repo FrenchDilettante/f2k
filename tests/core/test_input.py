@@ -146,6 +146,7 @@ def run(builder, log_path: Path, boot_timeout, steps: list[Step]) -> list[str]:
         timeout=boot_timeout(f2kboot.CORPUS_TIMEOUT) + STEP_TIMEOUT * len(steps),
         done=f2kboot.teardown_audited,
         observe=observe,
+        needs=f2kboot.command_needs(f2kboot.HELLO.command, "keyboard"),
     )
     if not ran:
         pytest.fail(f"the boot never reached its teardown (stopped: {stopped})\n"

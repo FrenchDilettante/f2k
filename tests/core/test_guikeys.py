@@ -86,6 +86,7 @@ def test_typed_keys_reach_the_window(builder, log_path, boot_timeout):
         timeout=boot_timeout(TIMEOUT),
         done=f2kboot.process_ended,
         during=typist,
+        needs=f2kboot.command_needs(COMMAND_LINE, "keyboard"),
     )
     context = f"(stopped: {stopped})\n{f2kboot.failure_context(log_path, log)}"
     if not typist.typed:
