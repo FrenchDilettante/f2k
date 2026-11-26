@@ -9,6 +9,12 @@
 //! chunk of the nonpaged pool at a time and keeps its peak; only memory bounds it. An id a table
 //! was destroyed under, or one naming no slot at all, finds nothing.
 //!
+//! A table has as many entries as its maker gives it, as Windows 2000's, a variable-size object of
+//! win32k's heap, has: the record holds up to [`INLINE`] of them itself, and a longer table's live
+//! in a block of the nonpaged pool sized to them, taken when the table is made and given back when
+//! it is destroyed (by DestroyAcceleratorTable or at its process's end), so a process leaves no
+//! page behind it. Only memory bounds a table.
+//!
 //! LoadAccelerators answers the same table for every load of one resource, until as many
 //! DestroyAcceleratorTable calls as loads have gone (Windows documents DestroyAcceleratorTable's
 //! answer as nonzero only then; the load section's capture shows the same handle four times).
@@ -46,6 +52,8 @@
 //! ERROR_INVALID_WINDOW_HANDLE for a window naming nothing, ERROR_INVALID_ACCEL_HANDLE for a table
 //! naming nothing.
 
+use core::ptr::NonNull;
+
 use rtl::accel::{Accel, Modifiers, ACCEL_BITS};
 use rtl::menu::{MF_DISABLED, MF_GRAYED};
 
@@ -57,8 +65,11 @@ use crate::sched::thread::ThreadId;
 use crate::slots::{Id, KernelId, Record, Slots, KERNEL_PAGES, PAGE};
 use crate::status::*;
 
-/// How many entries one table holds.
-pub const MAX_ENTRIES: usize = 128;
+/// How many entries a table holds in its record; a longer one's are in a block of their own.
+pub const INLINE: usize = 32;
+
+/// An ACCEL's bytes.
+const ACCEL_BYTES: usize = core::mem::size_of::<Accel>();
 
 /// The messages a translation sends (winuser.h).
 pub const WM_COMMAND: u32 = 0x0111;
@@ -73,7 +84,7 @@ const WS_DISABLED: u32 = 0x0800_0000;
 pub enum Failure {
     /// ERROR_NOT_ENOUGH_MEMORY (8): the pool could not grow.
     NotEnoughMemory,
-    /// ERROR_INVALID_PARAMETER (87): no entries, or more than a table holds.
+    /// ERROR_INVALID_PARAMETER (87): no entries, or more than the table was made for.
     InvalidParameter,
     /// ERROR_INVALID_WINDOW_HANDLE (1400).
     InvalidWindowHandle,
@@ -116,10 +127,53 @@ impl TableId {
 /// Tables to a chunk: one page's worth, a slot being its record and 8 bytes.
 const TABLES_PER_CHUNK: usize = PAGE / (core::mem::size_of::<Table>() + 8);
 
-// Measured (788-byte tables); the record holds no pointer, so this is the target's and the host's
-// alike.
-const _: () = assert!(TABLES_PER_CHUNK == 5);
+// Measured: 228-byte tables on target, 17 to a page (the host's pointer is 8 bytes, its count
+// not pinned).
+#[cfg(target_arch = "x86")]
+const _: () = assert!(TABLES_PER_CHUNK == 17);
 const _: () = assert!(Slots::<Table, KernelId<TableTag>, TABLES_PER_CHUNK>::CHUNK_PAGES == 1);
+
+/// `pages` zeroed pages for a table's entries, page-aligned: a block of the nonpaged pool, kept
+/// until [`give`] (on the host, the allocator's); none when there is no room.
+fn take(pages: usize) -> Option<NonNull<Accel>> {
+    #[cfg(target_arch = "x86")]
+    {
+        let block = crate::mem::pool::allocate(pages * PAGE)?;
+        let at = block.virtual_address();
+        // The pool keeps the block's pages mapped until `give` releases them by their address.
+        core::mem::forget(block);
+        NonNull::new(at as usize as *mut Accel)
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let layout = std::alloc::Layout::from_size_align(pages * PAGE, PAGE).ok()?;
+        // SAFETY: the layout's size is not zero (a block holds more than `INLINE` entries).
+        NonNull::new(unsafe { std::alloc::alloc_zeroed(layout) }.cast::<Accel>())
+    }
+}
+
+/// Give back the `pages` pages at `at` that [`take`] handed out.
+///
+/// # Safety
+///
+/// `at` and `pages` are a [`take`]'s, given back once, and nothing refers to the memory after.
+unsafe fn give(at: NonNull<Accel>, pages: usize) {
+    #[cfg(target_arch = "x86")]
+    {
+        crate::mem::pool::release_block(at.as_ptr() as usize as u32, pages * PAGE);
+    }
+    #[cfg(not(target_arch = "x86"))]
+    {
+        let layout = std::alloc::Layout::from_size_align(pages * PAGE, PAGE).unwrap();
+        // SAFETY: the caller's contract: `take`'s memory, of this layout.
+        unsafe { std::alloc::dealloc(at.as_ptr().cast::<u8>(), layout) };
+    }
+}
+
+/// The pages a block of `entries` entries takes; none when their bytes overflow.
+fn pages_for(entries: usize) -> Option<usize> {
+    Some(entries.checked_mul(ACCEL_BYTES)?.div_ceil(PAGE))
+}
 
 /// The resource a table was loaded from: its module and its data's address (0 for a table
 /// CreateAcceleratorTable made).
@@ -136,9 +190,20 @@ struct Table {
     source: Source,
     /// How many loads of its resource it answers for (1 for a created table).
     loads: u32,
-    count: u16,
-    entries: [Accel; MAX_ENTRIES],
+    /// How many entries it holds, and how many it was made for.
+    count: u32,
+    capacity: u32,
+    /// The block its entries are in when it was made for more than [`INLINE`], and its pages (the
+    /// table's own: given back when it is destroyed); none for a shorter table.
+    block: Option<NonNull<Accel>>,
+    pages: u32,
+    /// A shorter table's entries.
+    inline: [Accel; INLINE],
 }
+
+// SAFETY: the block is the table's alone (nothing else names its pages), so moving the table to
+// another thread moves that ownership with it.
+unsafe impl Send for Table {}
 
 impl Table {
     const EMPTY: Self = Table {
@@ -150,13 +215,39 @@ impl Table {
         },
         loads: 0,
         count: 0,
-        entries: [Accel {
+        capacity: 0,
+        block: None,
+        pages: 0,
+        inline: [Accel {
             virt: 0,
             pad: 0,
             key: 0,
             cmd: 0,
-        }; MAX_ENTRIES],
+        }; INLINE],
     };
+
+    /// The room for its entries: as many as it was made for.
+    fn room(&mut self) -> &mut [Accel] {
+        match self.block {
+            // SAFETY: the block's pages hold `capacity` entries (`take`'s, sized for them in
+            // `create`), mapped and the table's alone until it is destroyed; the exclusive borrow
+            // of the table makes this the only reference to them.
+            Some(at) => unsafe {
+                core::slice::from_raw_parts_mut(at.as_ptr(), self.capacity as usize)
+            },
+            None => &mut self.inline[..self.capacity as usize],
+        }
+    }
+
+    /// Its entries.
+    fn entries(&self) -> &[Accel] {
+        match self.block {
+            // SAFETY: as in `room`: the first `count` (≤ `capacity`) of the block's entries,
+            // written by `append`, and borrowed for as long as the table is.
+            Some(at) => unsafe { core::slice::from_raw_parts(at.as_ptr(), self.count as usize) },
+            None => &self.inline[..self.count as usize],
+        }
+    }
 }
 
 // SAFETY: `write_fresh` writes a whole record.
@@ -172,6 +263,8 @@ unsafe impl Record for Table {
 /// are lent.
 pub struct Accelerators {
     tables: Slots<Table, KernelId<TableTag>, TABLES_PER_CHUNK>,
+    /// The pages the longer tables' entries hold.
+    pages: usize,
 }
 
 impl Accelerators {
@@ -179,6 +272,7 @@ impl Accelerators {
     pub const fn new() -> Self {
         Accelerators {
             tables: Slots::new(),
+            pages: 0,
         }
     }
 
@@ -218,20 +312,38 @@ impl Accelerators {
         Some(table.handle)
     }
 
-    /// A new, empty table of the process `owner`, loaded from `source` (none: made); its handle.
+    /// A new, empty table of the process `owner` for `capacity` entries, loaded from `source`
+    /// (none: made); its handle. ERROR_INVALID_PARAMETER for no entries, ERROR_NOT_ENOUGH_MEMORY
+    /// when the pool has no room for the table or its entries.
     pub fn create(
         &mut self,
         handles: &mut UserHandles,
         owner: Owner,
         source: Source,
+        capacity: u32,
     ) -> Result<u32, Failure> {
+        if capacity == 0 {
+            return Err(Failure::InvalidParameter);
+        }
         if handles.is_full() {
             return Err(Failure::NotEnoughMemory);
         }
-        let (id, table) = self
-            .tables
-            .allocate_or_grow(0, &KERNEL_PAGES)
-            .map_err(|_| Failure::NotEnoughMemory)?;
+        let mut block = None;
+        let mut pages = 0;
+        if capacity as usize > INLINE {
+            pages = pages_for(capacity as usize).ok_or(Failure::NotEnoughMemory)?;
+            block = Some(take(pages).ok_or(Failure::NotEnoughMemory)?);
+        }
+        let (id, table) = match self.tables.allocate_or_grow(0, &KERNEL_PAGES) {
+            Ok(taken) => taken,
+            Err(_) => {
+                if let Some(at) = block {
+                    // SAFETY: just taken, for `pages` pages, and named nowhere else.
+                    unsafe { give(at, pages) };
+                }
+                return Err(Failure::NotEnoughMemory);
+            }
+        };
         let handle = handles.insert(UserObject::AcceleratorTable(id));
         // Field by field: a whole record would cross the gate stack as a temporary. The entries
         // past the count are never read.
@@ -240,35 +352,37 @@ impl Accelerators {
         table.source = source;
         table.loads = 1;
         table.count = 0;
+        table.capacity = capacity;
+        table.block = block;
+        table.pages = pages as u32;
+        self.pages += pages;
         Ok(handle)
     }
 
     /// Append `entries` to the table `id` (their fVirt cut to the bits a table keeps);
-    /// ERROR_INVALID_PARAMETER when they do not fit, ERROR_INVALID_ACCEL_HANDLE when `id` names
-    /// no live table.
+    /// ERROR_INVALID_PARAMETER when they are more than it was made for, ERROR_INVALID_ACCEL_HANDLE
+    /// when `id` names no live table.
     pub fn append(&mut self, id: TableId, entries: &[Accel]) -> Result<(), Failure> {
         let table = self.tables.get_mut(id).ok_or(Failure::InvalidAccelHandle)?;
         let count = table.count as usize;
         let end = count + entries.len();
-        if end > MAX_ENTRIES {
+        if end > table.capacity as usize {
             return Err(Failure::InvalidParameter);
         }
-        for (slot, entry) in table.entries[count..end].iter_mut().zip(entries) {
+        for (slot, entry) in table.room()[count..end].iter_mut().zip(entries) {
             *slot = Accel {
                 virt: entry.virt & ACCEL_BITS,
                 pad: 0,
                 ..*entry
             };
         }
-        table.count = end as u16;
+        table.count = end as u32;
         Ok(())
     }
 
     /// The table's entries (none when `id` names no live table).
     pub fn entries(&self, id: TableId) -> &[Accel] {
-        self.tables
-            .get(id)
-            .map_or(&[], |table| &table.entries[..table.count as usize])
+        self.tables.get(id).map_or(&[], Table::entries)
     }
 
     /// DestroyAcceleratorTable: the table's load count down, the table destroyed with its last
@@ -282,6 +396,15 @@ impl Accelerators {
             return false;
         }
         handles.close(table.handle);
+        if let Some(at) = table.block.take() {
+            let pages = core::mem::take(&mut table.pages) as usize;
+            // SAFETY: the table's block, of `pages` pages, taken by `create`; the record no longer
+            // names it (and the table goes now), so nothing refers to it.
+            unsafe { give(at, pages) };
+            self.pages -= pages;
+        }
+        table.count = 0;
+        table.capacity = 0;
         self.tables.free(id)
     }
 
@@ -305,6 +428,11 @@ impl Accelerators {
     /// How many tables are live.
     pub fn live(&self) -> usize {
         self.tables.live() as usize
+    }
+
+    /// How many pages the longer tables' entries hold (none once every table is gone).
+    pub fn entry_pages(&self) -> usize {
+        self.pages
     }
 }
 
@@ -405,7 +533,8 @@ mod services {
     /// NtUserCreateAcceleratorTable(Entries, Count, Module, Resource, Table): a table of the
     /// `count` ACCEL entries at `entries` into `table`; with a resource (LoadAccelerators's: the
     /// module and the resource data's address), the table the caller's process already loaded from
-    /// it, the entries unread. STATUS_INVALID_PARAMETER for no entries or more than a table holds.
+    /// it, the entries unread. STATUS_INVALID_PARAMETER for no entries; ERROR_NOT_ENOUGH_MEMORY
+    /// when the pool has no room for them.
     pub fn create_accelerator_table(
         call: &mut NtCall,
         entries: UserAddr,
@@ -420,11 +549,12 @@ mod services {
             table.write(handle)?;
             return Ok(STATUS_SUCCESS);
         }
-        if count == 0 || count as usize > MAX_ENTRIES {
+        if count == 0 {
             return Err(STATUS_INVALID_PARAMETER);
         }
         let handle = with_manager(call.passive(), |m| {
-            m.accels.create(&mut m.windows.handles, owner, source)
+            m.accels
+                .create(&mut m.windows.handles, owner, source, count)
         })
         .map_err(Failure::status)?;
         // The entries, a chunk at a time: read at the passive level, appended under the lock. A
@@ -625,8 +755,19 @@ mod tests {
     }
 
     impl Fixture {
+        /// A table for 3 entries.
         fn create(&mut self, owner: Owner, source: Source) -> Result<u32, Failure> {
-            self.accels.create(&mut self.handles, owner, source)
+            self.create_for(owner, source, 3)
+        }
+
+        fn create_for(
+            &mut self,
+            owner: Owner,
+            source: Source,
+            capacity: u32,
+        ) -> Result<u32, Failure> {
+            self.accels
+                .create(&mut self.handles, owner, source, capacity)
         }
 
         fn table_of(&self, handle: u32) -> Result<TableId, Failure> {
@@ -736,23 +877,155 @@ mod tests {
         );
     }
 
-    /// No more entries than a table holds.
+    const MADE: Source = Source {
+        module: 0,
+        resource: 0,
+    };
+
+    /// `n` distinct entries: the last-entry flag set on each, the key and command numbered.
+    fn numbered(n: usize) -> std::vec::Vec<Accel> {
+        (0..n)
+            .map(|i| Accel {
+                virt: 0x81,
+                pad: 7,
+                key: i as u16,
+                cmd: (i as u16).wrapping_mul(3),
+            })
+            .collect()
+    }
+
+    /// A table of any length holds what it was made for, appended a chunk at a time as the service
+    /// does, and no more; its entries cut to the bits a table keeps, in order. The longer ones'
+    /// entries take a block of pages sized to them, given back with the table.
     #[test]
-    fn tables_hold_what_they_hold() {
+    fn tables_hold_as_many_entries_as_they_are_made_for() {
         let mut a = accelerators();
-        let table = a
-            .create(
-                OWNER,
-                Source {
-                    module: 0,
-                    resource: 0,
-                },
-            )
-            .unwrap();
+        for n in [1, INLINE, INLINE + 1, 128, 129, 1000] {
+            let table = a.create_for(OWNER, MADE, n as u32).unwrap();
+            let id = a.table_of(table).unwrap();
+            let entries = numbered(n);
+            for chunk in entries.chunks(64) {
+                a.append(id, chunk).unwrap();
+            }
+            assert_eq!(a.entries(id).len(), n);
+            for (kept, given) in a.entries(id).iter().zip(&entries) {
+                assert_eq!(
+                    *kept,
+                    Accel {
+                        virt: 0x01,
+                        pad: 0,
+                        ..*given
+                    }
+                );
+            }
+            assert_eq!(
+                a.append(id, &entries[..1]),
+                Err(Failure::InvalidParameter),
+                "{n}: no more than it was made for"
+            );
+            assert_eq!(a.entries(id).len(), n);
+            let pages = if n > INLINE {
+                (n * ACCEL_BYTES).div_ceil(PAGE)
+            } else {
+                0
+            };
+            assert_eq!(a.entry_pages(), pages, "{n}");
+            assert!(a.destroy(id));
+            assert_eq!(a.entry_pages(), 0);
+        }
+        assert_eq!(a.live(), 0);
+        assert_eq!(a.create_for(OWNER, MADE, 0), Err(Failure::InvalidParameter));
+        assert_eq!(a.live(), 0);
+    }
+
+    /// TranslateAccelerator's match finds an entry past the old 128 cap.
+    #[test]
+    fn a_long_tables_last_entry_matches() {
+        let mut a = accelerators();
+        let table = a.create_for(OWNER, MADE, 1000).unwrap();
         let id = a.table_of(table).unwrap();
-        let entries = [Accel::default(); MAX_ENTRIES];
+        let mut entries = std::vec![Accel::default(); 1000];
+        entries[999] = Accel {
+            virt: 0x01, // FVIRTKEY
+            pad: 0,
+            key: 0x74, // VK_F5
+            cmd: 4242,
+        };
         a.append(id, &entries).unwrap();
-        assert_eq!(a.append(id, &entries[..1]), Err(Failure::InvalidParameter));
+        let found = rtl::accel::find(
+            a.entries(id),
+            rtl::accel::WM_KEYDOWN,
+            0x74,
+            Modifiers::default(),
+        );
+        assert_eq!(found.map(|entry| entry.cmd), Some(4242));
+    }
+
+    /// A long table destroyed, its slot and pages are taken again by the next: the old id names
+    /// nothing, the new table's entries are its own.
+    #[test]
+    fn a_long_tables_slot_and_pages_are_reused() {
+        let mut a = accelerators();
+        let first = a.create_for(OWNER, MADE, 1000).unwrap();
+        let id = a.table_of(first).unwrap();
+        a.append(id, &numbered(1000)).unwrap();
+        assert!(a.destroy(id));
+        assert_eq!(a.entry_pages(), 0);
+
+        let second = a.create_for(OWNER, MADE, 129).unwrap();
+        let again = a.table_of(second).unwrap();
+        assert_eq!(again.index, id.index);
+        assert_eq!(a.entries(id), &[]);
+        assert_eq!(a.entries(again), &[], "a fresh table holds no entry");
+        let entries: std::vec::Vec<Accel> = numbered(129)
+            .into_iter()
+            .map(|e| Accel { virt: 0x03, ..e })
+            .collect();
+        a.append(again, &entries).unwrap();
+        assert!(a
+            .entries(again)
+            .iter()
+            .all(|e| e.virt == 0x03 && e.pad == 0));
+        assert_eq!(a.entry_pages(), 1);
+
+        // A short table in the same slot holds its entries in the record again.
+        assert!(a.destroy(again));
+        let third = a.create_for(OWNER, MADE, 1).unwrap();
+        let short = a.table_of(third).unwrap();
+        a.append(short, &numbered(1)).unwrap();
+        assert_eq!(a.entries(short).len(), 1);
+        assert_eq!(a.entry_pages(), 0);
+        assert!(a.destroy(short));
+    }
+
+    /// The process's end gives back every table's pages, whatever its load count; another
+    /// process's stay.
+    #[test]
+    fn the_process_end_gives_back_its_tables_pages() {
+        let mut a = accelerators();
+        let mut longest = 0;
+        for (i, n) in [1u32, 128, 129, 1000, 5000].into_iter().enumerate() {
+            let source = Source {
+                module: 0x40_0000,
+                resource: 0x40_A000 + 16 * i as u32,
+            };
+            let table = a.create_for(OWNER, source, n).unwrap();
+            let id = a.table_of(table).unwrap();
+            a.append(id, &numbered(n as usize)).unwrap();
+            a.load_again(OWNER, source);
+            longest = n;
+        }
+        let other = a.create_for(OWNER + 1, MADE, 129).unwrap();
+        let other_id = a.table_of(other).unwrap();
+        assert_eq!(longest, 5000);
+        assert_eq!(a.entry_pages(), 1 + 1 + 2 + 8 + 1);
+        a.destroy_owner(OWNER);
+        assert_eq!(a.live(), 1);
+        assert_eq!(a.entry_pages(), 1, "the other process's table's");
+        assert_eq!(a.entries(other_id).len(), 0);
+        a.destroy_owner(OWNER + 1);
+        assert_eq!(a.live(), 0);
+        assert_eq!(a.entry_pages(), 0);
     }
 
     /// A destroyed table's id names nothing: no entries, nothing appended, no second destroy.
