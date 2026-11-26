@@ -35,6 +35,20 @@ use rtl::pod::Pod;
 use rtl::status::*;
 use rtl::user::*;
 use rtl::window::*;
+use rtl::winerror::{
+    ERROR_CANNOT_FIND_WND_CLASS,
+    ERROR_CLASS_ALREADY_EXISTS,
+    ERROR_CLASS_DOES_NOT_EXIST,
+    ERROR_CLASS_HAS_WINDOWS,
+    ERROR_CLIPBOARD_NOT_OPEN,
+    ERROR_INVALID_ACCEL_HANDLE,
+    ERROR_INVALID_CURSOR_HANDLE,
+    ERROR_INVALID_INDEX,
+    ERROR_INVALID_MENU_HANDLE,
+    ERROR_INVALID_THREAD_ID,
+    ERROR_MENU_ITEM_NOT_FOUND,
+    ERROR_TLW_WITH_WSCHILD,
+};
 
 use crate::class::WndClassExW;
 
@@ -376,18 +390,18 @@ use rtl::status::STATUS_INFO_LENGTH_MISMATCH;
 const fn carried(error: u32) -> u32 {
     NtStatus::from_win32(error).0
 }
-pub const INVALID_CURSOR_HANDLE: u32 = carried(1402);
-pub const INVALID_MENU_HANDLE: u32 = carried(1401);
-pub const INVALID_ACCEL_HANDLE: u32 = carried(1403);
-pub const TLW_WITH_WSCHILD: u32 = carried(1406);
-pub const CANNOT_FIND_WND_CLASS: u32 = carried(1407);
-pub const CLASS_ALREADY_EXISTS: u32 = carried(1410);
-pub const CLASS_DOES_NOT_EXIST: u32 = carried(1411);
-pub const CLASS_HAS_WINDOWS: u32 = carried(1412);
-pub const INVALID_INDEX: u32 = carried(1413);
-pub const CLIPBOARD_NOT_OPEN: u32 = carried(1418);
-pub const INVALID_THREAD_ID: u32 = carried(1444);
-pub const MENU_ITEM_NOT_FOUND: u32 = carried(1456);
+pub const INVALID_CURSOR_HANDLE: u32 = carried(ERROR_INVALID_CURSOR_HANDLE);
+pub const INVALID_MENU_HANDLE: u32 = carried(ERROR_INVALID_MENU_HANDLE);
+pub const INVALID_ACCEL_HANDLE: u32 = carried(ERROR_INVALID_ACCEL_HANDLE);
+pub const TLW_WITH_WSCHILD: u32 = carried(ERROR_TLW_WITH_WSCHILD);
+pub const CANNOT_FIND_WND_CLASS: u32 = carried(ERROR_CANNOT_FIND_WND_CLASS);
+pub const CLASS_ALREADY_EXISTS: u32 = carried(ERROR_CLASS_ALREADY_EXISTS);
+pub const CLASS_DOES_NOT_EXIST: u32 = carried(ERROR_CLASS_DOES_NOT_EXIST);
+pub const CLASS_HAS_WINDOWS: u32 = carried(ERROR_CLASS_HAS_WINDOWS);
+pub const INVALID_INDEX: u32 = carried(ERROR_INVALID_INDEX);
+pub const CLIPBOARD_NOT_OPEN: u32 = carried(ERROR_CLIPBOARD_NOT_OPEN);
+pub const INVALID_THREAD_ID: u32 = carried(ERROR_INVALID_THREAD_ID);
+pub const MENU_ITEM_NOT_FOUND: u32 = carried(ERROR_MENU_ITEM_NOT_FOUND);
 
 /// A class the window manager holds.
 #[derive(Clone, Debug)]
@@ -686,7 +700,7 @@ pub unsafe extern "system" fn NtUserRegisterClassExWOW(
             class,
             menu,
             windows: 0,
-            ansi: flags & crate::class::REGISTER_ANSI_PROC != 0,
+            ansi: flags & REGISTER_ANSI_PROC != 0,
             narrow,
             extra: std::vec![0; class.cb_cls_extra.max(0) as usize],
         });

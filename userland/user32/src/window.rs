@@ -47,6 +47,7 @@ use rtl::user::{
     WS_VISIBLE,
 };
 use rtl::window::*;
+use rtl::winerror::{ERROR_CANNOT_FIND_WND_CLASS, ERROR_INVALID_INDEX};
 
 use crate::imports::{self, Creation};
 use crate::procedure::{self, Procedure};
@@ -70,16 +71,9 @@ pub const ANSI_CREATOR: u32 = 0x8000_0000;
 /// programs for.
 pub const EXPECTED_VERSION: u32 = 0x0004_0000;
 
-/// The desktop window's class: the documented #32769.
-const DESKTOP_CLASS_ATOM: u16 = 0x8001;
-
 /// How many of the window table's first handles GetDesktopWindow looks at: the boot makes the
 /// desktop's windows before any other.
 const BOOT_HANDLES: u32 = 16;
-
-/// ERROR_CANNOT_FIND_WND_CLASS (winerror.h): the creation's class decision, which the kernel
-/// answers as itself.
-const ERROR_CANNOT_FIND_WND_CLASS: u32 = 1407;
 
 /// CreateWindowEx's core: the window made (user32's own classes registered in the process first),
 /// the messages its creation sent received; its handle, or NULL with the creation's error. The
@@ -1160,10 +1154,6 @@ pub extern "system" fn set_process_default_layout(layout: u32) -> u32 {
 }
 
 // --- The window's data ---------------------------------------------------------------------------
-
-/// ERROR_INVALID_INDEX: a GetWindowLong/SetWindowLong index that names no field of the window, or
-/// extra bytes past the window's own.
-pub const ERROR_INVALID_INDEX: u32 = 1413;
 
 /// The window's own fields, as the window manager holds them.
 pub fn window_data(window: usize) -> Result<WindowData, NtStatus> {

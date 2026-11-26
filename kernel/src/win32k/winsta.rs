@@ -23,13 +23,10 @@
 //! - NtUserGetObjectInformation(handle Object, u32 Index, ptr Information, u32 Length, ptr<u32>
 //!   LengthNeeded): GetUserObjectInformationW's answer.
 
+use rtl::user::{UOI_FLAGS, UOI_NAME, UOI_TYPE};
+
 use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use crate::status::*;
-
-/// GetUserObjectInformation's indexes (winuser.h).
-pub const UOI_FLAGS: u32 = 1;
-pub const UOI_NAME: u32 = 2;
-pub const UOI_TYPE: u32 = 3;
 
 /// USEROBJECTFLAGS' dwFlags for a window station: it is the interactive one, shown on the screen.
 pub const WSF_VISIBLE: u32 = 1;

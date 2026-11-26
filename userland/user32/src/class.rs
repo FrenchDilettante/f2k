@@ -41,6 +41,8 @@ use rtl::window::{
     GCL_STYLE,
     GCL_WNDPROC,
     GCW_ATOM,
+    REGISTER_ANSI_PROC,
+    REGISTER_WIN40_COMPAT,
 };
 
 use crate::imports::{self, UserBuffer};
@@ -115,21 +117,16 @@ impl WndClassEx {
     }
 }
 
-/// NtUserRegisterClassExWOW's flags word: the caller is 4.0-compatible; the class's procedure
-/// takes the narrow forms of the messages (a narrow registration's, Windows 2000's CSF_ANSIPROC).
-const REGISTER_WIN40_COMPAT: u32 = 0x1;
-pub const REGISTER_ANSI_PROC: u32 = 0x10;
-
 /// The longest class name the services answer, its terminator included: an atom's name, or '#'
 /// and an integer atom's digits.
 const CLASS_NAME_UNITS: usize = 130;
 
 // ERROR_FILE_NOT_FOUND: what a registration leaves as the last error.
-use rtl::winerror::ERROR_FILE_NOT_FOUND;
 // ERROR_NOACCESS: a buffer the call cannot reach.
 use rtl::winerror::ERROR_NOACCESS;
 // ERROR_RESOURCE_TYPE_NOT_FOUND: LoadCursor's answer for a stock cursor id there is none of.
 use rtl::winerror::ERROR_RESOURCE_TYPE_NOT_FOUND;
+use rtl::winerror::{ERROR_FILE_NOT_FOUND, ERROR_INVALID_INDEX};
 
 // --- The stock cursors ---------------------------------------------------------------------------
 
@@ -898,7 +895,7 @@ fn get_class_long(window: usize, index: i32, ansi: bool) -> u32 {
         GCL_STYLE => class.style,
         GCW_ATOM => class.atom,
         GCL_HICONSM => class.icon_sm,
-        _ => failed(crate::window::ERROR_INVALID_INDEX).unwrap_or(0),
+        _ => failed(ERROR_INVALID_INDEX).unwrap_or(0),
     }
 }
 
@@ -1053,6 +1050,7 @@ mod tests {
         ERROR_CLASS_ALREADY_EXISTS,
         ERROR_CLASS_DOES_NOT_EXIST,
         ERROR_CLASS_HAS_WINDOWS,
+        ERROR_INVALID_INDEX,
     };
 
     use super::*;
@@ -1311,10 +1309,10 @@ mod tests {
         assert_eq!(get_class_long_w(window, 2), 0x7788_1122);
         assert_eq!(last_error(), UNSET);
         assert_eq!(get_class_long_a(window, 5), 0);
-        assert_eq!(last_error(), crate::window::ERROR_INVALID_INDEX);
+        assert_eq!(last_error(), ERROR_INVALID_INDEX);
         arm();
         assert_eq!(get_class_long_w(window, -100), 0);
-        assert_eq!(last_error(), crate::window::ERROR_INVALID_INDEX);
+        assert_eq!(last_error(), ERROR_INVALID_INDEX);
         arm();
         assert_eq!(get_class_long_w(0, GCL_STYLE), 0);
         assert_eq!(last_error(), 1400);

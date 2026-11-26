@@ -370,6 +370,13 @@ pub const CF_OEMTEXT: u32 = 7;
 pub const CF_UNICODETEXT: u32 = 13;
 pub const CF_LOCALE: u32 = 16;
 
+// --- GetUserObjectInformation's indexes (winuser.h's UOI_*) --------------------------------------
+
+pub const UOI_FLAGS: u32 = 1;
+pub const UOI_NAME: u32 = 2;
+pub const UOI_TYPE: u32 = 3;
+pub const UOI_USER_SID: u32 = 4;
+
 // --- The structures (winuser.h) ------------------------------------------------------------------
 
 /// POINT: GDI's, one type for both headers' uses.

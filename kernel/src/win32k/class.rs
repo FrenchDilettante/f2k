@@ -66,6 +66,11 @@ use rtl::window::{
     GCLP_MENUNAME,
     GCLP_WNDPROC,
     GCL_CBCLSEXTRA,
+    REGISTER_ANSI_PROC,
+    REGISTER_SERVER_CLASS,
+    REGISTER_SERVER_SIDE_PROC,
+    REGISTER_SYSTEM_CLASS,
+    REGISTER_WIN40_COMPAT,
 };
 use rtl::winerror::{
     ERROR_ACCESS_DENIED,
@@ -144,15 +149,6 @@ pub const WINDOW_MANAGER_MODULE: u32 = 0xF000_0000;
 /// user32's module handle, at its documented base: the module a null hInstance looks classes up
 /// as, under which the classes user32 itself registers sit.
 pub const CLIENT_MODULE: u32 = 0x77E1_0000;
-
-/// The flags word of NtUserRegisterClassExWOW (F2K's own argument list).
-pub const REGISTER_WIN40_COMPAT: u32 = 0x1;
-pub const REGISTER_SERVER_SIDE_PROC: u32 = 0x2;
-pub const REGISTER_SYSTEM_CLASS: u32 = 0x4;
-pub const REGISTER_SERVER_CLASS: u32 = 0x8;
-/// The class's procedure takes the narrow forms of the messages: RegisterClassA's and
-/// RegisterClassExA's registration (Windows 2000's CSF_ANSIPROC).
-pub const REGISTER_ANSI_PROC: u32 = 0x10;
 
 /// Why a class operation failed: the Win32 error code (winerror.h) the decision reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

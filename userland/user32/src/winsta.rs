@@ -7,18 +7,13 @@
 //! failure becomes the last error through ntdll's RtlNtStatusToDosError.
 
 use rtl::status::NtStatus;
-
-use crate::imports::{self, HeapBlock, UserBuffer};
-use crate::{caller_bytes_mut, failed_with, spec, Out};
-
-/// GetUserObjectInformation's indexes (winuser.h).
-pub const UOI_NAME: u32 = 2;
-pub const UOI_TYPE: u32 = 3;
-pub const UOI_USER_SID: u32 = 4;
-
+use rtl::user::{UOI_NAME, UOI_TYPE, UOI_USER_SID};
 // ERROR_NOT_ENOUGH_MEMORY: the conversion's buffer could not be had.
 // ERROR_NOACCESS: a buffer the call cannot reach (a null address with a length).
 use rtl::winerror::{ERROR_NOACCESS, ERROR_NOT_ENOUGH_MEMORY};
+
+use crate::imports::{self, HeapBlock, UserBuffer};
+use crate::{caller_bytes_mut, failed_with, spec, Out};
 
 /// A service's answer: its value, or none with the failure's status made the last error (through
 /// ntdll's RtlNtStatusToDosError, not [`crate::window_error`]).

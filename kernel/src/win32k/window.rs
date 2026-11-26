@@ -140,6 +140,7 @@ use rtl::user::{
 };
 pub use rtl::window::{WindowData, WindowInfo, WindowPos};
 use rtl::window::{
+    DESKTOP_CLASS_ATOM,
     SWP_FRAMECHANGED,
     SWP_HIDEWINDOW,
     SWP_NOACTIVATE,
@@ -5046,9 +5047,6 @@ impl<H: Hold> Session for DefaultSession<H> {
 /// HWND_MESSAGE (winuser.h): the parent that makes a message-only window, a child of the desktop's
 /// message window.
 pub const HWND_MESSAGE: Hwnd = -3i32 as Hwnd;
-
-/// The desktop window's class: the integer atom of "#32769".
-pub const DESKTOP_CLASS_ATOM: class::Atom = 0x8001;
 
 /// The message window's class name, "Message".
 const MESSAGE_CLASS: [u16; 7] = [

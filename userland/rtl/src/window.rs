@@ -307,6 +307,19 @@ pub const CLASS_ANSI_PROC: u32 = 0x1;
 /// takes the narrow forms of the messages.
 pub const CLASS_INFO_ANSI_PROC: u32 = 0x1_0000;
 
+/// The flags word of NtUserRegisterClassExWOW (F2K's own argument list): the caller is
+/// 4.0-compatible; the class's procedure is the window manager's; a system class; a server class.
+pub const REGISTER_WIN40_COMPAT: u32 = 0x1;
+pub const REGISTER_SERVER_SIDE_PROC: u32 = 0x2;
+pub const REGISTER_SYSTEM_CLASS: u32 = 0x4;
+pub const REGISTER_SERVER_CLASS: u32 = 0x8;
+/// The class's procedure takes the narrow forms of the messages: RegisterClassA's and
+/// RegisterClassExA's registration (Windows 2000's CSF_ANSIPROC).
+pub const REGISTER_ANSI_PROC: u32 = 0x10;
+
+/// The desktop window's class: the integer atom of the documented "#32769".
+pub const DESKTOP_CLASS_ATOM: u16 = 0x8001;
+
 const _: () = {
     assert!(size_of::<WindowLinks>() == 24);
     assert!(size_of::<PropSet>() == 8);
