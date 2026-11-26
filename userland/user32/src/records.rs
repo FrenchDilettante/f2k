@@ -13,11 +13,14 @@
 //! record here by the handle either way, and drops it.
 //!
 //! A record is `W` words (pointer-sized: a block's address among them), the window's handle first;
-//! a table holds one record per window. The process's threads share a table under user32's lock
-//! ([`crate::imports::UserLock`]); the host tests' stand-in window managers are each thread's own,
-//! so there each thread has its own records. The work done under the lock calls nothing that could
-//! run a window procedure, so a procedure running nested inside another (a send to the thread's own
-//! window, a window destroyed from its own handler) never finds a table held.
+//! a table holds one record per window. Other per-process lists keep their records the same way,
+//! keyed by another nonzero handle in the first word: the DCs the GetDC family handed out
+//! ([`crate::dc`]), the memory blocks the clipboard owns ([`crate::clipboard`]), the procedures
+//! the call-procedure handles name ([`crate::procedure`]). The process's threads share a table
+//! under user32's lock ([`crate::imports::UserLock`]); the host tests' stand-in window managers are
+//! each thread's own, so there each thread has its own records. The work done under the lock calls
+//! nothing that could run a window procedure, so a procedure running nested inside another (a send
+//! to the thread's own window, a window destroyed from its own handler) never finds a table held.
 
 use rtl::pod::Pod;
 
@@ -114,6 +117,18 @@ impl<const W: usize> Records<W> {
         }
         self.block = Some(block);
         true
+    }
+
+    /// Where `key`'s record is among the records: an index below the count, which only a
+    /// [`Records::take`] (or a [`Records::retain`] dropping one) changes, so records only ever set
+    /// keep the order and the places they were added in.
+    pub fn index_of(&self, key: usize) -> Option<usize> {
+        self.position(key)
+    }
+
+    /// The record at `index`; none at or past the count.
+    pub fn record_at(&self, index: usize) -> Option<[usize; W]> {
+        (index < self.count).then(|| self.at(index))
     }
 
     /// `window`'s record (its handle first); none for a window without one, or 0.
@@ -341,6 +356,22 @@ mod tests {
         }
         assert_eq!((records.len(), records.capacity()), (0, 0));
         assert!(!records.set([0, 1, 2]));
+    }
+
+    /// Records only ever set keep the places they were added in, whatever their number: an index
+    /// names the same record as the table grows.
+    #[test]
+    fn set_records_keep_their_places() {
+        let mut records = Records::<1>::new();
+        for key in 1..=300usize {
+            assert!(records.set([key * 8]));
+        }
+        assert!(records.set([16]), "a set again keeps its place");
+        assert_eq!(records.len(), 300);
+        assert!((0..300).all(|index| records.index_of((index + 1) * 8) == Some(index)));
+        assert!((0..300).all(|index| records.record_at(index) == Some([(index + 1) * 8])));
+        assert_eq!(records.record_at(300), None);
+        assert_eq!(records.index_of(0), None);
     }
 
     /// A list takes as many windows as are pushed, in order.
