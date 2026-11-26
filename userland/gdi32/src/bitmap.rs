@@ -1064,6 +1064,15 @@ mod tests {
         colors
     }
 
+    /// GdiFlush answers TRUE, as Windows 2000's does once it has flushed the thread's batch: F2K
+    /// batches no drawing, so there is nothing to flush.
+    ///
+    /// Pins: gdi32.GdiFlush
+    #[test]
+    fn gdi_flush_answers_true() {
+        assert_eq!(gdi_flush(), 1);
+    }
+
     /// GetDIBits' conversions of the dibits capture's 32-bit row: as 16 (5-5-5), 8 (the system
     /// palette), 4 (the VGA's) and 1 bit (black and white).
     #[test]
