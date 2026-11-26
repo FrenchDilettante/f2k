@@ -127,6 +127,53 @@ pub fn set_tls_expansion_slots(slots: usize) {
     set_teb_field!(slots, tls_expansion_slots)
 }
 
+/// The commands the calling thread's GDI batch holds (its TEB's GdiBatchCount; see
+/// [`crate::gdi::BATCH_DELETE_REGION`]).
+pub fn gdi_batch_count() -> u32 {
+    teb_field!(gdi_batch_count)
+}
+
+/// The calling thread's GDI batch's command `index` (below [`crate::gdi::GDI_BATCH_LIMIT`]), as
+/// its buffer holds it.
+pub fn gdi_batch_command(index: usize) -> crate::gdi::BatchCommand {
+    let mut words = [0u32; 7];
+    for (at, word) in words.iter_mut().enumerate() {
+        *word = teb_field!(gdi_teb_batch.buffer[index * 7 + at]);
+    }
+    crate::gdi::BatchCommand {
+        command: words[0],
+        handle: words[1],
+        complexity: words[2] as i32,
+        bounds: crate::gdi::Rect::new(
+            words[3] as i32,
+            words[4] as i32,
+            words[5] as i32,
+            words[6] as i32,
+        ),
+    }
+}
+
+/// Queue `command` in the calling thread's GDI batch, after the ones it holds (the caller keeps
+/// their count below [`crate::gdi::GDI_BATCH_LIMIT`]).
+pub fn push_gdi_batch_command(command: crate::gdi::BatchCommand) {
+    let index = gdi_batch_count() as usize;
+    let bounds = command.bounds;
+    let words = [
+        command.command,
+        command.handle,
+        command.complexity as u32,
+        bounds.left as u32,
+        bounds.top as u32,
+        bounds.right as u32,
+        bounds.bottom as u32,
+    ];
+    for (at, word) in words.into_iter().enumerate() {
+        set_teb_field!(word, gdi_teb_batch.buffer[index * 7 + at]);
+    }
+    set_teb_field!(((index + 1) * 28) as u32, gdi_teb_batch.offset);
+    set_teb_field!(index as u32 + 1, gdi_batch_count);
+}
+
 /// The calling thread's locale (its TEB's CurrentLocale).
 pub fn current_locale() -> u32 {
     teb_field!(current_locale)

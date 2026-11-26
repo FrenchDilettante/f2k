@@ -239,7 +239,11 @@ pub struct Teb<P> {
     pub reserved_1: [u32; (0xC4 - 0x38) / 4],
     /// The thread's locale (GetThreadLocale, SetThreadLocale).
     pub current_locale: u32,
-    pub reserved_2: [u32; (0xBF4 - 0xC8) / 4],
+    pub reserved_2: [u32; (0x1D4 - 0xC8) / 4],
+    /// GDI_TEB_BATCH: the GDI batch's buffer, gdi32's queued commands (see
+    /// [`crate::gdi::BATCH_DELETE_REGION`]), which win32k runs.
+    pub gdi_teb_batch: GdiTebBatch,
+    pub reserved_2b: [u32; (0xBF4 - 0x6B4) / 4],
     /// The last failed status RtlNtStatusToDosError mapped.
     pub last_status_value: u32,
     pub reserved_3: [u32; (0xE0C - 0xBF8) / 4],
@@ -247,7 +251,10 @@ pub struct Teb<P> {
     pub deallocation_stack: P,
     /// The first 64 TLS slots.
     pub tls_slots: [P; 64],
-    pub reserved_4: [u32; (0xF94 - 0xF10) / 4],
+    pub reserved_4: [u32; (0xF70 - 0xF10) / 4],
+    /// GdiBatchCount: how many commands the GDI batch holds.
+    pub gdi_batch_count: u32,
+    pub reserved_5: [u32; (0xF94 - 0xF74) / 4],
     /// The block holding the other 1024 TLS slots (null until TlsSetValue makes it).
     pub tls_expansion_slots: P,
 }
@@ -271,12 +278,16 @@ impl<P: Default + Copy> Default for Teb<P> {
             last_error_value: 0,
             reserved_1: [0; (0xC4 - 0x38) / 4],
             current_locale: 0,
-            reserved_2: [0; (0xBF4 - 0xC8) / 4],
+            reserved_2: [0; (0x1D4 - 0xC8) / 4],
+            gdi_teb_batch: GdiTebBatch::default(),
+            reserved_2b: [0; (0xBF4 - 0x6B4) / 4],
             last_status_value: 0,
             reserved_3: [0; (0xE0C - 0xBF8) / 4],
             deallocation_stack: P::default(),
             tls_slots: [P::default(); 64],
-            reserved_4: [0; (0xF94 - 0xF10) / 4],
+            reserved_4: [0; (0xF70 - 0xF10) / 4],
+            gdi_batch_count: 0,
+            reserved_5: [0; (0xF94 - 0xF74) / 4],
             tls_expansion_slots: P::default(),
         }
     }
@@ -295,14 +306,39 @@ const _: () = {
     assert!(offset_of!(Layout, process_environment_block) == 0x30);
     assert!(offset_of!(Layout, last_error_value) == 0x34);
     assert!(offset_of!(Layout, current_locale) == 0xC4);
+    assert!(offset_of!(Layout, gdi_teb_batch) == 0x1D4);
+    assert!(offset_of!(Layout, reserved_2b) == 0x6B4);
     assert!(offset_of!(Layout, last_status_value) == 0xBF4);
     assert!(offset_of!(Layout, deallocation_stack) == 0xE0C);
     assert!(offset_of!(Layout, tls_slots) == 0xE10);
+    assert!(offset_of!(Layout, gdi_batch_count) == 0xF70);
     assert!(offset_of!(Layout, tls_expansion_slots) == 0xF94);
 };
 
 // SAFETY: u32s and arrays of them, so no padding.
 unsafe impl Pod for Teb<u32> {}
+
+/// GDI_TEB_BATCH: the bytes of the batch's buffer in use, the DC its drawing commands name (F2K
+/// batches none: 0), and the buffer.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GdiTebBatch {
+    pub offset: u32,
+    pub hdc: u32,
+    pub buffer: [u32; crate::gdi::GDI_BATCH_BUFFER_DWORDS],
+}
+
+impl Default for GdiTebBatch {
+    fn default() -> Self {
+        GdiTebBatch {
+            offset: 0,
+            hdc: 0,
+            buffer: [0; crate::gdi::GDI_BATCH_BUFFER_DWORDS],
+        }
+    }
+}
+
+const _: () = assert!(size_of::<GdiTebBatch>() == 0x4E0);
 
 /// An RTL_BITMAP: its size in bits and its buffer (the PEB's TLS bitmaps' headers are ntdll's own
 /// data, the bits the PEB's).

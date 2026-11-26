@@ -78,11 +78,9 @@ pub const SW_SCROLLCHILDREN: u32 = 0x0001;
 pub const SW_INVALIDATE: u32 = 0x0002;
 pub const SW_ERASE: u32 = 0x0004;
 
-/// A region's complexity, as ScrollWindowEx and the region calls answer it (wingdi.h's).
-pub const ERROR: i32 = 0;
-pub const NULLREGION: i32 = 1;
-pub const SIMPLEREGION: i32 = 2;
-pub const COMPLEXREGION: i32 = 3;
+/// A region's complexity, as ScrollWindowEx and the region calls answer it (wingdi.h's, which
+/// rtl::gdi keeps).
+pub use crate::gdi::{COMPLEXREGION, ERROR, NULLREGION, SIMPLEREGION};
 
 /// The shortest thumb drawn for a bar with a page (SM_CXHTHUMB's half: an assumption).
 pub const MIN_THUMB: i32 = 8;

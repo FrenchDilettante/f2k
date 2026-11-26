@@ -55,14 +55,14 @@ pub const DEFAULT_GUI_FONT: u32 = 17;
 pub const DC_BRUSH: u32 = 18;
 pub const DC_PEN: u32 = 19;
 
-/// The stock objects' handles: F2K's own constant per index, the kind of object in bits 16-18 and
+/// The stock objects' handles: F2K's own constant per index, the kind of object in bits 16-19 and
 /// the stock bit (bit 23) above them, the index in the low bits. No GDI table handle has the stock
 /// bit (see [`object_handle`]), so gdi32 and win32k tell a stock object from a process's object by
 /// its value alone, as Windows 2000's GDI handles carry their type and their stock bit in their
 /// own bits.
 const STOCK_BIT: u32 = 0x0080_0000;
 const KIND_SHIFT: u32 = 16;
-const KIND_MASK: u32 = 0x7;
+const KIND_MASK: u32 = 0xF;
 const INDEX_MASK: u32 = 0xFF;
 
 /// The kind of object stock object `index` is (its GetObjectType answer); none for an index
@@ -170,10 +170,11 @@ pub const fn global_object_kind(handle: u32) -> Option<u32> {
 
 /// The handles of the process's GDI objects (a brush CreateSolidBrush made) are win32k's GDI
 /// handle table's, Windows 2000's shape: the table's slot in the low word (from 1), the object's
-/// kind in bits 16-18, the stock bit (23) clear, and the slot's uniqueness (from 1) in bits 24-31.
-/// The uniqueness keeps a program's handle above the small values FillRect takes as COLOR_* + 1,
-/// and gdi32 reads an object's kind from its handle. (A DC's handle has its kind bits clear.)
-/// Bits 19-23 (the rest of Windows' type field, and the stock bit) are clear in every such handle.
+/// kind in bits 16-19 (OBJ_REGION, 8, the widest), the stock bit (23) clear, and the slot's
+/// uniqueness (from 1) in bits 24-31. The uniqueness keeps a program's handle above the small
+/// values FillRect takes as COLOR_* + 1, and gdi32 reads an object's kind from its handle. (A DC's
+/// handle has its kind bits clear.) Bits 20-23 (the rest of Windows' type field, and the stock bit)
+/// are clear in every such handle.
 const TYPE_BITS: u32 = 0xFF << KIND_SHIFT;
 
 /// The handle of the object of `kind` whose GDI table handle (its slot and uniqueness, its type
@@ -183,11 +184,11 @@ pub const fn object_handle(kind: u32, table: u32) -> u32 {
 }
 
 /// The kind of the object an object's handle names, and its GDI table handle (the kind's bits
-/// taken off); none for a handle with no kind bits (a DC's), a global object's, or one with other
-/// type bits set.
+/// taken off); none for a handle with no kind bits (a DC's), a global object's, one whose kind is
+/// past OBJ_REGION, or one with other type bits set.
 pub const fn object_of(handle: u32) -> Option<(u32, u32)> {
     let kind = (handle >> KIND_SHIFT) & KIND_MASK;
-    if kind == 0 || handle & TYPE_BITS != kind << KIND_SHIFT {
+    if kind == 0 || kind > OBJ_REGION || handle & TYPE_BITS != kind << KIND_SHIFT {
         return None;
     }
     Some((kind, handle & !TYPE_BITS))
@@ -906,6 +907,107 @@ pub fn narrow_truetype_metric(metric: &TextMetricW) -> TextMetricA {
     narrow
 }
 
+// --- Regions -------------------------------------------------------------------------------------
+
+/// GetObjectType's answer for a region (wingdi.h's OBJ_REGION). Its handles carry it in their kind
+/// bits as the other objects' carry theirs ([`object_handle`]).
+pub const OBJ_REGION: u32 = 8;
+
+/// A region's complexity, as the region calls and ScrollWindowEx answer it (wingdi.h's): ERROR for
+/// a failure, NULLREGION for an empty region, SIMPLEREGION for one rectangle, COMPLEXREGION for
+/// more.
+pub const ERROR: i32 = 0;
+pub const NULLREGION: i32 = 1;
+pub const SIMPLEREGION: i32 = 2;
+pub const COMPLEXREGION: i32 = 3;
+
+/// The complexity of a region of `count` rectangles.
+pub const fn region_complexity(count: usize) -> i32 {
+    match count {
+        0 => NULLREGION,
+        1 => SIMPLEREGION,
+        _ => COMPLEXREGION,
+    }
+}
+
+/// CombineRgn's modes (wingdi.h's RGN_*): both sources' common part, either's, either's but not
+/// both's, the first's but not the second's, the first's alone.
+pub const RGN_AND: u32 = 1;
+pub const RGN_OR: u32 = 2;
+pub const RGN_XOR: u32 = 3;
+pub const RGN_DIFF: u32 = 4;
+pub const RGN_COPY: u32 = 5;
+
+/// The polygon fill modes (SetPolyFillMode's, CreatePolygonRgn's): a point is inside when a ray
+/// from it crosses the outline an odd number of times (ALTERNATE), or when the outline winds
+/// around it a number of times other than zero (WINDING).
+pub const ALTERNATE: u32 = 1;
+pub const WINDING: u32 = 2;
+
+/// RGNDATAHEADER's iType: the data is rectangles.
+pub const RDH_RECTANGLES: u32 = 1;
+
+/// RGNDATAHEADER: GetRegionData's header (32 bytes), the rectangles after it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RgnDataHeader {
+    /// The header's size, 32.
+    pub size: u32,
+    /// RDH_RECTANGLES.
+    pub kind: u32,
+    /// How many rectangles follow.
+    pub count: u32,
+    /// Their size in bytes (16 each).
+    pub rgn_size: u32,
+    /// The region's bounding box.
+    pub bound: Rect,
+}
+
+// SAFETY: four u32s and a RECT, no padding.
+unsafe impl Pod for RgnDataHeader {}
+
+/// The GDI batch's commands: the records gdi32 queues in the calling thread's TEB (its
+/// GDI_TEB_BATCH, `rtl::peb::Teb::gdi_teb_batch`, their count in GdiBatchCount) for win32k to run
+/// on the thread's next win32k service (or GdiFlush), as Windows 2000's gdi32 batches calls that
+/// need no answer. The records' shape is F2K's own (only gdi32 writes them and win32k reads them):
+/// [`BatchCommand`]'s seven dwords, one after another from the buffer's start.
+///
+/// BATCH_DELETE_REGION: DeleteObject of a region. The region lives until the batch runs, as
+/// Windows 2000's does, and gdi32 answers GetRgnBox and PtInRegion of a simple or empty one from
+/// what the record kept of it (Windows 2000's gdi32 reads them from the region's attributes in
+/// user memory, which the deletion leaves until it runs).
+pub const BATCH_DELETE_REGION: u32 = 1;
+
+/// One command of the GDI batch (see [`BATCH_DELETE_REGION`]): its kind, the object's handle, and
+/// for a region its complexity and box as they were when it was queued.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct BatchCommand {
+    pub command: u32,
+    pub handle: u32,
+    pub complexity: i32,
+    pub bounds: Rect,
+}
+
+// SAFETY: integers and a RECT, no padding.
+unsafe impl Pod for BatchCommand {}
+
+/// The dwords of a GDI_TEB_BATCH's buffer (Windows 2000's GDIBATCHBUFSIZE).
+pub const GDI_BATCH_BUFFER_DWORDS: usize = 310;
+
+/// The most commands the batch holds before gdi32 runs it (Windows 2000's default batch limit,
+/// GdiSetBatchLimit's), well inside the buffer.
+pub const GDI_BATCH_LIMIT: u32 = 20;
+
+const _: () = {
+    assert!(core::mem::size_of::<RgnDataHeader>() == 32);
+    assert!(core::mem::size_of::<BatchCommand>() == 28);
+    assert!(
+        GDI_BATCH_LIMIT as usize * core::mem::size_of::<BatchCommand>()
+            <= GDI_BATCH_BUFFER_DWORDS * 4
+    );
+};
+
 #[cfg(test)]
 mod tests {
     use core::mem::{offset_of, size_of};
@@ -1080,7 +1182,13 @@ mod tests {
         );
         assert_eq!(object_of(HALFTONE_BRUSH), None);
         assert_eq!(object_of(DEFAULT_BITMAP), None);
-        assert_eq!(object_of(0x010A_001C), None, "a type bit past the kind's");
+        assert_eq!(object_of(0x010A_001C), None, "a kind past OBJ_REGION");
+        assert_eq!(object_of(0x0112_001C), None, "a type bit past the kind's");
+        assert_eq!(
+            object_of(object_handle(OBJ_REGION, 0x0100_001C)),
+            Some((OBJ_REGION, 0x0100_001C))
+        );
+        assert_eq!(object_handle(OBJ_REGION, 0x0100_001C), 0x0108_001C);
         assert_eq!(object_of(0x0182_001C), None, "the stock bit");
     }
 
