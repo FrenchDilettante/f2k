@@ -9,21 +9,20 @@
 //! that object on the clipboard (NtUserSetClipboardData); GetClipboardData asks for a format's
 //! data object (NtUserGetClipboardData) and copies its bytes into a new global memory block
 //! (NtUserCreateLocalMemHandle). The system owns both blocks once they cross: this process frees
-//! them at its next CloseClipboard or EmptyClipboard ([`Held`]), after which, the documentation
-//! says, the program uses neither. kernel32 reuses a freed handle first, so the block a program
-//! put comes back under the handle it gave as soon as it asks for it again in its next open, as
-//! the clipbrd capture shows.
+//! them at its next CloseClipboard or EmptyClipboard ([`HELD_BLOCKS`]), after which, the
+//! documentation says, the program uses neither. kernel32 reuses a freed handle first, so the block
+//! a program put comes back under the handle it gave as soon as it asks for it again in its next
+//! open, as the clipbrd capture shows.
 //!
 //! Delayed rendering (SetClipboardData with no data, WM_RENDERFORMAT and WM_RENDERALLFORMATS
 //! rendering it later) is not written: such a put is a stub's failure.
-
-use core::sync::atomic::{AtomicU32, Ordering};
 
 use rtl::edge::{InStr, OutBuf};
 use rtl::status::NtStatus;
 use rtl::user::ONE_PARAM_ENUM_CLIPBOARD_FORMATS;
 
 use crate::imports::{self, GlobalLocked, UserBuffer};
+use crate::records::Table;
 use crate::{failed_with, message, window_error};
 
 /// GlobalAlloc's flags for a block GetClipboardData makes: movable, and shareable as clipboard
@@ -42,70 +41,27 @@ fn answered<T>(answer: Result<T, NtStatus>) -> Option<T> {
 // --- The blocks the clipboard owns
 // -----------------------------------------------------------------------
 
-/// How many blocks the process holds for the clipboard at once; past that a block is left to the
-/// process's end.
-const HELD: usize = 64;
-
 /// The global memory blocks of this process the clipboard owns: the ones SetClipboardData was
-/// given and the ones GetClipboardData made, each a handle (0 for a free slot), freed at the next
-/// CloseClipboard or EmptyClipboard. Slots are taken and emptied atomically: any thread of the
-/// process may make the calls.
-struct Held([AtomicU32; HELD]);
+/// given and the ones GetClipboardData made, each a record of its handle, in the order they came,
+/// freed at the next CloseClipboard or EmptyClipboard. As many as the program hands over between
+/// two closes (Windows 2000 keeps no count of them: the clipboard's own data objects are the
+/// window manager's); a block the heap has no room to record is left to the process's end. Shared
+/// by the process's threads under user32's lock: any of them may make the calls.
+static HELD_BLOCKS: Table<1> = Table::new();
 
-impl Held {
-    const fn new() -> Self {
-        Held([const { AtomicU32::new(0) }; HELD])
-    }
-
-    /// Hold `memory` (once, however often it is handed over).
-    fn hold(&self, memory: usize) {
-        let memory = memory as u32;
-        if self
-            .0
-            .iter()
-            .any(|slot| slot.load(Ordering::Relaxed) == memory)
-        {
-            return;
-        }
-        for slot in &self.0 {
-            if slot
-                .compare_exchange(0, memory, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
-            {
-                return;
-            }
-        }
-    }
-
-    /// Free every block held, in the order they were taken.
-    fn release(&self) {
-        for slot in &self.0 {
-            let memory = slot.swap(0, Ordering::Relaxed);
-            if memory != 0 {
-                imports::global_free(memory as usize);
-            }
-        }
-    }
+/// Hold `memory` (once, however often it is handed over).
+fn hold(memory: usize) {
+    let _ = HELD_BLOCKS.with(|held| held.set([memory]));
 }
 
-#[cfg(not(test))]
-static HELD_BLOCKS: Held = Held::new();
-
-#[cfg(test)]
-std::thread_local! {
-    /// The host tests' threads each have their own stand-ins' memory, so their own blocks too.
-    static HELD_BLOCKS: Held = const { Held::new() };
-}
-
-/// Run `f` on the process's held blocks.
-fn held<R>(f: impl FnOnce(&Held) -> R) -> R {
-    #[cfg(not(test))]
-    {
-        f(&HELD_BLOCKS)
-    }
-    #[cfg(test)]
-    {
-        HELD_BLOCKS.with(f)
+/// Free every block held, in the order they were taken: the records taken out under the lock, the
+/// blocks freed after it.
+fn release() {
+    let held = HELD_BLOCKS.with(core::mem::take);
+    for index in 0..held.len() {
+        if let Some([memory]) = held.record_at(index) {
+            imports::global_free(memory);
+        }
     }
 }
 
@@ -126,7 +82,7 @@ pub extern "system" fn open_clipboard(window: usize) -> u32 {
 pub extern "system" fn close_clipboard() -> u32 {
     let closed = answered(imports::close_clipboard()).is_some();
     if closed {
-        held(Held::release);
+        release();
     }
     closed as u32
 }
@@ -140,7 +96,7 @@ pub extern "system" fn empty_clipboard() -> u32 {
     message::receive_sent();
     let emptied = answered(answer).is_some();
     if emptied {
-        held(Held::release);
+        release();
     }
     emptied as u32
 }
@@ -184,7 +140,7 @@ pub extern "system" fn set_clipboard_data(format: u32, memory: usize) -> usize {
     if answered(put).is_none() {
         return 0;
     }
-    held(|held| held.hold(memory));
+    hold(memory);
     imports::set_last_error(0);
     memory
 }
@@ -221,7 +177,7 @@ pub extern "system" fn get_clipboard_data(format: u32) -> usize {
             return 0;
         }
     }
-    held(|held| held.hold(memory));
+    hold(memory);
     memory
 }
 
@@ -423,6 +379,24 @@ mod tests {
         assert_eq!(last_error(), 0xF2F2_F2F2, "a missing format sets no error");
         assert_eq!(close_clipboard(), 1);
         assert!(live_globals().is_empty());
+    }
+
+    /// However many blocks cross between two closes, far past the 64 a fixed list held, each is
+    /// freed at the close (none left to the process's end), and no record stays behind.
+    #[test]
+    fn every_block_crossed_is_freed() {
+        assert_eq!(open_clipboard(0), 1);
+        assert_eq!(empty_clipboard(), 1);
+        for index in 0..200u8 {
+            let given = block(&[b'a' + index % 26, 0]);
+            assert_eq!(set_clipboard_data(CF_TEXT, given), given);
+            assert_eq!(set_clipboard_data(CF_TEXT, given), given, "held once");
+            assert_ne!(get_clipboard_data(CF_TEXT), 0);
+        }
+        assert_eq!(HELD_BLOCKS.with(|held| held.len()), 400);
+        assert_eq!(close_clipboard(), 1);
+        assert!(live_globals().is_empty(), "every block freed at the close");
+        assert!(HELD_BLOCKS.with(|held| held.is_empty()));
     }
 
     /// EnumClipboardFormats lists the formats in order and ends with 0, the last error 0.
