@@ -21,14 +21,51 @@ use rtl::accel::{Accel, AccelTableEntry, FVIRTKEY, WM_CHAR, WM_SYSCHAR};
 use rtl::edge::{InBuf, OutBuf};
 use rtl::user::Msg;
 
-use crate::imports::{self, ResourceName};
-use crate::{failed, failed_with, message, window_error, ERROR_INVALID_PARAMETER};
+use crate::imports::{self, HeapBlock, ResourceName};
+use crate::{
+    failed,
+    failed_with,
+    message,
+    window_error,
+    ERROR_INVALID_PARAMETER,
+    ERROR_NOT_ENOUGH_MEMORY,
+};
 
 /// RT_ACCELERATOR: an accelerator table's resource type.
 const RT_ACCELERATOR: u16 = 9;
 
-/// The most entries a table holds (the kernel's).
-const MAX_ENTRIES: usize = 128;
+/// A table's entries in a buffer of this DLL's, on the process heap and as long as the table:
+/// user32 sets no bound of its own on a table's length, as Windows 2000's sets none (its tables
+/// are as long as their resources or their callers' arrays; the window manager's own bound is the
+/// only one).
+struct Entries {
+    block: HeapBlock,
+    count: usize,
+}
+
+impl Entries {
+    /// Room for `count` entries, zeroed; none, ERROR_NOT_ENOUGH_MEMORY the last error, when the
+    /// heap has none.
+    fn new(count: usize) -> Option<Self> {
+        let Some(block) = HeapBlock::new(count * core::mem::size_of::<Accel>()) else {
+            return failed(ERROR_NOT_ENOUGH_MEMORY);
+        };
+        Some(Entries { block, count })
+    }
+
+    /// The entries.
+    fn as_mut_slice(&mut self) -> &mut [Accel] {
+        // SAFETY: the block holds `count` ACCELs' bytes, zeroed or written as ACCELs, and is the
+        // buffer's alone while the borrow lasts; the heap's blocks are 8-aligned (its granularity),
+        // enough for an ACCEL's words, and any bits make an ACCEL (its fields are integers).
+        unsafe {
+            core::slice::from_raw_parts_mut(
+                self.block.bytes_mut().as_mut_ptr().cast::<Accel>(),
+                self.count,
+            )
+        }
+    }
+}
 
 /// The UTF-16 unit of an ANSI character (the ANSI code page's, through ntdll).
 fn wide_of(byte: u8) -> u16 {
@@ -87,8 +124,10 @@ unsafe fn load_accelerators(instance: usize, name: ResourceName) -> usize {
     let Some(data) = imports::resource_data(instance, found) else {
         return 0;
     };
-    let mut entries = [Accel::default(); MAX_ENTRIES];
-    let mut count = 0;
+    let Some(mut entries) = Entries::new(AccelTableEntry::entries(data).count()) else {
+        return 0;
+    };
+    let entries = entries.as_mut_slice();
     for (slot, entry) in entries.iter_mut().zip(AccelTableEntry::entries(data)) {
         let virt = (entry.flags & 0x7F) as u8;
         let key = if virt & FVIRTKEY == 0 && entry.ansi < 0x100 {
@@ -102,10 +141,9 @@ unsafe fn load_accelerators(instance: usize, name: ResourceName) -> usize {
             key,
             cmd: entry.id,
         };
-        count += 1;
     }
     failed_with(
-        imports::create_accelerator_table(&entries[..count], instance, data.as_ptr() as usize),
+        imports::create_accelerator_table(entries, instance, data.as_ptr() as usize),
         window_error,
     )
     .unwrap_or(0)
@@ -115,7 +153,7 @@ unsafe fn load_accelerators(instance: usize, name: ResourceName) -> usize {
 // -------------------------------------------------------------------------------------
 
 /// CreateAcceleratorTableW: a table of the caller's `count` entries, the process's own; NULL with
-/// ERROR_INVALID_PARAMETER for no entries or more than a table holds.
+/// ERROR_INVALID_PARAMETER for no entries or more than the window manager's table holds.
 ///
 /// # Safety
 ///
@@ -158,23 +196,22 @@ pub unsafe extern "system" fn create_accelerator_table_a(
 ///
 /// As CreateAcceleratorTableW's.
 unsafe fn create_table(entries: *const Accel, count: i32, key: impl Fn(u16) -> u16) -> usize {
-    if count <= 0 || count as usize > MAX_ENTRIES {
+    if count <= 0 {
         return failed(ERROR_INVALID_PARAMETER).unwrap_or(0);
     }
     // SAFETY: the caller's contract.
     let given = unsafe { InBuf::new(entries, count as usize) };
-    let mut local = [Accel::default(); MAX_ENTRIES];
+    let Some(mut local) = Entries::new(count as usize) else {
+        return 0;
+    };
+    let local = local.as_mut_slice();
     for (slot, entry) in local.iter_mut().zip(given.iter()) {
         *slot = entry;
         if entry.virt & FVIRTKEY == 0 {
             slot.key = key(entry.key);
         }
     }
-    failed_with(
-        imports::create_accelerator_table(&local[..count as usize], 0, 0),
-        window_error,
-    )
-    .unwrap_or(0)
+    failed_with(imports::create_accelerator_table(local, 0, 0), window_error).unwrap_or(0)
 }
 
 /// CopyAcceleratorTableW: with no buffer the table's entry count; else as many of its entries as
@@ -212,22 +249,28 @@ pub unsafe extern "system" fn copy_accelerator_table_a(
     copy_table(table, buffer, narrow_of)
 }
 
-/// CopyAcceleratorTable's core: the entries copied into a buffer of this DLL's, a character
-/// entry's key through `key`, then into the caller's.
+/// CopyAcceleratorTable's core: the entries copied into a buffer of this DLL's (as long as the
+/// table or the caller's buffer, the shorter), a character entry's key through `key`, then into
+/// the caller's.
 fn copy_table(table: usize, buffer: Option<OutBuf<'_, Accel>>, key: impl Fn(u16) -> u16) -> i32 {
-    let Some(mut buffer) = buffer else {
-        return failed_with(imports::copy_accelerator_table(table, None), window_error)
-            .map_or(0, |count| count as i32);
+    let Some(length) = failed_with(imports::copy_accelerator_table(table, None), window_error)
+    else {
+        return 0;
     };
-    let mut local = [Accel::default(); MAX_ENTRIES];
-    let room = buffer.len().min(MAX_ENTRIES);
+    let Some(mut buffer) = buffer else {
+        return length as i32;
+    };
+    let Some(mut local) = Entries::new(buffer.len().min(length as usize)) else {
+        return 0;
+    };
+    let local = local.as_mut_slice();
     let Some(copied) = failed_with(
-        imports::copy_accelerator_table(table, Some(&mut local[..room])),
+        imports::copy_accelerator_table(table, Some(local)),
         window_error,
     ) else {
         return 0;
     };
-    let copied = copied as usize;
+    let copied = (copied as usize).min(local.len());
     for entry in &mut local[..copied] {
         if entry.virt & FVIRTKEY == 0 {
             entry.key = key(entry.key);
@@ -385,6 +428,58 @@ mod tests {
         assert_eq!(destroy_accelerator_table(w), 0);
         assert_eq!(destroy_accelerator_table(w), 1);
         assert_eq!(destroy_accelerator_table(w), 0);
+    }
+
+    /// user32 hands the window manager a table as long as its resource or its caller's array, far
+    /// past the 128 entries its fixed buffers held, and copies back as many as the caller's
+    /// buffer takes, the A forms' characters converted each way.
+    #[test]
+    fn tables_of_any_length_cross_whole() {
+        let mut data = std::vec::Vec::new();
+        for index in 0..200u16 {
+            let flags = if index == 199 { 0x80 | 0x01 } else { 0x01 };
+            for word in [flags, 0x30 + index % 40, 1000 + index, 0] {
+                data.extend_from_slice(&word.to_le_bytes());
+            }
+        }
+        add_resource(PROGRAM, RT_ACCELERATOR, 301, &data);
+        // SAFETY: a resource number.
+        let loaded = unsafe { load_accelerators_w(0, 301 as *const u16) };
+        assert_ne!(loaded, 0);
+        // SAFETY: no buffer.
+        assert_eq!(
+            unsafe { copy_accelerator_table_w(loaded, core::ptr::null_mut(), 0) },
+            200
+        );
+
+        let given: std::vec::Vec<Accel> = (0..300u16)
+            .map(|index| Accel {
+                virt: 0,
+                pad: 0,
+                key: if index == 0 { 0x80 } else { 0x41 + index % 26 },
+                cmd: index,
+            })
+            .collect();
+        // SAFETY: the test's array of 300.
+        let made = unsafe { create_accelerator_table_a(given.as_ptr(), 300) };
+        assert_ne!(made, 0);
+        let mut back = std::vec![Accel::default(); 400];
+        // SAFETY: the test's buffer of 400.
+        assert_eq!(
+            unsafe { copy_accelerator_table_w(made, back.as_mut_ptr(), 400) },
+            300
+        );
+        assert_eq!(back[0].key, 0x20AC, "cp1252's euro sign, widened");
+        assert_eq!((back[299].key, back[299].cmd), (0x41 + 299 % 26, 299));
+        assert_eq!(back[300], Accel::default(), "past the table: untouched");
+        // SAFETY: as above, 250 of the 400.
+        assert_eq!(
+            unsafe { copy_accelerator_table_a(made, back.as_mut_ptr(), 250) },
+            250
+        );
+        assert_eq!(back[0].key, 0x80, "narrowed back");
+        assert_eq!(destroy_accelerator_table(made), 1);
+        assert_eq!(destroy_accelerator_table(loaded), 1);
     }
 
     /// The A form converts a character message's character before the kernel sees it.
