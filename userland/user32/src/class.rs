@@ -25,6 +25,7 @@
 #[cfg(not(test))]
 use core::sync::atomic::{AtomicBool, Ordering};
 
+use rtl::cstr::ascii_units;
 use rtl::edge::In;
 use rtl::icon::{ICON_SIZE, RT_CURSOR};
 
@@ -538,22 +539,10 @@ pub unsafe fn missing_system_class(class: usize) -> Option<(&'static str, &'stat
 }
 
 /// The names of the controls' classes, NUL-terminated.
-const BUTTON_NAME: [u16; 7] = units::<7>("Button");
-const STATIC_NAME: [u16; 7] = units::<7>("Static");
-const EDIT_NAME: [u16; 5] = units::<5>("Edit");
-const SCROLLBAR_NAME: [u16; 10] = units::<10>("ScrollBar");
-
-/// `text`'s units, NUL-terminated, in an array of `N` (its length plus one).
-const fn units<const N: usize>(text: &str) -> [u16; N] {
-    let bytes = text.as_bytes();
-    let mut out = [0u16; N];
-    let mut at = 0;
-    while at < bytes.len() {
-        out[at] = bytes[at] as u16;
-        at += 1;
-    }
-    out
-}
+const BUTTON_NAME: [u16; 7] = ascii_units::<7>("Button");
+const STATIC_NAME: [u16; 7] = ascii_units::<7>("Static");
+const EDIT_NAME: [u16; 5] = ascii_units::<5>("Edit");
+const SCROLLBAR_NAME: [u16; 10] = ascii_units::<10>("ScrollBar");
 
 /// The entry points user32's classes are registered with: the procedures' addresses on the target,
 /// the stand-ins' numbers for them in the host tests (whose procedure calls go through a table).

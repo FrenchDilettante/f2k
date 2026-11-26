@@ -28,6 +28,7 @@
 //! The window manager has no non-client area yet: a dialog's window rectangle is its client area,
 //! the template's size mapped.
 
+use rtl::cstr::ascii_units;
 use rtl::edge::{In, OutBuf};
 use rtl::gdi::{LogFontW, Rect, DEFAULT_CHARSET, FW_NORMAL, SYSTEM_FONT};
 use rtl::user::*;
@@ -640,12 +641,12 @@ pub fn read_item(reader: &mut Reader, extended: bool) -> Option<Item> {
 
 /// The predefined control classes' names, by their ordinals 0x80 to 0x85, NUL-terminated.
 fn predefined_class(ordinal: u16) -> Option<&'static [u16]> {
-    const BUTTON: [u16; 7] = names::<7>("Button");
-    const EDIT: [u16; 5] = names::<5>("Edit");
-    const STATIC: [u16; 7] = names::<7>("Static");
-    const LISTBOX: [u16; 8] = names::<8>("ListBox");
-    const SCROLLBAR: [u16; 10] = names::<10>("ScrollBar");
-    const COMBOBOX: [u16; 9] = names::<9>("ComboBox");
+    const BUTTON: [u16; 7] = ascii_units::<7>("Button");
+    const EDIT: [u16; 5] = ascii_units::<5>("Edit");
+    const STATIC: [u16; 7] = ascii_units::<7>("Static");
+    const LISTBOX: [u16; 8] = ascii_units::<8>("ListBox");
+    const SCROLLBAR: [u16; 10] = ascii_units::<10>("ScrollBar");
+    const COMBOBOX: [u16; 9] = ascii_units::<9>("ComboBox");
     Some(match ordinal {
         0x80 => &BUTTON,
         0x81 => &EDIT,
@@ -655,18 +656,6 @@ fn predefined_class(ordinal: u16) -> Option<&'static [u16]> {
         0x85 => &COMBOBOX,
         _ => return None,
     })
-}
-
-/// `text`'s units, NUL-terminated, in an array of `N` (its length plus one).
-const fn names<const N: usize>(text: &str) -> [u16; N] {
-    let bytes = text.as_bytes();
-    let mut out = [0u16; N];
-    let mut at = 0;
-    while at < bytes.len() {
-        out[at] = bytes[at] as u16;
-        at += 1;
-    }
-    out
 }
 
 // --- Creation ------------------------------------------------------------------------------------

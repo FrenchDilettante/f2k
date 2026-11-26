@@ -33,6 +33,7 @@
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
+use rtl::cstr::ascii_into;
 use rtl::edge::Out;
 use rtl::gdi::{LogFontW, Rect, LF_FACESIZE, SYMBOL_CHARSET, TRANSPARENT};
 use rtl::nonclient::{Border, Button, Caption, Frame};
@@ -480,9 +481,7 @@ fn make_font(face: &str, height: i32, weight: i32, char_set: u8) -> Option<usize
         pitch_and_family: 0,
         face_name: [0; LF_FACESIZE],
     };
-    for (unit, byte) in font.face_name.iter_mut().zip(face.bytes()) {
-        *unit = u16::from(byte);
-    }
+    ascii_into(&mut font.face_name, face.as_bytes());
     imports::create_font(&font)
 }
 
