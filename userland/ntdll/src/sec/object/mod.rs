@@ -1,275 +1,213 @@
 //! The security-object wrappers: the routines that answer for an object's stored security
-//! descriptor, split by shape — the query and set wrappers over the security-object services on
-//! the object's handle (`mod.rs`), the in-memory descriptor lifecycle (`create`), and the
-//! impersonation no-op with the LUID helpers (`luid`).
+//! descriptor, split by shape — the query and set wrappers over the object's descriptor slot
+//! (`mod.rs`), the in-memory descriptor lifecycle (`create`), and the impersonation check with
+//! the LUID helpers (`luid`).
 //!
-//! The query and set wrappers are passthroughs of the services: the caller names the parts in its
-//! SECURITY_INFORMATION and the service does the work (a query fills a self-relative descriptor
-//! and reports its size, a set merges the named parts into the stored one). The generic mapping
-//! and the token arguments the public contract carries are the service's own concern — the
-//! service maps generic rights and checks the caller's token itself — so the wrappers leave them
-//! alone.
+//! The query and set wrappers work on the object's descriptor in memory: the query builds a
+//! self-relative descriptor of the parts the caller's SECURITY_INFORMATION names, the set
+//! merges the named parts of the caller's modification descriptor into the object's and
+//! answers the new self-relative descriptor through the object's slot. The generic mapping and
+//! the token arguments the public contract carries are the caller's own concern — the caller
+//! has already done the access checking — so the wrappers leave them alone.
 //!
-//! In the host tests the two services stand in over a mock object store (see `mock`), so the
-//! tests pin the argument forwarding, the status and out-parameter flow, and a set-then-query
-//! round trip.
+//! In the host tests the wrappers run over plain buffers, so the tests pin the descriptor
+//! building, the size protocol and a set-then-query round trip.
 
 use super::*;
 
 // The SECURITY_INFORMATION bits past the owner and group ones mod.rs carries.
-#[cfg(test)]
 const DACL_SECURITY_INFORMATION: u32 = 0x4;
-#[cfg(test)]
 const SACL_SECURITY_INFORMATION: u32 = 0x8;
 
 mod create;
 mod luid;
 
-// --- The security-object services: the target's gate, the host tests' mock -------------------
+// --- The wrappers over the object's descriptor ----------------------------------------------
 
-/// The target's NtQuerySecurityObject, over the service gate.
-#[cfg(not(test))]
-fn secobj_query(handle: u32, info: u32, descriptor: *mut u8, length: u32, needed: *mut u32) -> u32 {
-    use rtl::sys::nr;
-    service(
-        nr::NtQuerySecurityObject,
-        &[handle, info, descriptor as u32, length, needed as u32],
-    )
+/// The SECURITY_INFORMATION bit of each part, in the parts' order (owner, group, SACL, DACL).
+const PART_INFO: [u32; 4] = [
+    OWNER_SECURITY_INFORMATION,
+    GROUP_SECURITY_INFORMATION,
+    SACL_SECURITY_INFORMATION,
+    DACL_SECURITY_INFORMATION,
+];
+/// The control bit a present ACL part carries.
+const PART_PRESENT: [u16; 4] = [0, 0, SE_SACL_PRESENT, SE_DACL_PRESENT];
+/// The control bit a defaulted part carries.
+const PART_DEFAULTED: [u16; 4] = [
+    SE_OWNER_DEFAULTED,
+    SE_GROUP_DEFAULTED,
+    SE_SACL_DEFAULTED,
+    SE_DACL_DEFAULTED,
+];
+
+/// A heap block holding a self-relative SD of the parts at `addrs`/`sizes` (owner, group, SACL,
+/// DACL order in the arrays, packed after the header in SACL, DACL, owner, group order), with
+/// `control` and `revision`; none on failure.
+fn heap_relative_sd(
+    addrs: [usize; 4],
+    sizes: [usize; 4],
+    control: u16,
+    revision: u8,
+) -> Option<usize> {
+    let header = core::mem::size_of::<SecurityDescriptorRelative>();
+    let total = header + sizes.iter().sum::<usize>();
+    let block = heap_alloc(total)?;
+    // SAFETY: the block holds `total` bytes, the parts their own.
+    unsafe {
+        core::ptr::write_bytes(block as *mut u8, 0, header);
+        let mut field = block + header;
+        let mut offsets = [0u32; 4];
+        for index in [2usize, 3, 0, 1] {
+            if sizes[index] > 0 {
+                core::ptr::copy_nonoverlapping(addrs[index] as *const u8, field as *mut u8, sizes[index]);
+                offsets[index] = (field - block) as u32;
+                field += sizes[index];
+            }
+        }
+        write(
+            block as *mut u8,
+            SecurityDescriptorRelative {
+                revision,
+                sbz1: 0,
+                control,
+                owner: offsets[0],
+                group: offsets[1],
+                sacl: offsets[2],
+                dacl: offsets[3],
+            },
+        );
+    }
+    Some(block)
 }
 
-/// The host tests' stand-in: the mock store's answer.
-#[cfg(test)]
-fn secobj_query(handle: u32, info: u32, descriptor: *mut u8, length: u32, needed: *mut u32) -> u32 {
-    mock::query(handle, info, descriptor, length, needed)
-}
-
-/// The target's NtSetSecurityObject, over the service gate.
-#[cfg(not(test))]
-fn secobj_set(handle: u32, info: u32, descriptor: *const u8) -> u32 {
-    use rtl::sys::nr;
-    service(nr::NtSetSecurityObject, &[handle, info, descriptor as u32])
-}
-
-/// The host tests' stand-in: the mock store's merge.
-#[cfg(test)]
-fn secobj_set(handle: u32, info: u32, descriptor: *const u8) -> u32 {
-    mock::set(handle, info, descriptor)
-}
-
-// --- The wrappers over the services -----------------------------------------------------------
-
-/// RtlQuerySecurityObject: the object `handle`'s stored descriptor of the `info` parts into
-/// `resultant` (of `descriptor_length` bytes), the size the answer takes into `return_length` —
-/// a passthrough of the query service.
+/// RtlQuerySecurityObject: the parts of the descriptor at `object_descriptor` the
+/// `security_information` names, as a self-relative descriptor in `resultant_descriptor` (of
+/// `descriptor_length` bytes), the size the answer takes into `return_length`.
 #[unsafe(export_name = "f2k_export_RtlQuerySecurityObject")]
 pub unsafe extern "system" fn rtl_query_security_object(
-    object_handle: u32,
+    object_descriptor: *const u8,
     security_information: u32,
     resultant_descriptor: *mut u8,
     descriptor_length: u32,
     return_length: *mut u32,
 ) -> u32 {
-    secobj_query(
-        object_handle,
-        security_information,
-        resultant_descriptor,
-        descriptor_length,
-        return_length,
-    )
+    // SAFETY: the caller's descriptor; a bad pointer faults on the read, as it should.
+    let (addrs, sizes) = query_sd(object_descriptor);
+    let control = sd_control(object_descriptor);
+    // Only the named parts are packed into the answer.
+    let mut packed = [0usize; 4];
+    let mut size = core::mem::size_of::<SecurityDescriptorRelative>() as u32;
+    let mut answer_control = SE_SELF_RELATIVE;
+    for index in 0..4 {
+        if security_information & PART_INFO[index] != 0 {
+            packed[index] = sizes[index];
+            size += sizes[index] as u32;
+            answer_control |= control & (PART_PRESENT[index] | PART_DEFAULTED[index]);
+        }
+    }
+    // SAFETY: the caller's out word, written before the length check.
+    unsafe { return_length.write_unaligned(size) };
+    if size > descriptor_length {
+        return STATUS_BUFFER_TOO_SMALL;
+    }
+    let revision = read::<u8>(object_descriptor);
+    let Some(block) = heap_relative_sd(addrs, packed, answer_control, revision) else {
+        return STATUS_NO_MEMORY;
+    };
+    // SAFETY: the caller's buffer holds `size` bytes, the block the same answer.
+    unsafe {
+        core::ptr::copy_nonoverlapping(block as *const u8, resultant_descriptor, size as usize);
+        heap_free(block);
+    }
+    STATUS_SUCCESS
 }
 
-/// RtlSetSecurityObject: the object `handle`'s descriptor of the `security_information` parts
-/// replaced with `modification_descriptor`'s — a passthrough of the set service.
+/// The set wrappers' shared body: merge the parts `security_information` names from
+/// `modification_descriptor` into the self-relative descriptor the slot at
+/// `objects_security_descriptor` holds, and answer the new descriptor through the slot.
+fn set_security_object(
+    security_information: u32,
+    modification_descriptor: *const u8,
+    objects_security_descriptor: *mut *mut u8,
+) -> u32 {
+    if objects_security_descriptor.is_null() || modification_descriptor.is_null() {
+        return STATUS_INVALID_PARAMETER;
+    }
+    // SAFETY: the caller's slot and modification descriptor; a bad pointer faults on the
+    // read, as it should.
+    let (current, modification) = unsafe {
+        (
+            objects_security_descriptor.read_unaligned(),
+            modification_descriptor,
+        )
+    };
+    if current.is_null() || sd_control(current) & SE_SELF_RELATIVE == 0 {
+        return STATUS_BAD_DESCRIPTOR_FORMAT;
+    }
+    // SAFETY: both descriptors are the caller's.
+    let (mut addrs, mut sizes) = query_sd(current);
+    let (mod_addrs, mod_sizes) = query_sd(modification);
+    let mut control = sd_control(current);
+    let mod_control = sd_control(modification);
+    for index in 0..4 {
+        if security_information & PART_INFO[index] == 0 {
+            continue;
+        }
+        // The named part comes from the modification (a null one clears it), with its
+        // present and defaulted bits.
+        control = (control & !(PART_PRESENT[index] | PART_DEFAULTED[index]))
+            | (mod_control & (PART_PRESENT[index] | PART_DEFAULTED[index]));
+        addrs[index] = mod_addrs[index];
+        sizes[index] = mod_sizes[index];
+    }
+    let revision = read::<u8>(current);
+    let Some(block) = heap_relative_sd(addrs, sizes, control | SE_SELF_RELATIVE, revision) else {
+        return STATUS_NO_MEMORY;
+    };
+    // SAFETY: the slot holds the old heap descriptor, answered with the new one.
+    unsafe {
+        heap_free(current as usize);
+        objects_security_descriptor.write_unaligned(block as *mut u8);
+    }
+    STATUS_SUCCESS
+}
+
+/// RtlSetSecurityObject: merge the named parts of `modification_descriptor` into the object's
+/// descriptor at `objects_security_descriptor`.
 #[unsafe(export_name = "f2k_export_RtlSetSecurityObject")]
 pub unsafe extern "system" fn rtl_set_security_object(
     security_information: u32,
     modification_descriptor: *const u8,
-    object_handle: u32,
+    objects_security_descriptor: *mut *mut u8,
     _generic_mapping: *const u8,
     _token: u32,
 ) -> u32 {
-    secobj_set(object_handle, security_information, modification_descriptor)
+    set_security_object(
+        security_information,
+        modification_descriptor,
+        objects_security_descriptor,
+    )
 }
 
-/// RtlSetSecurityObjectEx: as RtlSetSecurityObject; the auto-inherit flags name no extra part in
-/// F2K, the set service merges the parts `security_information` names.
+/// RtlSetSecurityObjectEx: as RtlSetSecurityObject; the auto-inherit flags name no extra part
+/// for an in-memory object.
 #[unsafe(export_name = "f2k_export_RtlSetSecurityObjectEx")]
 pub unsafe extern "system" fn rtl_set_security_object_ex(
     security_information: u32,
     modification_descriptor: *const u8,
-    object_handle: u32,
+    objects_security_descriptor: *mut *mut u8,
     _auto_inherit_flags: u32,
     _generic_mapping: *const u8,
     _token: u32,
 ) -> u32 {
-    secobj_set(object_handle, security_information, modification_descriptor)
+    set_security_object(
+        security_information,
+        modification_descriptor,
+        objects_security_descriptor,
+    )
 }
 
-// --- The host tests' mock of the two services ---------------------------------------------------
-
-/// The host stand-in for the security-object services: a per-handle store of an object's
-/// control word and its four parts (owner, group, SACL, DACL, each present or not), answering
-/// queries with a self-relative descriptor of the named parts and merging sets into the store.
-/// It also records every call's argument block, so the tests pin what the wrappers forwarded.
-#[cfg(test)]
-mod mock {
-    use std::collections::BTreeMap;
-    use std::sync::Mutex;
-
-    use rtl::status::{STATUS_ACCESS_VIOLATION, STATUS_INVALID_HANDLE};
-
-    use super::*;
-
-    /// The query service's call tag, the set service's.
-    pub(crate) const QUERY: u32 = 1;
-    pub(crate) const SET: u32 = 2;
-
-    /// One object's stored state.
-    struct Object {
-        control: u16,
-        parts: [Option<Vec<u8>>; 4],
-    }
-
-    static OBJECTS: Mutex<BTreeMap<u32, Object>> = Mutex::new(BTreeMap::new());
-    static CALLS: Mutex<Vec<(u32, Vec<u32>)>> = Mutex::new(Vec::new());
-    /// The tests share the store, so each mock-using test holds this lock for its whole body.
-    static TEST_LOCK: Mutex<()> = Mutex::new(());
-
-    /// The SECURITY_INFORMATION bit of each part, in the parts' order (owner, group, SACL, DACL).
-    const BITS: [u32; 4] = [
-        OWNER_SECURITY_INFORMATION,
-        GROUP_SECURITY_INFORMATION,
-        SACL_SECURITY_INFORMATION,
-        DACL_SECURITY_INFORMATION,
-    ];
-    /// The control bit a present ACL part carries.
-    const PRESENT: [u16; 4] = [0, 0, SE_SACL_PRESENT, SE_DACL_PRESENT];
-    /// The control bit a defaulted part carries.
-    const DEFAULTED: [u16; 4] = [
-        SE_OWNER_DEFAULTED,
-        SE_GROUP_DEFAULTED,
-        SE_SACL_DEFAULTED,
-        SE_DACL_DEFAULTED,
-    ];
-
-    /// The whole-test lock a mock-using test holds.
-    pub(crate) fn test_lock() -> std::sync::MutexGuard<'static, ()> {
-        TEST_LOCK.lock().unwrap()
-    }
-
-    /// Clear the store and the recorded calls.
-    pub(crate) fn reset() {
-        OBJECTS.lock().unwrap().clear();
-        CALLS.lock().unwrap().clear();
-    }
-
-    /// Install an object: its control word and its four parts (owner, group, SACL, DACL).
-    pub(crate) fn add_object(handle: u32, control: u16, parts: [Option<Vec<u8>>; 4]) {
-        OBJECTS
-            .lock()
-            .unwrap()
-            .insert(handle, Object { control, parts });
-    }
-
-    /// The recorded calls: the service tag and its argument block.
-    pub(crate) fn calls() -> Vec<(u32, Vec<u32>)> {
-        CALLS.lock().unwrap().clone()
-    }
-
-    /// The mock query: the answer a fresh self-relative descriptor of the named parts takes,
-    /// into `needed` on success and when the buffer is too short (STATUS_BUFFER_TOO_SMALL,
-    /// nothing written); an unknown handle is STATUS_INVALID_HANDLE and writes nothing.
-    pub(crate) fn query(
-        handle: u32,
-        info: u32,
-        descriptor: *mut u8,
-        length: u32,
-        needed: *mut u32,
-    ) -> u32 {
-        CALLS.lock().unwrap().push((
-            QUERY,
-            vec![handle, info, descriptor as u32, length, needed as u32],
-        ));
-        if needed.is_null() {
-            return STATUS_ACCESS_VIOLATION;
-        }
-        let objects = OBJECTS.lock().unwrap();
-        let Some(object) = objects.get(&handle) else {
-            return STATUS_INVALID_HANDLE;
-        };
-        let mut control = SE_SELF_RELATIVE;
-        let mut body: Vec<u8> = Vec::new();
-        let mut offsets = [0u32; 4];
-        for index in 0..4 {
-            if info & BITS[index] == 0 {
-                continue;
-            }
-            control |= object.control & (PRESENT[index] | DEFAULTED[index]);
-            if let Some(part) = &object.parts[index] {
-                while body.len() % 4 != 0 {
-                    body.push(0);
-                }
-                offsets[index] = (20 + body.len()) as u32;
-                body.extend_from_slice(part);
-            }
-        }
-        let size = 20 + body.len();
-        // SAFETY: the caller's out word.
-        unsafe { needed.write_unaligned(size as u32) };
-        if size > length as usize {
-            return STATUS_BUFFER_TOO_SMALL;
-        }
-        let header = SecurityDescriptorRelative {
-            revision: 1,
-            sbz1: 0,
-            control,
-            owner: offsets[0],
-            group: offsets[1],
-            sacl: offsets[2],
-            dacl: offsets[3],
-        };
-        // SAFETY: the caller's buffer holds `size` bytes.
-        unsafe {
-            write(descriptor, header);
-            core::ptr::copy_nonoverlapping(body.as_ptr(), descriptor.add(20), body.len());
-        }
-        STATUS_SUCCESS
-    }
-
-    /// The mock set: the parts `info` names taken from the caller's descriptor (either form)
-    /// into the object's stored parts; an unknown handle is STATUS_INVALID_HANDLE, a null
-    /// descriptor STATUS_ACCESS_VIOLATION.
-    pub(crate) fn set(handle: u32, info: u32, descriptor: *const u8) -> u32 {
-        CALLS
-            .lock()
-            .unwrap()
-            .push((SET, vec![handle, info, descriptor as u32]));
-        if descriptor.is_null() {
-            return STATUS_ACCESS_VIOLATION;
-        }
-        let mut objects = OBJECTS.lock().unwrap();
-        let Some(object) = objects.get_mut(&handle) else {
-            return STATUS_INVALID_HANDLE;
-        };
-        let control = sd_control(descriptor);
-        let (addrs, sizes) = query_sd(descriptor);
-        for index in 0..4 {
-            if info & BITS[index] == 0 {
-                continue;
-            }
-            object.parts[index] = if addrs[index] != 0 {
-                // SAFETY: the part holds its aligned size of bytes.
-                Some(unsafe { bytes(addrs[index] as *const u8, sizes[index]) }.to_vec())
-            } else {
-                None
-            };
-            if index >= 2 {
-                object.control = (object.control & !PRESENT[index]) | (control & PRESENT[index]);
-            }
-        }
-        STATUS_SUCCESS
-    }
-}
 #[cfg(test)]
 pub(crate) mod fixtures {
     //! The descriptor builders the tests of this module and of `create` share.
@@ -322,41 +260,47 @@ pub(crate) mod fixtures {
 
 #[cfg(test)]
 mod tests {
-    use rtl::status::STATUS_INVALID_HANDLE;
-
     use super::fixtures::{absolute_sd, dacl_with};
     use super::*;
+    use crate::sec::convert::rtl_make_self_relative_sd;
     use crate::sec::test_support::*;
 
-    fn object_with_owner_and_dacl() -> (Vec<u8>, Vec<u8>) {
-        let owner = admins().to_vec();
-        let dacl = dacl_with(0x0012_019F, &world());
-        mock::add_object(
-            0x40,
-            SE_DACL_PRESENT,
-            [Some(owner.clone()), None, None, Some(dacl.clone())],
+    /// A heap block holding `sd` in self-relative form, as an object's slot holds it.
+    fn heap_relative(sd: &[u8]) -> *mut u8 {
+        let length = unsafe { rtl_length_security_descriptor(sd.as_ptr()) } as usize;
+        let block = heap_alloc(length).unwrap();
+        let mut size = length as u32;
+        assert_eq!(
+            unsafe { rtl_make_self_relative_sd(sd.as_ptr(), block as *mut u8, &mut size) },
+            STATUS_SUCCESS
         );
-        (owner, dacl)
+        block as *mut u8
     }
 
     #[test]
-    fn a_query_forwards_its_arguments_and_reports_the_size() {
-        let _guard = mock::test_lock();
-        mock::reset();
-        let (owner, dacl) = object_with_owner_and_dacl();
+    fn a_query_builds_a_self_relative_answer_of_the_named_parts() {
+        let owner = admins();
+        let group = world();
+        let dacl = dacl_with(0x0012_019F, &world());
+        let object = absolute_sd(&owner, &group, Some(&dacl));
+        let info = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
         let mut buffer = [0u8; 256];
         let mut needed = 0u32;
-        let info = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
         // Too small a buffer: the size comes out, nothing is written.
         assert_eq!(
-            unsafe { rtl_query_security_object(0x40, info, buffer.as_mut_ptr(), 0, &mut needed) },
+            unsafe {
+                rtl_query_security_object(object.as_ptr(), info, buffer.as_mut_ptr(), 0, &mut needed)
+            },
             STATUS_BUFFER_TOO_SMALL
         );
-        assert_eq!(needed, 20 + 16 + 64);
+        assert_eq!(needed, 20 + 64 + 16);
         assert_eq!(&buffer[..20], &[0u8; 20]);
-        // Enough room: the self-relative answer with the two named parts.
+        // Enough room: the self-relative answer with the two named parts, packed in
+        // SACL, DACL, owner, group order — the DACL at 20, the owner at 84.
         assert_eq!(
-            unsafe { rtl_query_security_object(0x40, info, buffer.as_mut_ptr(), 256, &mut needed) },
+            unsafe {
+                rtl_query_security_object(object.as_ptr(), info, buffer.as_mut_ptr(), 256, &mut needed)
+            },
             STATUS_SUCCESS
         );
         assert_eq!(needed, 100);
@@ -364,77 +308,31 @@ mod tests {
         assert_eq!(header.revision, 1);
         assert!(header.control & SE_SELF_RELATIVE != 0);
         assert!(header.control & SE_DACL_PRESENT != 0);
-        assert_eq!((header.owner, header.group, header.sacl), (20, 0, 0));
-        assert_eq!(header.dacl, 20 + 16);
-        assert_eq!(&buffer[20..36], &owner[..]);
-        assert_eq!(&buffer[36..100], &dacl[..]);
-        // What the wrapper forwarded: the handle, the info, the buffer, the length, the out word.
-        let calls = mock::calls();
-        assert_eq!(calls.len(), 2);
+        assert_eq!((header.owner, header.group, header.sacl, header.dacl), (84, 0, 0, 20));
+        assert_eq!(&buffer[20..84], &dacl[..]);
+        assert_eq!(&buffer[84..100], &owner[..]);
+        // Naming nothing answers the header alone.
         assert_eq!(
-            calls[0],
-            (
-                mock::QUERY,
-                vec![
-                    0x40,
-                    info,
-                    buffer.as_mut_ptr() as u32,
-                    0,
-                    &mut needed as *mut u32 as u32
-                ]
-            )
+            unsafe {
+                rtl_query_security_object(object.as_ptr(), 0, buffer.as_mut_ptr(), 256, &mut needed)
+            },
+            STATUS_SUCCESS
         );
+        assert_eq!(needed, 20);
+        let header: SecurityDescriptorRelative = read(buffer.as_ptr());
         assert_eq!(
-            calls[1].1,
-            vec![
-                0x40,
-                info,
-                buffer.as_mut_ptr() as u32,
-                256,
-                &mut needed as *mut u32 as u32
-            ]
+            (header.owner, header.group, header.sacl, header.dacl),
+            (0, 0, 0, 0)
         );
     }
 
     #[test]
-    fn a_query_of_an_unknown_handle_writes_nothing() {
-        let _guard = mock::test_lock();
-        mock::reset();
-        let mut buffer = [0u8; 64];
-        let mut needed = 0xDEAD_BEEF;
-        assert_eq!(
-            unsafe {
-                rtl_query_security_object(
-                    0x99,
-                    DACL_SECURITY_INFORMATION,
-                    buffer.as_mut_ptr(),
-                    64,
-                    &mut needed,
-                )
-            },
-            STATUS_INVALID_HANDLE
-        );
-        assert_eq!(needed, 0xDEAD_BEEF);
-        // A null out word is refused before the handle is looked at.
-        assert_eq!(
-            unsafe {
-                rtl_query_security_object(
-                    0x40,
-                    DACL_SECURITY_INFORMATION,
-                    buffer.as_mut_ptr(),
-                    64,
-                    core::ptr::null_mut(),
-                )
-            },
-            rtl::status::STATUS_ACCESS_VIOLATION
-        );
-    }
-
-    #[test]
-    fn a_set_then_a_query_round_trips_the_named_parts() {
-        let _guard = mock::test_lock();
-        mock::reset();
-        let (owner, _dacl) = object_with_owner_and_dacl();
+    fn a_set_merges_the_named_parts_and_answers_through_the_slot() {
+        let owner = admins();
+        let group = world();
+        let dacl = dacl_with(0x0012_019F, &world());
+        let object = absolute_sd(&owner, &group, Some(&dacl));
+        let mut slot = heap_relative(&object);
         // A modification naming the DACL and the owner.
         let new_dacl = dacl_with(0x0010_0000, &world());
         let modification = absolute_sd(&admins(), &world(), Some(&new_dacl));
@@ -443,35 +341,34 @@ mod tests {
                 rtl_set_security_object(
                     DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
                     modification.as_ptr(),
-                    0x40,
+                    &mut slot,
                     core::ptr::null(),
                     0,
                 )
             },
             STATUS_SUCCESS
         );
-        // The set forwarded the handle, the info and the descriptor.
-        let calls = mock::calls();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(
-            calls[0],
-            (
-                mock::SET,
-                vec![
-                    0x40,
-                    DACL_SECURITY_INFORMATION | OWNER_SECURITY_INFORMATION,
-                    modification.as_ptr() as u32
-                ]
-            )
-        );
-        // Query the DACL back: the answer holds the modification's ACL.
+        assert!(!slot.is_null());
+        // SAFETY: the block is the call's answer.
+        let header: SecurityDescriptorRelative = read(slot as *const u8);
+        assert!(header.control & SE_SELF_RELATIVE != 0);
+        assert!(header.control & SE_DACL_PRESENT != 0);
+        assert_ne!(header.dacl, 0);
+        assert_ne!(header.owner, 0);
+        // The DACL in the answer is the modification's; the group was not named, so it
+        // is the object's.
+        // SAFETY: the block holds the answer.
+        let all = unsafe { bytes(slot as *const u8, 20 + 64 + 16 + 12) };
+        assert_eq!(&all[header.dacl as usize..][..64], &new_dacl[..]);
+        assert_eq!(&all[header.group as usize..][..12], &group[..]);
+        // Query the new descriptor back through the wrapper: the merged parts come out.
         let mut buffer = [0u8; 256];
         let mut needed = 0u32;
         assert_eq!(
             unsafe {
                 rtl_query_security_object(
-                    0x40,
-                    DACL_SECURITY_INFORMATION,
+                    slot,
+                    DACL_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION,
                     buffer.as_mut_ptr(),
                     256,
                     &mut needed,
@@ -479,41 +376,18 @@ mod tests {
             },
             STATUS_SUCCESS
         );
-        let header: SecurityDescriptorRelative = read(buffer.as_ptr());
-        assert_eq!(header.dacl, 20);
-        assert_eq!(&buffer[20..20 + 64], &new_dacl[..]);
-        // And the owner, still the stored one until a set names it: it was named, so it is the
-        // modification's owner.
-        assert_eq!(
-            unsafe {
-                rtl_query_security_object(
-                    0x40,
-                    OWNER_SECURITY_INFORMATION,
-                    buffer.as_mut_ptr(),
-                    256,
-                    &mut needed,
-                )
-            },
-            STATUS_SUCCESS
-        );
-        let header: SecurityDescriptorRelative = read(buffer.as_ptr());
-        assert_eq!(header.owner, 20);
-        assert_eq!(&buffer[20..36], &owner[..]);
-    }
-
-    #[test]
-    fn the_set_variants_and_their_error_paths() {
-        let _guard = mock::test_lock();
-        mock::reset();
-        object_with_owner_and_dacl();
-        let modification = absolute_sd(&admins(), &world(), None);
-        // The Ex variant forwards the same way.
+        let answer: SecurityDescriptorRelative = read(buffer.as_ptr());
+        assert_eq!(answer.dacl, 20);
+        assert_eq!(&buffer[20..84], &new_dacl[..]);
+        assert_eq!(answer.group, 84);
+        assert_eq!(&buffer[84..96], &group[..]);
+        // The Ex variant answers the same way.
         assert_eq!(
             unsafe {
                 rtl_set_security_object_ex(
                     GROUP_SECURITY_INFORMATION,
                     modification.as_ptr(),
-                    0x40,
+                    &mut slot,
                     0,
                     core::ptr::null(),
                     0,
@@ -521,43 +395,45 @@ mod tests {
             },
             STATUS_SUCCESS
         );
-        let calls = mock::calls();
-        assert_eq!(calls.len(), 1);
-        assert_eq!(
-            calls[0],
-            (
-                mock::SET,
-                vec![
-                    0x40,
-                    GROUP_SECURITY_INFORMATION,
-                    modification.as_ptr() as u32
-                ]
-            )
-        );
-        // An unknown handle, and a null descriptor.
+        // An absolute descriptor in the slot is refused; so are a null slot and a null
+        // modification.
+        let mut absolute_slot = object.as_ptr() as *mut u8;
         assert_eq!(
             unsafe {
                 rtl_set_security_object(
-                    GROUP_SECURITY_INFORMATION,
+                    DACL_SECURITY_INFORMATION,
                     modification.as_ptr(),
-                    0x99,
+                    &mut absolute_slot,
                     core::ptr::null(),
                     0,
                 )
             },
-            STATUS_INVALID_HANDLE
+            STATUS_BAD_DESCRIPTOR_FORMAT
         );
         assert_eq!(
             unsafe {
                 rtl_set_security_object(
-                    GROUP_SECURITY_INFORMATION,
-                    core::ptr::null(),
-                    0x40,
+                    DACL_SECURITY_INFORMATION,
+                    modification.as_ptr(),
+                    core::ptr::null_mut(),
                     core::ptr::null(),
                     0,
                 )
             },
-            rtl::status::STATUS_ACCESS_VIOLATION
+            STATUS_INVALID_PARAMETER
         );
+        assert_eq!(
+            unsafe {
+                rtl_set_security_object(
+                    DACL_SECURITY_INFORMATION,
+                    core::ptr::null(),
+                    &mut slot,
+                    core::ptr::null(),
+                    0,
+                )
+            },
+            STATUS_INVALID_PARAMETER
+        );
+        assert!(heap_free(slot as usize));
     }
 }
