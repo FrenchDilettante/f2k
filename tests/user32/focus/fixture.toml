@@ -12,7 +12,6 @@ gate = true
 # so GetForegroundWindow answers NULL.
 [pending]
 destroy = "the foreground passes to another program's window when the active window is destroyed; F2K's console has no window, so the foreground window is NULL"
-ncactivate = "F2K's activation does not look at WM_NCACTIVATE's answer (kernel/src/win32k/focus.rs), so a window answering FALSE does not keep the activation"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

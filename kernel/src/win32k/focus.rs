@@ -31,7 +31,16 @@
 //! hands that thread as an event: [`activate_this`] has them queued for it, not waited for
 //! ([`Session::queue_for`]). So what the default procedure does with WM_ACTIVATE (the focus to the
 //! window, through [`call_hwnd_lock`]'s routine, a nested decision) happens inside the activation,
-//! as on Windows 2000; the answers themselves (WM_NCACTIVATE's veto) are not looked at yet.
+//! as on Windows 2000.
+//!
+//! WM_NCACTIVATE (FALSE) answered FALSE vetoes the deactivation, as Windows 2000's
+//! xxxActivateThisWindow and xxxDeactivate stop there (the focus capture's ncactivate block): a
+//! window of the deciding thread's own keeps the activation, SetActiveWindow answering the active
+//! window and SetForegroundWindow FALSE; another thread's window, whose messages are queued,
+//! stops its own thread's deactivation when its answer comes ([`deactivation_vetoed`]: the rest
+//! of the deactivation's messages dropped, the thread's active window and focus given back), the
+//! deciding thread's activation going on. A window active in its thread again made the
+//! foreground then is sent WM_NCACTIVATE (TRUE) alone ([`foreground_to`]).
 //!
 //! The services, user32's calls (F2K's argument lists, see [`crate::win32k`]; Windows 2000's
 //! numbers):
@@ -65,7 +74,17 @@ use rtl::user::{
 };
 use rtl::window::{SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE};
 
-use super::window::{Activate, InsertAfter, Message, Payload, Session, WParam, WindowId, Windows};
+use super::window::{
+    Activate,
+    InsertAfter,
+    LResult,
+    Message,
+    Payload,
+    Session,
+    WParam,
+    WindowId,
+    Windows,
+};
 use crate::sched::thread::ThreadId;
 
 // --- The state's reads ---------------------------------------------------------------------------
@@ -125,8 +144,14 @@ fn is_within(windows: &Windows, window: WindowId, ancestor: WindowId) -> bool {
     false
 }
 
-/// A message with no payload sent to `target`.
-fn send(s: &mut dyn Session, target: WindowId, message: u32, wparam: WParam, lparam: u32) {
+/// A message with no payload sent to `target`; its answer.
+fn send(
+    s: &mut dyn Session,
+    target: WindowId,
+    message: u32,
+    wparam: WParam,
+    lparam: u32,
+) -> LResult {
     s.send(
         target,
         &mut Message {
@@ -135,7 +160,7 @@ fn send(s: &mut dyn Session, target: WindowId, message: u32, wparam: WParam, lpa
             lparam: lparam as i32,
             payload: Payload::None,
         },
-    );
+    )
 }
 
 // --- The focus -----------------------------------------------------------------------------------
@@ -326,7 +351,12 @@ fn activate_this_queued(s: &mut dyn Session, thread: ThreadId, new: Option<Windo
         return true;
     }
     if let Some(old) = old {
-        send(s, old, WM_NCACTIVATE, 0, 0);
+        // A FALSE answer keeps the activation where it is (another thread's queued message is
+        // answered as the default procedure answers: its veto comes when the thread answers,
+        // [`deactivation_vetoed`]).
+        if send(s, old, WM_NCACTIVATE, 0, 0) == 0 {
+            return false;
+        }
         let windows = s.windows();
         let wparam = activate_wparam(windows, old, WA_INACTIVE);
         let other = handle(windows, new);
@@ -337,6 +367,9 @@ fn activate_this_queued(s: &mut dyn Session, thread: ThreadId, new: Option<Windo
         let t = windows.thread_mut(thread);
         t.active_prev = old;
         t.active = new;
+        if new.is_none() {
+            t.deactivated_focus = t.focus;
+        }
     }
     let Some(new) = new else {
         if let Some(old) = old {
@@ -509,7 +542,8 @@ fn foreground_to(s: &mut dyn Session, window: WindowId) -> bool {
     let windows = s.windows();
     let top = top_level(windows, window);
     let thread = windows.window_thread(top);
-    if windows.foreground_thread != Some(thread) {
+    let becomes = windows.foreground_thread != Some(thread);
+    if becomes {
         if let Some(f) = windows.foreground_thread {
             if windows.thread(f).live {
                 activate_this(s, f, None);
@@ -517,8 +551,44 @@ fn foreground_to(s: &mut dyn Session, window: WindowId) -> bool {
         }
         let windows = s.windows();
         windows.foreground_thread = Some(thread);
+        // A window that kept its thread's activation (its WM_NCACTIVATE's veto) is only drawn
+        // active again: WM_NCACTIVATE (TRUE) alone, no WM_ACTIVATEAPP nor WM_ACTIVATE.
+        if active_window(windows, thread) == Some(top) {
+            let outer = s.queue_for(Some(thread));
+            send(s, top, WM_NCACTIVATE, 1, 0);
+            s.queue_for(outer);
+            return true;
+        }
     }
     activate_this(s, thread, Some(top))
+}
+
+/// The thread `thread`'s window `window` answered FALSE to the WM_NCACTIVATE (FALSE) another
+/// thread's activation queued for it: the thread's deactivation stops there, as Windows 2000's
+/// xxxDeactivate, run by the thread itself, stops. The rest of the deactivation's queued
+/// messages (WM_ACTIVATE (WA_INACTIVE), WM_ACTIVATEAPP (FALSE), WM_KILLFOCUS) are dropped, and the
+/// thread keeps `window` active and its focus where it was, unless it has activated another
+/// window since.
+pub fn deactivation_vetoed(windows: &mut Windows, thread: ThreadId, window: WindowId) {
+    super::queue::drop_deferred_run(windows, thread, |target, message, wparam| match message {
+        WM_ACTIVATE => target == Some(window) && wparam & 0xFFFF == WA_INACTIVE,
+        WM_ACTIVATEAPP => wparam == 0,
+        WM_KILLFOCUS => true,
+        _ => false,
+    });
+    if !windows.is_live(window) || windows.thread(thread).active.is_some() {
+        return;
+    }
+    let focus = windows
+        .thread_mut(thread)
+        .deactivated_focus
+        .take()
+        .filter(|&f| windows.is_live(f) && windows.window_thread(f) == thread);
+    let t = windows.thread_mut(thread);
+    t.active = Some(window);
+    if t.focus.is_none() {
+        t.focus = focus;
+    }
 }
 
 // --- The mouse capture ---------------------------------------------------------------------------
@@ -552,7 +622,8 @@ pub fn set_capture(
 
 /// NtUserCallHwndLock's routines served here (rtl::user's HWND_LOCK_*), for [`super::paint`]'s
 /// service, on the window `window` and for the calling thread `caller`: SetForegroundWindow
-/// (STATUS_ACCESS_DENIED when the caller may not take the foreground) and the default procedure's
+/// (STATUS_ACCESS_DENIED when the caller may not take the foreground, STATUS_UNSUCCESSFUL when a
+/// WM_NCACTIVATE vetoed the activation) and the default procedure's
 /// WM_ACTIVATE ([`activate_focus`]); none for another routine.
 pub fn call_hwnd_lock(
     s: &mut dyn Session,
@@ -562,10 +633,15 @@ pub fn call_hwnd_lock(
 ) -> Option<Result<(), crate::status::NtStatus>> {
     use rtl::user::{HWND_LOCK_ACTIVATE_FOCUS, HWND_LOCK_SET_FOREGROUND_WINDOW};
     match routine {
-        HWND_LOCK_SET_FOREGROUND_WINDOW => Some(if set_foreground_window(s, caller, window) {
+        // A caller that may not take the foreground is refused with an error; an activation a
+        // window's WM_NCACTIVATE vetoed answers FALSE and leaves the last error alone (the focus
+        // capture's ncactivate block), which STATUS_UNSUCCESSFUL tells user32.
+        HWND_LOCK_SET_FOREGROUND_WINDOW => Some(if !may_take_foreground(s.windows(), caller) {
+            Err(crate::status::STATUS_ACCESS_DENIED)
+        } else if foreground_to(s, window) {
             Ok(())
         } else {
-            Err(crate::status::STATUS_ACCESS_DENIED)
+            Err(crate::status::STATUS_UNSUCCESSFUL)
         }),
         HWND_LOCK_ACTIVATE_FOCUS => {
             activate_focus(s, window);
@@ -853,7 +929,8 @@ mod tests {
         }
 
         /// Deliver the sent messages as user32 does for the fixture's procedure, which hands each
-        /// to DefWindowProc: a WM_ACTIVATE activating a window gives it the focus. The recorded
+        /// to DefWindowProc: WM_NCACTIVATE answered TRUE, a WM_ACTIVATE activating a window gives
+        /// it the focus. The recorded
         /// ones, in order.
         fn settle(&mut self) -> Vec<Record> {
             let only_sent = Filter::new(0, 0, 0, PM_QS_SENDMESSAGE);
@@ -863,7 +940,9 @@ mod tests {
                 if RECORDED.contains(&msg.message) {
                     got.push((msg.hwnd, msg.message, msg.wparam, msg.lparam));
                 }
-                assert!(end_sent(&mut self.m.windows, self.t, 0));
+                // DefWindowProc's answers: WM_NCACTIVATE's TRUE lets the activation go on.
+                let answer = (msg.message == WM_NCACTIVATE) as i32;
+                assert!(end_sent(&mut self.m.windows, self.t, answer));
                 if msg.message == WM_ACTIVATE && msg.wparam == WA_ACTIVE {
                     let window = self.m.windows.window_from_handle(msg.hwnd).unwrap();
                     let WindowManager {

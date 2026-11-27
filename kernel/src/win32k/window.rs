@@ -104,6 +104,7 @@ use rtl::user::{
     WM_DESTROY,
     WM_GETMINMAXINFO,
     WM_MOVE,
+    WM_NCACTIVATE,
     WM_NCCALCSIZE,
     WM_NCCREATE,
     WM_NCDESTROY,
@@ -591,10 +592,11 @@ pub struct Resize {
 
 /// The default window procedure's answer to `message` for `target`, as the window manager gives it
 /// when no client procedure answers (a window whose procedure is the window manager's, a message
-/// queued for another thread, a session that cannot call back): WM_NCCREATE and
-/// WM_QUERYENDSESSION answer 1, the rest 0; WM_NCCALCSIZE's rectangle (either form's first) is
-/// made the client rectangle the window's frame leaves inside it ([`Windows::default_client`]), as
-/// user32's DefWindowProc makes it. A window gone leaves the payload as it is.
+/// queued for another thread, a session that cannot call back): WM_NCCREATE, WM_QUERYENDSESSION
+/// and WM_NCACTIVATE answer 1 (the last: the activation goes on), the rest 0; WM_NCCALCSIZE's
+/// rectangle (either form's first) is made the client rectangle the window's frame leaves inside it
+/// ([`Windows::default_client`]), as user32's DefWindowProc makes it. A window gone leaves the
+/// payload as it is.
 pub fn default_procedure(windows: &Windows, target: WindowId, message: &mut Message) -> LResult {
     if message.message == WM_NCCALCSIZE && windows.pool.is_live(target) {
         match &mut message.payload {
@@ -606,7 +608,7 @@ pub fn default_procedure(windows: &Windows, target: WindowId, message: &mut Mess
         }
     }
     match message.message {
-        WM_NCCREATE | WM_QUERYENDSESSION => 1,
+        WM_NCCREATE | WM_QUERYENDSESSION | WM_NCACTIVATE => 1,
         _ => 0,
     }
 }
@@ -1420,6 +1422,9 @@ pub struct Thread {
     pub active: Option<WindowId>,
     pub active_prev: Option<WindowId>,
     pub focus: Option<WindowId>,
+    /// The focus the thread had when another thread's activation last deactivated it: given
+    /// back when its window vetoes the deactivation ([`super::focus::deactivation_vetoed`]).
+    pub deactivated_focus: Option<WindowId>,
     pub capture: Option<WindowId>,
     /// The thread's caret ([`super::caret`]).
     pub caret: super::caret::Caret,
@@ -1447,6 +1452,7 @@ impl Thread {
         active: None,
         active_prev: None,
         focus: None,
+        deactivated_focus: None,
         capture: None,
         caret: super::caret::Caret::EMPTY,
         keys: super::input::KeyState::EMPTY,
@@ -6758,6 +6764,7 @@ mod tests {
             match message.message {
                 WM_NCCREATE => self.rec.nccreate_answer,
                 WM_CREATE => self.rec.create_answer,
+                WM_NCACTIVATE => 1,
                 _ => 0,
             }
         }

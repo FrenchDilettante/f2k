@@ -11,6 +11,7 @@
 //! do; IsWindowEnabled reads the window's style, which Windows 2000's user32 reads from the window
 //! manager's records mapped into its process, through NtUserQueryWindow.
 
+use rtl::status::{NtStatus, STATUS_UNSUCCESSFUL};
 use rtl::user::{
     HWND_LOCK_ACTIVATE_FOCUS,
     HWND_LOCK_SET_FOREGROUND_WINDOW,
@@ -61,10 +62,14 @@ pub extern "system" fn get_foreground_window() -> usize {
 
 /// SetForegroundWindow: the window's thread made the foreground one and the window activated, the
 /// messages it sent received; TRUE, or FALSE with the last error (1400 for a handle naming no
-/// window, 5 when the caller may not take the foreground).
+/// window, 5 when the caller may not take the foreground), or FALSE alone when the active window's
+/// WM_NCACTIVATE vetoed the activation (the kernel's STATUS_UNSUCCESSFUL).
 #[unsafe(export_name = "f2k_export_SetForegroundWindow")]
 pub extern "system" fn set_foreground_window(window: usize) -> u32 {
     let answer = imports::call_hwnd_lock(window, HWND_LOCK_SET_FOREGROUND_WINDOW);
+    if answer == Err(NtStatus(STATUS_UNSUCCESSFUL)) {
+        return 0;
+    }
     answered(answer).is_some() as u32
 }
 

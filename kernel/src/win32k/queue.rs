@@ -137,6 +137,7 @@ use rtl::user::{
     WM_KEYLAST,
     WM_MOUSEFIRST,
     WM_MOUSELAST,
+    WM_NCACTIVATE,
     WM_NCCREATE,
     WM_NCDESTROY,
     WM_PAINT,
@@ -2408,8 +2409,12 @@ pub fn end_received(
         queues.queues[queue.index as usize].receiving = queues.sent.at(top).next;
         let Sent {
             message,
+            wparam,
             window,
             state,
+            sender,
+            server,
+            notify,
             ..
         } = *queues.sent.at(top);
         let answer = if top == id {
@@ -2427,6 +2432,14 @@ pub fn end_received(
             super::caret::ncdestroy_delivered(windows, caller, window);
         }
         if top == id {
+            // Another thread's activation deactivating this one, its WM_NCACTIVATE (FALSE)
+            // answered FALSE: the deactivation stops there ([`super::focus`]).
+            let deferred = sender.is_none() && !server && !notify;
+            if let (WM_NCACTIVATE, 0, true, 0, Some(window)) =
+                (message, wparam, deferred, answer, window)
+            {
+                super::focus::deactivation_vetoed(windows, caller, window);
+            }
             return;
         }
     }
@@ -2596,6 +2609,29 @@ pub struct CallbackInput {
     /// The structure, its first `length` bytes.
     pub carried: [u8; CARRIED],
     pub length: usize,
+}
+
+/// Drop the messages the window manager queued for `thread` (sent by no thread, no answer
+/// awaited: [`defer`]) that wait at the head of its sent list while `drop` says so (the window,
+/// the message, its wParam); the first it keeps ends the run.
+pub fn drop_deferred_run(
+    windows: &mut Windows,
+    thread: ThreadId,
+    drop: impl Fn(Option<WindowId>, u32, WParam) -> bool,
+) {
+    let queues = &mut windows.queues;
+    let Some(queue) = queues.queue_of(thread) else {
+        return;
+    };
+    while let Some(head) = queues.queues[queue.index as usize].sent.head {
+        let sent = queues.sent.at(head);
+        let deferred = sent.sender.is_none() && !sent.server && !sent.notify;
+        if !deferred || !drop(sent.window, sent.message, sent.wparam) {
+            return;
+        }
+        let _ = queues.pop_sent(queue);
+        queues.free_sent(head);
+    }
 }
 
 /// The window `window` is being freed: the messages posted to it go, its timers, its update
