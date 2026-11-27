@@ -49,6 +49,7 @@ pub(crate) const ERROR_DOMAINS_DIFFER: u32 = 1258;
 // STATUS_INVALID_SECURITY_DESCR, STATUS_ALLOTTED_SPACE_EXCEEDED.
 pub(crate) const STATUS_INVALID_ACL: u32 = 0xC000_0077;
 pub(crate) const STATUS_INVALID_SID: u32 = 0xC000_0078;
+pub(crate) const STATUS_INVALID_SECURITY_DESCR: u32 = 0xC000_0079;
 pub(crate) const STATUS_ALLOTTED_SPACE_EXCEEDED: u32 = 0xC000_0099;
 
 use crate::imports::{self as nt, HeapBlock, ProcessHeap};
@@ -245,8 +246,11 @@ pub(crate) fn sid_parts_bytes(parts: &SidParts, out: &mut [u8]) {
 }
 
 /// The token information classes the check reads, and the token rights it opens with.
-const TOKEN_USER: u32 = 1;
-const TOKEN_GROUPS: u32 = 2;
+pub(crate) const TOKEN_USER: u32 = 1;
+pub(crate) const TOKEN_GROUPS: u32 = 2;
+pub(crate) const TOKEN_OWNER: u32 = 4;
+pub(crate) const TOKEN_PRIMARY_GROUP: u32 = 5;
+pub(crate) const TOKEN_DEFAULT_DACL: u32 = 6;
 const TOKEN_TYPE: u32 = 8;
 const TOKEN_IMPERSONATION_LEVEL: u32 = 9;
 use rtl::nt::access::TOKEN_QUERY;
@@ -254,7 +258,7 @@ use rtl::nt::access::TOKEN_QUERY;
 const TOKEN_PRIMARY: u32 = 1;
 const SECURITY_IDENTIFICATION: u32 = 1;
 /// GetCurrentProcess's pseudo-handle.
-const CURRENT_PROCESS: u32 = 0xFFFF_FFFF;
+pub(crate) const CURRENT_PROCESS: u32 = 0xFFFF_FFFF;
 
 /// The groups' attributes the check reads (winnt.h's SE_GROUP_*).
 const SE_GROUP_ENABLED: u32 = 0x4;
@@ -769,7 +773,7 @@ pub unsafe extern "system" fn equal_domain_sid(
 
 /// A token's information of `class`, read whole into a block of the process heap (asked for its
 /// size first).
-fn token_information(token: u32, class: u32) -> Result<HeapBlock, NtStatus> {
+pub(crate) fn token_information(token: u32, class: u32) -> Result<HeapBlock, NtStatus> {
     let answer = nt::query_token(token, class, &mut []);
     if answer.status.0 != STATUS_BUFFER_TOO_SMALL {
         answer.status.ok()?;
@@ -789,7 +793,7 @@ fn token_word(token: u32, class: u32) -> Result<u32, NtStatus> {
 }
 
 /// The SID a token's answer points at, `at` its address and `base` the answer's own.
-fn pointed(answer: &[u8], base: usize, at: u32) -> Option<&[u8]> {
+pub(crate) fn pointed(answer: &[u8], base: usize, at: u32) -> Option<&[u8]> {
     let offset = (at as usize).checked_sub(base)?;
     sid_of(answer.get(offset..)?)
 }

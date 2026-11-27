@@ -5,15 +5,29 @@
 //! error alone; the caller's buffer, its length (the size's value in) and the size out go
 //! straight to the service, which probes them.
 
-use rtl::winerror::{ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER};
+use rtl::status::{STATUS_BUFFER_TOO_SMALL, STATUS_KEY_DELETED, STATUS_SUCCESS};
+use rtl::winerror::{ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER, ERROR_SUCCESS};
 
+use crate::defaults;
 use crate::imports::{self as nt};
 use crate::registry;
 use crate::{filesec, Out};
 
+/// The key's deleted-mark check: a key deleted under its open handle answers STATUS_KEY_DELETED
+/// to any query of its own information (class 0), which the calls report as its error code
+/// (ERROR_KEY_DELETED) before any security service call. Any other answer is left to the
+/// service itself.
+fn deleted(key: u32) -> Option<u32> {
+    let mut information = [0u8; 64];
+    let answer = nt::query_key(key, 0, &mut information);
+    (answer.status.0 == STATUS_KEY_DELETED).then(|| nt::dos_error(answer.status))
+}
+
 /// RegGetKeySecurity: the key `key`'s security descriptor of the `info` parts into the caller's
 /// `descriptor`, its size in `*size` and out again: the error code (ERROR_INVALID_HANDLE for a
-/// null key, ERROR_INVALID_PARAMETER for no size).
+/// null key, ERROR_INVALID_PARAMETER for no size). A null descriptor is the size query: the
+/// service writes the size the descriptor takes into `*size` and its buffer-too-small status is
+/// reported as success.
 ///
 /// # Safety
 ///
@@ -38,13 +52,26 @@ pub unsafe extern "system" fn reg_get_key_security(
         Ok(key) => key,
         Err(code) => return code,
     };
+    if let Some(code) = deleted(key) {
+        return code;
+    }
+    if descriptor.is_null() {
+        // The size query: no buffer and no length, the size out only.
+        // SAFETY: the caller's size, handed to the service.
+        let status = unsafe { filesec::query_security_object(key, info, descriptor, 0, size) };
+        return match status.0 {
+            STATUS_SUCCESS | STATUS_BUFFER_TOO_SMALL => ERROR_SUCCESS,
+            _ => nt::dos_error(status),
+        };
+    }
     // SAFETY: the caller's buffer of `length` bytes and size, handed to the service.
     let status = unsafe { filesec::query_security_object(key, info, descriptor, length, size) };
     nt::dos_error(status)
 }
 
 /// RegSetKeySecurity: the key `key`'s security descriptor of the `info` parts set to the caller's
-/// `descriptor`: the error code.
+/// `descriptor`: the error code. The descriptor goes to the service in the self-relative form,
+/// an absolute one converted into a block of the process heap.
 ///
 /// # Safety
 ///
@@ -62,9 +89,23 @@ pub unsafe extern "system" fn reg_set_key_security(
         Ok(key) => key,
         Err(code) => return code,
     };
-    // SAFETY: the caller's descriptor, handed to the service.
-    let status = unsafe { filesec::set_security_object(key, info, descriptor) };
+    if let Some(code) = deleted(key) {
+        return code;
+    }
+    // SAFETY: the caller's descriptor.
+    let status = unsafe { set_descriptor(key, info, descriptor) };
     nt::dos_error(status)
+}
+
+/// The caller's descriptor to the service in the self-relative form the service takes: an
+/// absolute one converted into a heap block first, a self-relative one as it is.
+///
+/// # Safety
+///
+/// `descriptor` is the caller's security descriptor.
+unsafe fn set_descriptor(key: u32, info: u32, descriptor: *const u8) -> rtl::status::NtStatus {
+    // SAFETY: the caller's descriptor.
+    unsafe { defaults::set_object_sd(key, info, descriptor) }
 }
 
 #[cfg(test)]
@@ -130,11 +171,72 @@ mod tests {
         assert_eq!(
             calls,
             [
-                ("NtQuerySecurityObject", 0x1234, WANT, 0xF2F2_F2F2),
+                ("NtQuerySecurityObject", 0x1234, WANT, 0),
                 ("NtQuerySecurityObject", 0x1234, WANT, 27),
                 ("NtQuerySecurityObject", 0x1234, WANT, 28),
             ]
         );
+    }
+
+    /// A key deleted under its open handle: the key's own information answers STATUS_KEY_DELETED,
+    /// and both calls report its error code (ERROR_KEY_DELETED) before any security service call.
+    #[test]
+    fn a_deleted_key_answers_error_key_deleted() {
+        reset();
+        crate::imports::host::KEY_REPLY.with(|reply| *reply.borrow_mut() = Err(rtl::status::STATUS_KEY_DELETED));
+        let mut buffer = [0xCCu8; 64];
+        let mut need = 64;
+        arm();
+        let code = unsafe { reg_get_key_security(0x1234, WANT, buffer.as_mut_ptr(), &mut need) };
+        assert_eq!((code, last_error()), (1018, 0xF2F2));
+        arm();
+        let code = unsafe { reg_set_key_security(0x1234, WANT, buffer.as_ptr()) };
+        assert_eq!((code, last_error()), (1018, 0xF2F2));
+        assert!(
+            host::SEC_CALLS.with(|calls| calls.borrow().is_empty()),
+            "no security service call"
+        );
+        crate::imports::host::KEY_REPLY
+            .with(|reply| *reply.borrow_mut() = Err(rtl::status::STATUS_NOT_IMPLEMENTED));
+    }
+
+    /// RegSetKeySecurity converts an absolute descriptor into a self-relative heap block before
+    /// the service: the block holds the header with SE_SELF_RELATIVE set and each component at
+    /// its recorded offset.
+    #[test]
+    fn an_absolute_descriptor_is_converted_to_self_relative() {
+        reset();
+        let admins = {
+            let mut bytes = vec![1, 2, 0, 0, 0, 0, 0, 5];
+            bytes.extend(32u32.to_le_bytes());
+            bytes.extend(544u32.to_le_bytes());
+            bytes
+        };
+        let mut sd = vec![0u8; 64];
+        sd[0] = 1;
+        sd[2..4].copy_from_slice(&0x0000u16.to_le_bytes()); // absolute, nothing present
+        sd[4..12].copy_from_slice(&(admins.as_ptr() as usize).to_le_bytes()); // owner pointer
+        // SAFETY: the test's descriptor.
+        let block = unsafe { defaults::self_relative_block(sd.as_ptr()) }.expect("a valid absolute SD");
+        let bytes = block.bytes();
+        assert_eq!(bytes[0], 1, "the revision");
+        assert_eq!(
+            u16::from_le_bytes([bytes[2], bytes[3]]) & crate::sd::SE_SELF_RELATIVE,
+            crate::sd::SE_SELF_RELATIVE,
+            "self-relative now"
+        );
+        let owner_off = usize::from_le_bytes(bytes[4..12].try_into().unwrap());
+        assert_eq!(owner_off, crate::sd::SD_HEADER, "the owner at the header's end");
+        assert_eq!(&bytes[owner_off..owner_off + admins.len()], &admins[..]);
+        // A self-relative descriptor is handed to the service as it is.
+        let mut rel = vec![0u8; 32];
+        rel[0] = 1;
+        rel[2..4].copy_from_slice(&0x8000u16.to_le_bytes());
+        arm();
+        let code = unsafe { reg_set_key_security(0x1234, WANT, rel.as_ptr()) };
+        assert_eq!((code, last_error()), (ERROR_SUCCESS, 0xF2F2));
+        let calls = host::SEC_CALLS.with(|calls| calls.borrow().clone());
+        assert_eq!(calls, [("NtSetSecurityObject", 0x1234, WANT, 0)]);
     }
 
     /// The error paths: a null key and no size answer locally; a bogus or closed handle is the
@@ -165,8 +267,9 @@ mod tests {
         let code = unsafe { reg_get_key_security(0x1234, WANT, buffer.as_mut_ptr(), &mut need) };
         assert_eq!((code, last_error()), (6, 0xF2F2));
         host::SEC_SET_STATUS.with(|status| status.set(0xC000_0022));
+        let sd = sd_bytes();
         arm();
-        let code = unsafe { reg_set_key_security(0x1234, WANT, buffer.as_ptr()) };
+        let code = unsafe { reg_set_key_security(0x1234, WANT, sd.as_ptr()) };
         assert_eq!((code, last_error()), (5, 0xF2F2));
         let calls = host::SEC_CALLS.with(|calls| calls.borrow().clone());
         assert_eq!(
