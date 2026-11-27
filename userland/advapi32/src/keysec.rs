@@ -183,7 +183,8 @@ mod tests {
     #[test]
     fn a_deleted_key_answers_error_key_deleted() {
         reset();
-        crate::imports::host::KEY_REPLY.with(|reply| *reply.borrow_mut() = Err(rtl::status::STATUS_KEY_DELETED));
+        crate::imports::host::KEY_REPLY
+            .with(|reply| *reply.borrow_mut() = Err(rtl::status::STATUS_KEY_DELETED));
         let mut buffer = [0xCCu8; 64];
         let mut need = 64;
         arm();
@@ -216,8 +217,10 @@ mod tests {
         sd[0] = 1;
         sd[2..4].copy_from_slice(&0x0000u16.to_le_bytes()); // absolute, nothing present
         sd[4..12].copy_from_slice(&(admins.as_ptr() as usize).to_le_bytes()); // owner pointer
-        // SAFETY: the test's descriptor.
-        let block = unsafe { defaults::self_relative_block(sd.as_ptr()) }.expect("a valid absolute SD");
+                                                                              // SAFETY: the test's
+                                                                              // descriptor.
+        let block =
+            unsafe { defaults::self_relative_block(sd.as_ptr()) }.expect("a valid absolute SD");
         let bytes = block.bytes();
         assert_eq!(bytes[0], 1, "the revision");
         assert_eq!(
@@ -226,7 +229,11 @@ mod tests {
             "self-relative now"
         );
         let owner_off = usize::from_le_bytes(bytes[4..12].try_into().unwrap());
-        assert_eq!(owner_off, crate::sd::SD_HEADER, "the owner at the header's end");
+        assert_eq!(
+            owner_off,
+            crate::sd::SD_HEADER,
+            "the owner at the header's end"
+        );
         assert_eq!(&bytes[owner_off..owner_off + admins.len()], &admins[..]);
         // A self-relative descriptor is handed to the service as it is.
         let mut rel = vec![0u8; 32];

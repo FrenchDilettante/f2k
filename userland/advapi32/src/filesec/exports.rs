@@ -166,7 +166,12 @@ pub unsafe extern "system" fn get_named_security_info_ex_w(
     group: *mut usize,
 ) -> u32 {
     // SAFETY: the caller's string and out parameters.
-    let (name, mut outs) = unsafe { (wide_text(name), ex_outs(access_list, audit_list, owner, group)) };
+    let (name, mut outs) = unsafe {
+        (
+            wide_text(name),
+            ex_outs(access_list, audit_list, owner, group),
+        )
+    };
     ex_get(&Counted::new(name), object_type, info, &mut outs, true)
 }
 
@@ -189,7 +194,12 @@ pub unsafe extern "system" fn get_named_security_info_ex_a(
     group: *mut usize,
 ) -> u32 {
     // SAFETY: the caller's string and out parameters.
-    let (name, mut outs) = unsafe { (ansi_text(name), ex_outs(access_list, audit_list, owner, group)) };
+    let (name, mut outs) = unsafe {
+        (
+            ansi_text(name),
+            ex_outs(access_list, audit_list, owner, group),
+        )
+    };
     let name = match wide(name) {
         Ok(name) => name,
         Err(code) => return code,
@@ -348,7 +358,9 @@ pub unsafe extern "system" fn get_kernel_object_security(
     // The current process's own handle answers with its token's descriptor where the kernel
     // keeps the blank one.
     let sd_block = match read_object_sd(handle, info, || {
-        (handle == crate::sid::CURRENT_PROCESS).then(|| defaults::process_sd(info)).flatten()
+        (handle == crate::sid::CURRENT_PROCESS)
+            .then(|| defaults::process_sd(info))
+            .flatten()
     }) {
         Ok(block) => block,
         Err(_) => return 0,
@@ -479,7 +491,10 @@ mod tests {
                 core::ptr::null(),
             )
         };
-        assert_eq!((code, last_error()), (ERROR_INVALID_FUNCTION, ERROR_INVALID_FUNCTION));
+        assert_eq!(
+            (code, last_error()),
+            (ERROR_INVALID_FUNCTION, ERROR_INVALID_FUNCTION)
+        );
         assert_eq!(
             host::OPEN_CALLS.with(|calls| calls.borrow().clone()),
             [(WRITE_DAC, FILE_SHARE_ALL, FILE_OPEN_REPARSE_POINT)]
@@ -553,7 +568,10 @@ mod tests {
                 core::ptr::null(),
             )
         };
-        assert_eq!((code, last_error()), (ERROR_INVALID_FUNCTION, ERROR_NO_TOKEN));
+        assert_eq!(
+            (code, last_error()),
+            (ERROR_INVALID_FUNCTION, ERROR_NO_TOKEN)
+        );
         reset();
         host::SEC_OPEN_STATUS.with(|status| status.set(0xC000_0034));
         let code = unsafe {
@@ -622,7 +640,10 @@ mod tests {
                 core::ptr::null(),
             )
         };
-        assert_eq!((code, last_error()), (ERROR_INVALID_FUNCTION, ERROR_NO_TOKEN));
+        assert_eq!(
+            (code, last_error()),
+            (ERROR_INVALID_FUNCTION, ERROR_NO_TOKEN)
+        );
         assert!(host::SEC_CALLS.with(|calls| calls.borrow().is_empty()));
     }
 
@@ -735,7 +756,10 @@ mod tests {
             .into_iter()
             .map(|(_, h, _, _)| h)
             .collect::<Vec<_>>();
-        assert_eq!(handles, [0xFFFF_FFFF; 5], "two gets (sizing and read) and a set");
+        assert_eq!(
+            handles, [0xFFFF_FFFF; 5],
+            "two gets (sizing and read) and a set"
+        );
         // A closed handle: the status as the last error too.
         reset();
         host::SEC_REPLY.with(|reply| *reply.borrow_mut() = Err(0xC000_0008));

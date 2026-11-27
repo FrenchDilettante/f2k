@@ -6,6 +6,7 @@
 //! into a self-relative block of the process heap first.
 
 use rtl::array_vec::ArrayVec;
+use rtl::nt::access::TOKEN_QUERY;
 use rtl::pod::Pod;
 use rtl::status::{NtStatus, STATUS_NO_MEMORY};
 
@@ -13,11 +14,20 @@ use crate::imports::{self as nt, HeapBlock};
 use crate::private;
 use crate::sd::{control, SE_SELF_RELATIVE};
 use crate::sid::{
-    pointed, sid_len, sid_parts_bytes, sid_to_units, token_information, well_known_sid,
-    CURRENT_PROCESS, MAX_SUB_AUTHORITIES, SID_HEADER, STATUS_INVALID_SECURITY_DESCR,
-    TOKEN_DEFAULT_DACL, TOKEN_OWNER, TOKEN_PRIMARY_GROUP,
+    pointed,
+    sid_len,
+    sid_parts_bytes,
+    sid_to_units,
+    token_information,
+    well_known_sid,
+    CURRENT_PROCESS,
+    MAX_SUB_AUTHORITIES,
+    SID_HEADER,
+    STATUS_INVALID_SECURITY_DESCR,
+    TOKEN_DEFAULT_DACL,
+    TOKEN_OWNER,
+    TOKEN_PRIMARY_GROUP,
 };
-use rtl::nt::access::TOKEN_QUERY;
 
 /// The well-known administrators kind (WinBuiltinAdministratorsSid).
 const KIND_ADMINS: u32 = 26;
@@ -82,7 +92,11 @@ fn write_target_sd(out: &mut [u8], mut bits: u16, parts: &[Option<&[u8]>; 4]) ->
 /// layout: none when the heap has no room.
 fn block_of(parts: [Option<&[u8]>; 4], bits: u16) -> Option<HeapBlock> {
     let mut block = HeapBlock::new(crate::sd::packed_size(&parts))?;
-    write_target_sd(block.bytes_mut(), bits | private::present_bits(&parts), &parts);
+    write_target_sd(
+        block.bytes_mut(),
+        bits | private::present_bits(&parts),
+        &parts,
+    );
     Some(block)
 }
 
@@ -253,7 +267,11 @@ mod tests {
         let bytes = sd.bytes();
         assert_eq!(bytes.len(), 52, "the header and two SIDs");
         assert_eq!(bytes[0], 1);
-        assert_eq!(u16::from_le_bytes([bytes[2], bytes[3]]), 0x8000, "self-relative, no DACL");
+        assert_eq!(
+            u16::from_le_bytes([bytes[2], bytes[3]]),
+            0x8000,
+            "self-relative, no DACL"
+        );
         let field = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
         assert_eq!(field(4), 20, "the owner's offset");
         assert_eq!(field(8), 36, "the group's offset");
@@ -263,7 +281,10 @@ mod tests {
 
         let empty = file_sd(DACL_INFO).expect("the heap has room");
         assert_eq!(empty.bytes().len(), 20, "the header alone");
-        assert_eq!(u16::from_le_bytes([empty.bytes()[2], empty.bytes()[3]]), 0x8000);
+        assert_eq!(
+            u16::from_le_bytes([empty.bytes()[2], empty.bytes()[3]]),
+            0x8000
+        );
     }
 
     /// The process descriptor of the token parts: owner, primary group and default DACL of the
@@ -280,7 +301,11 @@ mod tests {
             .expect("the heap has room");
         let bytes = sd.bytes();
         assert_eq!(bytes.len(), 116, "the header, two SIDs and the DACL");
-        assert_eq!(u16::from_le_bytes([bytes[2], bytes[3]]), 0x8004, "self-relative, DACL present");
+        assert_eq!(
+            u16::from_le_bytes([bytes[2], bytes[3]]),
+            0x8004,
+            "self-relative, DACL present"
+        );
         let field = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
         assert_eq!((field(4), field(8), field(16)), (20, 36, 64));
         assert_eq!(&bytes[20..36], &owner[..]);
@@ -289,7 +314,10 @@ mod tests {
         // A mask that names the DACL alone: the header and the DACL.
         let only = token_sd(DACL_INFO, &owner, &group, &dacl).expect("the heap has room");
         assert_eq!(only.bytes().len(), 20 + 52);
-        assert_eq!(u16::from_le_bytes([only.bytes()[2], only.bytes()[3]]), 0x8004);
+        assert_eq!(
+            u16::from_le_bytes([only.bytes()[2], only.bytes()[3]]),
+            0x8004
+        );
     }
 
     /// An absolute descriptor is converted into a self-relative block; the SID text is the
@@ -309,7 +337,10 @@ mod tests {
         assert_eq!(&bytes[owner_at..owner_at + 16], &admins[..]);
 
         let text = sid_string(&admins).expect("a valid SID");
-        let text: String = text.iter().map(|&u| char::from_u32(u32::from(u)).unwrap()).collect();
+        let text: String = text
+            .iter()
+            .map(|&u| char::from_u32(u32::from(u)).unwrap())
+            .collect();
         assert_eq!(text, "S-1-5-32-544");
     }
 }

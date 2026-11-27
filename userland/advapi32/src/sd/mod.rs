@@ -19,16 +19,20 @@ mod tests;
 use rtl::heap::ProcessHeap as _;
 use rtl::pod::Pod;
 use rtl::stub::Memory as _;
-use rtl::winerror::{
-    ERROR_INVALID_DATA, ERROR_INVALID_PARAMETER, ERROR_INSUFFICIENT_BUFFER,
-};
+use rtl::winerror::{ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_DATA, ERROR_INVALID_PARAMETER};
 
-use crate::acl::{caller_acl, ACL_HEADER};
 use crate::acl::edit::valid_acl;
-use crate::imports::{self as nt, ProcessHeap, Probed};
+use crate::acl::{caller_acl, ACL_HEADER};
+use crate::imports::{self as nt, Probed, ProcessHeap};
 use crate::sid::{
-    caller_sid, ptr_field, set_ptr_field, valid_sid, ERROR_INVALID_SECURITY_DESCR,
-    ERROR_UNKNOWN_REVISION, PTR, SID_HEADER,
+    caller_sid,
+    ptr_field,
+    set_ptr_field,
+    valid_sid,
+    ERROR_INVALID_SECURITY_DESCR,
+    ERROR_UNKNOWN_REVISION,
+    PTR,
+    SID_HEADER,
 };
 use crate::{caller_bytes, caller_bytes_mut, Out};
 
@@ -460,10 +464,7 @@ impl<T: Copy> core::ops::DerefMut for HeapVec<T> {
 ///
 /// `sd` is null or a writable security descriptor's header.
 #[unsafe(export_name = "f2k_export_InitializeSecurityDescriptor")]
-pub unsafe extern "system" fn initialize_security_descriptor(
-    sd: *mut u8,
-    revision: u32,
-) -> u32 {
+pub unsafe extern "system" fn initialize_security_descriptor(sd: *mut u8, revision: u32) -> u32 {
     if revision != u32::from(SD_REVISION) {
         nt::set_last_error(ERROR_UNKNOWN_REVISION);
         return 0;
@@ -950,7 +951,12 @@ pub unsafe extern "system" fn make_self_relative_sd(
     }
     // The storage is the header plus the components; on the host the header's fields take more
     // room than on the target, so the buffer read covers the whole of it.
-    let used = SD_HEADER + components.iter().flatten().map(|c| long_align(c.len())).sum::<usize>();
+    let used = SD_HEADER
+        + components
+            .iter()
+            .flatten()
+            .map(|c| long_align(c.len()))
+            .sum::<usize>();
     // SAFETY: the caller's buffer of `used` bytes at least.
     let out = unsafe { caller_bytes_mut(relative, used.max(needed)) };
     let Some(out) = out else {

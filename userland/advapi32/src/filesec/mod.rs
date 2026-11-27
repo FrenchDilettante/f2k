@@ -712,7 +712,13 @@ pub(crate) mod testkit {
     }
 
     /// A self-relative SD with the given component offsets (0 for absent).
-    pub(crate) fn self_relative(owner: u32, group: u32, sacl: u32, dacl: u32, total: usize) -> Vec<u8> {
+    pub(crate) fn self_relative(
+        owner: u32,
+        group: u32,
+        sacl: u32,
+        dacl: u32,
+        total: usize,
+    ) -> Vec<u8> {
         let mut bytes = vec![0u8; total.max(SD_MIN)];
         bytes[0] = 1;
         let control = SE_SELF_RELATIVE

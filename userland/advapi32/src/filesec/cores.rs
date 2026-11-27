@@ -29,8 +29,15 @@ pub(crate) fn read_object_sd(
         }
     };
     // SAFETY: the block is the descriptor's buffer of `needed` bytes, the local the size.
-    let status =
-        unsafe { query_security_object(handle, info, kernel.bytes_mut().as_mut_ptr(), needed, &mut needed) };
+    let status = unsafe {
+        query_security_object(
+            handle,
+            info,
+            kernel.bytes_mut().as_mut_ptr(),
+            needed,
+            &mut needed,
+        )
+    };
     if !status.is_success() {
         return Err(fail(status));
     }
@@ -163,7 +170,14 @@ pub(crate) fn named_set(
     };
     // The caller's components are read (probed as the service would read them).
     // SAFETY: the caller's components.
-    let _ = unsafe { (caller_sid(owner), caller_sid(group), caller_acl(dacl), caller_acl(sacl)) };
+    let _ = unsafe {
+        (
+            caller_sid(owner),
+            caller_sid(group),
+            caller_acl(dacl),
+            caller_acl(sacl),
+        )
+    };
     // F2K's files keep no security descriptor to set: the open succeeds, the set answers
     // ERROR_INVALID_FUNCTION.
     let _ = nt::close(handle);
@@ -174,7 +188,13 @@ pub(crate) fn named_set(
 /// GetFileSecurity's core: the named file opened with the query access, its descriptor of the
 /// `info` parts into the caller's `descriptor` of `length` bytes, its size into `needed`: TRUE,
 /// or FALSE with the status's error as the last error.
-pub(crate) fn file_get(name: &Counted, info: u32, descriptor: *mut u8, length: u32, needed: *mut u32) -> u32 {
+pub(crate) fn file_get(
+    name: &Counted,
+    info: u32,
+    descriptor: *mut u8,
+    length: u32,
+    needed: *mut u32,
+) -> u32 {
     let handle = match open_named(name, query_access_mask(info)) {
         Ok(handle) => handle,
         Err(status) => {
@@ -310,11 +330,18 @@ fn text_block(text: &[u16], wide: bool) -> Option<usize> {
 /// left NULL, the owner and group as their SIDs' text. ERROR_NONE_MAPPED is left as the last
 /// error (no account names behind the SIDs); ERROR_INVALID_PARAMETER when every out place is
 /// null. The error code; an open failure's status is the code, the last error left alone.
-pub(crate) fn ex_get(name: &Counted, object_type: u32, info: u32, outs: &mut ExOuts<'_>, wide: bool) -> u32 {
+pub(crate) fn ex_get(
+    name: &Counted,
+    object_type: u32,
+    info: u32,
+    outs: &mut ExOuts<'_>,
+    wide: bool,
+) -> u32 {
     if object_type != SE_FILE_OBJECT {
         return ERROR_INVALID_PARAMETER;
     }
-    if outs.access.is_none() && outs.audit.is_none() && outs.owner.is_none() && outs.group.is_none() {
+    if outs.access.is_none() && outs.audit.is_none() && outs.owner.is_none() && outs.group.is_none()
+    {
         return ERROR_INVALID_PARAMETER;
     }
     let handle = match open_named(name, query_access_mask(info)) {
@@ -337,8 +364,7 @@ pub(crate) fn ex_get(name: &Counted, object_type: u32, info: u32, outs: &mut ExO
                 (outs.group.as_mut(), OFFSET_GROUP),
             ] {
                 if let Some(out) = out {
-                    let offset =
-                        u32::read_from(bytes, at).unwrap_or(0) as usize;
+                    let offset = u32::read_from(bytes, at).unwrap_or(0) as usize;
                     if let Some(text) = sid_at(bytes, offset).and_then(defaults::sid_string) {
                         if let Some(at) = text_block(&text, wide) {
                             out.set(at);

@@ -457,13 +457,24 @@ fn the_audit_list_is_built_and_left_pending() {
     let mut new_list: *mut u8 = core::ptr::null_mut();
     arm();
     let ret = unsafe {
-        set_entries_in_audit_list_a(1, entry.as_ptr(), 5, name.as_ptr(), core::ptr::null(), &mut new_list)
+        set_entries_in_audit_list_a(
+            1,
+            entry.as_ptr(),
+            5,
+            name.as_ptr(),
+            core::ptr::null(),
+            &mut new_list,
+        )
     };
     assert_eq!((ret, last_error()), (0, 997));
     assert!(!new_list.is_null(), "the new list set");
     // SAFETY: the heap block the call built.
     let list = unsafe { core::slice::from_raw_parts(new_list, LIST_SIZE) };
-    assert_eq!(u32::from_le_bytes(list[..4].try_into().unwrap()), 1, "its cEntries");
+    assert_eq!(
+        u32::from_le_bytes(list[..4].try_into().unwrap()),
+        1,
+        "its cEntries"
+    );
     let entries_at = usize::from_le_bytes(list[4..4 + PTR].try_into().unwrap());
     assert_eq!(entries_at, new_list as usize + LIST_SIZE);
     // SAFETY: the entries the list points at.
@@ -475,7 +486,14 @@ fn the_audit_list_is_built_and_left_pending() {
     let mut new_list: *mut u8 = core::ptr::null_mut();
     arm();
     let ret = unsafe {
-        set_entries_in_audit_list_w(1, entry.as_ptr(), 5, core::ptr::null(), core::ptr::null(), &mut new_list)
+        set_entries_in_audit_list_w(
+            1,
+            entry.as_ptr(),
+            5,
+            core::ptr::null(),
+            core::ptr::null(),
+            &mut new_list,
+        )
     };
     assert_eq!((ret, last_error()), (0, 997));
     assert!(!new_list.is_null());
@@ -485,7 +503,14 @@ fn the_audit_list_is_built_and_left_pending() {
     let mut new_list: *mut u8 = core::ptr::null_mut();
     arm();
     let ret = unsafe {
-        set_entries_in_audit_list_a(1, core::ptr::null(), 5, core::ptr::null(), core::ptr::null(), &mut new_list)
+        set_entries_in_audit_list_a(
+            1,
+            core::ptr::null(),
+            5,
+            core::ptr::null(),
+            core::ptr::null(),
+            &mut new_list,
+        )
     };
     assert_eq!((ret, last_error()), (87, 0xF2F2));
     assert!(new_list.is_null());

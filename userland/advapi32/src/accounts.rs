@@ -11,8 +11,13 @@ use rtl::winerror::{ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_SID, ERROR_IO_PENDI
 use crate::imports::{self as nt};
 use crate::sd::build::{kind_name, kind_of_sid, name_kind, wide_name_kind};
 use crate::sid::{
-    caller_sid, sid_len, sid_parts_bytes, well_known_sid, ERROR_NONE_MAPPED,
-    MAX_SUB_AUTHORITIES, SID_HEADER,
+    caller_sid,
+    sid_len,
+    sid_parts_bytes,
+    well_known_sid,
+    ERROR_NONE_MAPPED,
+    MAX_SUB_AUTHORITIES,
+    SID_HEADER,
 };
 use crate::{caller_bytes_mut, Out};
 
