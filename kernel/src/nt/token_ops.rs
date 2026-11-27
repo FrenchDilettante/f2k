@@ -4,17 +4,20 @@
 //! As in `nt::token`, what these keep is bookkeeping, so that the calls a program makes answer
 //! as Windows 2000's do: NtAdjustGroupsToken validates the group list it is given and reports
 //! the previous state of what it would change (the token's groups are the logon's fixed set,
-//! so nothing is rewritten in the token); NtCreateToken makes a token of the calling process's
-//! shape — a copy of its token of the type asked for, so a create with no object attributes
-//! succeeds; NtFilterToken makes a copy of the existing token (with nothing disabled, a plain
-//! copy) whose handle takes the existing handle's granted access; NtOpenThreadToken answers
-//! with the thread's process's token, since F2K's threads never impersonate. The handle checks
-//! are the object manager's, as for any object (see `nt::token`): NtAdjustGroupsToken needs
-//! TOKEN_ADJUST_GROUPS (with TOKEN_QUERY when PreviousState is given), NtFilterToken
-//! TOKEN_DUPLICATE, NtOpenThreadToken THREAD_QUERY_INFORMATION on the thread.
+//! so nothing is rewritten in the token); NtCreateToken probes its four content pointers for
+//! read (a NULL in them is STATUS_ACCESS_VIOLATION) and otherwise makes a token of the calling
+//! process's shape — a copy of its token of the type asked for, so a create with no object
+//! attributes and valid content pointers succeeds; NtFilterToken makes a copy of the existing
+//! token (with nothing disabled, a plain copy) whose handle takes the existing handle's granted
+//! access; NtOpenThreadToken answers with the thread's process's token, since F2K's threads
+//! never impersonate. The handle checks are the object manager's, as for any object (see
+//! `nt::token`): NtAdjustGroupsToken needs TOKEN_ADJUST_GROUPS (with TOKEN_QUERY when
+//! PreviousState is given), NtFilterToken TOKEN_DUPLICATE, NtOpenThreadToken
+//! THREAD_QUERY_INFORMATION on the thread.
 
 use crate::se;
 use crate::status::*;
+use crate::user::args::UserAddr;
 
 /// The right a groups adjustment needs (a specific right, carried by TOKEN_WRITE and
 /// TOKEN_ALL_ACCESS).
@@ -201,6 +204,31 @@ pub(crate) fn plan_groups(
         }
     }
     adjustment
+}
+
+/// NtCreateToken's input probes: ExpirationTime, Groups, Privileges and TokenSource are probed
+/// for read before any other work, so a NULL in any of them is STATUS_ACCESS_VIOLATION. The
+/// user, owner, primary group and default DACL pointers are optional: they are not probed, and
+/// a NULL in them passes.
+pub(crate) fn create_input_probes(
+    expiration_time: UserAddr,
+    _user: UserAddr,
+    groups: UserAddr,
+    privileges: UserAddr,
+    _owner: UserAddr,
+    _primary_group: UserAddr,
+    _default_dacl: UserAddr,
+    token_source: UserAddr,
+) -> Result<(), NtStatus> {
+    if expiration_time.is_null()
+        || groups.is_null()
+        || privileges.is_null()
+        || token_source.is_null()
+    {
+        Err(STATUS_ACCESS_VIOLATION)
+    } else {
+        Ok(())
+    }
 }
 
 /// The token NtCreateToken makes: a copy of the process's token `source`, of type `kind` at
@@ -472,8 +500,9 @@ mod services {
     /// impersonation level for an impersonation one (none there is
     /// STATUS_BAD_IMPERSONATION_LEVEL, as is a level past SecurityDelegation) — its handle
     /// granted the rights asked for (none at all is STATUS_ACCESS_DENIED) into TokenHandle,
-    /// inheritable when the attributes say so. The content pointers (the user, groups,
-    /// privileges, owner, primary group, default DACL, source) are not read: F2K's created
+    /// inheritable when the attributes say so. ExpirationTime, Groups, Privileges and
+    /// TokenSource are probed for read before anything else: a NULL in any of them is
+    /// STATUS_ACCESS_VIOLATION. The content pointers are not read beyond that: F2K's created
     /// token is the process's shape.
     #[cfg_attr(not(test), allow(dead_code))] // wired to its export when the spec flips
     pub fn create_token(
@@ -483,19 +512,29 @@ mod services {
         attributes: UserAddr,
         kind: u32,
         _authentication_id: UserAddr,
-        _expiration_time: UserAddr,
-        _user: UserAddr,
-        _groups: UserAddr,
-        _privileges: UserAddr,
-        _owner: UserAddr,
-        _primary_group: UserAddr,
-        _default_dacl: UserAddr,
-        _token_source: UserAddr,
+        expiration_time: UserAddr,
+        user: UserAddr,
+        groups: UserAddr,
+        privileges: UserAddr,
+        owner: UserAddr,
+        primary_group: UserAddr,
+        default_dacl: UserAddr,
+        token_source: UserAddr,
     ) -> NtResult {
         if slot.is_null() {
             return Err(STATUS_ACCESS_VIOLATION);
         }
         slot.addr().probe(4)?;
+        create_input_probes(
+            expiration_time,
+            user,
+            groups,
+            privileges,
+            owner,
+            primary_group,
+            default_dacl,
+            token_source,
+        )?;
         let (level, inherit) = quality_of_service(attributes)?;
         let access = granted(desired);
         if access == 0 {
@@ -811,6 +850,69 @@ mod tests {
         let adjustment = plan_groups(false, &groups, &plan);
         assert_eq!(adjustment.status(), Err(STATUS_CANT_ENABLE_DENY_ONLY));
         assert_eq!(STATUS_CANT_ENABLE_DENY_ONLY.0, 0xC000_02B3);
+    }
+
+    /// The create's input probes: a NULL in any of the four probed pointers (ExpirationTime,
+    /// Groups, Privileges, TokenSource) is STATUS_ACCESS_VIOLATION — the all-NULL create
+    /// included — and each of them alone faults.
+    #[test]
+    fn a_null_probed_pointer_refuses_the_create() {
+        assert_eq!(STATUS_ACCESS_VIOLATION.0, 0xC000_0005);
+        let p = |n: u32| UserAddr(BASE + n);
+        let null = UserAddr(0);
+        assert_eq!(
+            create_input_probes(null, null, null, null, null, null, null, null),
+            Err(STATUS_ACCESS_VIOLATION),
+            "the all-NULL create"
+        );
+        assert_eq!(
+            create_input_probes(null, p(0), p(8), p(16), p(24), p(32), p(40), p(48)),
+            Err(STATUS_ACCESS_VIOLATION),
+            "a NULL ExpirationTime"
+        );
+        assert_eq!(
+            create_input_probes(p(0), p(8), null, p(16), p(24), p(32), p(40), p(48)),
+            Err(STATUS_ACCESS_VIOLATION),
+            "a NULL Groups"
+        );
+        assert_eq!(
+            create_input_probes(p(0), p(8), p(16), null, p(24), p(32), p(40), p(48)),
+            Err(STATUS_ACCESS_VIOLATION),
+            "a NULL Privileges"
+        );
+        assert_eq!(
+            create_input_probes(p(0), p(8), p(16), p(24), p(32), p(40), p(48), null),
+            Err(STATUS_ACCESS_VIOLATION),
+            "a NULL TokenSource"
+        );
+    }
+
+    /// With the four probed pointers at valid buffers the probes pass. The optional pointers
+    /// (the user, owner, primary group, default DACL) are not probed, so a NULL in them passes
+    /// too: a NULL-User-only create succeeds.
+    #[test]
+    fn valid_probed_pointers_pass_the_create_probes() {
+        let p = |n: u32| UserAddr(BASE + n);
+        assert!(create_input_probes(p(0), p(8), p(16), p(24), p(32), p(40), p(48), p(56)).is_ok());
+        assert!(
+            create_input_probes(p(0), UserAddr(0), p(16), p(24), p(32), p(40), p(48), p(56))
+                .is_ok(),
+            "a NULL user alone"
+        );
+        assert!(
+            create_input_probes(
+                p(0),
+                p(8),
+                p(16),
+                p(24),
+                UserAddr(0),
+                UserAddr(0),
+                UserAddr(0),
+                p(56)
+            )
+            .is_ok(),
+            "NULL owner, primary group and default DACL"
+        );
     }
 
     /// A created token is the process's shape: a primary copy of the process's token, of no
