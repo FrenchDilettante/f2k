@@ -274,6 +274,10 @@ pub unsafe extern "system" fn rtl_convert_sid_to_unicode_string(
     sid: *const u8,
     allocate: u32,
 ) -> u32 {
+    // A null or ill-formed SID is refused before its header is read.
+    if sid.is_null() {
+        return STATUS_INVALID_SID;
+    }
     // SAFETY: the caller's SID, its header readable.
     let header = unsafe { bytes(sid, SID_HEADER) };
     if !sid_header_valid(header) || header[0] != SID_REVISION {
@@ -489,6 +493,11 @@ mod tests {
         bad[0] = 7;
         assert_eq!(
             unsafe { rtl_convert_sid_to_unicode_string(&mut string, bad.as_ptr(), 0) },
+            STATUS_INVALID_SID
+        );
+        // A null SID is refused the same way, without reading it.
+        assert_eq!(
+            unsafe { rtl_convert_sid_to_unicode_string(&mut string, core::ptr::null(), 0) },
             STATUS_INVALID_SID
         );
     }
