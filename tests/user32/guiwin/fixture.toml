@@ -4,7 +4,6 @@ kind = "sectioned"
 gate = true
 
 [pending]
-dienest = "a DestroyWindow nested in the window's own WM_DESTROY: F2K sends the inner call no WM_DESTROY or WM_NCDESTROY (the outer's WM_NCDESTROY comes after), where Windows 2000 sends both inside the outer WM_DESTROY"
 # err183pop and err183ovl were captured (2026-11-27) with a second input locale installed:
 # internat.exe's indicdll.dll (with imm32, advapi32 and rpcrt4) loaded at the first window and
 # set 183 there, so the blocks show that machine state, not a clean one. Kept pending until a

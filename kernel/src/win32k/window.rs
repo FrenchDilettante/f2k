@@ -977,6 +977,9 @@ struct Flags {
     /// The window's destroy has begun, or the destroy cascade has reached it: a DestroyWindow of
     /// it from one of its handlers (WM_DESTROY's, WM_NCDESTROY's) finds it on its way already.
     destroying: bool,
+    /// Its own destroy is sending the window its WM_DESTROY: a DestroyWindow of it from that
+    /// handler runs a destroy of its own, nested (guiwin `dienest`).
+    in_wm_destroy: bool,
     /// The create finished (WM_CREATE ran).
     initialized: bool,
     /// The create came through the ANSI entry point.
@@ -1116,6 +1119,7 @@ impl Window {
             destroyed: false,
             in_destroy: false,
             destroying: false,
+            in_wm_destroy: false,
             initialized: false,
             ansi_creator: false,
             win31_compat: false,
@@ -2929,7 +2933,10 @@ impl Windows {
         window: WindowId,
     ) -> Result<bool, Failure> {
         // A window on its way already (destroyed again from one of its own handlers, its
-        // creation's included) is left to the destroy under way.
+        // creation's included) is left to the destroy under way — except from the WM_DESTROY its
+        // own destroy sends it: Windows 2000 destroys it again there, in full (its WM_DESTROY
+        // and WM_NCDESTROY inside the outer WM_DESTROY, guiwin `dienest`), and the outer
+        // destroy finds it gone.
         if s.windows().on_its_way(window) {
             return Ok(true);
         }
@@ -3050,6 +3057,7 @@ impl Windows {
     fn on_its_way(&self, window: WindowId) -> bool {
         let w = self.at(window);
         w.flags.destroying
+            && !w.flags.in_wm_destroy
             && !self
                 .handles
                 .window(w.handle)
@@ -3202,9 +3210,13 @@ impl Windows {
             }
         }
 
-        // The destroy messages (skipped on the re-entry path).
+        // The destroy messages (skipped on the re-entry path). A WM_DESTROY handler that
+        // destroyed the window again has freed it already: nothing is left to do.
         if !already {
             Windows::send_destroy_messages(s, window);
+            if Windows::gone_in_destroy(s, window) {
+                return;
+            }
         }
         let windows = s.windows();
 
@@ -3236,7 +3248,12 @@ impl Windows {
     /// parent's children. The walk follows the child and parent links, the next sibling kept in
     /// the record ([`Walk::next`]).
     fn send_destroy_messages(s: &mut dyn Session, window: WindowId) {
+        s.windows().at_mut(window).flags.in_wm_destroy = true;
         Windows::send_destroy(s, window);
+        if Windows::gone_in_destroy(s, window) {
+            return;
+        }
+        s.windows().at_mut(window).flags.in_wm_destroy = false;
         let mut current = window;
         let mut descend = true;
         loop {
@@ -3274,6 +3291,19 @@ impl Windows {
                 }
             }
         }
+    }
+
+    /// Whether `window`, whose WM_DESTROY was just sent, went meanwhile: its handler destroyed
+    /// it again, in full (freed, or a zombie: its handle marked for destruction). Its destroyed
+    /// flag tells nothing here: a parent's free sets it on a child of another thread's before
+    /// that thread destroys it.
+    fn gone_in_destroy(s: &mut dyn Session, window: WindowId) -> bool {
+        let windows = s.windows();
+        !windows.pool.is_live(window)
+            || windows
+                .handles
+                .window(windows.at(window).handle)
+                .is_none_or(|e| e.marked_destroy)
     }
 
     /// One window's step of the WM_DESTROY cascade, before its children's: the focus check, the
@@ -6712,6 +6742,8 @@ mod tests {
                 }
             }
             if self.rec.destroy_self_on == Some(message.message) {
+                // Once: a handler destroying its window from every WM_DESTROY would nest forever.
+                self.rec.destroy_self_on = None;
                 let caller = self.rec.caller;
                 let _ = Windows::destroy_window(self, caller, target);
             }
@@ -8332,11 +8364,29 @@ mod tests {
         );
     }
 
-    /// A window destroyed from its own WM_DESTROY or WM_NCDESTROY handler is on its way already:
-    /// the nested DestroyWindow succeeds and does nothing, so each message comes once.
+    /// A window destroyed from its own WM_DESTROY handler is destroyed again, nested: the inner
+    /// destroy's WM_DESTROY and WM_NCDESTROY come inside the outer WM_DESTROY, and the outer
+    /// destroy finds the window gone (guiwin `dienest`).
+    #[test]
+    fn a_window_destroyed_in_its_own_wm_destroy_is_destroyed_nested() {
+        let (w, c, t, atom, _, _) = setup();
+        let mut pump = Rec::new(t);
+        let top = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
+        pump.events.clear();
+        pump.destroy_self_on = Some(WM_DESTROY);
+        assert!(Windows::destroy_window(&mut pump.on(w, c), t, top).unwrap());
+        assert_eq!(
+            pump.sends(),
+            vec![(top, WM_DESTROY), (top, WM_DESTROY), (top, WM_NCDESTROY)]
+        );
+        assert!(!w.pool.is_live(top));
+    }
+
+    /// A window destroyed from its own WM_NCDESTROY handler is on its way already: the nested
+    /// DestroyWindow succeeds and does nothing, so each message comes once.
     #[test]
     fn a_handler_destroying_its_own_window_changes_nothing() {
-        for message in [WM_DESTROY, WM_NCDESTROY] {
+        for message in [WM_NCDESTROY] {
             let (w, c, t, atom, _, _) = setup();
             let mut pump = Rec::new(t);
             let top = create(w, c, t, atom, WS_OVERLAPPED, &mut pump).unwrap();
