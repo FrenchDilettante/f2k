@@ -7,11 +7,8 @@ kind = "sectioned"
 gate = true
 
 [pending]
-# Every listed block waits for the behavior it pins (the capture is in: tests\capture.bat privchk
-# ran on the VM trip); each un-xfails when that behavior lands. The adjust block is not pending:
-# F2K's bookkeeping AdjustTokenPrivileges already answers it as the real machine does, and it passes.
-threadtok = "OpenThreadToken, SetThreadToken and ImpersonateSelf are unimplemented in advapi32 (catalogued only), so the thread never gets a token of its own"
-lookupdisp = "LookupPrivilegeDisplayNameA/W are unimplemented in advapi32 (catalogued only), so a privilege's display name is never looked up"
+lookupdisp = "[LookupPrivilegeDisplayNameA(room): ret=1 err=997"
+threadtok = "[OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, OpenAsSelf=FALSE): ret=1 err=-, a handle], expected [OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, OpenAsSelf=FALSE): ret=0 err=1008, no handle]"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

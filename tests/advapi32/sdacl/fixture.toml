@@ -7,16 +7,14 @@ kind = "sectioned"
 gate = true
 
 [pending]
-# Every block waits for the behavior it pins; tests/capture.bat sdacl fills output.txt on the VM
-# trip, and each block un-xfails when that behavior lands.
-initsd = "advapi32's security-descriptor entry points carry no impl yet: InitializeSecurityDescriptor, IsValidSecurityDescriptor, GetSecurityDescriptorLength and GetSecurityDescriptorControl are catalogued only"
-acl = "the ACL builders are unimplemented in advapi32: InitializeAcl, IsValidAcl, AddAce, GetAce, FindFirstFreeAce and DeleteAce are catalogued only"
-selfrel = "MakeSelfRelativeSD and the Get/SetSecurityDescriptorOwner/Group/Dacl/Sacl round trips are unimplemented in advapi32 (catalogued only)"
-trustee = "the trustee builders and queries are unimplemented in advapi32 (catalogued only): BuildTrusteeWith*, BuildImpersonate* and GetTrustee* A/W never fill a trustee"
-privobj = "the private object security calls are unimplemented in advapi32 (catalogued only): CreatePrivateObjectSecurity(Ex), DestroyPrivateObjectSecurity, Get/SetPrivateObjectSecurity(Ex) and ConvertToAutoInheritPrivateObjectSecurity never run"
-sdcorner = "the SD corner calls are unimplemented in advapi32/ntdll (catalogued only): SetSecurityDescriptorControl, the RM control pair, BuildSecurityDescriptorA/W, the Convert*ToAccess* conversions and ntdll's RtlCopySecurityDescriptor never run"
-saclaudit = "GetAuditedPermissionsFromAclA/W and SetEntriesInAuditListA/W are unimplemented in advapi32 (catalogued only), so no audit list is queried or built"
-sidmore = "the remaining SID calls are unimplemented in advapi32 (catalogued only): EqualDomainSid, GetWindowsAccountDomainSid, GetSiteSidFromToken, GetMangledSiteSid, IsWellKnownSid and the LookupAccountName/Sid A/W pair never answer"
+acl = "[InitializeAcl(NULL, ...): ret=0 err=87], expected [InitializeAcl(NULL, ...): faulted 0xC0000005]"
+initsd = "[InitializeSecurityDescriptor(NULL, REVISION): ret=0 err=87], expected [InitializeSecurityDescriptor(NULL, REVISION): faulted 0xC0000005]"
+privobj = "missing, expected [CreatePrivateObjectSecurity(no parent, the creator SD): ret=0 err=1308"
+saclaudit = "[SetEntriesInAuditListA(1 entry, SET_AUDIT_SUCCESS, no old list): ret=0 err=-"
+sdcorner = "[ConvertAccessToSecurityDescriptorA(empty list, owner/group names): ret=0 err=-"
+selfrel = "missing, expected [IsValidSecurityDescriptor(the absolute SD): ret=0 err=1338]"
+sidmore = "[GetWindowsAccountDomainSid not found], expected [EqualDomainSid(S-1-5-32-544, S-1-5-32): ret=1 err=0 equal=1]"
+trustee = "extra [BuildImpersonateTrusteeA: operation=1 form=1 err=- name=Everyone]"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

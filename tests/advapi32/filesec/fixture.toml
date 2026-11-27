@@ -8,13 +8,11 @@ kind = "sectioned"
 gate = true
 
 [pending]
-# Every block waits for the behavior it pins; tests/capture.bat filesec fills output.txt on the
-# VM trip, and each block un-xfails when that behavior lands.
-getset = "the file security calls are unimplemented in advapi32 (catalogued only): GetFileSecurityA/W and SetFileSecurityA/W, and F2K keeps no security descriptor on a file to set or read"
-named = "GetNamedSecurityInfoA/W, SetNamedSecurityInfoA/W, GetSecurityInfo and SetSecurityInfo are unimplemented in advapi32 (catalogued only)"
-errors = "the error paths of the file security calls are unimplemented in advapi32 (catalogued only)"
-namedex = "GetNamedSecurityInfoExA/W and SetNamedSecurityInfoExA/W are unimplemented in advapi32 (catalogued only)"
-kernelobj = "GetKernelObjectSecurity and SetKernelObjectSecurity are unimplemented in advapi32 (catalogued only), and F2K keeps no security descriptor on a kernel object"
+errors = "[GetNamedSecurityInfoA(a path that does not exist): ret=2 err=-], expected [GetNamedSecurityInfoA(a path that does not exist): ret=2 err=0]"
+getset = "[GetFileSecurityA(a byte short): ret=0 err=122"
+kernelobj = "[the process's SD: Control 0x8004, owner present: no, DACL present: no, length 20], expected [the process's SD: Control 0x8004, owner present: yes, DACL present: no, length 116]"
+named = "[GetNamedSecurityInfoA(filesec.tmp, file, owner|group|DACL): ret=0 err=122"
+namedex = "[GetNamedSecurityInfoExA(filesec.tmp, file, owner|group|DACL, no provider): ret=0 err=122"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

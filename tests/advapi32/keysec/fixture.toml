@@ -8,11 +8,8 @@ kind = "sectioned"
 gate = true
 
 [pending]
-# Every listed block waits for the behavior it pins (the capture is in: tests\capture.bat keysec
-# ran on the VM trip); each un-xfails when that behavior lands. The create block is not pending:
-# RegCreateKeyEx/RegCloseKey/RegDeleteKey are implemented and it passes.
-roundtrip = "RegGetKeySecurity and RegSetKeySecurity are unimplemented in advapi32 (catalogued only), and F2K keeps no security descriptor on a registry key"
-errors = "the error paths of RegGetKeySecurity/RegSetKeySecurity are unimplemented in advapi32 (catalogued only)"
+errors = "[RegGetKeySecurity(the deleted key's open handle): ret=0 err=-], expected [RegGetKeySecurity(the deleted key's open handle): ret=1018 err=-]"
+roundtrip = "[RegGetKeySecurity(no buffer): ret=998 err=-"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

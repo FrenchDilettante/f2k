@@ -9,16 +9,13 @@ kind = "sectioned"
 gate = true
 
 [pending]
-# Every listed block waits for the behavior it pins (the capture is in: tests\capture.bat ntsvc
-# ran on the VM trip); each un-xfails when that behavior lands. The createwithsd block is not
-# pending: its calls are implemented and it passes (the SD at create is accepted, not yet enforced).
-ntaccesscheck = "NtAccessCheck is unimplemented in ntdll and F2K enforces no security descriptor: no access check runs"
-ntprivcheck = "NtPrivilegeCheck and NtQueryInformationToken's privilege class are unimplemented in ntdll: no privilege check runs"
-ntquerysecobj = "NtQuerySecurityObject is unimplemented in ntdll: F2K keeps no security descriptor on an object to query"
-ntsetsecobj = "NtSetSecurityObject is unimplemented in ntdll: F2K keeps no security descriptor to set on an object"
-ntbytype = "NtAccessCheckByType and NtAccessCheckByTypeResultList are unimplemented in ntdll (catalogued only): no by-type access check runs"
-ntcreatefilter = "NtCreateToken and NtFilterToken are unimplemented in ntdll (catalogued only): no token is created or filtered"
-ntthreadtok = "NtOpenThreadToken is unimplemented in ntdll (catalogued only): the thread's token is never opened"
+ntaccesscheck = "[NtAccessCheck(allow Everyone 0x000F01FF, requested 1): status=0xC0000005 granted=0x00000000 err=-], expected [NtAccessCheck(allow Everyone 0x000F01FF, requested 1): status=0xC000005C granted=0x000000"
+ntbytype = "[NtAccessCheckByType(two types, requested 1): status=0xC0000005 granted=0x00000000 err=-], expected [NtAccessCheckByType(two types, requested 1): status=0xC000005C granted=0x00000000 err=-]"
+ntcreatefilter = "[NtCreateToken(TOKEN_QUERY, no object attributes, all else NULL): status=0x00000000 err=-, a handle], expected [NtCreateToken(TOKEN_QUERY, no object attributes, all else NULL): status=0xC0000005 err=-"
+ntprivcheck = "[NtQueryInformationToken(TokenPrivileges): status=0x00000000 err=- ReturnLength 208], expected [NtQueryInformationToken(TokenPrivileges): status=0x00000000 err=- ReturnLength 232]"
+ntquerysecobj = "[NtQuerySecurityObject(a byte short): status=0xC0000023 err=-"
+ntsetsecobj = "[the file's SD read back: Control 0x8004, owner present: no, DACL present: no, length 20], expected [the file's SD read back: Control 0x8000, owner present: no, DACL present: no, length 20]"
+ntthreadtok = "[NtOpenThreadToken(GetCurrentThread(), TOKEN_QUERY, OpenAsSelf=FALSE): status=0x00000000 err=-, a handle], expected [NtOpenThreadToken(GetCurrentThread(), TOKEN_QUERY, OpenAsSelf=FALSE): status=0xC000"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

@@ -7,14 +7,12 @@ kind = "sectioned"
 gate = true
 
 [pending]
-# Every block waits for the behavior it pins; tests/capture.bat acccheck fills output.txt on the
-# VM trip, and each block un-xfails when that behavior lands.
-allowed = "AccessCheck is unimplemented in advapi32 (catalogued only) and F2K enforces no security descriptor, so no access check runs"
-denied = "the deny-first walk order of the access check is unimplemented: AccessCheck is catalogued only in advapi32 and F2K keeps no DACL to walk"
-owner = "the owner's implicit READ_CONTROL/WRITE_DAC in the access check is unimplemented: AccessCheck is catalogued only in advapi32"
-maximum = "the MAXIMUM_ALLOWED fast path of the access check is unimplemented: AccessCheck is catalogued only in advapi32"
-areall = "AreAllAccessesGranted and AreAnyAccessesGranted are unimplemented in advapi32 (catalogued only)"
-priv = "the privilege-gated rights of the access check (ACCESS_SYSTEM_SECURITY needs SeSecurityPrivilege, WRITE_OWNER needs the owner or SeTakeOwnershipPrivilege) are unimplemented: AccessCheck is catalogued only in advapi32"
+allowed = "[AccessCheck(requested 1, allow 0x000F01FF): ret=0 err=998 status=0x00000000 granted=0x00000000], expected [AccessCheck(requested 1, allow 0x000F01FF): ret=0 err=1309 status=0x00000000 granted=0x00000"
+areall = "[AccessCheck(requested 1): ret=0 err=998 granted=0x00000000], expected [AccessCheck(requested 1): ret=0 err=1309 granted=0x00000000]"
+denied = "[deny Everyone 0x000F01FF before allow all, requested 1: ret=0 err=998 status=0x00000000 granted=0x00000000], expected [deny Everyone 0x000F01FF before allow all, requested 1: ret=0 err=1309 status=0x"
+maximum = "[AccessCheck(MAXIMUM_ALLOWED, allow 0x000F01FF): ret=0 err=998 status=0x00000000 granted=0x00000000], expected [AccessCheck(MAXIMUM_ALLOWED, allow 0x000F01FF): ret=0 err=1309 status=0x00000000 granted"
+owner = "[TokenUser: S-1-5-21-999244753-1780587534-777500329-1000], expected [TokenUser: S-1-5-21-602162358-1085031214-839522115-1000]"
+priv = "[ACCESS_SYSTEM_SECURITY, privilege disabled, empty DACL: ret=0 err=998 status=0x00000000 granted=0x00000000], expected [ACCESS_SYSTEM_SECURITY, privilege disabled, empty DACL: ret=0 err=1309 status=0x"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
