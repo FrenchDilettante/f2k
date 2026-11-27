@@ -64,43 +64,7 @@ pub unsafe extern "system" fn get_sid_length_required(count: u32) -> u32 {
     services::length_required_sid(count & 0xFF)
 }
 
-/// CopySid: the source SID copied into the destination buffer of `length` bytes: FALSE with the
-/// copy's status as the last error (ERROR_INSUFFICIENT_BUFFER when the buffer is too small)
-/// when it does not fit, TRUE with the last error untouched when it does.
-///
-/// # Safety
-///
-/// `destination` is a buffer of `length` bytes the call may write; `source` a SID it may read.
-#[unsafe(export_name = "f2k_export_CopySid")]
-pub unsafe extern "system" fn copy_sid(
-    length: u32,
-    destination: *mut u8,
-    source: *const u8,
-) -> u32 {
-    if source.is_null() || destination.is_null() {
-        nt::set_last_error(ERROR_INVALID_PARAMETER);
-        return 0;
-    }
-    match services::copy_sid(length, destination, source).ok() {
-        Ok(()) => 1,
-        Err(status) => failed(status),
-    }
-}
 
-/// EqualPrefixSid: whether the two SIDs are equal except for the last sub-authority; the last
-/// error ERROR_SUCCESS whatever the answer.
-///
-/// # Safety
-///
-/// `sid1` and `sid2` are SIDs the call may read.
-#[unsafe(export_name = "f2k_export_EqualPrefixSid")]
-pub unsafe extern "system" fn equal_prefix_sid(sid1: *const u8, sid2: *const u8) -> u32 {
-    nt::set_last_error(0);
-    if sid1.is_null() || sid2.is_null() {
-        return 0;
-    }
-    services::equal_prefix_sid(sid1, sid2)
-}
 
 #[cfg(test)]
 mod tests {
@@ -155,82 +119,5 @@ mod tests {
         assert_eq!(last_error(), 0);
     }
 
-    /// CopySid copies the whole SID into a roomy buffer (the last error untouched), answers
-    /// FALSE with ERROR_INSUFFICIENT_BUFFER (122) when the buffer is too small, and
-    /// ERROR_INVALID_PARAMETER (87) for a null source or destination.
-    #[test]
-    fn copy_sid_copies_or_asks_for_room() {
-        let admins = sid(5, &[32, 544]);
-        let mut buffer = [0xCCu8; 256];
-        arm();
-        let ok = unsafe { copy_sid(256, buffer.as_mut_ptr(), admins.as_ptr()) };
-        assert_eq!((ok, last_error()), (1, 0xF2F2));
-        assert_eq!(&buffer[..16], &admins[..]);
-        arm();
-        let ok = unsafe { copy_sid(4, buffer.as_mut_ptr(), admins.as_ptr()) };
-        assert_eq!((ok, last_error()), (0, 122));
-        arm();
-        let ok = unsafe { copy_sid(256, buffer.as_mut_ptr(), core::ptr::null()) };
-        assert_eq!((ok, last_error()), (0, 87));
-        let ok = unsafe { copy_sid(256, core::ptr::null_mut(), admins.as_ptr()) };
-        assert_eq!((ok, last_error()), (0, 87));
-    }
 
-    /// EqualPrefixSid answers whether the two SIDs share all but the last sub-authority, with
-    /// the last error ERROR_SUCCESS either way: a prefix of the SID is not equal to it, the SID
-    /// is equal to itself, and two SIDs differing only in the last sub-authority share a prefix.
-    #[test]
-    fn equal_prefix_compares_all_but_the_last() {
-        let admins = sid(5, &[32, 544]);
-        let users = sid(5, &[32, 545]);
-        let builtin = sid(5, &[32]);
-        arm();
-        assert_eq!(
-            (
-                unsafe { equal_prefix_sid(admins.as_ptr(), builtin.as_ptr()) },
-                last_error()
-            ),
-            (0, 0)
-        );
-        arm();
-        assert_eq!(
-            (
-                unsafe { equal_prefix_sid(builtin.as_ptr(), admins.as_ptr()) },
-                last_error()
-            ),
-            (0, 0)
-        );
-        arm();
-        assert_eq!(
-            (
-                unsafe { equal_prefix_sid(admins.as_ptr(), admins.as_ptr()) },
-                last_error()
-            ),
-            (1, 0)
-        );
-        arm();
-        assert_eq!(
-            (
-                unsafe { equal_prefix_sid(admins.as_ptr(), users.as_ptr()) },
-                last_error()
-            ),
-            (1, 0)
-        );
-        arm();
-        assert_eq!(
-            (
-                unsafe { equal_prefix_sid(admins.as_ptr(), sid(1, &[0]).as_ptr()) },
-                last_error()
-            ),
-            (0, 0)
-        );
-        arm();
-        assert_eq!(
-            (
-                unsafe { equal_prefix_sid(admins.as_ptr(), core::ptr::null()) },
-                last_error()
-            ),
-            (0, 0)
-        );
-    }
 }

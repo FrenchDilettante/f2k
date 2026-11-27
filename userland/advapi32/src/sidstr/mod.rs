@@ -30,7 +30,6 @@ use crate::{caller_bytes, Out};
 
 pub mod parts;
 pub mod string;
-pub mod wellknown;
 
 /// A SID's header: revision, sub-authority count, the six-byte identifier authority; then a
 /// dword per sub-authority.
