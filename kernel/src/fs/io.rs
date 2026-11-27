@@ -164,8 +164,20 @@ mod target {
             return Err(STATUS_INSUFFICIENT_RESOURCES);
         }
         if open.granted & crate::fs::file::rights::FILE_WRITE_DATA != 0 || open.delete_on_close {
-            let record = with_records(|records| records.find(&file));
-            if record.is_some_and(image_in_use) {
+            // The record is held across the check: purging a cached image lets go of its file
+            // object, which may be the record's last holder; it goes once the check is done, and
+            // the open below makes the file a record of its own.
+            let record = with_records(|records| {
+                let record = records.find(&file)?;
+                records.hold(record);
+                Some(record)
+            });
+            let in_use = record.is_some_and(|record| {
+                let in_use = image_in_use(record);
+                with_records(|records| records.close(record));
+                in_use
+            });
+            if in_use {
                 return Err(if open.delete_on_close {
                     STATUS_CANNOT_DELETE
                 } else {

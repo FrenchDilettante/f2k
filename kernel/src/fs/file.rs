@@ -937,6 +937,14 @@ impl FileRecords {
         (record.cleanups == 0 && record.delete_pending).then_some(record.file)
     }
 
+    /// A reference of the caller's own on the record `record`, taken while it decides on an open
+    /// (the FCB FastFat holds across its create): whatever else lets go of the record meanwhile —
+    /// the image cache's file object, when the image is purged — it stays, and the same file's.
+    /// [`Self::close`] lets go of it.
+    pub fn hold(&mut self, record: FileRecordId) {
+        self.get_mut(record).references += 1;
+    }
+
     /// An open's last reference went: the record goes with the last one.
     pub fn close(&mut self, record: FileRecordId) {
         let entry = self.get_mut(record);
@@ -1620,6 +1628,35 @@ mod tests {
         assert_eq!(records.find(&entry(1)), Some(image));
         assert_eq!(records.find(&entry(2)), None);
         let _ = leaked;
+    }
+
+    /// An open for writing of a file only its cached image holds (fswrite's imagewrite: the
+    /// image's views unmapped, its section closed) holds the record while it asks whether the
+    /// image is in use: the purge that answers closes the image's file object, the record's last
+    /// holder but the open's, and the record stays readable until the open lets go of it — the
+    /// open then makes the file a record of its own. Without the hold, the purge freed the record
+    /// under the question and its next read panicked the kernel.
+    #[test]
+    fn a_held_record_outlives_its_cached_images_close() {
+        let mut records = FileRecords::empty();
+        let image = records.open(entry(1), ACCESS_READ, ACCESS_READ).unwrap();
+        let _ = records.cleanup(image, ACCESS_READ, ACCESS_READ, false);
+        assert!(
+            records.held_by_one_object(image),
+            "the cached image's alone"
+        );
+        let found = records.find(&entry(1)).unwrap();
+        records.hold(found);
+        // The purge: the image's file object closes.
+        records.close(image);
+        assert_eq!(records.find(&entry(1)), Some(found), "held");
+        assert!(records.get(found).image.is_none());
+        records.close(found);
+        assert_eq!(records.find(&entry(1)), None, "gone with the hold");
+        let opened = records
+            .open(entry(1), ACCESS_READ | ACCESS_WRITE, SHARE_ALL)
+            .unwrap();
+        assert_eq!(records.find(&entry(1)), Some(opened));
     }
 
     /// Delete-on-close is the file's, not the handle's: the flagged open's cleanup marks it
