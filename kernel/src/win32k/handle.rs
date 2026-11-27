@@ -55,7 +55,7 @@ use super::accel::TableId;
 use super::class::{Owner, SYSTEM_OWNER};
 use super::icon::CursorId;
 use super::menu::MenuId;
-use super::process::{self, W32Processes};
+use super::process::{self, Objects, W32Processes};
 use super::window::WindowEntry;
 use crate::slots::{per_page, Full, Record, Slots, UserHandle};
 
@@ -129,8 +129,9 @@ const ODD: usize = 1;
 /// handed out, so no handle is 0): Windows' ceiling on USER handles, system-wide.
 pub struct UserHandles {
     slots: Slots<Entry, UserHandle, ENTRIES_PER_CHUNK>,
-    /// The processes' records: each one's count of the objects it holds.
-    processes: W32Processes,
+    /// The processes' records, where each one's count of the USER objects it holds is kept (the
+    /// kernel's, shared with the GDI table: [`process::processes`]).
+    processes: &'static W32Processes,
 }
 
 impl UserHandles {
@@ -145,7 +146,7 @@ impl UserHandles {
         unsafe {
             handles.write(UserHandles {
                 slots: Slots::new(),
-                processes: W32Processes::new(),
+                processes: process::processes(),
             })
         };
     }
@@ -172,7 +173,7 @@ impl UserHandles {
         if let Some(owner) = owner {
             let quota = super::quota::user_process_handle_quota();
             self.processes
-                .may_take_user_object(owner, quota, super::pages())
+                .may_take(Objects::User, owner, quota, super::pages())
                 .map_err(|refusal| match refusal {
                     process::Refusal::Quota => Refusal::NoMoreUserHandles,
                     process::Refusal::NoMemory => Refusal::NoMemory,
@@ -190,7 +191,7 @@ impl UserHandles {
             Full::NoChunk => Refusal::NoMemory,
         })?;
         if let Some(owner) = owner {
-            self.processes.took_user_object(owner);
+            self.processes.took(Objects::User, owner);
         }
         Ok(handle)
     }
@@ -257,15 +258,10 @@ impl UserHandles {
         let entry = self.slots.get_mut(handle)?;
         let object = entry.object.take()?;
         if let Some(owner) = entry.owner.take() {
-            self.processes.gave_user_object(owner);
+            self.processes.gave(Objects::User, owner);
         }
         self.slots.free(handle);
         Some(object)
-    }
-
-    /// The processes' records (GetGuiResources reads a count).
-    pub fn processes(&self) -> &W32Processes {
-        &self.processes
     }
 
     /// The USER objects the process `owner` holds.
@@ -280,7 +276,7 @@ impl UserHandles {
     /// starts afresh for the next process at its index.
     pub fn end_process(&mut self, owner: Owner) {
         if owner == SYSTEM_OWNER || self.processes.user_objects(owner) == 0 {
-            self.processes.end(owner);
+            self.processes.end(Objects::User, owner);
             return;
         }
         for (_, entry) in self.slots.iter_mut() {
@@ -288,7 +284,7 @@ impl UserHandles {
                 entry.owner = None;
             }
         }
-        self.processes.end(owner);
+        self.processes.end(Objects::User, owner);
     }
 
     /// The handles open: one per live object of every kind.

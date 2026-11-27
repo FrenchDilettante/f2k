@@ -499,12 +499,13 @@ fn selected_elsewhere(object: crate::ob::ObjectId, reference: &crate::ob::ObRef)
 }
 
 /// A bitmap of state `bitmap` made, its GDI handle the calling process's ([`super::gdi`]);
-/// STATUS_INSUFFICIENT_RESOURCES when the bitmaps' pool or the GDI table is full.
+/// STATUS_INSUFFICIENT_RESOURCES when the bitmaps' pool is full, the GDI table's refusal's status
+/// (STATUS_NO_MEMORY: the process's quota, the table's ceiling) when it gives no handle.
 #[cfg(target_arch = "x86")]
 fn publish_bitmap(_call: &mut NtCall, bitmap: Bitmap) -> Result<u32, NtStatus> {
     let id = crate::ob::locked(|directory| directory.create_bitmap(bitmap))
         .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-    super::gdi::insert(id).ok_or(STATUS_INSUFFICIENT_RESOURCES)
+    super::gdi::insert(id)
 }
 
 /// Delete the calling process's bitmap `handle` (one this service just made).

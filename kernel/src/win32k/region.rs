@@ -1177,14 +1177,15 @@ mod objects {
     }
 
     /// Publish a new region: an object holding `region` (whose block it takes), its handle the
-    /// calling process's; STATUS_INSUFFICIENT_RESOURCES when the regions' pool or the GDI table is
-    /// full (the block given back).
+    /// calling process's; STATUS_INSUFFICIENT_RESOURCES when the regions' pool is full (the block
+    /// given back), the GDI table's refusal's status (STATUS_NO_MEMORY: the process's quota, the
+    /// table's ceiling) when it gives no handle.
     pub fn publish(_call: &mut NtCall, region: Region) -> Result<u32, NtStatus> {
         let Some(id) = crate::ob::locked(|directory| directory.create_region(region)) else {
             release_storage(&region);
             return Err(STATUS_INSUFFICIENT_RESOURCES);
         };
-        super::super::gdi::insert(id).ok_or(STATUS_INSUFFICIENT_RESOURCES)
+        super::super::gdi::insert(id)
     }
 
     /// Delete the calling process's region `handle` (one a service just made).

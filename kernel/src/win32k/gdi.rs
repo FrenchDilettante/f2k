@@ -24,6 +24,15 @@
 //! every entry the process still owns and drops their references ([`end_process`]), as Windows
 //! 2000 frees a process's GDI objects at its end.
 //!
+//! Each process's GDI objects are counted in its win32k record ([`super::process`]'s
+//! `gdi_objects`) from the insert to the delete or the teardown, under the table's lock, and a
+//! process holding its quota's worth ([`super::quota::gdi_process_handle_quota`]:
+//! GDIProcessHandleQuota, 10,000 by default) gets no entry. A create refused by the quota, by the
+//! table's ceiling or for want of a page answers NULL with ERROR_NOT_ENOUGH_MEMORY (8,
+//! [`Refusal::status`]): GDI has no error of its own for a full table (`manygdi`'s `quota`
+//! predicts it; to confirm). The stock objects are no process's: in no entry, they count for
+//! none.
+//!
 //! Lock order: the table's lock is taken alone. A look-up copies the object's id out and
 //! references it after the release, by id: an object deleted between the two is a reference that
 //! fails (its id's generation moved on), so nothing the table hands out ever names another object.
@@ -31,8 +40,10 @@
 use rtl::dib::OBJ_BITMAP;
 use rtl::gdi::{object_handle, OBJ_BRUSH, OBJ_FONT, OBJ_PEN, OBJ_REGION};
 
+use super::process::{self, Objects, W32Processes};
 use crate::ob::{ObjectId, ObjectType};
-use crate::slots::{per_page, Codec, GdiHandle, Inline, Pages, Record, Slots};
+use crate::slots::{per_page, Codec, Full, GdiHandle, Inline, Pages, Record, Slots};
+use crate::status::{NtStatus, STATUS_NO_MEMORY};
 
 /// A DC's kind in its handle's bits: none (rtl::gdi's object_of tells a DC by their absence).
 pub const DC_KIND: u32 = 0;
@@ -100,55 +111,95 @@ pub const fn kind_bits(kind: ObjectType) -> Option<u32> {
     }
 }
 
-/// The GDI handle table.
-pub struct GdiTable {
-    slots: Slots<GdiEntry, GdiHandle, PER, Inline<CHUNKS>>,
+/// Why an insert gave no handle.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Refusal {
+    /// The process holds its quota's worth of GDI objects.
+    Quota,
+    /// The table holds its 16,384 entries.
+    Ceiling,
+    /// No page was left for the table's next chunk or the process's record.
+    NoMemory,
 }
 
-impl Default for GdiTable {
-    fn default() -> Self {
-        Self::new()
+impl Refusal {
+    /// The status the create answers: STATUS_NO_MEMORY for each, which gdi32 makes
+    /// ERROR_NOT_ENOUGH_MEMORY (8), as Windows 2000's GDI answers a create it has no handle for
+    /// (from memory: `manygdi`'s `quota` predicts it, and may find the last error untouched).
+    pub const fn status(self) -> NtStatus {
+        STATUS_NO_MEMORY
     }
 }
 
+/// The GDI handle table.
+pub struct GdiTable {
+    slots: Slots<GdiEntry, GdiHandle, PER, Inline<CHUNKS>>,
+    /// The processes' records, where each one's count of the GDI objects it holds is kept (the
+    /// kernel's, shared with the user handle table: [`process::processes`]).
+    processes: &'static W32Processes,
+}
+
 impl GdiTable {
-    /// An empty table: no chunk made.
-    pub const fn new() -> Self {
+    /// An empty table, counting in `processes`: no chunk made.
+    pub const fn on(processes: &'static W32Processes) -> Self {
         GdiTable {
             slots: Slots::new(),
+            processes,
         }
     }
 
     /// An entry for `object` (a GDI object's, holding its creator's reference from now on) owned
-    /// by the process `owner`: its handle, the object's kind in its bits. None when the table is
-    /// full or no page is left for its next chunk.
+    /// by the process `owner`, counted against its quota: its handle, the object's kind in its
+    /// bits. [`Refusal::Quota`] when `owner` holds its quota's worth
+    /// ([`super::quota::gdi_process_handle_quota`]), [`Refusal::Ceiling`] when the table is full,
+    /// [`Refusal::NoMemory`] when no page is left for its next chunk or the process's record.
     ///
     /// # Panics
     ///
     /// `object` is no GDI object's.
-    pub fn insert(&mut self, owner: u16, object: ObjectId, pages: &impl Pages) -> Option<u32> {
+    pub fn insert(
+        &mut self,
+        owner: u16,
+        object: ObjectId,
+        pages: &impl Pages,
+    ) -> Result<u32, Refusal> {
         let kind = kind_bits(object.kind).expect("a GDI object");
         self.insert_as(owner, object, kind, pages)
     }
 
     /// [`GdiTable::insert`], the handle carrying the kind `kind` (an extended pen's OBJ_EXTPEN,
-    /// where its object's type says OBJ_PEN).
+    /// where its object's type says OBJ_PEN). An owner or a kind past the entry's byte is
+    /// [`Refusal::Ceiling`]'s (neither happens: process indices stay below 0x100, kinds below 16).
     pub fn insert_as(
         &mut self,
         owner: u16,
         object: ObjectId,
         kind: u32,
         pages: &impl Pages,
-    ) -> Option<u32> {
+    ) -> Result<u32, Refusal> {
         if owner > 0xFF || kind > 0xFF {
-            return None;
+            return Err(Refusal::Ceiling);
         }
-        let (id, entry) = self.slots.allocate_or_grow(0, pages).ok()?;
+        let quota = super::quota::gdi_process_handle_quota();
+        self.processes
+            .may_take(Objects::Gdi, owner, quota, pages)
+            .map_err(|refusal| match refusal {
+                process::Refusal::Quota => Refusal::Quota,
+                process::Refusal::NoMemory => Refusal::NoMemory,
+            })?;
+        let (id, entry) = self
+            .slots
+            .allocate_or_grow(0, pages)
+            .map_err(|full| match full {
+                Full::Limit => Refusal::Ceiling,
+                Full::NoChunk => Refusal::NoMemory,
+            })?;
         *entry = GdiEntry {
             object,
             owner_kind: owner | ((kind as u16) << 8),
         };
-        Some(object_handle(kind, id))
+        self.processes.took(Objects::Gdi, owner);
+        Ok(object_handle(kind, id))
     }
 
     /// The object `handle` names for the process `owner`: an entry it owns whose kind and
@@ -166,6 +217,7 @@ impl GdiTable {
     pub fn remove(&mut self, owner: u16, handle: u32) -> Option<ObjectId> {
         let object = self.find(owner, handle)?;
         self.slots.free(handle);
+        self.processes.gave(Objects::Gdi, owner);
         Some(object)
     }
 
@@ -188,6 +240,12 @@ impl GdiTable {
         }
         for &handle in &handles[..count] {
             self.slots.free(handle);
+            self.processes.gave(Objects::Gdi, owner);
+        }
+        if count < room {
+            // The last of the owner's entries: its count starts afresh for the next process at
+            // its index.
+            self.processes.end(Objects::Gdi, owner);
         }
         count
     }
@@ -218,8 +276,8 @@ mod target {
     use crate::slots::KERNEL_PAGES;
     use crate::sync::ShortLock;
 
-    /// The kernel's GDI table, behind its short lock.
-    static TABLE: ShortLock<GdiTable> = ShortLock::new(GdiTable::new());
+    /// The kernel's GDI table, behind its short lock, counting in the kernel's records.
+    static TABLE: ShortLock<GdiTable> = ShortLock::new(GdiTable::on(&process::PROCESSES));
 
     /// Run `f` on the locked table (the bridge for code without a passive token: see
     /// `crate::win32k::window::locked`). Nothing else is locked inside.
@@ -242,24 +300,26 @@ mod target {
     }
 
     /// Publish a new GDI object `object` for the calling process: an entry holding its creator's
-    /// reference, its handle answered. A full table takes the object back with it (none).
-    pub fn insert(object: ObjectId) -> Option<u32> {
+    /// reference, its handle answered. A refusal (the process's quota, the table's ceiling, no
+    /// page: [`Refusal`]) takes the object back with it, its status answered (STATUS_NO_MEMORY,
+    /// ERROR_NOT_ENOUGH_MEMORY's).
+    pub fn insert(object: ObjectId) -> Result<u32, NtStatus> {
         let owner = owner();
         let handle = with_table(|table| table.insert(owner, object, &KERNEL_PAGES));
-        if handle.is_none() {
+        handle.map_err(|refusal| {
             crate::ob::release(object);
-        }
-        handle
+            refusal.status()
+        })
     }
 
     /// [`insert`], the handle carrying the kind `kind` ([`GdiTable::insert_as`]).
-    pub fn insert_as(object: ObjectId, kind: u32) -> Option<u32> {
+    pub fn insert_as(object: ObjectId, kind: u32) -> Result<u32, NtStatus> {
         let owner = owner();
         let handle = with_table(|table| table.insert_as(owner, object, kind, &KERNEL_PAGES));
-        if handle.is_none() {
+        handle.map_err(|refusal| {
             crate::ob::release(object);
-        }
-        handle
+            refusal.status()
+        })
     }
 
     /// The object of `kind` (its handle's kind bits: [`DC_KIND`], OBJ_BRUSH...) the calling
@@ -341,6 +401,11 @@ mod tests {
         }
     }
 
+    /// An empty table counting in records of its own.
+    fn table() -> GdiTable {
+        GdiTable::on(process::processes())
+    }
+
     const ONE: u16 = 3;
     const OTHER: u16 = 5;
 
@@ -349,7 +414,7 @@ mod tests {
     #[test]
     fn handles_carry_their_slot_kind_and_uniqueness() {
         let pages = HostPages::new();
-        let mut table = GdiTable::new();
+        let mut table = table();
         let dc = table
             .insert(ONE, object(ObjectType::Dc, 1), &pages)
             .unwrap();
@@ -390,7 +455,7 @@ mod tests {
     #[test]
     fn a_pens_handle_carries_its_kind() {
         let pages = HostPages::new();
-        let mut table = GdiTable::new();
+        let mut table = table();
         let pen = object(ObjectType::Pen, 1);
         let plain = table.insert(ONE, pen, &pages).unwrap();
         let extended = table
@@ -408,7 +473,7 @@ mod tests {
     #[test]
     fn another_process_finds_nothing() {
         let pages = HostPages::new();
-        let mut table = GdiTable::new();
+        let mut table = table();
         let brush = object(ObjectType::Brush, 7);
         let handle = table.insert(ONE, brush, &pages).unwrap();
         assert_eq!(table.find(ONE, handle), Some(brush));
@@ -425,7 +490,7 @@ mod tests {
     #[test]
     fn a_deleted_objects_handle_goes_stale() {
         let pages = HostPages::new();
-        let mut table = GdiTable::new();
+        let mut table = table();
         let first = table
             .insert(ONE, object(ObjectType::Brush, 1), &pages)
             .unwrap();
@@ -454,7 +519,7 @@ mod tests {
     #[test]
     fn forged_handles_name_nothing() {
         let pages = HostPages::new();
-        let mut table = GdiTable::new();
+        let mut table = table();
         let handle = table
             .insert(ONE, object(ObjectType::Brush, 1), &pages)
             .unwrap();
@@ -485,7 +550,7 @@ mod tests {
     #[test]
     fn the_teardown_sweep_takes_the_owners_entries() {
         let pages = HostPages::new();
-        let mut table = GdiTable::new();
+        let mut table = table();
         let kinds = [
             ObjectType::Dc,
             ObjectType::Brush,
@@ -519,26 +584,153 @@ mod tests {
         }
     }
 
+    /// Each process's entries are counted from the insert to the delete; at its quota's worth
+    /// (10,000) the next insert is refused, ERROR_NOT_ENOUGH_MEMORY's status, the table and the
+    /// count as they were; one deleted makes room for one more (its slot), and another process
+    /// is not held back.
+    #[test]
+    fn a_process_is_refused_at_its_quota() {
+        let pages = HostPages::new();
+        let mut table = table();
+        let quota = super::super::quota::GDI_PROCESS_HANDLE_QUOTA;
+        let mut handles = std::vec::Vec::new();
+        for index in 0..quota {
+            let kind = if index % 2 == 0 {
+                ObjectType::Brush
+            } else {
+                ObjectType::Region
+            };
+            handles.push(table.insert(ONE, object(kind, 1), &pages).unwrap());
+            assert_eq!(table.processes.gdi_objects(ONE), index + 1);
+        }
+        assert_eq!(
+            table.insert(ONE, object(ObjectType::Brush, 1), &pages),
+            Err(Refusal::Quota)
+        );
+        assert_eq!(Refusal::Quota.status(), STATUS_NO_MEMORY);
+        assert_eq!(rtl::status::dos_error(Refusal::Quota.status().0), 8);
+        assert_eq!(table.processes.gdi_objects(ONE), quota);
+        assert_eq!(table.live(), quota);
+        assert!(table
+            .insert(OTHER, object(ObjectType::Font, 1), &pages)
+            .is_ok());
+        assert_eq!(table.processes.gdi_objects(OTHER), 1);
+
+        let last = handles.pop().unwrap();
+        assert!(table.remove(ONE, last).is_some());
+        assert_eq!(table.processes.gdi_objects(ONE), quota - 1);
+        let again = table
+            .insert(ONE, object(ObjectType::Brush, 2), &pages)
+            .unwrap();
+        assert_eq!(again & 0xFFFF, last & 0xFFFF, "the freed slot");
+        assert_eq!(
+            table.insert(ONE, object(ObjectType::Brush, 3), &pages),
+            Err(Refusal::Quota)
+        );
+        handles.push(again);
+        for handle in handles {
+            assert!(table.remove(ONE, handle).is_some());
+        }
+        assert_eq!(table.processes.gdi_objects(ONE), 0, "every one given back");
+    }
+
+    /// A delete by another process, or of a stale handle, gives no count back; the teardown's
+    /// sweep gives back the owner's whole count, and no other process's.
+    #[test]
+    fn the_count_follows_deletes_and_the_teardown() {
+        let pages = HostPages::new();
+        let mut table = table();
+        let first = table
+            .insert(ONE, object(ObjectType::Brush, 1), &pages)
+            .unwrap();
+        for index in 0..(TAKE_STEP as u16 + 3) {
+            table
+                .insert(ONE, object(ObjectType::Bitmap, index), &pages)
+                .unwrap();
+        }
+        table
+            .insert(OTHER, object(ObjectType::Dc, 1), &pages)
+            .unwrap();
+        assert_eq!(table.processes.gdi_objects(ONE), TAKE_STEP as u32 + 4);
+        assert_eq!(table.remove(OTHER, first), None);
+        assert_eq!(table.processes.gdi_objects(ONE), TAKE_STEP as u32 + 4);
+        assert!(table.remove(ONE, first).is_some());
+        assert_eq!(table.remove(ONE, first), None, "stale");
+        assert_eq!(table.processes.gdi_objects(ONE), TAKE_STEP as u32 + 3);
+        let mut step = [None; TAKE_STEP];
+        assert_eq!(table.take_owned(ONE, &mut step), TAKE_STEP);
+        assert_eq!(table.processes.gdi_objects(ONE), 3);
+        assert_eq!(table.take_owned(ONE, &mut step), 3);
+        assert_eq!(table.processes.gdi_objects(ONE), 0);
+        assert_eq!(table.processes.gdi_objects(OTHER), 1);
+    }
+
+    /// The stock objects are no process's: their handles name no entry, so a delete gives no
+    /// count back, and making them costs none (they are never inserted).
+    #[test]
+    fn stock_objects_count_for_nobody() {
+        let pages = HostPages::new();
+        let mut table = table();
+        table
+            .insert(ONE, object(ObjectType::Brush, 1), &pages)
+            .unwrap();
+        for index in 0..=rtl::gdi::DEFAULT_GUI_FONT {
+            if let Some(stock) = rtl::gdi::stock_handle(index) {
+                assert_eq!(table.remove(ONE, stock), None);
+            }
+        }
+        assert_eq!(table.processes.gdi_objects(ONE), 1);
+        assert_eq!(table.live(), 1);
+    }
+
     /// The table stops at Windows 2000's 16,384 entries (slot 0 never handed out), and grows a
-    /// page at a time on the way; a failed page leaves it as it was.
+    /// page at a time on the way; a failed page leaves it as it was. Two processes fill it, each
+    /// short of its quota.
     #[test]
     fn the_table_fills_at_its_ceiling() {
+        let mut table = table();
+        for owner in [ONE, OTHER] {
+            // The processes' records made beforehand, out of the budget below.
+            let quota = super::super::quota::GDI_PROCESS_HANDLE_QUOTA;
+            let records = HostPages::new();
+            assert_eq!(
+                table
+                    .processes
+                    .may_take(Objects::Gdi, owner, quota, &records),
+                Ok(())
+            );
+        }
         let pages = HostPages::with_budget(1);
-        let mut table = GdiTable::new();
         let mut handles = std::vec::Vec::new();
-        while let Some(handle) = table.insert(ONE, object(ObjectType::Brush, 1), &pages) {
-            handles.push(handle);
-        }
+        let refusal = loop {
+            match table.insert(ONE, object(ObjectType::Brush, 1), &pages) {
+                Ok(handle) => handles.push(handle),
+                Err(refusal) => break refusal,
+            }
+        };
         assert_eq!(handles.len(), PER - 1, "one page's slots, slot 0 reserved");
+        assert_eq!(refusal, Refusal::NoMemory);
+        assert_eq!(table.processes.gdi_objects(ONE), PER as u32 - 1);
         pages.set_budget(CHUNKS);
-        while let Some(handle) = table.insert(ONE, object(ObjectType::Brush, 1), &pages) {
-            handles.push(handle);
-        }
+        let refusal = loop {
+            let owner = if handles.len() < 8_000 { ONE } else { OTHER };
+            match table.insert(owner, object(ObjectType::Brush, 1), &pages) {
+                Ok(handle) => handles.push(handle),
+                Err(refusal) => break refusal,
+            }
+        };
+        assert_eq!(refusal, Refusal::Ceiling);
         assert_eq!(handles.len(), 0x3FFF);
         assert_eq!(handles.last().map(|handle| handle & 0xFFFF), Some(0x3FFF));
         assert_eq!(table.live(), 0x3FFF);
-        assert!(handles
-            .iter()
-            .all(|&handle| table.find(ONE, handle).is_some()));
+        assert_eq!(
+            table.processes.gdi_objects(ONE) + table.processes.gdi_objects(OTHER),
+            0x3FFF
+        );
+        assert_eq!(
+            Refusal::Ceiling.status(),
+            STATUS_NO_MEMORY,
+            "the ceiling answers ERROR_NOT_ENOUGH_MEMORY too"
+        );
     }
 }

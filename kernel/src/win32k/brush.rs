@@ -237,12 +237,13 @@ pub fn fill_of(call: &mut NtCall, handle: Handle) -> Result<Fill, NtStatus> {
 // --- The target's side: the objects --------------------------------------------------------------
 
 /// A brush of state `brush` made, its GDI handle the calling process's ([`super::gdi`]);
-/// STATUS_INSUFFICIENT_RESOURCES when the brushes' pool or the GDI table is full.
+/// STATUS_INSUFFICIENT_RESOURCES when the brushes' pool is full, the GDI table's refusal's status
+/// (STATUS_NO_MEMORY: the process's quota, the table's ceiling) when it gives no handle.
 #[cfg(target_arch = "x86")]
 fn publish_brush(_call: &mut NtCall, brush: Brush) -> Result<u32, NtStatus> {
     let id = crate::ob::locked(|directory| directory.create_brush(brush))
         .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-    super::gdi::insert(id).ok_or(STATUS_INSUFFICIENT_RESOURCES)
+    super::gdi::insert(id)
 }
 
 /// Delete the calling process's brush `handle` (one this service just made).

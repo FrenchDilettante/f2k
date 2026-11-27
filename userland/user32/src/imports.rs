@@ -1291,8 +1291,8 @@ pub fn process_window_station() -> Result<u32, NtStatus> {
     Ok(handle)
 }
 
-/// NtUserGetGuiResources: the count of the objects of `flags`' kind (GR_USEROBJECTS) the process
-/// `process` names holds.
+/// NtUserGetGuiResources: the count of the objects of `flags`' kind (GR_GDIOBJECTS,
+/// GR_USEROBJECTS) the process `process` names holds.
 pub fn gui_resources(process: usize, flags: u32) -> Result<u32, NtStatus> {
     let mut count = 0u32;
     // SAFETY: the service writes the count into the local.

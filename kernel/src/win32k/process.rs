@@ -1,25 +1,35 @@
 //! The window manager's per-process records: what win32k keeps for each process that holds its
 //! objects, as Windows 2000's win32k keeps a W32PROCESS (its PROCESSINFO) beside each EPROCESS.
-//! F2K's record holds the count of the process's USER objects, which the per-process quota bounds
-//! ([`super::quota`]); slot-pool slices 13 and 18 add the GDI objects' count and the class lists.
+//! F2K's record holds the counts of the process's USER objects and GDI objects, which the
+//! per-process quotas bound ([`super::quota`]); slot-pool slice 18 adds the class lists.
 //!
 //! The records are a side table of the slot pool ([`crate::slots::SideTable`]) keyed by the
 //! process object's index (a class [`Owner`]), made a page at a time as processes come: a record
-//! is ensured at its process's first counted object and kept, reset at the process's end. The
-//! table lives in the user handle table ([`super::handle::UserHandles`]), whose inserts and closes
-//! are the only changes to the counts (Windows 2000's HMAllocObject and HMFreeObject), under the
-//! window manager's lock.
+//! is ensured at its process's first counted object and kept, each count reset at the process's
+//! end. The table takes no lock of its own (a side table's records are made and found without
+//! one), and the counts are atomic: each is changed under its own table's lock, the USER count
+//! under the window manager's by the user handle table ([`super::handle::UserHandles`], as
+//! Windows 2000's HMAllocObject and HMFreeObject count it inside the USER lock), the GDI count
+//! under the GDI handle table's ([`super::gdi`], as Windows 2000's GDI moves its W32PROCESS
+//! count with interlocked operations, outside the USER lock). A check and its raise under the
+//! same lock are exact; a reader (GetGuiResources) takes neither lock.
 //!
 //! The service (F2K's argument list, see [`crate::win32k`]; Windows 2000's number):
 //!
-//! - NtUserGetGuiResources (0x118A): GetGuiResources's GR_USEROBJECTS, the USER objects a process
-//!   holds (0 for a process that holds none, or never made one).
+//! - NtUserGetGuiResources (0x118A): GetGuiResources's GR_GDIOBJECTS, the GDI objects a process
+//!   holds, or GR_USEROBJECTS, its USER objects (0 for a process that holds none, or never made
+//!   one). The stock objects are no process's, and count for none.
+
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use rtl::winerror::ERROR_NO_MORE_USER_HANDLES;
 
 use super::class::Owner;
 use crate::slots::{Exhausted, Pages, Record, SideTable, PAGE};
 use crate::status::*;
+
+/// GetGuiResources's flag for the GDI objects a process holds.
+pub const GR_GDIOBJECTS: u32 = 0;
 
 /// GetGuiResources's flag for the USER objects a process holds.
 pub const GR_USEROBJECTS: u32 = 1;
@@ -31,11 +41,16 @@ pub const GR_USEROBJECTS: u32 = 1;
 pub const NO_MORE_USER_HANDLES: NtStatus = NtStatus::from_win32(ERROR_NO_MORE_USER_HANDLES);
 
 /// One process's record.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub struct W32Process {
     /// The USER objects the process holds: its windows, menus, accelerator tables, cursors and
-    /// icons, each counted from its handle's insert to its close.
-    pub user_objects: u32,
+    /// icons, each counted from its handle's insert to its close (under the window manager's
+    /// lock).
+    pub user_objects: AtomicU32,
+    /// The GDI objects the process holds: its DCs, brushes, bitmaps, fonts and regions, each
+    /// counted from its GDI handle's insert to its delete or the process's end (under the GDI
+    /// table's lock).
+    pub gdi_objects: AtomicU32,
 }
 
 // SAFETY: `write_fresh` writes a whole record.
@@ -51,10 +66,28 @@ const RECORDS_PER_CHUNK: usize = PAGE / (4 + core::mem::size_of::<W32Process>())
 
 const _: () = assert!(SideTable::<W32Process, RECORDS_PER_CHUNK>::CHUNK_PAGES == 1);
 
-/// Why a process may not take one more USER object.
+/// Which of a record's counts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Objects {
+    /// The USER objects' ([`W32Process::user_objects`]).
+    User,
+    /// The GDI objects' ([`W32Process::gdi_objects`]).
+    Gdi,
+}
+
+impl Objects {
+    fn of(self, record: &W32Process) -> &AtomicU32 {
+        match self {
+            Objects::User => &record.user_objects,
+            Objects::Gdi => &record.gdi_objects,
+        }
+    }
+}
+
+/// Why a process may not take one more object.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
-    /// The process holds its quota's worth (ERROR_NO_MORE_USER_HANDLES).
+    /// The process holds its quota's worth.
     Quota,
     /// No page was left for the process's record (ERROR_NOT_ENOUGH_MEMORY).
     NoMemory,
@@ -73,17 +106,31 @@ impl W32Processes {
         }
     }
 
-    /// The USER objects the process `process` holds: 0 for one with no record.
-    pub fn user_objects(&self, process: Owner) -> u32 {
+    /// How many objects of `objects`' kind the process `process` holds: 0 for one with no
+    /// record.
+    pub fn count(&self, objects: Objects, process: Owner) -> u32 {
         self.table
             .get(u32::from(process))
-            .map_or(0, |record| record.user_objects)
+            .map_or(0, |record| objects.of(record).load(Ordering::Relaxed))
     }
 
-    /// Whether the process `process` may take one more USER object under `quota`, its record made
-    /// if it had none: the check Windows 2000's HMAllocObject makes before it takes a handle.
-    pub fn may_take_user_object(
-        &mut self,
+    /// The USER objects the process `process` holds.
+    pub fn user_objects(&self, process: Owner) -> u32 {
+        self.count(Objects::User, process)
+    }
+
+    /// The GDI objects the process `process` holds.
+    pub fn gdi_objects(&self, process: Owner) -> u32 {
+        self.count(Objects::Gdi, process)
+    }
+
+    /// Whether the process `process` may take one more object of `objects`' kind under `quota`,
+    /// its record made if it had none: the check Windows 2000's HMAllocObject (and GDI's handle
+    /// allocation) makes before it takes a handle. The caller holds the lock its kind's count is
+    /// changed under, until its [`W32Processes::took`].
+    pub fn may_take(
+        &self,
+        objects: Objects,
         process: Owner,
         quota: u32,
         pages: &impl Pages,
@@ -92,35 +139,46 @@ impl W32Processes {
         self.table.ensure(index, pages).map_err(|why| match why {
             Exhausted::NoPages | Exhausted::Limit => Refusal::NoMemory,
         })?;
-        if self.user_objects(process) >= quota {
+        if self.count(objects, process) >= quota {
             return Err(Refusal::Quota);
         }
         Ok(())
     }
 
-    /// The process `process` took a USER object (after [`W32Processes::may_take_user_object`]).
-    pub fn took_user_object(&mut self, process: Owner) {
-        if let Some(record) = self.table.get_mut(u32::from(process)) {
-            record.user_objects += 1;
+    /// The process `process` took an object of `objects`' kind (after
+    /// [`W32Processes::may_take`]).
+    pub fn took(&self, objects: Objects, process: Owner) {
+        if let Some(record) = self.table.get(u32::from(process)) {
+            objects.of(record).fetch_add(1, Ordering::Relaxed);
         }
     }
 
-    /// The process `process` let a USER object go: its handle closed.
-    pub fn gave_user_object(&mut self, process: Owner) {
-        if let Some(record) = self.table.get_mut(u32::from(process)) {
-            debug_assert!(
-                record.user_objects > 0,
-                "a USER object counted at its insert"
-            );
-            record.user_objects = record.user_objects.saturating_sub(1);
+    /// The process `process` let an object of `objects`' kind go: its handle closed.
+    pub fn gave(&self, objects: Objects, process: Owner) {
+        if let Some(record) = self.table.get(u32::from(process)) {
+            // Under the lock its kind's count is changed under: no other change meanwhile.
+            let count = objects.of(record);
+            let before = count.load(Ordering::Relaxed);
+            debug_assert!(before > 0, "an object counted at its insert");
+            count.store(before.saturating_sub(1), Ordering::Relaxed);
         }
     }
 
-    /// The process `process` has ended: its record starts afresh for the next process at its
-    /// index.
-    pub fn end(&mut self, process: Owner) {
-        if let Some(record) = self.table.get_mut(u32::from(process)) {
-            *record = W32Process::default();
+    /// The process `process` has ended, its objects of `objects`' kind gone: that count starts
+    /// afresh for the next process at its index.
+    pub fn end(&self, objects: Objects, process: Owner) {
+        if let Some(record) = self.table.get(u32::from(process)) {
+            objects.of(record).store(0, Ordering::Relaxed);
+        }
+    }
+
+    /// GetGuiResources's answer for the process `process`: the count `flags` names
+    /// (GR_GDIOBJECTS, GR_USEROBJECTS), STATUS_INVALID_PARAMETER for another flag.
+    pub fn gui_resources(&self, process: Owner, flags: u32) -> Result<u32, NtStatus> {
+        match flags {
+            GR_GDIOBJECTS => Ok(self.gdi_objects(process)),
+            GR_USEROBJECTS => Ok(self.user_objects(process)),
+            _ => Err(STATUS_INVALID_PARAMETER),
         }
     }
 }
@@ -131,6 +189,23 @@ impl Default for W32Processes {
     }
 }
 
+/// The kernel's records: every process's, shared by the user handle table and the GDI table.
+#[cfg(target_arch = "x86")]
+pub static PROCESSES: W32Processes = W32Processes::new();
+
+/// The kernel's records ([`PROCESSES`]).
+#[cfg(target_arch = "x86")]
+pub fn processes() -> &'static W32Processes {
+    &PROCESSES
+}
+
+/// A host test's records: a set of its own for each table that asks, so the tests running at
+/// once count apart (leaked: a test's few pages).
+#[cfg(not(target_arch = "x86"))]
+pub fn processes() -> &'static W32Processes {
+    std::boxed::Box::leak(std::boxed::Box::new(W32Processes::new()))
+}
+
 // --- The service
 // ----------------------------------------------------------------------------------
 
@@ -139,28 +214,26 @@ mod services {
     use super::*;
     use crate::nt::call::{Handle, NtCall, NtResult, UserPtr};
     use crate::nt::object::{reference_process, PROCESS_QUERY_INFORMATION};
-    use crate::win32k::queue::with_manager;
 
-    /// NtUserGetGuiResources(Process, Flags, Count): the USER objects the process `process` names
-    /// holds (GR_USEROBJECTS) into `count`; the handle opened with PROCESS_QUERY_INFORMATION
-    /// (STATUS_ACCESS_DENIED without it, STATUS_INVALID_HANDLE for a handle naming none) or the
-    /// current-process pseudo-handle. STATUS_INVALID_PARAMETER for another flag: user32 answers
-    /// GR_GDIOBJECTS itself until the GDI objects are counted (slot-pool slice 13).
+    /// NtUserGetGuiResources(Process, Flags, Count): the GDI objects (GR_GDIOBJECTS) or the USER
+    /// objects (GR_USEROBJECTS) the process `process` names holds into `count`; the handle opened
+    /// with PROCESS_QUERY_INFORMATION (STATUS_ACCESS_DENIED without it, STATUS_INVALID_HANDLE for
+    /// a handle naming none) or the current-process pseudo-handle. STATUS_INVALID_PARAMETER for
+    /// another flag. The counts are read without a lock: a count another thread moves meanwhile
+    /// is read before or after.
     pub fn get_gui_resources(
-        call: &mut NtCall,
+        _call: &mut NtCall,
         process: Handle,
         flags: u32,
         count: UserPtr<u32>,
     ) -> NtResult {
-        if flags != GR_USEROBJECTS {
+        if flags != GR_GDIOBJECTS && flags != GR_USEROBJECTS {
             return Err(STATUS_INVALID_PARAMETER);
         }
         let owner = reference_process(process.raw(), PROCESS_QUERY_INFORMATION)?
             .id()
             .index;
-        let answer = with_manager(call.passive(), |m| {
-            m.windows.handles.processes().user_objects(owner)
-        });
+        let answer = processes().gui_resources(owner, flags)?;
         count.write(answer)?;
         Ok(STATUS_SUCCESS)
     }
@@ -182,6 +255,8 @@ pub use services::get_gui_resources;
 
 #[cfg(test)]
 mod tests {
+    use Objects::{Gdi, User};
+
     use super::*;
     use crate::win32k::test_pages;
 
@@ -189,47 +264,80 @@ mod tests {
     /// down, refuses at the quota, and starts afresh at the process's end.
     #[test]
     fn a_record_counts_and_refuses_at_the_quota() {
-        let mut p = W32Processes::new();
+        let p = W32Processes::new();
         assert_eq!(p.user_objects(3), 0);
         for _ in 0..5 {
-            assert_eq!(p.may_take_user_object(3, 5, test_pages::current()), Ok(()));
-            p.took_user_object(3);
+            assert_eq!(p.may_take(User, 3, 5, test_pages::current()), Ok(()));
+            p.took(User, 3);
         }
         assert_eq!(p.user_objects(3), 5);
         assert_eq!(
-            p.may_take_user_object(3, 5, test_pages::current()),
+            p.may_take(User, 3, 5, test_pages::current()),
             Err(Refusal::Quota)
         );
         assert_eq!(p.user_objects(7), 0, "another process's count is its own");
-        p.gave_user_object(3);
-        assert_eq!(p.may_take_user_object(3, 5, test_pages::current()), Ok(()));
-        p.end(3);
+        p.gave(User, 3);
+        assert_eq!(p.may_take(User, 3, 5, test_pages::current()), Ok(()));
+        p.end(User, 3);
         assert_eq!(p.user_objects(3), 0);
+    }
+
+    /// The USER and GDI counts are apart: each refuses at its own quota, and each process's end
+    /// resets only its own.
+    #[test]
+    fn the_gdi_count_is_its_own() {
+        let p = W32Processes::new();
+        for _ in 0..3 {
+            assert_eq!(p.may_take(Gdi, 2, 3, test_pages::current()), Ok(()));
+            p.took(Gdi, 2);
+        }
+        p.took(User, 2);
+        assert_eq!(
+            p.may_take(Gdi, 2, 3, test_pages::current()),
+            Err(Refusal::Quota)
+        );
+        assert_eq!(p.may_take(User, 2, 3, test_pages::current()), Ok(()));
+        assert_eq!((p.gdi_objects(2), p.user_objects(2)), (3, 1));
+        p.end(Gdi, 2);
+        assert_eq!((p.gdi_objects(2), p.user_objects(2)), (0, 1));
+    }
+
+    /// GetGuiResources's answers: GR_GDIOBJECTS the GDI count, GR_USEROBJECTS the USER count, 0
+    /// for a process that never made one, and another flag refused.
+    #[test]
+    fn gui_resources_answers_each_count() {
+        let p = W32Processes::new();
+        assert_eq!(p.gui_resources(4, GR_GDIOBJECTS), Ok(0));
+        assert_eq!(p.gui_resources(4, GR_USEROBJECTS), Ok(0));
+        p.may_take(Gdi, 4, 10, test_pages::current()).unwrap();
+        p.took(Gdi, 4);
+        p.took(Gdi, 4);
+        p.took(User, 4);
+        assert_eq!(p.gui_resources(4, GR_GDIOBJECTS), Ok(2));
+        assert_eq!(p.gui_resources(4, GR_USEROBJECTS), Ok(1));
+        assert_eq!(p.gui_resources(4, 2), Err(STATUS_INVALID_PARAMETER));
     }
 
     /// No page for a record: the check refuses for memory, not the quota.
     #[test]
     fn no_page_no_record() {
-        let mut p = W32Processes::new();
+        let p = W32Processes::new();
         test_pages::budget(0);
         assert_eq!(
-            p.may_take_user_object(1, 10, test_pages::current()),
+            p.may_take(User, 1, 10, test_pages::current()),
             Err(Refusal::NoMemory)
         );
         test_pages::unlimited();
-        assert_eq!(p.may_take_user_object(1, 10, test_pages::current()), Ok(()));
+        assert_eq!(p.may_take(User, 1, 10, test_pages::current()), Ok(()));
     }
 
     /// A record past the first chunk: processes at high indices have records of their own.
     #[test]
     fn records_reach_past_the_first_chunk() {
-        let mut p = W32Processes::new();
+        let p = W32Processes::new();
         let far = RECORDS_PER_CHUNK as Owner * 3 + 1;
-        assert_eq!(
-            p.may_take_user_object(far, 10, test_pages::current()),
-            Ok(())
-        );
-        p.took_user_object(far);
+        assert_eq!(p.may_take(User, far, 10, test_pages::current()), Ok(()));
+        p.took(User, far);
         assert_eq!(p.user_objects(far), 1);
         assert_eq!(p.user_objects(1), 0);
     }

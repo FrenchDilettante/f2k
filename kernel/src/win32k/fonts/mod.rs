@@ -1036,12 +1036,13 @@ mod target {
     }
 
     /// A font object holding `font`, its GDI handle the calling process's, the font kind in its
-    /// bits ([`rtl::gdi::object_handle`]); STATUS_INSUFFICIENT_RESOURCES when the pool or the GDI
-    /// table is full.
+    /// bits ([`rtl::gdi::object_handle`]); STATUS_INSUFFICIENT_RESOURCES when the pool is full, the
+    /// GDI table's refusal's status (STATUS_NO_MEMORY: the process's quota, the table's ceiling)
+    /// when it gives no handle.
     pub fn publish_font(_call: &mut NtCall, font: FontObject) -> Result<u32, NtStatus> {
         let id = crate::ob::locked(|directory| directory.create_font(font))
             .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-        super::super::gdi::insert(id).ok_or(STATUS_INSUFFICIENT_RESOURCES)
+        super::super::gdi::insert(id)
     }
 
     /// Delete the calling process's font `handle`; STATUS_INVALID_HANDLE when it names none.

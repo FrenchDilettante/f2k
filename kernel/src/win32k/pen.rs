@@ -357,13 +357,14 @@ pub fn pen_of(call: &mut NtCall, handle: Handle) -> Result<Pen, NtStatus> {
 // --- The target's side: the objects --------------------------------------------------------------
 
 /// A pen of state `pen` made, its GDI handle the calling process's (OBJ_PEN, or OBJ_EXTPEN for an
-/// extended pen); STATUS_INSUFFICIENT_RESOURCES when the pool or the GDI table is full.
+/// extended pen); STATUS_INSUFFICIENT_RESOURCES when the pool is full, the GDI table's refusal's
+/// status (STATUS_NO_MEMORY: the process's quota, the table's ceiling) when it gives no handle.
 #[cfg(target_arch = "x86")]
 fn publish_pen(_call: &mut NtCall, pen: Pen) -> Result<u32, NtStatus> {
     let kind = if pen.extended { OBJ_EXTPEN } else { OBJ_PEN };
     let id = crate::ob::locked(|directory| directory.create_pen(pen))
         .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-    super::gdi::insert_as(id, kind).ok_or(STATUS_INSUFFICIENT_RESOURCES)
+    super::gdi::insert_as(id, kind)
 }
 
 /// Delete the calling process's pen `handle` (either kind); whether it named one.

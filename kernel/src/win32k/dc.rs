@@ -1288,14 +1288,15 @@ pub(super) fn release_paint_dc(call: &mut NtCall, handle: u32) -> Result<(), NtS
 }
 
 /// A DC of state `dc` made, its GDI handle the calling process's ([`super::gdi`]);
-/// STATUS_INSUFFICIENT_RESOURCES when the DCs' pool or the GDI table is full.
+/// STATUS_INSUFFICIENT_RESOURCES when the DCs' pool is full, the GDI table's refusal's status
+/// (STATUS_NO_MEMORY: the process's quota, the table's ceiling) when it gives no handle.
 #[cfg(target_arch = "x86")]
 fn publish_dc(_call: &mut NtCall, mut dc: Dc) -> Result<u32, NtStatus> {
     let Some(id) = crate::ob::locked(|directory| directory.create_dc(dc)) else {
         dc.release_regions();
         return Err(STATUS_INSUFFICIENT_RESOURCES);
     };
-    super::gdi::insert(id).ok_or(STATUS_INSUFFICIENT_RESOURCES)
+    super::gdi::insert(id)
 }
 
 /// Delete the calling process's DC `handle`; STATUS_INVALID_HANDLE when it names none.
