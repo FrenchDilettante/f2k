@@ -210,6 +210,138 @@ fn set_on(
     directory.set_security_descriptor(id, merged)
 }
 
+#[cfg(target_arch = "x86")]
+pub use services::*;
+
+/// The services themselves, on the calling process's handles and the object manager's stored
+/// descriptors.
+#[cfg(target_arch = "x86")]
+mod services {
+    use super::super::call::{calling_process, Handle, NtCall, NtResult, UserAddr, UserPtr};
+    use super::super::object::{is_console_handle, CURRENT_PROCESS, CURRENT_THREAD};
+    use super::*;
+    use crate::ob::security::{CallerMemory, MAX_SD};
+    use crate::ob::{self, ObRef};
+    use crate::sec::CallerMode;
+
+    /// The object `handle` names, referenced for the service's scope: the process and thread
+    /// pseudo-handles name their own objects with every right; a console handle or a handle
+    /// naming no entry is STATUS_INVALID_HANDLE; one whose granted access is short of
+    /// `needed` is STATUS_ACCESS_DENIED.
+    fn object_of(handle: u32, needed: u32) -> Result<ObRef, NtStatus> {
+        let id = match handle {
+            CURRENT_PROCESS => crate::process::current().object(),
+            CURRENT_THREAD => ob::current_thread().ok_or(STATUS_INVALID_HANDLE)?,
+            _ if is_console_handle(handle) => return Err(STATUS_INVALID_HANDLE),
+            _ => {
+                let entry = calling_process()
+                    .lookup_handle(handle)
+                    .ok_or(STATUS_INVALID_HANDLE)?;
+                let id = entry.object_id().ok_or(STATUS_INVALID_HANDLE)?;
+                if entry.access & needed != needed {
+                    return Err(STATUS_ACCESS_DENIED);
+                }
+                id
+            }
+        };
+        ob::reference(id).ok_or(STATUS_INVALID_HANDLE)
+    }
+
+    /// The calling process's token, copied out of the directory; none when it has none.
+    fn caller_token() -> Option<crate::se::TokenBody> {
+        let process = crate::process::current().object();
+        ob::locked(|directory| {
+            directory
+                .process_token(process)
+                .and_then(|id| directory.token(id))
+                .copied()
+        })
+    }
+
+    /// NtQuerySecurityObject: the object's stored security descriptor of the `info` parts
+    /// into the caller's buffer of `length` bytes, the size the answer takes into
+    /// LengthNeeded — written on success and when the buffer is too short
+    /// (STATUS_BUFFER_TOO_SMALL, nothing written), not when the handle itself failed. A null
+    /// LengthNeeded or an unprobeable output range is STATUS_ACCESS_VIOLATION, answered
+    /// before the handle is looked at.
+    pub fn query_security_object(
+        _: &mut NtCall,
+        handle: Handle,
+        info: u32,
+        descriptor: UserAddr,
+        length: u32,
+        length_needed: UserPtr<u32>,
+    ) -> NtResult {
+        if length_needed.is_null() {
+            return Err(STATUS_ACCESS_VIOLATION);
+        }
+        length_needed.addr().probe(4)?;
+        descriptor.probe(length)?;
+        let object = object_of(handle.raw(), query_access(info) & !ACCESS_SYSTEM_SECURITY)?;
+        if let Some(token) = caller_token() {
+            privilege_gate(info, &token)?;
+        } else if names_sacl(info) {
+            return Err(STATUS_PRIVILEGE_NOT_HELD);
+        }
+        let reply = ob::locked(|directory| query_on(directory, object.id(), info))?;
+        let size = reply.size;
+        if fits(size, length).is_err() {
+            length_needed.write(size)?;
+            return Err(STATUS_BUFFER_TOO_SMALL);
+        }
+        descriptor.write(&reply.bytes[..size as usize])?;
+        length_needed.write(size)?;
+        Ok(STATUS_SUCCESS)
+    }
+
+    /// NtSetSecurityObject: the caller's descriptor captured (always, even from kernel
+    /// mode; every range probed and each part validated from user mode) and merged into the
+    /// object's stored one per the `info` parts (see [`set_merge`]), then stored back on the
+    /// record. A null descriptor pointer is STATUS_ACCESS_VIOLATION.
+    pub fn set_security_object(
+        _: &mut NtCall,
+        handle: Handle,
+        info: u32,
+        descriptor: UserAddr,
+    ) -> NtResult {
+        if descriptor.is_null() {
+            return Err(STATUS_ACCESS_VIOLATION);
+        }
+        let object = object_of(handle.raw(), set_access(info) & !ACCESS_SYSTEM_SECURITY)?;
+        let token = caller_token();
+        if let Some(token) = &token {
+            privilege_gate(info, token)?;
+        } else if names_sacl(info) {
+            return Err(STATUS_PRIVILEGE_NOT_HELD);
+        }
+        let user_mode = ob::security::caller_mode() == CallerMode::User;
+        let mut captured = [0u8; MAX_SD];
+        let mut captured_len = 0u32;
+        let captured_status = crate::sec::sd::capture(
+            &CallerMemory,
+            descriptor.raw(),
+            user_mode,
+            true,
+            &mut captured,
+            &mut captured_len,
+        );
+        if captured_status != STATUS_SUCCESS {
+            return Err(captured_status);
+        }
+        let rules = token.as_ref().map(OwnerRules::of);
+        let merged = ob::locked(|directory| {
+            let stored = directory
+                .security_descriptor(object.id())
+                .ok_or(STATUS_INVALID_HANDLE)?;
+            set_merge(stored, info, &captured[..captured_len as usize], |sid| {
+                rules.as_ref().is_some_and(|rules| rules.allows(sid))
+            })
+        })?;
+        ob::locked(|directory| directory.set_security_descriptor(object.id(), &merged))?;
+        Ok(STATUS_SUCCESS)
+    }
+}
+
 /// The host builds' services (see `nt::unserved`): they run on the target's handle table and
 /// directory; the host tests exercise the pure parts above and the directory seam.
 #[cfg(not(target_arch = "x86"))]
