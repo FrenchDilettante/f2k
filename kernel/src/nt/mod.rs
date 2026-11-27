@@ -63,6 +63,7 @@ pub mod driver;
 pub mod exception;
 pub mod file;
 pub mod key;
+pub mod luid;
 pub mod memory;
 pub mod object;
 pub mod process;
