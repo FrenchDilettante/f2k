@@ -32,90 +32,15 @@
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use rtl::array_vec::ArrayVec;
-use rtl::nt::{Luid, LuidAndAttributes};
+use rtl::nt::LuidAndAttributes;
 
 use crate::ob::ObjectId;
 use crate::status::{NtStatus, STATUS_INVALID_PARAMETER};
 
-/// The privileges' attributes (winnt.h's SE_PRIVILEGE_*): enabled when the token was made, and
-/// enabled now. Only the second changes; an adjustment reads only that bit of what it is given.
-pub const SE_PRIVILEGE_ENABLED_BY_DEFAULT: u32 = 0x1;
-pub const SE_PRIVILEGE_ENABLED: u32 = 0x2;
-
-/// The privileges' public LUIDs (winnt.h's SE_*_PRIVILEGE values) that a token holds.
-pub const SE_INCREASE_QUOTA_PRIVILEGE: u32 = 5;
-pub const SE_SECURITY_PRIVILEGE: u32 = 8;
-pub const SE_TAKE_OWNERSHIP_PRIVILEGE: u32 = 9;
-pub const SE_LOAD_DRIVER_PRIVILEGE: u32 = 10;
-pub const SE_SYSTEM_PROFILE_PRIVILEGE: u32 = 11;
-pub const SE_SYSTEMTIME_PRIVILEGE: u32 = 12;
-pub const SE_PROF_SINGLE_PROCESS_PRIVILEGE: u32 = 13;
-pub const SE_INC_BASE_PRIORITY_PRIVILEGE: u32 = 14;
-pub const SE_CREATE_PAGEFILE_PRIVILEGE: u32 = 15;
-pub const SE_BACKUP_PRIVILEGE: u32 = 17;
-pub const SE_RESTORE_PRIVILEGE: u32 = 18;
-pub const SE_SHUTDOWN_PRIVILEGE: u32 = 19;
-pub const SE_DEBUG_PRIVILEGE: u32 = 20;
-pub const SE_SYSTEM_ENVIRONMENT_PRIVILEGE: u32 = 22;
-pub const SE_CHANGE_NOTIFY_PRIVILEGE: u32 = 23;
-pub const SE_REMOTE_SHUTDOWN_PRIVILEGE: u32 = 24;
-pub const SE_UNDOCK_PRIVILEGE: u32 = 25;
-
-/// How many privileges a token holds.
-pub const HELD: usize = 17;
-
-/// TOKEN_PRIVILEGES' size for `count` entries: the count, then the entries.
-pub const fn privileges_size(count: usize) -> u32 {
-    (4 + count * core::mem::size_of::<LuidAndAttributes>()) as u32
-}
-
-/// A privilege of the given public LUID and attributes.
-const fn privilege(luid: u32, attributes: u32) -> LuidAndAttributes {
-    LuidAndAttributes {
-        luid: Luid {
-            low_part: luid,
-            high_part: 0,
-        },
-        attributes,
-    }
-}
-
-/// The privileges a token holds and their state when it is made: an administrator's on Windows
-/// 2000, in the order its token lists them. The ones every user holds come first, enabled by
-/// default (SeChangeNotifyPrivilege, bypassing traverse checking) or not; then the
-/// Administrators group's, held disabled: the token fixture's `privs` block enables
-/// SeSystemtimePrivilege, SeBackupPrivilege, SeShutdownPrivilege and SeDebugPrivilege and finds
-/// each held and disabled, and `notheld` finds SeTcbPrivilege not held (no account holds it but
-/// the system's own). SeUndockPrivilege, which every interactive user holds, is enabled by
-/// default as SeChangeNotifyPrivilege is. The privileges no administrator's token holds
-/// (SeCreateTokenPrivilege, SeAssignPrimaryTokenPrivilege, SeLockMemoryPrivilege,
-/// SeMachineAccountPrivilege, SeTcbPrivilege, SeCreatePermanentPrivilege, SeAuditPrivilege,
-/// SeSyncAgentPrivilege, SeEnableDelegationPrivilege) are refused: STATUS_NOT_ALL_ASSIGNED.
-pub const DEFAULT_PRIVILEGES: [LuidAndAttributes; HELD] = [
-    privilege(
-        SE_CHANGE_NOTIFY_PRIVILEGE,
-        SE_PRIVILEGE_ENABLED_BY_DEFAULT | SE_PRIVILEGE_ENABLED,
-    ),
-    privilege(SE_SECURITY_PRIVILEGE, 0),
-    privilege(SE_BACKUP_PRIVILEGE, 0),
-    privilege(SE_RESTORE_PRIVILEGE, 0),
-    privilege(SE_SYSTEMTIME_PRIVILEGE, 0),
-    privilege(SE_SHUTDOWN_PRIVILEGE, 0),
-    privilege(SE_REMOTE_SHUTDOWN_PRIVILEGE, 0),
-    privilege(SE_TAKE_OWNERSHIP_PRIVILEGE, 0),
-    privilege(SE_DEBUG_PRIVILEGE, 0),
-    privilege(SE_SYSTEM_ENVIRONMENT_PRIVILEGE, 0),
-    privilege(SE_SYSTEM_PROFILE_PRIVILEGE, 0),
-    privilege(SE_PROF_SINGLE_PROCESS_PRIVILEGE, 0),
-    privilege(SE_INC_BASE_PRIORITY_PRIVILEGE, 0),
-    privilege(SE_LOAD_DRIVER_PRIVILEGE, 0),
-    privilege(SE_CREATE_PAGEFILE_PRIVILEGE, 0),
-    privilege(SE_INCREASE_QUOTA_PRIVILEGE, 0),
-    privilege(
-        SE_UNDOCK_PRIVILEGE,
-        SE_PRIVILEGE_ENABLED_BY_DEFAULT | SE_PRIVILEGE_ENABLED,
-    ),
-];
+// The privilege side — the attributes, the well-known LUIDs and their public names, the
+// name<->LUID lookups, the single-privilege check, the adjustment and the default set — lives in
+// `sec_priv`; re-exported here where the token reads it.
+pub use crate::sec_priv::*;
 
 /// A token's type (TOKEN_TYPE): a process's primary token, or a copy a thread impersonates with.
 pub const TOKEN_PRIMARY: u32 = 1;
@@ -364,11 +289,7 @@ impl TokenBody {
     /// Whether the token holds the privilege of public LUID `luid` and has it enabled: what a
     /// privilege check (SeSinglePrivilegeCheck) asks.
     pub fn enabled(&self, luid: u32) -> bool {
-        self.privileges.iter().any(|privilege| {
-            privilege.luid.low_part == luid
-                && privilege.luid.high_part == 0
-                && privilege.attributes & SE_PRIVILEGE_ENABLED != 0
-        })
+        crate::sec_priv::held_enabled(&self.privileges, crate::sec_priv::luid(luid))
     }
 
     /// Apply `change` to the privileges, as NtAdjustPrivilegesToken does: each privilege whose
@@ -377,35 +298,10 @@ impl TokenBody {
     /// a change whose report would not fit makes no change at all: the error is the size the
     /// report takes. A change that changes something gives the token a new ModifiedId.
     pub fn adjust(&mut self, change: &Change, room: Option<u32>) -> Result<Adjusted, u32> {
-        let mut next = self.privileges;
-        for (index, privilege) in next.iter_mut().enumerate() {
-            let enable = match change {
-                Change::DisableAll => Some(false),
-                Change::Set(requests) => requests.wanted[index],
-            };
-            match enable {
-                Some(true) => privilege.attributes |= SE_PRIVILEGE_ENABLED,
-                Some(false) => privilege.attributes &= !SE_PRIVILEGE_ENABLED,
-                None => {}
-            }
-        }
-        let mut previous = ArrayVec::new();
-        for (old, new) in self.privileges.iter().zip(&next) {
-            if old.attributes != new.attributes {
-                previous.push(*old);
-            }
-        }
-        let adjusted = Adjusted {
-            previous,
-            not_all_assigned: matches!(change, Change::Set(requests) if requests.unheld),
-        };
-        if room.is_some_and(|room| room < adjusted.length()) {
-            return Err(adjusted.length());
-        }
+        let adjusted = crate::sec_priv::adjust(&mut self.privileges, change, room)?;
         if !adjusted.previous.is_empty() {
             self.modified = new_luid();
         }
-        self.privileges = next;
         Ok(adjusted)
     }
 
@@ -503,62 +399,6 @@ impl TokenBody {
             Class::SessionId => out.word(0),
         }
         Ok(out)
-    }
-}
-
-/// What a NewState asks of a token, folded from its entries in their order: for each privilege
-/// the token holds, whether to enable it (the last entry naming it decides), and whether an entry
-/// names a privilege the token does not hold.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Requests {
-    wanted: [Option<bool>; HELD],
-    unheld: bool,
-}
-
-impl Requests {
-    /// No entry yet.
-    pub const fn new() -> Self {
-        Requests {
-            wanted: [None; HELD],
-            unheld: false,
-        }
-    }
-
-    /// One more of NewState's entries: its privilege enabled when its attributes carry
-    /// SE_PRIVILEGE_ENABLED, disabled otherwise.
-    pub fn add(&mut self, entry: LuidAndAttributes) {
-        let held = DEFAULT_PRIVILEGES
-            .iter()
-            .position(|privilege| privilege.luid == entry.luid);
-        match held {
-            Some(index) => self.wanted[index] = Some(entry.attributes & SE_PRIVILEGE_ENABLED != 0),
-            None => self.unheld = true,
-        }
-    }
-}
-
-/// An adjustment of a token's privileges.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Change {
-    /// DisableAllPrivileges: every enabled privilege disabled.
-    DisableAll,
-    /// NewState's entries.
-    Set(Requests),
-}
-
-/// What an adjustment did: the privileges it changed, with their attributes before it
-/// (PreviousState's entries), and whether NewState named a privilege the token does not hold
-/// (STATUS_NOT_ALL_ASSIGNED: the others are changed all the same).
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Adjusted {
-    pub previous: ArrayVec<LuidAndAttributes, HELD>,
-    pub not_all_assigned: bool,
-}
-
-impl Adjusted {
-    /// PreviousState's size: its count and its entries (ReturnLength).
-    pub fn length(&self) -> u32 {
-        privileges_size(self.previous.len())
     }
 }
 

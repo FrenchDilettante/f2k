@@ -121,6 +121,7 @@ mod cm;
 // The security reference monitor's stand-in: the process's token and the privileges it lists,
 // bookkeeping only (nothing checks them)
 mod se;
+mod sec_priv; // the privilege model's primitives: LUIDs, the well-known privileges' names, checks, adjustments
 
 // The SID primitives: the byte layout, the well-known SIDs, and the operations on the bytes
 mod sec_sid;
