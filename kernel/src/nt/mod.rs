@@ -67,6 +67,7 @@ pub mod memory;
 pub mod object;
 pub mod process;
 pub mod seccheck;
+pub mod secobj;
 pub mod section;
 pub mod shutdown;
 pub mod signal;
