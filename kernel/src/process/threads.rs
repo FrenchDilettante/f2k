@@ -600,18 +600,21 @@ pub enum TerminateError {
     Ended,
 }
 
-/// TerminateThread on a thread other than the caller: it ends with `status`, by its own exit (see
-/// [`crate::sched::dispatcher::Dispatcher::request_termination`]: inside a critical region, as it
-/// leaves the region, holding nothing), and its handle signals and its waiters wake then. A thread
-/// that can run its exit at once — its wait broken, or ready — is handed the processor, so it has
-/// ended by the time the caller's TerminateThread returns, as the threads fixture's lateexit block
-/// shows Windows 2000's terminated thread has (its exit code and a zero-timeout wait on it, at
-/// once). The last thread of another process ends that process with it, as any last thread's end
-/// does: the process is terminated with `status` ([`terminate_process`]'s rule, so a thread that
-/// never reached user mode ends with STATUS_THREAD_IS_TERMINATING and its process with 0, as the
-/// spawn fixture's capture shows). A thread already ending, or whose process's end is decided or
-/// under way meanwhile, is refused as one that has ended. A thread of the current process is never
-/// its last (the caller is alive). The calling thread ends through [`exit_thread`] instead.
+/// TerminateThread on a thread other than the caller (Windows 2000's PspTerminateThreadByPointer):
+/// its exit APC is queued and the call returns; the thread ends by its own exit when it next runs
+/// (see [`crate::sched::dispatcher::Dispatcher::request_termination`]: inside a critical region,
+/// as it leaves the region, holding nothing), and its handle signals, its waiters wake and its exit
+/// code is recorded then. Until it has run, GetExitCodeThread reports STILL_ACTIVE and a wait on it
+/// times out, as the threads fixture's lateexit block shows Windows 2000's does on one processor,
+/// the caller above the target. A thread that has not reached user mode yet (never run, or parked
+/// in its startup's suspend) ends with STATUS_THREAD_IS_TERMINATING, not `status`, as the threads
+/// fixture's suspterm and open blocks show; [`terminate_process`] applies the same rule. The last
+/// thread of another process ends that process with it, as any last thread's end does: the
+/// process is terminated with `status` ([`terminate_process`]'s rule, so a thread that never
+/// reached user mode ends with STATUS_THREAD_IS_TERMINATING and its process with 0, as the spawn
+/// fixture's capture shows). A thread already ending, or whose process's end is decided or under
+/// way meanwhile, is refused as one that has ended. A thread of the current process is never its
+/// last (the caller is alive). The calling thread ends through [`exit_thread`] instead.
 pub fn terminate_thread(target: ThreadId, status: u32) -> Result<(), TerminateError> {
     let owner = raised::<Dispatch, _>(|dispatch| {
         let record = DISPATCHER.get(dispatch).thread(target);
@@ -625,10 +628,14 @@ pub fn terminate_thread(target: ThreadId, status: u32) -> Result<(), TerminateEr
     }
     raised::<Dispatch, _>(|dispatch| {
         let dispatcher = DISPATCHER.get(dispatch);
+        let status = if dispatcher.thread(target).user_started {
+            status
+        } else {
+            crate::status::STATUS_THREAD_IS_TERMINATING.0
+        };
         if !dispatcher.request_termination(target, exit_apc_normal, status) {
             return Err(TerminateError::Ended);
         }
-        dispatcher.hand_processor_to(target);
         Ok(())
     })
 }

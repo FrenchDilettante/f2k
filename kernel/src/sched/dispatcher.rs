@@ -825,9 +825,9 @@ impl Dispatcher {
     /// force-resumed: a suspended thread runs on to its exit. A thread inside a critical region
     /// keeps its wait and runs on to the region's end; one at the APC level (a short lock's holder
     /// or waiter) runs on until it lowers; one that never ran delivers it at its startup, before
-    /// its first user instruction. The exit status is recorded now, for GetExitCodeThread. False,
-    /// with nothing changed, for a thread already terminating — its exit APC queued, or its own
-    /// exit running.
+    /// its first user instruction. The exit status travels in the APC: GetExitCodeThread reports
+    /// STILL_ACTIVE until the thread's own exit records it. False, with nothing changed, for a
+    /// thread already terminating — its exit APC queued, or its own exit running.
     ///
     /// # Panics
     ///
@@ -852,7 +852,6 @@ impl Dispatcher {
             return false;
         }
         record.terminate_pending = true;
-        record.exit_status = status;
         self.discard_apcs(thread);
         self.apc_mut(ApcId::Exit(thread)).init(
             thread,
@@ -869,40 +868,6 @@ impl Dispatcher {
         if record.suspend_count != 0 || record.freeze_count != 0 {
             self.force_resume_thread(thread);
         }
-        true
-    }
-
-    /// Give the processor to `thread`, a thread just terminated
-    /// ([`Dispatcher::request_termination`]) that can run its exit now — Ready, its wait broken
-    /// by the exit APC or never begun — ahead of the running thread, whatever their priorities:
-    /// it takes the standby slot (a standby thread there goes back to the head of its ready
-    /// queue), and the running thread, marked displaced, goes back to the head of its own at
-    /// the next dispatch decision — the service boundary of the termination's caller. The
-    /// terminated thread runs its exit, which does not wait, and its switch away selects the
-    /// caller again. A thread that cannot run at once (waiting in a wait the APC does not
-    /// break, already selected) is left as it is. Returns whether it was handed the processor.
-    pub fn hand_processor_to(&mut self, thread: ThreadId) -> bool {
-        let record = self.thread(thread);
-        if record.state != ThreadState::Ready || record.parked_on_process {
-            return false;
-        }
-        let Some(current) = self.current() else {
-            return false;
-        };
-        let priority = record.priority;
-        self.dequeue(thread, priority);
-        if let Some(standby) = self.next_thread() {
-            self.set_next(None);
-            let record = self.thread_mut(standby);
-            record.state = ThreadState::Ready;
-            record.preempted = false;
-            let level = record.priority;
-            list::push_front(self, ReadyQueue(level as u8), standby);
-            self.ready_summary |= 1 << level as u32;
-        }
-        self.thread_mut(thread).state = ThreadState::Standby;
-        self.set_next(Some(thread));
-        self.thread_mut(current).preempted = true;
         true
     }
 
@@ -1549,7 +1514,11 @@ mod tests {
         assert!(first.kernel_apc_pending, "armed for the resume tail");
         assert!(first.termination_pending());
         assert!(!first.apc_queueable);
-        assert_eq!(first.exit_status(), 7);
+        assert_eq!(
+            first.exit_status(),
+            crate::ob::STILL_ACTIVE,
+            "recorded by its own exit"
+        );
         assert_eq!(first.state(), ThreadState::Ready, "it runs its own exit");
         assert_eq!(d.ready_summary, 1 << 8);
         assert_eq!(unsafe { (*p).stack_count() }, 3, "attached until its exit");
@@ -1610,7 +1579,7 @@ mod tests {
     }
 
     /// A thread is terminated once: a second request — or one for a thread running its own exit —
-    /// changes nothing, its first status standing.
+    /// changes nothing, its first status standing in its exit APC.
     #[test]
     fn a_termination_is_requested_once() {
         let mut d = dispatcher();
@@ -1622,8 +1591,7 @@ mod tests {
         d.make_ready(other);
         assert!(d.request_termination(other, exit_normal, 5));
         assert!(!d.request_termination(other, exit_normal, 6));
-        assert_eq!(other.exit_status(), 5);
-        assert!(exit_queued(&d, other, 5));
+        assert!(exit_queued(&d, other, 5), "its first status standing");
 
         // A thread whose own exit runs is marked terminating by it, its queue closed.
         exiting.terminate_pending = true;

@@ -1804,7 +1804,6 @@ mod tests {
         assert_eq!(deliver_kernel_apcs(), ApcDelivery::Delivered);
         assert_eq!(recorded_calls(), vec!["exit"]);
         assert_eq!(recorded_arguments(), vec![3]);
-        assert_eq!(fresh.exit_status(), 3);
         assert_eq!(d.audit(), Ok(()));
     }
 

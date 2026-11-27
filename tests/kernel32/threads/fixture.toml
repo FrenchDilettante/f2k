@@ -4,10 +4,7 @@ kind = "sectioned"
 gate = true
 
 [pending]
-lateexit = "recaptured at 1 CPU: Windows 2000's TerminateThread of a thread blocked in a wait returns before the thread has ended (GetExitCodeThread STILL_ACTIVE, the wait WAIT_TIMEOUT at once); F2K's has ended it"
-suspterm = "recaptured at 1 CPU: a thread created suspended and terminated before it ever ran ends with STATUS_THREAD_IS_TERMINATING (0xC000004B) on Windows 2000, not TerminateThread's code; F2K's ends with the code (9)"
-open = "recaptured at 1 CPU: a child terminated through OpenThread's handle ends with STATUS_THREAD_IS_TERMINATING (0xC000004B) on Windows 2000, not TerminateThread's 44; F2K's ends with 44"
-priority = "recaptured at 1 CPU: the join of the section's last child times out on Windows 2000 (join: wait WAIT_TIMEOUT); F2K's child ends within the wait"
+priority = "the section's SetPriorityClass(0x12345) puts the process in the idle class on Windows 2000 as on F2K (the IDLE bit wins), so its last child runs at priority 4; at 1 CPU the capture's join of it times out after 5 s (join: wait WAIT_TIMEOUT) while the 2-CPU capture's child ended at once: the capture VM had a thread above priority 4 ready all along, which starved the child until the balance-set boost (sched starve: 1-6 s). Nothing in the program waits on it; F2K has no such load and its child ends within the wait"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
