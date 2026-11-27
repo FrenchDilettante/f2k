@@ -265,6 +265,13 @@ fn word(at: *const u8) -> u16 {
     read::<u16>(at)
 }
 
+/// Write `value` as a BOOLEAN out parameter at `at`: a single byte, leaving the
+/// rest of the caller's dword alone (the get routines' flag outs are bytes).
+fn set_boolean(at: *mut u32, value: bool) {
+    // SAFETY: the caller's out parameter holds a byte to write.
+    unsafe { (at as *mut u8).write_unaligned(u8::from(value)) };
+}
+
 // --- The process heap and the system services: the target's, stand-ins in the host tests --
 
 /// `size` bytes of the process heap, or none when the heap has no room.

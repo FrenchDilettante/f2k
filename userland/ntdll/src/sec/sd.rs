@@ -282,17 +282,15 @@ pub(crate) fn get_acl_sd(
         return STATUS_UNKNOWN_REVISION;
     }
     let is_present = view.control & present_bit != 0;
-    // SAFETY: the caller's out parameter.
-    unsafe { present.write_unaligned(u32::from(is_present)) };
+    // The caller's out parameter, a BOOLEAN written as a byte.
+    set_boolean(present, is_present);
     if is_present {
         let self_relative = view.control & SE_SELF_RELATIVE != 0;
         let field = if dacl { view.dacl } else { view.sacl };
         let addr = sd_addr(sd as usize, field, self_relative);
-        // SAFETY: the caller's out parameters.
-        unsafe {
-            acl.write_unaligned(addr as *mut u8);
-            defaulted.write_unaligned(u32::from(view.control & defaulted_bit != 0));
-        }
+        // SAFETY: the caller's out parameters; the defaulted flag is a byte too.
+        unsafe { acl.write_unaligned(addr as *mut u8) };
+        set_boolean(defaulted, view.control & defaulted_bit != 0);
     }
     STATUS_SUCCESS
 }
@@ -334,11 +332,10 @@ pub(crate) fn get_sid_sd(
     let self_relative = view.control & SE_SELF_RELATIVE != 0;
     let field = if owner { view.owner } else { view.group };
     let addr = sd_addr(sd as usize, field, self_relative);
-    // SAFETY: the caller's out parameters.
-    unsafe {
-        sid.write_unaligned(addr as *mut u8);
-        defaulted.write_unaligned(u32::from(view.control & defaulted_bit != 0));
-    }
+    // SAFETY: the caller's out parameter.
+    unsafe { sid.write_unaligned(addr as *mut u8) };
+    // The defaulted flag is a BOOLEAN written as a byte.
+    set_boolean(defaulted, view.control & defaulted_bit != 0);
     STATUS_SUCCESS
 }
 
@@ -676,6 +673,21 @@ mod tests {
             STATUS_SUCCESS
         );
         assert_eq!(defaulted, 0);
+        // The flag outs are BOOLEANs: a single byte is written, the rest of the
+        // caller's dword keeps what it held (an armed sentinel shows through).
+        let sentinel = 0x0F2F_2F2Fu32;
+        let mut armed = sentinel;
+        assert_eq!(
+            unsafe { rtl_get_owner_security_descriptor(sd, &mut owner, &mut armed) },
+            STATUS_SUCCESS
+        );
+        assert_eq!(armed, sentinel & !0xFF | 1);
+        let mut armed = sentinel;
+        assert_eq!(
+            unsafe { rtl_get_group_security_descriptor(sd, &mut group, &mut armed) },
+            STATUS_SUCCESS
+        );
+        assert_eq!(armed, sentinel & !0xFF);
         // The DACL.
         let mut acl_buffer = [0u8; 64];
         assert_eq!(
@@ -701,6 +713,46 @@ mod tests {
         assert_eq!(
             (present, dacl as usize, defaulted),
             (1, acl_buffer.as_ptr() as usize, 1)
+        );
+        // The DACL's present and defaulted outs are bytes too; a not-present ACL
+        // still writes the present byte and leaves the rest alone.
+        let sentinel = 0x0F2F_2F2Fu32;
+        let mut armed_present = sentinel;
+        let mut armed_defaulted = sentinel;
+        assert_eq!(
+            unsafe {
+                rtl_get_dacl_security_descriptor(
+                    sd,
+                    &mut armed_present,
+                    &mut dacl,
+                    &mut armed_defaulted,
+                )
+            },
+            STATUS_SUCCESS
+        );
+        assert_eq!(armed_present, sentinel & !0xFF | 1);
+        assert_eq!(armed_defaulted, sentinel & !0xFF | 1);
+        assert_eq!(
+            unsafe { rtl_set_dacl_security_descriptor(sd, 0, core::ptr::null_mut(), 0) },
+            STATUS_SUCCESS
+        );
+        let mut armed_present = sentinel;
+        assert_eq!(
+            unsafe {
+                rtl_get_dacl_security_descriptor(
+                    sd,
+                    &mut armed_present,
+                    &mut dacl,
+                    &mut armed_defaulted,
+                )
+            },
+            STATUS_SUCCESS
+        );
+        assert_eq!(armed_present, sentinel & !0xFF);
+        assert_eq!(armed_defaulted, sentinel & !0xFF | 1);
+        assert_eq!(
+            unsafe { rtl_set_dacl_security_descriptor(sd, 1, acl_buffer.as_mut_ptr(), 1) },
+            STATUS_SUCCESS
         );
         assert_eq!(unsafe { rtl_valid_security_descriptor(sd) }, 1);
         // Length: header + aligned owner + aligned group + aligned ACL.
