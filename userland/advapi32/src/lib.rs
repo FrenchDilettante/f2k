@@ -22,6 +22,7 @@ pub mod explicit;
 pub mod filesec;
 pub mod imports;
 pub mod keysec;
+pub mod private;
 pub mod regenum;
 pub mod registry;
 pub mod sd;
