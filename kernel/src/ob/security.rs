@@ -143,28 +143,37 @@ pub fn take_pending() -> Option<Sd> {
     pending::take()
 }
 
+/// The pending slot a service's thread uses: the thread record's own index, or the reserved
+/// slot past every record when no thread runs (the boot's object creations, before the
+/// scheduler installs the idle thread). The slot array holds one slot per thread record plus
+/// that reserved one.
+#[cfg(any(target_arch = "x86", test))]
+fn slot_index(thread: Option<u16>) -> usize {
+    thread.map_or(crate::sched::database::THREAD_RECORDS, |index| index as usize)
+}
+
 #[cfg(target_arch = "x86")]
 mod pending {
-    use super::Sd;
-    use crate::ob::THREADS;
+    use super::{Sd, slot_index};
+    use crate::sched::database::THREAD_RECORDS;
 
-    /// One slot per thread record, plus one for a service reached with no current thread (the
-    /// boot's object creations): the services read the attributes and allocate the object on
-    /// the same thread, so each slot is reached only by its own thread.
-    struct Slots([core::cell::UnsafeCell<Sd>; THREADS + 1]);
+    /// One slot per thread record, plus the reserved slot for a service reached with no
+    /// current thread (the boot's object creations): the services read the attributes and
+    /// allocate the object on the same thread, so each slot is reached only by its own thread.
+    struct Slots([core::cell::UnsafeCell<Sd>; THREAD_RECORDS + 1]);
 
-    // SAFETY: slot `i` is reached only through the thread whose record is `i` (the idle
-    // thread's record is the one past the pool; it never runs a service, so its index shares
-    // the last slot with the no-current-thread case, which only the boot hits), and one thread
-    // runs one service at a time.
+    // SAFETY: slot `i` is reached only through the thread whose record is `i` — the idle,
+    // console-control and raw-input threads never run user services, but each has its own
+    // slot anyway — and the reserved slot is reached only during boot, before the scheduler
+    // runs; one thread runs one service at a time.
     unsafe impl Sync for Slots {}
 
-    static SLOTS: Slots = Slots([const { core::cell::UnsafeCell::new(Sd::NONE) }; THREADS + 1]);
+    static SLOTS: Slots =
+        Slots([const { core::cell::UnsafeCell::new(Sd::NONE) }; THREAD_RECORDS + 1]);
 
     fn slot() -> &'static core::cell::UnsafeCell<Sd> {
-        let index = crate::sched::try_current_thread()
-            .map_or(THREADS, |thread| thread.index() as usize);
-        &SLOTS.0[index]
+        let thread = crate::sched::try_current_thread().map(|thread| thread.index());
+        &SLOTS.0[slot_index(thread)]
     }
 
     pub fn set(sd: Option<Sd>) {
@@ -797,6 +806,32 @@ mod tests {
         assert_eq!(take_pending(), None, "taken");
         set_pending(None);
         assert_eq!(take_pending(), None);
+    }
+
+    /// The pending slot's index: every thread record — the last thread object's, the idle, the
+    /// console-control and the raw-input threads' — maps to its own in-bounds slot, and no
+    /// current thread (the boot, before the scheduler runs) maps to the reserved slot past
+    /// them all.
+    #[test]
+    fn the_pending_slot_index_covers_every_thread_record() {
+        use crate::sched::database::{
+            CONSOLE_CONTROL_THREAD, IDLE_THREAD, RAW_INPUT_THREAD, THREAD_RECORDS,
+        };
+        let last_thread = crate::ob::THREADS as u16 - 1;
+        for index in [
+            0,
+            last_thread,
+            IDLE_THREAD.index(),
+            CONSOLE_CONTROL_THREAD.index(),
+            RAW_INPUT_THREAD.index(),
+        ] {
+            assert_eq!(slot_index(Some(index)), index as usize);
+            assert!(slot_index(Some(index)) < THREAD_RECORDS + 1, "in bounds");
+        }
+        // The highest real record, the raw-input thread's, takes the last slot a thread can
+        // reach; the reserved slot sits one past it.
+        assert_eq!(RAW_INPUT_THREAD.index() as usize, THREAD_RECORDS - 1);
+        assert_eq!(slot_index(None), THREAD_RECORDS, "the reserved no-thread slot");
     }
 
     // -- the grant's check ----------------------------------------------------------
