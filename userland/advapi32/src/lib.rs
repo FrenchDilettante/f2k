@@ -16,7 +16,9 @@
 #![cfg_attr(not(test), no_std)]
 
 pub mod accesscheck;
+pub mod filesec;
 pub mod imports;
+pub mod keysec;
 pub mod regenum;
 pub mod registry;
 pub mod sid;
