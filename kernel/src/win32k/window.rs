@@ -272,6 +272,10 @@ pub enum Failure {
     /// window went while it was being created: no error, the last error left as it was (guiwin
     /// `refuse`); the creation's answer is NULL.
     Refused,
+    /// The window procedure destroyed the window inside its WM_NCCREATE: Windows 2000's
+    /// creation goes no further and answers the dead window's handle (this one), with
+    /// ERROR_INVALID_PARAMETER for the last error (guiwin `diecreate`).
+    DestroyedInNcCreate(Hwnd),
 }
 
 impl Failure {
@@ -287,6 +291,7 @@ impl Failure {
             Failure::CannotFindWindowClass => ERROR_CANNOT_FIND_WND_CLASS,
             Failure::NoMoreUserHandles => ERROR_NO_MORE_USER_HANDLES,
             Failure::Refused => 0,
+            Failure::DestroyedInNcCreate(_) => ERROR_INVALID_PARAMETER,
         }
     }
 
@@ -2677,7 +2682,9 @@ impl Windows {
         params.cy = cy;
 
         // WM_NCCREATE first: a zero answer rolls the whole creation back, the procedure's refusal
-        // (no error). The procedure may have destroyed the window meanwhile: then it is gone.
+        // (no error). The procedure may have destroyed the window meanwhile: then it is gone, and
+        // Windows 2000's creation answers its dead handle with ERROR_INVALID_PARAMETER.
+        let handle = s.windows().at(id).handle;
         let mut message = Message {
             message: WM_NCCREATE,
             wparam: 0,
@@ -2686,7 +2693,7 @@ impl Windows {
         };
         let answer = s.send(id, &mut message);
         if Windows::gone_in_creation(s, id) {
-            return Err(Failure::Refused);
+            return Err(Failure::DestroyedInNcCreate(handle));
         }
         if answer == 0 {
             Windows::rollback_create(s, caller, id);
@@ -2748,8 +2755,9 @@ impl Windows {
             payload: Payload::Create(params),
         };
         let answer = s.send(id, &mut message);
+        // Destroyed inside WM_CREATE: NULL, with ERROR_INVALID_PARAMETER (guiwin `diecreate`).
         if Windows::gone_in_creation(s, id) {
-            return Err(Failure::Refused);
+            return Err(Failure::InvalidParameter);
         }
         if answer == -1 {
             let _ = Windows::destroy_window(s, caller, id);
@@ -5730,6 +5738,12 @@ pub fn create_window_ex(
     let created = match created {
         // The procedure's refusal: NULL, the last error untouched.
         Err(Failure::Refused) => 0,
+        // A window destroyed inside its WM_NCCREATE: its dead handle, and the error's status,
+        // which user32 makes the last error while answering the handle.
+        Err(failure @ Failure::DestroyedInNcCreate(handle)) => {
+            window.write(handle)?;
+            return Err(failure.status());
+        }
         created => created.map_err(Failure::status)?,
     };
     window.write(created)?;
@@ -8334,9 +8348,9 @@ mod tests {
         }
     }
 
-    /// A window its procedure destroys while it is being created (from WM_NCCREATE, WM_CREATE or
-    /// WM_MOVE) makes the creation answer NULL, the procedure's refusal (no error), the window
-    /// gone.
+    /// A window its procedure destroys while it is being created fails the creation, the window
+    /// gone: from WM_NCCREATE with its dead handle and ERROR_INVALID_PARAMETER, from WM_CREATE
+    /// with ERROR_INVALID_PARAMETER alone (guiwin `diecreate`), from WM_MOVE as a refusal.
     #[test]
     fn a_window_destroyed_in_its_creation_fails_it() {
         for message in [WM_NCCREATE, WM_CREATE, WM_MOVE] {
@@ -8344,7 +8358,14 @@ mod tests {
             let mut pump = Rec::new(t);
             pump.destroy_self_on = Some(message);
             let err = create(w, c, t, atom, WS_POPUP, &mut pump).unwrap_err();
-            assert_eq!(err, Failure::Refused, "destroyed in {message:#x}");
+            match message {
+                WM_NCCREATE => assert!(
+                    matches!(err, Failure::DestroyedInNcCreate(h) if h != 0),
+                    "{err:?}"
+                ),
+                WM_CREATE => assert_eq!(err, Failure::InvalidParameter),
+                _ => assert_eq!(err, Failure::Refused, "destroyed in {message:#x}"),
+            }
             assert_eq!(live(w), 2, "only the desktop windows remain");
             assert_eq!(w.thread(t).window_count, 0);
         }

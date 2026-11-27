@@ -1445,13 +1445,15 @@ pub struct Creation {
     pub version: u32,
 }
 
-/// NtUserCreateWindowEx: the window `creation` describes, made: its handle.
-pub fn create_window(creation: &Creation) -> Result<u32, NtStatus> {
+/// NtUserCreateWindowEx: the window `creation` describes, made: its handle. A failure carries
+/// the handle the service wrote all the same: zero, or the dead handle of a window its procedure
+/// destroyed inside WM_NCCREATE, which Windows 2000's CreateWindowEx answers with the error.
+pub fn create_window(creation: &Creation) -> Result<u32, (NtStatus, u32)> {
     let mut window = 0u32;
     let c = creation;
     // SAFETY: the kernel reads the two strings through its fault-tolerant copies (this DLL's own,
     // or the caller's, alive for the call), and writes the handle into the local.
-    checked(unsafe {
+    let answer = checked(unsafe {
         raw::NtUserCreateWindowEx(
             c.ex_style,
             c.class,
@@ -1468,8 +1470,8 @@ pub fn create_window(creation: &Creation) -> Result<u32, NtStatus> {
             c.version,
             &mut window,
         )
-    })?;
-    Ok(window)
+    });
+    answer.map(|()| window).map_err(|status| (status, window))
 }
 
 /// NtUserDestroyWindow: `window` destroyed.

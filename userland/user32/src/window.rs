@@ -100,6 +100,14 @@ pub fn create_or_missing(
         }
         window_error(status)
     };
+    // A window its procedure destroyed inside WM_NCCREATE: its dead handle, the error set.
+    let answer = answer.or_else(|(status, window)| match window {
+        0 => Err(status),
+        window => {
+            imports::set_last_error(window_error(status));
+            Ok(window)
+        }
+    });
     match failed_with(answer, error) {
         Some(window) => Ok(window as usize),
         None => Err(missing),

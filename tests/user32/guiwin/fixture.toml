@@ -4,7 +4,6 @@ kind = "sectioned"
 gate = true
 
 [pending]
-diecreate = "a window destroyed inside its own WM_NCCREATE or WM_CREATE: F2K's CreateWindowEx answers NULL and leaves the last error, where Windows 2000 answers the (dead) window's handle for WM_NCCREATE, NULL for WM_CREATE, both with ERROR_INVALID_PARAMETER"
 dienest = "a DestroyWindow nested in the window's own WM_DESTROY: F2K sends the inner call no WM_DESTROY or WM_NCDESTROY (the outer's WM_NCDESTROY comes after), where Windows 2000 sends both inside the outer WM_DESTROY"
 # err183pop and err183ovl were captured (2026-11-27) with a second input locale installed:
 # internat.exe's indicdll.dll (with imm32, advapi32 and rpcrt4) loaded at the first window and
