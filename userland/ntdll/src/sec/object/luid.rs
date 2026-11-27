@@ -4,10 +4,18 @@ use super::*;
 
 // --- Impersonation and the LUID helpers --------------------------------------------------------
 
-/// RtlImpersonateSelf: F2K's threads never impersonate, so the call succeeds and changes
-/// nothing.
+// The impersonation levels (public values); a level above the process token's own
+// impersonation level is refused, and the status that refusal carries.
+const SECURITY_IMPERSONATION: u32 = 2;
+const STATUS_BAD_IMPERSONATION_LEVEL: u32 = 0xC000_00A5;
+
+/// RtlImpersonateSelf: F2K's threads never impersonate, so a level the process token
+/// can carry succeeds and changes nothing; a higher one (delegation) is refused.
 #[unsafe(export_name = "f2k_export_RtlImpersonateSelf")]
-pub unsafe extern "system" fn rtl_impersonate_self(_impersonation_level: u32) -> u32 {
+pub unsafe extern "system" fn rtl_impersonate_self(impersonation_level: u32) -> u32 {
+    if impersonation_level > SECURITY_IMPERSONATION {
+        return STATUS_BAD_IMPERSONATION_LEVEL;
+    }
     STATUS_SUCCESS
 }
 
@@ -49,9 +57,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn impersonation_is_a_successful_no_op() {
-        assert_eq!(unsafe { rtl_impersonate_self(2) }, STATUS_SUCCESS);
-        assert_eq!(unsafe { rtl_impersonate_self(0) }, STATUS_SUCCESS);
+    fn impersonation_succeeds_up_to_impersonation_and_refuses_above() {
+        // The public levels: anonymous 0, identification 1, impersonation 2, delegation 3.
+        for level in [0, 1, 2] {
+            assert_eq!(unsafe { rtl_impersonate_self(level) }, STATUS_SUCCESS);
+        }
+        assert_eq!(
+            unsafe { rtl_impersonate_self(3) },
+            STATUS_BAD_IMPERSONATION_LEVEL
+        );
+        assert_eq!(
+            unsafe { rtl_impersonate_self(4) },
+            STATUS_BAD_IMPERSONATION_LEVEL
+        );
     }
 
     #[test]
