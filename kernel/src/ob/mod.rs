@@ -57,8 +57,12 @@
 //! generation 0.
 
 pub mod access;
+pub mod security;
 
 use rtl::array_vec::ArrayVec;
+
+use security::Sd;
+use crate::status::NtStatus;
 
 use crate::level::Dispatch;
 use crate::sched::dispatcher::Dispatcher;
@@ -268,12 +272,14 @@ impl Counts {
 }
 
 /// One record's header in a fixed pool (the dispatcher objects' and the processes'): whether it
-/// holds a live object, its generation, and the object's counts.
+/// holds a live object, its generation, the object's counts, and its security descriptor.
 #[derive(Clone, Copy, Debug)]
 pub struct Header {
     live: bool,
     generation: u16,
     counts: Counts,
+    /// The object's security descriptor (see [`security`]).
+    sd: Sd,
 }
 
 impl Header {
@@ -282,6 +288,7 @@ impl Header {
             live: false,
             generation: 0,
             counts: Counts::NONE,
+            sd: Sd::NULL_DACL,
         }
     }
 
@@ -292,14 +299,16 @@ impl Header {
 }
 
 /// Take a free record among `headers` in `range` for a new object: the lowest one holding no live
-/// object. The object starts with one reference (its creator's) and no handle. None when the range
-/// is exhausted. The record itself is the caller's to renew.
+/// object. The object starts with one reference (its creator's) and no handle, and carries the
+/// security descriptor the current create captured (the default when it captured none). None when
+/// the range is exhausted. The record itself is the caller's to renew.
 fn allocate(headers: &mut [Header], range: core::ops::Range<usize>) -> Option<u16> {
     let end = range.end.min(headers.len());
     let index = (range.start..end).find(|&index| !headers[index].live)?;
     let header = &mut headers[index];
     header.live = true;
     header.counts = Counts::CREATED;
+    header.sd = security::take_pending().unwrap_or(Sd::NULL_DACL);
     Some(index as u16)
 }
 
@@ -363,6 +372,7 @@ impl<T, const N: usize> Pool<T, N> {
         header.live = false;
         header.counts = Counts::NONE;
         header.generation = header.generation.wrapping_add(1);
+        header.sd = Sd::NULL_DACL;
     }
 
     /// How many records hold a live object.
@@ -372,12 +382,14 @@ impl<T, const N: usize> Pool<T, N> {
     }
 }
 
-/// An object's record in its kind's slot pool: its counts and its body. The pool's slot holds the
-/// liveness and the generation (the slot's uniqueness count: 1 first, moved on at the delete, never
-/// 0), and its chunk keeps the record at its address for the kernel's life (a file object's lock
-/// event is named by its address).
+/// An object's record in its kind's slot pool: its counts, its security descriptor, and its body.
+/// The pool's slot holds the liveness and the generation (the slot's uniqueness count: 1 first,
+/// moved on at the delete, never 0), and its chunk keeps the record at its address for the
+/// kernel's life (a file object's lock event is named by its address).
 pub struct ObRecord<B> {
     counts: Counts,
+    /// The object's security descriptor (see [`security`]).
+    sd: Sd,
     body: B,
 }
 
@@ -419,7 +431,9 @@ fn pages() -> &'static crate::slots::HostPages {
 }
 
 /// A new object's record in `pool`, holding its creator's reference: its id and its record, for
-/// the caller to fill. None when no page is left for the pool to grow (or its u16 index is spent).
+/// the caller to fill. The record carries the security descriptor the current create captured
+/// (the default when it captured none). None when no page is left for the pool to grow (or its u16
+/// index is spent).
 fn allocate_record<B, const PER: usize>(
     pool: &mut ObSlots<B, PER>,
     kind: ObjectType,
@@ -429,6 +443,7 @@ where
 {
     let (id, record) = pool.allocate_or_grow(0, pages()).ok()?;
     record.counts = Counts::CREATED;
+    record.sd = security::take_pending().unwrap_or(Sd::NULL_DACL);
     Some((object_id(kind, id), record))
 }
 
@@ -789,6 +804,7 @@ macro_rules! pools {
                     unsafe {
                         at.write(ObRecord {
                             counts: Counts::NONE,
+                            sd: Sd::NULL_DACL,
                             body: $sfresh,
                         })
                     };
@@ -841,6 +857,23 @@ macro_rules! pools {
                         .$spool
                         .get_mut(slot_id(id))
                         .map(|record| &mut record.counts),)*
+                }
+            }
+
+            /// The security descriptor cell of the live object `id` names; none for an id that
+            /// names nothing.
+            fn sd_cell(&mut self, id: ObjectId) -> Option<&mut Sd> {
+                match id.kind {
+                    $(ObjectType::$kind => self
+                        .$pool
+                        .headers
+                        .get_mut(id.index as usize)
+                        .filter(|header| header.names(id.generation))
+                        .map(|header| &mut header.sd),)*
+                    $(ObjectType::$skind => self
+                        .$spool
+                        .get_mut(slot_id(id))
+                        .map(|record| &mut record.sd),)*
                 }
             }
 
@@ -930,6 +963,7 @@ unsafe impl Record for ObRecord<ImageSegment> {
         unsafe {
             at.write(ObRecord {
                 counts: Counts::NONE,
+                sd: Sd::NULL_DACL,
                 body: ImageSegment::none(),
             })
         };
@@ -1039,6 +1073,48 @@ impl Directory {
     pub fn counts(&mut self, id: ObjectId) -> Option<(u32, u32)> {
         self.header(id)
             .map(|counts| (counts.pointers, counts.handles))
+    }
+
+    /// The security descriptor of the live object `id` names, as stored (see [`security`]); none
+    /// for an id that names nothing.
+    pub fn sd(&mut self, id: ObjectId) -> Option<&Sd> {
+        self.sd_cell(id).map(|cell| &*cell)
+    }
+
+    /// Replace the security descriptor of the live object `id` names with `sd`; false when `id`
+    /// names nothing. The query/set services' seam (a later slice), so unused on the target yet.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn set_sd(&mut self, id: ObjectId, sd: Sd) -> bool {
+        match self.sd_cell(id) {
+            Some(cell) => {
+                *cell = sd;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The seam NtQuerySecurityObject takes: the security descriptor's bytes of the live object
+    /// `id` names; none for an id that names nothing. Unused on the target until that service
+    /// lands.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn security_descriptor(&mut self, id: ObjectId) -> Option<&[u8]> {
+        self.sd(id).map(Sd::as_slice)
+    }
+
+    /// The seam NtSetSecurityObject takes: replace the security descriptor of the live object
+    /// `id` names with `sd`. STATUS_INVALID_PARAMETER for an empty descriptor,
+    /// STATUS_BUFFER_TOO_SMALL past the record's storage ([`security::MAX_SD`]),
+    /// STATUS_INVALID_HANDLE for an id that names nothing. Unused on the target until that
+    /// service lands.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn set_security_descriptor(&mut self, id: ObjectId, sd: &[u8]) -> Result<(), NtStatus> {
+        use crate::status::{STATUS_BUFFER_TOO_SMALL, STATUS_INVALID_HANDLE, STATUS_INVALID_PARAMETER};
+        if sd.is_empty() {
+            return Err(STATUS_INVALID_PARAMETER);
+        }
+        let stored = Sd::from_bytes(sd).ok_or(STATUS_BUFFER_TOO_SMALL)?;
+        self.set_sd(id, stored).then_some(()).ok_or(STATUS_INVALID_HANDLE)
     }
 
     /// The body of the live object `id` names, when it is of `T`'s kind.
@@ -1152,6 +1228,8 @@ impl Directory {
     pub fn create_segment(&mut self, segment: ImageSegment) -> Option<SegmentId> {
         let (id, record) = self.segments.allocate_or_grow(0, pages()).ok()?;
         record.counts = Counts::CREATED;
+        // A segment is no object a handle names: no captured descriptor, the default.
+        record.sd = Sd::NULL_DACL;
         record.body = segment;
         Some(SegmentId {
             index: id.index,
@@ -2214,30 +2292,43 @@ mod target {
         }
     }
 
-    /// Publish a new object: a handle to it in `process` (the current one) granted `access` (its
-    /// generic rights mapped: [`ObjectType::granted`]) and `inheritance`, and its creator's
-    /// reference dropped — the handle holds it from now on. A failure (the table is full) takes
-    /// the object back with it.
+    /// Publish a new object: a handle to it in `process` (the current one) granted `access`
+    /// (its generic rights mapped: [`ObjectType::granted`], checked against the object's
+    /// security descriptor and the caller's token when the caller is in user mode:
+    /// [`security::grant_handle`]) and `inheritance`, and its creator's reference dropped — the
+    /// handle holds it from now on. A failure (the table is full, or the access check denied the
+    /// grant) takes the object back with it.
     pub fn publish(
         process: &crate::process::Process,
         id: ObjectId,
         access: u32,
         inherit: bool,
     ) -> Option<NonZeroU32> {
-        let handle = process.insert_object(id, id.kind.granted(access), inherit);
+        let granted = security::grant_handle(process, id, access, true);
+        // The create's captured descriptor went onto the object at its allocation; one left over
+        // (an OBJ_OPENIF create that found the name bound made no object) is dropped.
+        security::take_pending();
+        let granted = granted.ok()?;
+        let handle = process.insert_object(id, granted, inherit);
         release(id);
         handle
     }
 
     /// Open the object `id` names as a new handle in `process`, granted `access` (its generic
-    /// rights mapped: [`ObjectType::granted`]); none when the table is full or the object is gone.
+    /// rights mapped: [`ObjectType::granted`], checked against the object's security descriptor
+    /// and the caller's token when the caller is in user mode: [`security::grant_handle`]); none
+    /// when the table is full, the object is gone, or the access check denied the grant.
     pub fn open(
         process: &crate::process::Process,
         id: ObjectId,
         access: u32,
         inherit: bool,
     ) -> Option<NonZeroU32> {
-        process.insert_object(id, id.kind.granted(access), inherit)
+        let granted = security::grant_handle(process, id, access, false);
+        // An open's OBJECT_ATTRIBUTES descriptor is not stored on the existing object.
+        security::take_pending();
+        let granted = granted.ok()?;
+        process.insert_object(id, granted, inherit)
     }
 
     /// The process `id` names has ended with `exit_status`: its object signals, once, and its
@@ -3901,5 +3992,209 @@ mod tests {
         // A new ask after the process let go makes a new token.
         let again = directory.process_token(process(1)).unwrap();
         assert_ne!(again, token);
+    }
+
+    /// A small security descriptor's bytes for the tests: a self-relative header, a present DACL
+    /// of one allowed ACE, the owner after it.
+    fn test_sd(owner: &[u8], aces: &[Vec<u8>]) -> Vec<u8> {
+        use crate::sec::{ACL_REVISION2, ACCESS_ALLOWED_ACE_TYPE, SE_DACL_PRESENT, SE_SELF_RELATIVE, SecurityDescriptor};
+        let mut dacl = vec![ACL_REVISION2, 0];
+        let size = (8 + aces.iter().map(|a| a.len()).sum::<usize>()) as u16;
+        dacl.extend_from_slice(&size.to_le_bytes());
+        dacl.extend_from_slice(&(aces.len() as u16).to_le_bytes());
+        dacl.extend_from_slice(&0u16.to_le_bytes());
+        for ace in aces {
+            dacl.extend_from_slice(ace);
+        }
+        let mut v = vec![0u8; 20];
+        let dacl_off = v.len() as u32;
+        v.extend_from_slice(&dacl);
+        while v.len() % 4 != 0 {
+            v.push(0);
+        }
+        let owner_off = v.len() as u32;
+        v.extend_from_slice(owner);
+        while v.len() % 4 != 0 {
+            v.push(0);
+        }
+        let h = SecurityDescriptor {
+            revision: 1,
+            sbz1: 0,
+            control: SE_SELF_RELATIVE | SE_DACL_PRESENT,
+            owner: owner_off,
+            group: 0,
+            sacl: 0,
+            dacl: dacl_off,
+        };
+        assert!(h.write(&mut v[..]));
+        v
+    }
+
+    /// An allowed ACE of `mask` to the SID's bytes `sid`.
+    fn allowed_ace(mask: u32, sid: &[u8]) -> Vec<u8> {
+        use crate::sec::ACCESS_ALLOWED_ACE_TYPE;
+        let size = (4 + 4 + sid.len() + 3) & !3;
+        let mut v = vec![ACCESS_ALLOWED_ACE_TYPE, 0];
+        v.extend_from_slice(&(size as u16).to_le_bytes());
+        v.extend_from_slice(&mask.to_le_bytes());
+        v.extend_from_slice(sid);
+        v.resize(size, 0);
+        v
+    }
+
+    /// The test user's SID's bytes.
+    fn user_sid() -> Vec<u8> {
+        let mut v = vec![1u8, 5, 0, 0, 0, 0, 0, 5];
+        for sub in [21u32, 111, 222, 333, 1000] {
+            v.extend_from_slice(&sub.to_le_bytes());
+        }
+        v
+    }
+
+    /// An object carries its security descriptor on its record: the default NULL DACL until a
+    /// create's captured one (or a set) replaces it, read back per object, two objects holding
+    /// different ones, a dead id naming none.
+    #[test]
+    fn an_object_carries_its_security_descriptor() {
+        let directory = directory();
+        let a = directory
+            .create_event(EventKind::Notification, false)
+            .unwrap();
+        let b = directory
+            .create_event(EventKind::Notification, false)
+            .unwrap();
+        // The default: a NULL DACL, present with a zero field.
+        assert_eq!(
+            directory.security_descriptor(a),
+            Some(security::Sd::NULL_DACL.as_slice())
+        );
+        assert_eq!(
+            directory.security_descriptor(b),
+            Some(security::Sd::NULL_DACL.as_slice())
+        );
+        assert_eq!(directory.sd(a).copied(), Some(security::Sd::NULL_DACL));
+
+        // A set replaces it, on that object alone.
+        let sd = test_sd(&user_sid(), &[allowed_ace(0x7, &user_sid())]);
+        directory.set_security_descriptor(a, &sd).unwrap();
+        assert_eq!(directory.security_descriptor(a), Some(&sd[..]));
+        assert_eq!(
+            directory.security_descriptor(b),
+            Some(security::Sd::NULL_DACL.as_slice()),
+            "the other object keeps its own"
+        );
+        // Set again: replaced.
+        let other = test_sd(&user_sid(), &[]);
+        directory.set_security_descriptor(a, &other).unwrap();
+        assert_eq!(directory.security_descriptor(a), Some(&other[..]));
+
+        // The refusals: an empty descriptor, one past the record's storage, a dead id.
+        assert_eq!(
+            directory.set_security_descriptor(b, &[]),
+            Err(crate::status::STATUS_INVALID_PARAMETER)
+        );
+        assert_eq!(
+            directory.set_security_descriptor(b, &[0u8; security::MAX_SD + 1]),
+            Err(crate::status::STATUS_BUFFER_TOO_SMALL)
+        );
+        assert!(directory.set_sd(b, security::Sd::NULL_DACL));
+        assert_eq!(directory.dereference(a), None);
+        assert_eq!(directory.security_descriptor(a), None, "a dead id names none");
+        assert_eq!(
+            directory.set_security_descriptor(a, &sd),
+            Err(crate::status::STATUS_INVALID_HANDLE)
+        );
+    }
+
+    /// A create's captured (pending) descriptor lands on the object its allocation made; with
+    /// none captured, the default goes on.
+    #[test]
+    fn a_pending_sd_lands_on_the_next_allocated_object() {
+        let directory = directory();
+        let sd = test_sd(&user_sid(), &[allowed_ace(0x7, &user_sid())]);
+        security::set_pending(security::Sd::from_bytes(&sd));
+        let id = directory
+            .create_event(EventKind::Notification, false)
+            .unwrap();
+        assert_eq!(directory.security_descriptor(id), Some(&sd[..]));
+        assert_eq!(security::take_pending(), None, "the allocation took it");
+
+        // A slot-pool kind too, and the default when nothing is pending.
+        security::set_pending(security::Sd::from_bytes(&sd));
+        let section = directory.create_section(SectionObject::none()).unwrap();
+        assert_eq!(directory.security_descriptor(section), Some(&sd[..]));
+        let file = directory
+            .create_file(crate::fs::file::Context::Null, 0, 0, 0)
+            .unwrap();
+        assert_eq!(
+            directory.security_descriptor(file),
+            Some(security::Sd::NULL_DACL.as_slice())
+        );
+    }
+
+    /// A handle's grant checks the object's own descriptor: two events, one with a deny-all DACL,
+    /// one default, grant differently to the same subject.
+    #[test]
+    fn a_handle_grant_checks_the_objects_own_sd() {
+        use crate::sec::CallerMode;
+        let directory = directory();
+        let open = directory
+            .create_event(EventKind::Notification, false)
+            .unwrap();
+        let locked = directory
+            .create_event(EventKind::Notification, false)
+            .unwrap();
+        let deny_all = test_sd(&user_sid(), &[{
+            use crate::sec::ACCESS_DENIED_ACE_TYPE;
+            let mut v = vec![ACCESS_DENIED_ACE_TYPE, 0];
+            let size = (4 + 4 + user_sid().len() + 3) & !3;
+            v.extend_from_slice(&(size as u16).to_le_bytes());
+            v.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+            v.extend_from_slice(&user_sid());
+            v.resize(size, 0);
+            v
+        }]);
+        directory.set_security_descriptor(locked, &deny_all).unwrap();
+
+        let token = crate::se::TokenBody::of(ObjectId {
+            kind: ObjectType::Process,
+            index: 1,
+            generation: 0,
+        });
+        let parts = security::subject_parts(&token);
+        let event = ObjectType::Event;
+        use rtl::nt::access::GENERIC_ALL;
+        assert_eq!(
+            security::check_with(
+                &parts,
+                event,
+                GENERIC_ALL,
+                directory.security_descriptor(open).unwrap(),
+                CallerMode::User
+            ),
+            Ok(event.granted(GENERIC_ALL)),
+            "the default NULL DACL grants all"
+        );
+        assert_eq!(
+            security::check_with(
+                &parts,
+                event,
+                GENERIC_ALL,
+                directory.security_descriptor(locked).unwrap(),
+                CallerMode::User
+            ),
+            Err(crate::status::STATUS_ACCESS_DENIED)
+        );
+        // Kernel mode bypasses the descriptor.
+        assert_eq!(
+            security::check_with(
+                &parts,
+                event,
+                GENERIC_ALL,
+                directory.security_descriptor(locked).unwrap(),
+                CallerMode::Kernel
+            ),
+            Ok(event.granted(GENERIC_ALL))
+        );
     }
 }

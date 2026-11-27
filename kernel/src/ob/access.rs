@@ -127,6 +127,22 @@ pub const DIRECTORY_MAPPING: GenericMapping = GenericMapping {
 };
 
 impl ObjectType {
+    /// Whether this kind maps the generic rights to its own rights (a real GENERIC_MAPPING, as
+    /// [`ObjectType::granted`] maps them); win32k's kinds (a window station, a desktop, the GDI
+    /// objects) pass a mask through as it is.
+    pub fn maps_generics(self) -> bool {
+        !matches!(
+            self,
+            ObjectType::WindowStation
+                | ObjectType::Desktop
+                | ObjectType::Dc
+                | ObjectType::Brush
+                | ObjectType::Bitmap
+                | ObjectType::Font
+                | ObjectType::Region
+        )
+    }
+
     /// The access a handle to an object of this kind asking for `desired` is granted: its generic
     /// rights mapped as the kind maps them (see the module notes). The process, thread, file, key
     /// and token kinds map as their services always have ([`crate::nt::object::process_access`],
@@ -312,6 +328,25 @@ mod tests {
         }
         // win32k's kinds keep the mask they are given.
         assert_eq!(ObjectType::Dc.granted(GENERIC_ALL), GENERIC_ALL);
+    }
+
+    #[test]
+    fn the_kinds_with_a_real_mapping_are_told_from_win32ks() {
+        for kind in KINDS {
+            let maps = !matches!(
+                kind,
+                ObjectType::WindowStation
+                    | ObjectType::Desktop
+                    | ObjectType::Dc
+                    | ObjectType::Brush
+                    | ObjectType::Bitmap
+                    | ObjectType::Font
+                    | ObjectType::Region
+            );
+            assert_eq!(kind.maps_generics(), maps, "{kind:?}");
+        }
+        assert!(ObjectType::Event.maps_generics());
+        assert!(!ObjectType::Desktop.maps_generics());
     }
 
     #[test]
