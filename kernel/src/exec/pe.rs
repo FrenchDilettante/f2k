@@ -1228,14 +1228,14 @@ mod tests {
 
     #[test]
     fn section_table_offset_is_honored() {
-        // The table follows SizeOfOptionalHeader, not a fixed offset: exit0 0x1b0, ret0 0x1c0, each
+        // The table follows SizeOfOptionalHeader, not a fixed offset: exit0 0x1b8, ret0 0x1c8, each
         // starting with ".text".
         let e = parse_ok(EXIT0);
         assert_eq!(e.section(0).name_str(), ".text");
-        assert_eq!(off_table(EXIT0), 0x1b0);
+        assert_eq!(off_table(EXIT0), 0x1b8);
         let r = parse_ok(RET0);
         assert_eq!(r.section(0).name_str(), ".text");
-        assert_eq!(off_table(RET0), 0x1c0);
+        assert_eq!(off_table(RET0), 0x1c8);
     }
 
     #[test]
