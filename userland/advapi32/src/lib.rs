@@ -23,6 +23,7 @@ pub mod imports;
 pub mod keysec;
 pub mod regenum;
 pub mod registry;
+pub mod sd;
 pub mod sid;
 pub mod stub;
 pub mod token;
