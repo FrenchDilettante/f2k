@@ -1289,10 +1289,16 @@ ordinal = 193
 
 [[export]]
 name = "GetEffectiveRightsFromAclA"
+group = "security"
+args = ["ptr pacl", "ptr pTrustee", "ptr<u32> pAccessRights"]
+impl = { native = "GetEffectiveRightsFromAclA" }
 ordinal = 194
 
 [[export]]
 name = "GetEffectiveRightsFromAclW"
+group = "security"
+args = ["ptr pacl", "ptr pTrustee", "ptr<u32> pAccessRights"]
+impl = { native = "GetEffectiveRightsFromAclW" }
 ordinal = 195
 
 [[export]]
@@ -1355,18 +1361,30 @@ ordinal = 205
 
 [[export]]
 name = "GetMultipleTrusteeA"
+group = "security"
+args = ["ptr pTrustee"]
+impl = { native = "GetMultipleTrusteeA" }
 ordinal = 206
 
 [[export]]
 name = "GetMultipleTrusteeOperationA"
+group = "security"
+args = ["ptr pTrustee"]
+impl = { native = "GetMultipleTrusteeOperationA" }
 ordinal = 207
 
 [[export]]
 name = "GetMultipleTrusteeOperationW"
+group = "security"
+args = ["ptr pTrustee"]
+impl = { native = "GetMultipleTrusteeOperationW" }
 ordinal = 208
 
 [[export]]
 name = "GetMultipleTrusteeW"
+group = "security"
+args = ["ptr pTrustee"]
+impl = { native = "GetMultipleTrusteeW" }
 ordinal = 209
 
 [[export]]
@@ -1623,18 +1641,30 @@ ordinal = 256
 
 [[export]]
 name = "ImpersonateAnonymousToken"
+group = "security"
+args = ["handle ThreadHandle"]
+impl = { native = "ImpersonateAnonymousToken" }
 ordinal = 257
 
 [[export]]
 name = "ImpersonateLoggedOnUser"
+group = "security"
+args = ["handle hToken"]
+impl = { native = "ImpersonateLoggedOnUser" }
 ordinal = 258
 
 [[export]]
 name = "ImpersonateNamedPipeClient"
+group = "security"
+args = ["handle hNamedPipe"]
+impl = { native = "ImpersonateNamedPipeClient" }
 ordinal = 259
 
 [[export]]
 name = "ImpersonateSelf"
+group = "security"
+args = ["u32 ImpersonationLevel"]
+impl = { native = "ImpersonateSelf" }
 ordinal = 260
 
 [[export]]
@@ -1779,10 +1809,16 @@ ordinal = 286
 
 [[export]]
 name = "LookupSecurityDescriptorPartsA"
+group = "security"
+args = ["ptr ppOwner", "ptr ppGroup", "ptr<u32> pcCountOfAccessEntries", "ptr ppListOfAccessEntries", "ptr<u32> pcCountOfAuditEntries", "ptr ppListOfAuditEntries", "ptr pSD"]
+impl = { native = "LookupSecurityDescriptorPartsA" }
 ordinal = 289
 
 [[export]]
 name = "LookupSecurityDescriptorPartsW"
+group = "security"
+args = ["ptr ppOwner", "ptr ppGroup", "ptr<u32> pcCountOfAccessEntries", "ptr ppListOfAccessEntries", "ptr<u32> pcCountOfAuditEntries", "ptr ppListOfAuditEntries", "ptr pSD"]
+impl = { native = "LookupSecurityDescriptorPartsW" }
 ordinal = 290
 
 [[export]]
@@ -2390,6 +2426,9 @@ ordinal = 458
 
 [[export]]
 name = "RevertToSelf"
+group = "security"
+args = []
+impl = { native = "RevertToSelf" }
 ordinal = 459
 
 [[export]]
@@ -2575,6 +2614,9 @@ ordinal = 487
 
 [[export]]
 name = "SetThreadToken"
+group = "security"
+args = ["ptr Thread", "handle Token"]
+impl = { native = "SetThreadToken" }
 ordinal = 488
 
 [[export]]
@@ -2778,10 +2820,16 @@ ordinal = 537
 
 [[export]]
 name = "TrusteeAccessToObjectA"
+group = "security"
+args = ["strA pObjectName", "u32 ObjectType", "strA? lpProvider", "ptr pTrustee", "u32 GuidCount", "ptr pObjectClassGuids"]
+impl = { native = "TrusteeAccessToObjectA" }
 ordinal = 538
 
 [[export]]
 name = "TrusteeAccessToObjectW"
+group = "security"
+args = ["strW pObjectName", "u32 ObjectType", "strW? lpProvider", "ptr pTrustee", "u32 GuidCount", "ptr pObjectClassGuids"]
+impl = { native = "TrusteeAccessToObjectW" }
 ordinal = 539
 
 [[export]]

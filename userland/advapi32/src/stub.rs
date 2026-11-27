@@ -59,7 +59,7 @@ mod tests {
         let provider: Vec<u16> = "Windows NT Access Provider\0".encode_utf16().collect();
         // SAFETY: the generated body (stdcall), given a NUL-terminated provider and null slots.
         let result = unsafe {
-            crate::f2k_stub_GetSecurityInfoExW(
+            crate::f2k_stub_OpenSCManagerA(
                 0x44,
                 1,
                 4,
