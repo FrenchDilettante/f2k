@@ -88,7 +88,7 @@ const NAMES: &[(&str, u32)] = &[
 ];
 
 /// The kind a well-known name names, compared case-insensitively.
-fn name_kind(name: &[u8]) -> Option<u32> {
+pub(crate) fn name_kind(name: &[u8]) -> Option<u32> {
     NAMES
         .iter()
         .find(|(known, _)| known.as_bytes().eq_ignore_ascii_case(name))
@@ -96,7 +96,7 @@ fn name_kind(name: &[u8]) -> Option<u32> {
 }
 
 /// As [`name_kind`], for a UTF-16 name.
-fn wide_name_kind(units: InBuf<'_, u16>) -> Option<u32> {
+pub(crate) fn wide_name_kind(units: InBuf<'_, u16>) -> Option<u32> {
     NAMES
         .iter()
         .find(|(known, _)| {
@@ -107,6 +107,23 @@ fn wide_name_kind(units: InBuf<'_, u16>) -> Option<u32> {
                     .all(|(a, b)| (a as u8).eq_ignore_ascii_case(&(b as u8)))
         })
         .map(|(_, kind)| *kind)
+}
+
+/// The account name a well-known kind answers a SID lookup with: the first name the kind goes by
+/// in [`NAMES`] (Everyone rather than World, for instance), or none for an unknown kind.
+pub(crate) fn kind_name(kind: u32) -> Option<&'static str> {
+    NAMES
+        .iter()
+        .find(|(_, known)| *known == kind)
+        .map(|(name, _)| *name)
+}
+
+/// The well-known kind whose SID `sid` is, if any (the domain kinds have no fixed SID).
+pub(crate) fn kind_of_sid(sid: &[u8]) -> Option<u32> {
+    NAMES
+        .iter()
+        .map(|(_, kind)| *kind)
+        .find(|&kind| sid_of_kind(kind).is_some_and(|bytes| &bytes[..] == sid))
 }
 
 /// The SID bytes of a well-known kind.

@@ -1357,6 +1357,9 @@ ordinal = 204
 
 [[export]]
 name = "GetMangledSiteSid"
+group = "security"
+args = ["ptr Sid", "ptr MangledSiteSid"]
+impl = { native = "GetMangledSiteSid" }
 ordinal = 205
 
 [[export]]
@@ -1555,6 +1558,9 @@ ordinal = 238
 
 [[export]]
 name = "GetSiteSidFromToken"
+group = "security"
+args = ["handle Token", "ptr SiteSid"]
+impl = { native = "GetSiteSidFromToken" }
 ordinal = 239
 
 [[export]]
@@ -1625,6 +1631,9 @@ ordinal = 252
 
 [[export]]
 name = "GetWindowsAccountDomainSid"
+group = "security"
+args = ["ptr Sid", "ptr DomainSid", "ptr<u32> cbDomainSid"]
+impl = { native = "GetWindowsAccountDomainSid" }
 ordinal = 253
 
 [[export]]
@@ -1765,18 +1774,30 @@ ordinal = 278
 
 [[export]]
 name = "LookupAccountNameA"
+group = "security"
+args = ["strA? lpSystemName", "strA lpAccountName", "ptr Sid", "ptr<u32> cbSid", "ptr ReferencedDomainName", "ptr<u32> cchReferencedDomainName", "ptr<u32> peUse"]
+impl = { native = "LookupAccountNameA" }
 ordinal = 279
 
 [[export]]
 name = "LookupAccountNameW"
+group = "security"
+args = ["strW? lpSystemName", "strW lpAccountName", "ptr Sid", "ptr<u32> cbSid", "ptr<u16> ReferencedDomainName", "ptr<u32> cchReferencedDomainName", "ptr<u32> peUse"]
+impl = { native = "LookupAccountNameW" }
 ordinal = 280
 
 [[export]]
 name = "LookupAccountSidA"
+group = "security"
+args = ["strA? lpSystemName", "ptr Sid", "ptr Name", "ptr<u32> cchName", "ptr ReferencedDomainName", "ptr<u32> cchReferencedDomainName", "ptr<u32> peUse"]
+impl = { native = "LookupAccountSidA" }
 ordinal = 281
 
 [[export]]
 name = "LookupAccountSidW"
+group = "security"
+args = ["strW? lpSystemName", "ptr Sid", "ptr<u16> Name", "ptr<u32> cchName", "ptr<u16> ReferencedDomainName", "ptr<u32> cchReferencedDomainName", "ptr<u32> peUse"]
+impl = { native = "LookupAccountSidW" }
 ordinal = 282
 
 [[export]]
