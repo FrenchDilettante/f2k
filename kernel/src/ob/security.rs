@@ -148,20 +148,22 @@ mod pending {
     use super::Sd;
     use crate::ob::THREADS;
 
-    /// One slot per thread record: the services read the attributes and allocate the object on
+    /// One slot per thread record, plus one for a service reached with no current thread (the
+    /// boot's object creations): the services read the attributes and allocate the object on
     /// the same thread, so each slot is reached only by its own thread.
-    struct Slots([core::cell::UnsafeCell<Sd>; THREADS]);
+    struct Slots([core::cell::UnsafeCell<Sd>; THREADS + 1]);
 
-    // SAFETY: slot `i` is reached only through the thread whose record is `i` (the boot's
-    // object creations, with no thread, take the last slot), and one thread runs one service
-    // at a time.
+    // SAFETY: slot `i` is reached only through the thread whose record is `i` (the idle
+    // thread's record is the one past the pool; it never runs a service, so its index shares
+    // the last slot with the no-current-thread case, which only the boot hits), and one thread
+    // runs one service at a time.
     unsafe impl Sync for Slots {}
 
-    static SLOTS: Slots = Slots([const { core::cell::UnsafeCell::new(Sd::NONE) }; THREADS]);
+    static SLOTS: Slots = Slots([const { core::cell::UnsafeCell::new(Sd::NONE) }; THREADS + 1]);
 
     fn slot() -> &'static core::cell::UnsafeCell<Sd> {
         let index = crate::sched::try_current_thread()
-            .map_or(THREADS - 1, |thread| thread.index() as usize);
+            .map_or(THREADS, |thread| thread.index() as usize);
         &SLOTS.0[index]
     }
 
