@@ -37,7 +37,7 @@
 use rtl::icon::{CursorData, ICON_SIZE, RT_CURSOR, RT_ICON, STOCK_CURSORS, STOCK_ICONS};
 
 use super::class::Owner;
-use super::handle::{UserHandles, UserObject};
+use super::handle::{Refusal, UserHandles, UserObject};
 use crate::slots::{Id, LowestFirst, Record, Slots};
 use crate::status::*;
 
@@ -150,27 +150,48 @@ impl CursorTable {
         self.slots.get_mut(id).map(|record| &mut record.locks)
     }
 
-    /// A new cursor or icon record with its handle in `handles`; none when the handle table is
-    /// full or no page is left for the record.
+    /// A new cursor or icon record of the window manager's own with its handle in `handles`;
+    /// none when the handle table is full or no page is left for the record.
     pub fn make(
         &mut self,
         handles: &mut UserHandles,
         is_icon: bool,
         secret: bool,
     ) -> Option<(CursorId, u32)> {
-        let (id, record) = self.slots.allocate_or_grow(0, super::pages()).ok()?;
-        let handle = handles.insert(UserObject::Cursor(id));
-        if handle == 0 {
-            self.slots.free(id);
-            return None;
-        }
+        self.make_for(handles, None, is_icon, secret).ok()
+    }
+
+    /// A new cursor or icon record of the process `owner` (none: the window manager's own) with
+    /// its handle in `handles`, counted against the process's USER quota: the refusal when the
+    /// process is at its quota or the handle table at its ceiling
+    /// ([`Refusal::NoMoreUserHandles`]), or no page is left for the record or the handle
+    /// ([`Refusal::NoMemory`]).
+    fn make_for(
+        &mut self,
+        handles: &mut UserHandles,
+        owner: Option<Owner>,
+        is_icon: bool,
+        secret: bool,
+    ) -> Result<(CursorId, u32), Refusal> {
+        let (id, record) = self
+            .slots
+            .allocate_or_grow(0, super::pages())
+            .map_err(|_| Refusal::NoMemory)?;
+        let handle = match handles.insert(owner, UserObject::Cursor(id)) {
+            Ok(handle) => handle,
+            Err(refusal) => {
+                self.slots.free(id);
+                return Err(refusal);
+            }
+        };
         *record = Cursor {
             handle,
             secret,
             is_icon,
+            owner,
             ..Cursor::EMPTY
         };
-        Some((id, handle))
+        Ok((id, handle))
     }
 
     /// The cursor or icon `handle` names in `handles`, when the handle is live (its record's
@@ -304,14 +325,17 @@ impl CursorTable {
     }
 
     /// An empty record of the process `owner`, which NtUserSetCursorIconData fills in: its handle;
-    /// STATUS_NO_MEMORY when the table is full.
+    /// ERROR_NO_MORE_USER_HANDLES's status ([`super::process::NO_MORE_USER_HANDLES`]) when the
+    /// process holds its quota's worth of USER objects or the handle table is at its ceiling,
+    /// STATUS_NO_MEMORY when no page is left.
     pub fn create_empty(
         &mut self,
         handles: &mut UserHandles,
         owner: Owner,
     ) -> Result<u32, NtStatus> {
-        let (id, handle) = self.make(handles, false, false).ok_or(STATUS_NO_MEMORY)?;
-        self.at_mut(id).owner = Some(owner);
+        let (_, handle) = self
+            .make_for(handles, Some(owner), false, false)
+            .map_err(Refusal::status)?;
         Ok(handle)
     }
 

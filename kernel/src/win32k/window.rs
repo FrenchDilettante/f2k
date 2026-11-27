@@ -173,12 +173,13 @@ use rtl::winerror::{
     ERROR_INVALID_INDEX,
     ERROR_INVALID_PARAMETER,
     ERROR_INVALID_WINDOW_HANDLE,
+    ERROR_NO_MORE_USER_HANDLES,
     ERROR_OUTOFMEMORY,
     ERROR_TLW_WITH_WSCHILD,
 };
 
 use super::class;
-use super::handle::{UserHandles, UserObject};
+use super::handle::{Refusal, UserHandles, UserObject};
 #[cfg(target_arch = "x86")]
 use super::text::Staged;
 use super::text::{Text, Texts};
@@ -264,6 +265,9 @@ pub enum Failure {
     TlwWithWsChild,
     /// ERROR_CANNOT_FIND_WND_CLASS (1407): the class name resolved to no visible class.
     CannotFindWindowClass,
+    /// ERROR_NO_MORE_USER_HANDLES (1158): the creating process holds its quota's worth of USER
+    /// objects, or the user handle table has no window slot left below its ceiling.
+    NoMoreUserHandles,
     /// The window procedure refused the creation (WM_NCCREATE answering 0, WM_CREATE -1), or the
     /// window went while it was being created: no error, the last error left as it was (guiwin
     /// `refuse`); the creation's answer is NULL.
@@ -281,6 +285,7 @@ impl Failure {
             Failure::InvalidIndex => ERROR_INVALID_INDEX,
             Failure::TlwWithWsChild => ERROR_TLW_WITH_WSCHILD,
             Failure::CannotFindWindowClass => ERROR_CANNOT_FIND_WND_CLASS,
+            Failure::NoMoreUserHandles => ERROR_NO_MORE_USER_HANDLES,
             Failure::Refused => 0,
         }
     }
@@ -2292,16 +2297,22 @@ impl Windows {
         let Some(id) = windows.pool.allocate() else {
             return Err(Failure::OutOfMemory);
         };
-        let handle = windows.handles.insert(UserObject::Window(WindowEntry {
+        let entry = UserObject::Window(WindowEntry {
             id,
             owner: caller,
             marked_destroy: false,
             in_destroy: false,
-        }));
-        if handle == 0 {
-            windows.pool.free(id);
-            return Err(Failure::OutOfMemory);
-        }
+        });
+        let handle = match windows.handles.insert(Some(process), entry) {
+            Ok(handle) => handle,
+            Err(refusal) => {
+                windows.pool.free(id);
+                return Err(match refusal {
+                    Refusal::NoMoreUserHandles => Failure::NoMoreUserHandles,
+                    Refusal::NoMemory => Failure::OutOfMemory,
+                });
+            }
+        };
         {
             let monitor = windows.thread(caller).monitor.unwrap_or(PRIMARY_MONITOR);
             let w = windows.at_mut(id);
@@ -5296,6 +5307,9 @@ impl WindowManager {
         windows.menus.destroy_owner(&mut windows.handles, owner);
         accels.destroy_owner(&mut windows.handles, owner);
         classes.cursors.destroy_owner(&mut windows.handles, owner);
+        // Its count given back with each handle closed; what a zombie window keeps open is charged
+        // to no process from now on, and the record starts afresh.
+        windows.handles.end_process(owner);
     }
 
     /// The thread `key`'s end, on its way out: its windows go and its queue ends
@@ -6341,12 +6355,18 @@ mod tests {
         parent: Option<WindowId>,
     ) -> WindowId {
         let id = w.pool.allocate().unwrap();
-        let handle = w.handles.insert(UserObject::Window(WindowEntry {
-            id,
-            owner: t,
-            marked_destroy: false,
-            in_destroy: false,
-        }));
+        let handle = w
+            .handles
+            .insert(
+                Some(OWNER),
+                UserObject::Window(WindowEntry {
+                    id,
+                    owner: t,
+                    marked_destroy: false,
+                    in_destroy: false,
+                }),
+            )
+            .unwrap();
         let rec = w.pool.at_mut(id);
         rec.handle = handle;
         rec.thread = t;

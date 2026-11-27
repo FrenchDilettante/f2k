@@ -28,6 +28,29 @@ pub unsafe extern "system" fn get_process_window_station() -> usize {
     answered(imports::process_window_station()).map_or(0, |handle| handle as usize)
 }
 
+/// GetGuiResources's flag for the GDI objects a process holds.
+const GR_GDIOBJECTS: u32 = 0;
+
+/// GetGuiResources: how many USER objects (GR_USEROBJECTS) the process `process` names holds, its
+/// windows, menus, accelerator tables, cursors and icons (win32k's count, which its quota bounds);
+/// 0 with the last error for a handle naming no process or opened without
+/// PROCESS_QUERY_INFORMATION, or ERROR_INVALID_PARAMETER for an unknown flag. GR_GDIOBJECTS is not
+/// counted yet (slot-pool slice 13): it goes to the stub routine.
+#[unsafe(export_name = "f2k_export_GetGuiResources")]
+pub extern "system" fn get_gui_resources(process: usize, flags: u32) -> u32 {
+    if flags == GR_GDIOBJECTS {
+        // SAFETY: the arguments as GetGuiResources's kinds read them.
+        return unsafe {
+            crate::stub::stubbed(
+                &spec::GetGuiResources,
+                "GDI object counts not yet implemented",
+                &[process as u64, u64::from(flags)],
+            )
+        };
+    }
+    answered(imports::gui_resources(process, flags)).unwrap_or(0)
+}
+
 /// GetThreadDesktop: the handle of the desktop of the calling process's thread `thread_id`; NULL
 /// with ERROR_INVALID_PARAMETER for an id no thread has.
 #[unsafe(export_name = "f2k_export_GetThreadDesktop")]

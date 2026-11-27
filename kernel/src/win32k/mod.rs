@@ -54,8 +54,10 @@ pub mod menu;
 pub mod mouse;
 pub mod paint;
 pub mod posted;
+pub mod process;
 pub mod prop;
 pub mod queue;
+pub mod quota;
 pub mod raster;
 pub mod region;
 pub mod scroll;
@@ -141,6 +143,7 @@ mod tests {
             W::InvalidIndex,
             W::TlwWithWsChild,
             W::CannotFindWindowClass,
+            W::NoMoreUserHandles,
         ] {
             assert_eq!(dos_error(failure.status().0), failure.code(), "{failure:?}");
         }
@@ -166,6 +169,7 @@ mod tests {
             (M::InvalidMenuHandle, 1401),
             (M::ChildWindowMenu, 1436),
             (M::ItemNotFound, 1456),
+            (M::NoMoreUserHandles, 1158),
         ] {
             assert_eq!(dos_error(failure.status().0), error, "{failure:?}");
         }
@@ -175,6 +179,7 @@ mod tests {
             (A::InvalidParameter, 87),
             (A::InvalidWindowHandle, 1400),
             (A::InvalidAccelHandle, 1403),
+            (A::NoMoreUserHandles, 1158),
         ] {
             assert_eq!(dos_error(failure.status().0), error, "{failure:?}");
         }
@@ -189,6 +194,7 @@ mod tests {
         }
         for (status, error) in [
             (icon::INVALID_CURSOR_HANDLE, 1402),
+            (process::NO_MORE_USER_HANDLES, 1158),
             (queue::MESSAGE_SYNC_ONLY, 1159),
             (queue::INVALID_THREAD_ID, 1444),
         ] {

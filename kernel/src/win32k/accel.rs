@@ -62,10 +62,11 @@ use rtl::winerror::{
     ERROR_INVALID_PARAMETER,
     ERROR_INVALID_WINDOW_HANDLE,
     ERROR_NOT_ENOUGH_MEMORY,
+    ERROR_NO_MORE_USER_HANDLES,
 };
 
 use super::class::Owner;
-use super::handle::{UserHandles, UserObject};
+use super::handle::{Refusal, UserHandles, UserObject};
 use super::menu::ItemRef;
 use super::window::{Message, Payload, Session, WindowId, WindowManager};
 use crate::sched::thread::ThreadId;
@@ -89,6 +90,9 @@ pub enum Failure {
     InvalidWindowHandle,
     /// ERROR_INVALID_ACCEL_HANDLE (1403).
     InvalidAccelHandle,
+    /// ERROR_NO_MORE_USER_HANDLES (1158): the process holds its quota's worth of USER objects, or
+    /// the user handle table is at its ceiling.
+    NoMoreUserHandles,
 }
 
 impl Failure {
@@ -99,6 +103,7 @@ impl Failure {
             Failure::InvalidParameter => ERROR_INVALID_PARAMETER,
             Failure::InvalidWindowHandle => ERROR_INVALID_WINDOW_HANDLE,
             Failure::InvalidAccelHandle => ERROR_INVALID_ACCEL_HANDLE,
+            Failure::NoMoreUserHandles => ERROR_NO_MORE_USER_HANDLES,
         }
     }
 
@@ -313,7 +318,8 @@ impl Accelerators {
 
     /// A new, empty table of the process `owner` for `capacity` entries, loaded from `source`
     /// (none: made); its handle. ERROR_INVALID_PARAMETER for no entries, ERROR_NOT_ENOUGH_MEMORY
-    /// when the pool has no room for the table or its entries.
+    /// when the pool has no room for the table or its entries, ERROR_NO_MORE_USER_HANDLES when the
+    /// process holds its quota's worth of USER objects or the handle table is at its ceiling.
     pub fn create(
         &mut self,
         handles: &mut UserHandles,
@@ -340,15 +346,20 @@ impl Accelerators {
                 return Err(Failure::NotEnoughMemory);
             }
         };
-        let handle = handles.insert(UserObject::AcceleratorTable(id));
-        if handle == 0 {
-            if let Some(at) = block {
-                // SAFETY: just taken, for `pages` pages, and named nowhere else.
-                unsafe { give(at, pages) };
+        let handle = match handles.insert(Some(owner), UserObject::AcceleratorTable(id)) {
+            Ok(handle) => handle,
+            Err(refusal) => {
+                if let Some(at) = block {
+                    // SAFETY: just taken, for `pages` pages, and named nowhere else.
+                    unsafe { give(at, pages) };
+                }
+                self.tables.free(id);
+                return Err(match refusal {
+                    Refusal::NoMoreUserHandles => Failure::NoMoreUserHandles,
+                    Refusal::NoMemory => Failure::NotEnoughMemory,
+                });
             }
-            self.tables.free(id);
-            return Err(Failure::NotEnoughMemory);
-        }
+        };
         // Field by field: a whole record would cross the gate stack as a temporary. The entries
         // past the count are never read.
         table.handle = handle;
@@ -1063,7 +1074,10 @@ mod tests {
     fn an_id_past_the_pool_names_nothing() {
         let mut a = accelerators();
         for forged in [TableId::for_tests(200), Id::new(0xFFFF, 1), Id::new(0, 0)] {
-            let handle = a.handles.insert(UserObject::AcceleratorTable(forged));
+            let handle = a
+                .handles
+                .insert(None, UserObject::AcceleratorTable(forged))
+                .unwrap();
             assert_eq!(a.table_of(handle), Err(Failure::InvalidAccelHandle));
             a.handles.close(handle);
             assert_eq!(a.entries(forged), &[]);
@@ -1099,5 +1113,31 @@ mod tests {
             assert_eq!(a.table_of(table), Err(Failure::InvalidAccelHandle));
         }
         assert!(a.table_of(other).is_ok());
+    }
+
+    /// A table counts against its process's USER quota with every other object it holds: at the
+    /// quota, CreateAcceleratorTable fails with ERROR_NO_MORE_USER_HANDLES and leaves no record;
+    /// the table's destruction gives its count back.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn create_stops_at_the_process_quota() {
+        let mut a = accelerators();
+        let source = Source {
+            module: 0,
+            resource: 0,
+        };
+        let menu = UserObject::Menu(crate::win32k::menu::MenuId::for_tests(1));
+        for _ in 0..9_999 {
+            a.handles.insert(Some(OWNER), menu).unwrap();
+        }
+        let table = a.create(OWNER, source).unwrap();
+        assert_eq!(a.handles.user_objects(OWNER), 10_000);
+        assert_eq!(a.create(OWNER, source), Err(Failure::NoMoreUserHandles));
+        assert_eq!(Failure::NoMoreUserHandles.code(), 1158);
+        assert_eq!(a.live(), 1, "the refused table's record freed");
+        let id = a.table_of(table).unwrap();
+        assert!(a.destroy(id));
+        assert_eq!(a.handles.user_objects(OWNER), 9_999);
+        assert!(a.create(OWNER, source).is_ok());
     }
 }

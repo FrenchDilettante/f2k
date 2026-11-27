@@ -255,6 +255,17 @@ pub unsafe extern "system" fn NtUserGetProcessWindowStation(window_station: *mut
     0
 }
 
+pub unsafe extern "system" fn NtUserGetGuiResources(
+    _process: usize,
+    _flags: u32,
+    count: *mut u32,
+) -> u32 {
+    SERVICES.with(|count| count.set(count.get() + 1));
+    // SAFETY: the caller's out-pointer.
+    unsafe { count.write(0) };
+    0
+}
+
 pub unsafe extern "system" fn NtUserGetThreadDesktop(thread_id: u32, desktop: *mut u32) -> u32 {
     SERVICES.with(|count| count.set(count.get() + 1));
     if thread_id != THREAD_ID.with(Cell::get) {

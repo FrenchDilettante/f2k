@@ -89,10 +89,11 @@ use rtl::winerror::{
     ERROR_INVALID_WINDOW_HANDLE,
     ERROR_MENU_ITEM_NOT_FOUND,
     ERROR_NOT_ENOUGH_MEMORY,
+    ERROR_NO_MORE_USER_HANDLES,
 };
 
 use super::class::Owner;
-use super::handle::{UserHandles, UserObject};
+use super::handle::{Refusal, UserHandles, UserObject};
 use super::window::Windows;
 use crate::slots::{Id, KernelId, Record, Slots, KERNEL_PAGES, PAGE};
 use crate::status::*;
@@ -117,6 +118,9 @@ pub enum Failure {
     ChildWindowMenu,
     /// ERROR_MENU_ITEM_NOT_FOUND (1456).
     ItemNotFound,
+    /// ERROR_NO_MORE_USER_HANDLES (1158): the process holds its quota's worth of USER objects, or
+    /// the user handle table is at its ceiling.
+    NoMoreUserHandles,
 }
 
 impl Failure {
@@ -128,6 +132,7 @@ impl Failure {
             Failure::InvalidMenuHandle => ERROR_INVALID_MENU_HANDLE,
             Failure::ChildWindowMenu => ERROR_CHILD_WINDOW_MENU,
             Failure::ItemNotFound => ERROR_MENU_ITEM_NOT_FOUND,
+            Failure::NoMoreUserHandles => ERROR_NO_MORE_USER_HANDLES,
         }
     }
 
@@ -353,17 +358,24 @@ impl Menus {
 
     /// A new menu of the process `owner`; its handle. A popup (CreatePopupMenu's) and a menu bar
     /// (CreateMenu's) are the same record until the menu bar's drawing and the menus' tracking
-    /// tell them apart.
+    /// tell them apart. ERROR_NO_MORE_USER_HANDLES when the process holds its quota's worth of
+    /// USER objects (`manywin`'s `quota`) or the handle table is at its ceiling,
+    /// ERROR_NOT_ENOUGH_MEMORY when no page is left.
     pub fn create(&mut self, handles: &mut UserHandles, owner: Owner) -> Result<u32, Failure> {
         let (id, record) = self
             .menus
             .allocate_or_grow(0, &KERNEL_PAGES)
             .map_err(|_| Failure::NotEnoughMemory)?;
-        let handle = handles.insert(UserObject::Menu(id));
-        if handle == 0 {
-            self.menus.free(id);
-            return Err(Failure::NotEnoughMemory);
-        }
+        let handle = match handles.insert(Some(owner), UserObject::Menu(id)) {
+            Ok(handle) => handle,
+            Err(refusal) => {
+                self.menus.free(id);
+                return Err(match refusal {
+                    Refusal::NoMoreUserHandles => Failure::NoMoreUserHandles,
+                    Refusal::NoMemory => Failure::NotEnoughMemory,
+                });
+            }
+        };
         record.handle = handle;
         record.owner = owner;
         record.destroying = false;
@@ -1661,7 +1673,7 @@ mod tests {
                 Err(Failure::InvalidMenuHandle)
             );
             m.destroy(forged);
-            let handle = m.handles.insert(UserObject::Menu(forged));
+            let handle = m.handles.insert(None, UserObject::Menu(forged)).unwrap();
             assert_eq!(m.menu_of(handle), Err(Failure::InvalidMenuHandle));
             m.handles.close(handle);
         }
@@ -1706,6 +1718,36 @@ mod tests {
         m.destroy_owner(OWNER + 1);
         assert_eq!(m.live(), 1);
         assert_eq!(m.items.live(), 1);
+    }
+
+    /// `manywin`'s `quota`: CreateMenu makes 10,000 menus for a process, then fails with
+    /// ERROR_NO_MORE_USER_HANDLES leaving no record behind; one destroyed, the next is made. The
+    /// process's end gives every one back.
+    #[test]
+    #[cfg_attr(miri, ignore)]
+    fn create_stops_at_the_process_quota() {
+        let mut m = menus();
+        let mut made = std::vec::Vec::new();
+        let failure = loop {
+            match m.create(OWNER) {
+                Ok(menu) => made.push(menu),
+                Err(failure) => break failure,
+            }
+        };
+        assert_eq!(made.len(), 10_000);
+        assert_eq!(failure, Failure::NoMoreUserHandles);
+        assert_eq!(failure.code(), 1158);
+        assert_eq!(rtl::status::dos_error(failure.status().0), 1158);
+        assert_eq!(m.live(), 10_000, "the refused menu's record freed");
+        assert_eq!(m.handles.user_objects(OWNER), 10_000);
+        let last = m.menu_of(made.pop().unwrap()).unwrap();
+        m.destroy(last);
+        made.push(m.create(OWNER).unwrap());
+        assert_eq!(m.create(OWNER), Err(Failure::NoMoreUserHandles));
+        assert!(m.create(OWNER + 1).is_ok(), "another process makes its own");
+        m.destroy_owner(OWNER);
+        assert_eq!(m.handles.user_objects(OWNER), 0);
+        assert_eq!(m.live(), 1);
     }
 
     /// A popup inserted into itself, or into its own popup, ends its destruction there.

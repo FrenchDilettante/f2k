@@ -137,6 +137,21 @@ impl = { syscall = "crate::win32k::winsta::get_process_window_station" }
 internal = true
 
 [[export]]
+name = "GetGuiResources"
+group = "winsta"
+args = ["handle Process", "u32 Flags"]
+impl = { native = "GetGuiResources" }
+ordinal = 270
+fails = "0"
+
+[[export]]
+name = "NtUserGetGuiResources"
+group = "winsta"
+args = ["handle Process", "u32 Flags", "ptr<u32> Count"]
+impl = { syscall = "crate::win32k::process::get_gui_resources" }
+internal = true
+
+[[export]]
 name = "NtUserGetThreadDesktop"
 group = "winsta"
 args = ["u32 ThreadId", "ptr<u32> Desktop"]
@@ -4332,10 +4347,6 @@ ordinal = 255
 [[export]]
 name = "GetDoubleClickTime"
 ordinal = 266
-
-[[export]]
-name = "GetGuiResources"
-ordinal = 270
 
 [[export]]
 name = "GetIconInfo"

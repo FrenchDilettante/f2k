@@ -253,6 +253,10 @@ mod raw {
         /// `window_station`.
         #[link_name = "\u{1}_f2k_nt_NtUserGetProcessWindowStation"]
         pub fn NtUserGetProcessWindowStation(window_station: *mut u32) -> u32;
+        /// NtUserGetGuiResources: the count of the objects of `flags`' kind the process
+        /// `process` holds, into `count`.
+        #[link_name = "\u{1}_f2k_nt_NtUserGetGuiResources"]
+        pub fn NtUserGetGuiResources(process: usize, flags: u32, count: *mut u32) -> u32;
         /// NtUserGetThreadDesktop: the desktop handle of thread `thread_id`, into `desktop`.
         #[link_name = "\u{1}_f2k_nt_NtUserGetThreadDesktop"]
         pub fn NtUserGetThreadDesktop(thread_id: u32, desktop: *mut u32) -> u32;
@@ -1285,6 +1289,15 @@ pub fn process_window_station() -> Result<u32, NtStatus> {
     // SAFETY: the service writes the handle into the local.
     checked(unsafe { raw::NtUserGetProcessWindowStation(&mut handle) })?;
     Ok(handle)
+}
+
+/// NtUserGetGuiResources: the count of the objects of `flags`' kind (GR_USEROBJECTS) the process
+/// `process` names holds.
+pub fn gui_resources(process: usize, flags: u32) -> Result<u32, NtStatus> {
+    let mut count = 0u32;
+    // SAFETY: the service writes the count into the local.
+    checked(unsafe { raw::NtUserGetGuiResources(process, flags, &mut count) })?;
+    Ok(count)
 }
 
 /// NtUserGetThreadDesktop: the desktop handle of the process's thread `thread_id`.

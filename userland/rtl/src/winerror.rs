@@ -42,6 +42,9 @@ pub const ERROR_NOACCESS: u32 = 998;
 pub const ERROR_INVALID_FLAGS: u32 = 1004;
 pub const ERROR_NO_UNICODE_TRANSLATION: u32 = 1113;
 pub const ERROR_OLD_WIN_VERSION: u32 = 1150;
+/// A process's USER objects at its quota (USERProcessHandleQuota), or the window manager's handle
+/// table at its ceiling.
+pub const ERROR_NO_MORE_USER_HANDLES: u32 = 1158;
 pub const ERROR_MESSAGE_SYNC_ONLY: u32 = 1159;
 pub const ERROR_NO_IMPERSONATION_TOKEN: u32 = 1309;
 pub const ERROR_NO_SUCH_PRIVILEGE: u32 = 1313;
