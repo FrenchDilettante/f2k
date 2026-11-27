@@ -104,7 +104,7 @@ fn wide_name_kind(units: InBuf<'_, u16>) -> Option<u32> {
                 && known
                     .encode_utf16()
                     .zip(units.iter())
-                    .all(|(a, b)| (a as u8).to_ascii_lowercase() == (b as u8).to_ascii_lowercase())
+                    .all(|(a, b)| (a as u8).eq_ignore_ascii_case(&(b as u8)))
         })
         .map(|(_, kind)| *kind)
 }
@@ -545,7 +545,7 @@ unsafe fn name_sid(name: *const u8, wide: bool) -> Option<SidBytes> {
         wide_name_kind(name.units())?
     } else {
         // SAFETY: the caller's ANSI name.
-        let name = unsafe { InStr::optional(name as *const u8) }?;
+        let name = unsafe { InStr::optional(name) }?;
         name_kind(name.bytes())?
     };
     sid_of_kind(kind)

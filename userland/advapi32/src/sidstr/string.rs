@@ -11,6 +11,10 @@ use rtl::heap::ProcessHeap as _;
 use rtl::winerror::{ERROR_INVALID_PARAMETER, ERROR_INVALID_SID, ERROR_NOT_ENOUGH_MEMORY};
 
 use super::{SID_HEADER, SID_MAX_SUB_AUTHORITIES};
+
+/// A parsed SID string: its revision, its identifier authority's six bytes, and its
+/// sub-authorities with how many of the array they fill.
+type ParsedSid = (u8, [u8; 6], ([u32; SID_MAX_SUB_AUTHORITIES], usize));
 use crate::imports::{self as nt, ProcessHeap};
 use crate::token::{bool_of, failed, optional_ansi, optional_wide};
 use crate::Out;
@@ -47,9 +51,7 @@ fn parse_number(units: &[u16], default_base: u32) -> Option<(u32, u32, usize)> {
 /// over. A `0x` prefix on a number reads it in hex; without one the revision's base applies to
 /// the rest. The authority keeps its low 32 bits. The revision, the authority's six bytes and
 /// the sub-authorities (15 at most); none for a malformed string.
-fn parse_sid_string(
-    units: &[u16],
-) -> Option<(u8, [u8; 6], ([u32; SID_MAX_SUB_AUTHORITIES], usize))> {
+fn parse_sid_string(units: &[u16]) -> Option<ParsedSid> {
     if *units.first()? | 0x20 != u16::from(b's') || units.get(1) != Some(&u16::from(b'-')) {
         return None;
     }
@@ -80,9 +82,7 @@ fn parse_sid_string(
         match units.get(at) {
             None => break,
             Some(&unit) if unit == u16::from(b'-') => {
-                if units.get(at + 1).is_none() {
-                    return None; // a SID does not end with '-'
-                }
+                units.get(at + 1)?; // a SID does not end with '-'
             }
             _ => return None, // not the whole string consumed
         }
@@ -119,9 +119,7 @@ fn string_to_sid(units: &[u16], place: &mut Out<'_, *mut u8>) -> Result<(), u32>
 /// ERROR_INVALID_PARAMETER for a null SID or place, the conversion's status as the last error
 /// when the SID does not print (ERROR_INVALID_SID), ERROR_NOT_ENOUGH_MEMORY when the heap has
 /// no room; TRUE with the last error ERROR_SUCCESS on success.
-
-
-
+///
 /// ConvertStringSidToSidW: the stringized SID parsed into a SID in a block of the process heap,
 /// its address into `sid` (freed by the caller with LocalFree). FALSE with
 /// ERROR_INVALID_PARAMETER for a null string or place, ERROR_INVALID_SID for a string that is

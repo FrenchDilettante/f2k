@@ -55,6 +55,10 @@ pub unsafe extern "system" fn get_sid_sub_authority_count(sid: *const u8) -> usi
 
 /// GetSidLengthRequired: the bytes a SID of `count` sub-authorities takes; the last error
 /// untouched.
+///
+/// # Safety
+///
+/// Nothing is read; `count` is a plain value.
 #[unsafe(export_name = "f2k_export_GetSidLengthRequired")]
 pub unsafe extern "system" fn get_sid_length_required(count: u32) -> u32 {
     services::length_required_sid(count & 0xFF)

@@ -210,9 +210,10 @@ pub(crate) fn well_known_sid(kind: u32, domain: Option<&[u8]>) -> Option<SidPart
                 subs: [0; MAX_SUB_AUTHORITIES],
                 count: count + 1,
             };
-            for index in 0..count {
-                parts.subs[index] =
-                    u32::from_le_bytes(domain.get(SID_HEADER + 4 * index..SID_HEADER + 4 * index + 4)?.try_into().ok()?);
+            for (index, slot) in parts.subs.iter_mut().enumerate().take(count) {
+                *slot = u32::from_le_bytes(
+                    domain.get(SID_HEADER + 4 * index..SID_HEADER + 4 * index + 4)?.try_into().ok()?,
+                );
             }
             parts.subs[count] = rid;
             return Some(parts);

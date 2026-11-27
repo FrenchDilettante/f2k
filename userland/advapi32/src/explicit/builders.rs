@@ -11,22 +11,6 @@ use super::{
     TRUSTEE_IS_UNKNOWN,
 };
 
-/// Fill a whole TRUSTEE: the form and the name pointer given, the rest the plain values.
-fn fill_trustee(p_trustee: *mut u8, form: u32, name: usize) {
-    if p_trustee.is_null() {
-        return;
-    }
-    let trustee = Trustee {
-        p_multiple_trustee: 0,
-        multiple_trustee_operation: NO_MULTIPLE_TRUSTEE,
-        trustee_form: form,
-        trustee_type: TRUSTEE_IS_UNKNOWN,
-        ptstr_name: name,
-    };
-    // SAFETY: the caller's trustee, written unaligned.
-    unsafe { (p_trustee as *mut Trustee).write_unaligned(trustee) };
-}
-
 /// Fill a whole EXPLICIT_ACCESS over the trustee given (the name one when none).
 fn fill_explicit_access(
     p_explicit_access: *mut u8,
