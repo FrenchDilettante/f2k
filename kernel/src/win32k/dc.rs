@@ -136,6 +136,7 @@ use super::bitmap::with_surface;
 use super::brush::Fill;
 use super::font;
 use super::fonts::table::Realization;
+use super::layout;
 use super::mapping::{Device, Mapping};
 use super::raster::{advanced, get_pixel_on, set_pixel_on, Clip, Surface, TextOut};
 use super::region::{ordered, OwnedRegion, Region};
@@ -186,6 +187,13 @@ pub struct Dc {
     /// is taken.
     pub rop2: u32,
     pub fill_mode: u32,
+    /// The text layout ([`super::layout`]): the alignment (SetTextAlign's value, as set), the
+    /// extra pixels after each character (SetTextCharacterExtra's), and the justification's extra
+    /// pixels spread over its break count (SetTextJustification's).
+    pub text_align: u32,
+    pub char_extra: i32,
+    pub break_extra: i32,
+    pub break_count: i32,
     /// The font object selected, beside its handle: none for a stock font.
     pub font_object: Option<crate::ob::ObjectId>,
     /// Whether it is a memory DC (CreateCompatibleDC's): it draws on its selected bitmap, whose
@@ -234,6 +242,10 @@ impl Dc {
             current: (0, 0),
             rop2: 0,
             fill_mode: 0,
+            text_align: 0,
+            char_extra: 0,
+            break_extra: 0,
+            break_count: 0,
             font_object: None,
             memory: false,
             bitmap: 0,
@@ -270,6 +282,10 @@ impl Dc {
             current: (0, 0),
             rop2: DEFAULT_ROP2,
             fill_mode: DEFAULT_POLY_FILL_MODE,
+            text_align: TA_LEFT | TA_TOP | TA_NOUPDATECP,
+            char_extra: 0,
+            break_extra: 0,
+            break_count: 0,
             font_object: None,
             memory: false,
             bitmap: DEFAULT_BITMAP,
@@ -404,6 +420,10 @@ impl Dc {
             DC_MAP_MODE => Some(self.mapping.mode),
             DC_ROP2 => Some(self.rop2),
             DC_POLY_FILL_MODE => Some(self.fill_mode),
+            DC_TEXT_ALIGN => Some(self.text_align),
+            DC_CHAR_EXTRA => Some(self.char_extra as u32),
+            DC_BREAK_EXTRA => Some(self.break_extra as u32),
+            DC_BREAK_COUNT => Some(self.break_count as u32),
             DC_OBJECT_TYPE => Some(if self.memory {
                 rtl::dib::OBJ_MEMDC
             } else {
@@ -434,6 +454,16 @@ impl Dc {
             DC_STRETCH_MODE => &mut self.stretch_mode,
             DC_ROP2 => &mut self.rop2,
             DC_POLY_FILL_MODE => &mut self.fill_mode,
+            DC_TEXT_ALIGN => &mut self.text_align,
+            DC_CHAR_EXTRA => {
+                return Some(core::mem::replace(&mut self.char_extra, value as i32) as u32)
+            }
+            DC_BREAK_EXTRA => {
+                return Some(core::mem::replace(&mut self.break_extra, value as i32) as u32)
+            }
+            DC_BREAK_COUNT => {
+                return Some(core::mem::replace(&mut self.break_count, value as i32) as u32)
+            }
             DC_BRUSH_ORG_X => {
                 return Some(core::mem::replace(&mut self.brush_org.0, value as i32) as u32)
             }
@@ -1022,7 +1052,10 @@ pub fn get_and_set_dc_dword(
 
 /// NtGdiExtTextOutW(Dc, X, Y, Options, Rect, String, Count, Dx): see the module notes. The
 /// rectangle and the string (and the advances) are read from the caller a chunk at a time, each
-/// drawn before the next is read.
+/// drawn before the next is read; the text laid out as the DC's text attributes say
+/// ([`super::layout`]: its alignment, from the current position under TA_UPDATECP, which it then
+/// moves; its character extra and justification, without `Dx`), a text aligned other than to its
+/// left measured first.
 #[allow(clippy::too_many_arguments)]
 pub fn ext_text_out_w(
     call: &mut NtCall,
@@ -1035,6 +1068,7 @@ pub fn ext_text_out_w(
     count: u32,
     dx: UserAddr,
 ) -> NtResult {
+    let handle = dc;
     let (_reference, dc) = dc_of(call, dc)?;
     let realization = super::fonts::realize_selected(call, &dc);
     let rect = if rect.is_null() {
@@ -1042,7 +1076,41 @@ pub fn ext_text_out_w(
     } else {
         Some(dc.screen_rect(rect.cast::<Rect>().read()?))
     };
-    let (x, y) = dc.screen_point(x, y);
+    let face = layout::FontLayout::of(&realization).unwrap_or(layout::FontLayout {
+        ascent: 0,
+        height: 0,
+        break_char: 0x20,
+    });
+    let update = dc.text_align & TA_UPDATECP != 0;
+    let at = if update { dc.current } else { (x, y) };
+    let spacing = if dx.is_null() {
+        layout::Spacing::of(&dc, face.break_char)
+    } else {
+        layout::Spacing::NONE
+    };
+    let mut width = 0i32;
+    if update || dc.text_align & TA_CENTER != 0 {
+        let mut spacing = spacing;
+        layout::runs(
+            string,
+            count,
+            dx,
+            &realization,
+            false,
+            &mut spacing,
+            |_, advances| {
+                width = layout::widened(width, advances);
+                Ok(())
+            },
+        )?;
+    }
+    let (x, y) = layout::aligned(
+        dc.text_align,
+        dc.screen_point(at.0, at.1),
+        width,
+        face.ascent,
+        face.height,
+    );
     let text = TextOut::new(
         dc.clip(),
         dc.text_color,
@@ -1053,36 +1121,35 @@ pub fn ext_text_out_w(
         rect,
     );
     with_surface(&dc, |surface| text.fill_background(surface));
-    let mut units = [0u16; CHUNK];
-    let mut advances = [0i32; CHUNK];
     let mut pen = x;
-    let mut done = 0usize;
-    while done < count as usize {
-        let length = (count as usize - done).min(CHUNK);
-        string
-            .offset(2 * done as u32)
-            .read_units(&mut units[..length])?;
-        let advances = if dx.is_null() {
-            None
-        } else {
-            dx.offset(4 * done as u32)
-                .read(&mut advances.as_bytes_mut()[..4 * length])?;
-            Some(&advances[..length])
-        };
-        let units = &units[..length];
-        pen = match realization {
-            Realization::BuiltIn { .. } => {
-                with_surface(&dc, |surface| text.draw(surface, pen, units, advances))
-                    .unwrap_or_else(|| advanced(pen, length, advances))
-            }
-            Realization::TrueType { key, .. } => with_surface(&dc, |surface| {
-                super::fonts::draw_text(Some(surface), &text, key, pen, units, advances)
-            })
-            .unwrap_or_else(|| {
-                super::fonts::draw_text::<dyn Surface>(None, &text, key, pen, units, advances)
-            }),
-        };
-        done += length;
+    let mut spacing = spacing;
+    layout::runs(
+        string,
+        count,
+        dx,
+        &realization,
+        false,
+        &mut spacing,
+        |units, advances| {
+            let advances = Some(advances);
+            pen = match realization {
+                Realization::BuiltIn { .. } => {
+                    with_surface(&dc, |surface| text.draw(surface, pen, units, advances))
+                        .unwrap_or_else(|| advanced(pen, units.len(), advances))
+                }
+                Realization::TrueType { key, .. } => with_surface(&dc, |surface| {
+                    super::fonts::draw_text(Some(surface), &text, key, pen, units, advances)
+                })
+                .unwrap_or_else(|| {
+                    super::fonts::draw_text::<dyn Surface>(None, &text, key, pen, units, advances)
+                }),
+            };
+            Ok(())
+        },
+    )?;
+    if update {
+        let moved = layout::moved_position(dc.text_align, dc.mapping, at, width);
+        update_dc(call, handle, |dc| dc.current = moved)?;
     }
     Ok(STATUS_SUCCESS)
 }
@@ -1116,10 +1183,10 @@ pub fn get_text_metrics_w(call: &mut NtCall, dc: Handle, metric: UserAddr) -> Nt
     Ok(STATUS_SUCCESS)
 }
 
-/// NtGdiGetTextExtent(Dc, String, Count, Size): the SIZE of `count` characters of the string (each
-/// read: the built-in font's cells are all one width, but a string the caller cannot read is a
-/// fault). In a TrueType font, the characters' advances side by side and the cell's height; no
-/// characters, no height.
+/// NtGdiGetTextExtent(Dc, String, Count, Size): the SIZE of `count` characters of the string
+/// (each read: a string the caller cannot read is a fault), laid out with the DC's character extra
+/// and justification ([`super::layout`]): the characters' advances side by side, and the cell's
+/// height (in a TrueType font, no characters no height).
 pub fn get_text_extent(
     call: &mut NtCall,
     dc: Handle,
@@ -1129,27 +1196,8 @@ pub fn get_text_extent(
 ) -> NtResult {
     let (_reference, dc) = dc_of(call, dc)?;
     let realization = super::fonts::realize_selected(call, &dc);
-    let mut units = [0u16; CHUNK];
-    let mut width = 0i32;
-    let mut done = 0usize;
-    while done < count as usize {
-        let length = (count as usize - done).min(CHUNK);
-        string
-            .offset(2 * done as u32)
-            .read_units(&mut units[..length])?;
-        if let Realization::TrueType { key, .. } = realization {
-            width = width.saturating_add(super::fonts::text_width(key, &units[..length]));
-        }
-        done += length;
-    }
-    let (cx, cy) = match realization {
-        Realization::BuiltIn { .. } => font::extent(count),
-        Realization::TrueType { .. } if count == 0 => (0, 0),
-        Realization::TrueType { key, char_set, .. } => {
-            let metric = super::fonts::text_metric(key, char_set).ok_or(STATUS_INVALID_HANDLE)?;
-            (width, metric.height)
-        }
-    };
+    let cx = layout::text_width(&dc, &realization, string, count, false)?;
+    let cy = layout::extent_height(&realization, count)?;
     size.cast::<Size>().write(Size { cx, cy })?;
     Ok(STATUS_SUCCESS)
 }

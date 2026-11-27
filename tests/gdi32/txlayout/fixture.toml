@@ -2,8 +2,9 @@
 # Built and captured on the 2026-11-27 VM trip (tests\build.bat txlayout, tests\capture.bat txlayout).
 # Text is drawn black on a green opaque background into a 32-bit DIB section in a memory DC, so a
 # drawing prints as the box of its character cells, which follow from the font's widths and metrics
-# alone, never its glyphs' shapes. The font is the memory DC's default, the stock SYSTEM_FONT; its
-# boot carries the system's fonts (system_fonts), as guidc's. Glyph indices print only as relations.
+# alone, and the count of its green pixels, which does not (see the masks). The font is the memory
+# DC's default, the stock SYSTEM_FONT; its boot carries the system's fonts (system_fonts), as
+# guidc's. Glyph indices print only as relations.
 # No handle or address prints.
 description = "txlayout - SetTextAlign/GetTextAlign over every TA_ alignment and TA_UPDATECP, SetTextCharacterExtra/GetTextCharacterExtra, SetTextJustification, GetTextExtentPointA/W, GetTextExtentExPointA/W/I, GetTextExtentPointI, GetCharacterPlacementA/W, PolyTextOutA/W, GetTextCharset, GetTextCharsetInfo, GetFontLanguageInfo and TranslateCharsetInfo, over the stock SYSTEM_FONT in a memory DC, the cells drawn read back from a DIB section."
 kind = "sectioned"
@@ -12,14 +13,43 @@ system_fonts = true
 
 [pending]
 # G9 of .scratch/plans/user32-gdi32-completeness.md: drop each entry once its block passes.
-align = "F2K's gdi32 has no SetTextAlign/GetTextAlign (stubs; plan G9)"
-updatecp = "F2K's gdi32 has no SetTextAlign, so no TA_UPDATECP (plan G9)"
-extra = "F2K's gdi32 has no SetTextCharacterExtra/GetTextCharacterExtra (plan G9)"
-justify = "F2K's gdi32 has no SetTextJustification (plan G9)"
-extentex = "F2K's gdi32 has no GetTextExtentExPointA/W/I, GetTextExtentPointA/I or GetGlyphIndicesW (plan G9, G10)"
-placement = "F2K's gdi32 has no GetCharacterPlacementA/W (plan G9)"
-polytext = "F2K's gdi32 has no PolyTextOutA/W (plan G9)"
-charset = "F2K's gdi32 has no GetTextCharset, GetTextCharsetInfo, GetFontLanguageInfo or TranslateCharsetInfo (plan G9)"
+extentex = "Windows 2000's GetTextExtentExPointI over GetGlyphIndicesW's indices of the System font answers a fit, partial extents and a size unlike GetTextExtentExPointW's of the same text (the capture's 'no no no', what it answers unprinted); F2K's answers GetTextExtentExPointW's ('yes yes yes'). Every other line matches."
+
+[masks]
+# The green count is a drawing's cells less its glyphs' pixels, so it hangs on the glyphs' shapes
+# after all (a fixture bug: its header says otherwise): F2K's System face is Wine's (fonts/README.md),
+# not Windows 2000's vgasys.fon, and "Ab" holds 2 glyph pixels more, "abc" 1 fewer. The boxes, which
+# the layout alone makes, stay compared.
+align = [
+    "  TextOutA(48, 24, \"Ab\"): ret=1 err=- box x 48..63 y 24..39, green *",
+    "  TextOutA(48, 24, \"Ab\"): ret=1 err=- box x 40..55 y 24..39, green *",
+    "  TextOutA(48, 24, \"Ab\"): ret=1 err=- box x 32..47 y 24..39, green *",
+    "  TextOutA(48, 24, \"Ab\"): ret=1 err=- box x 48..63 y 11..26, green *",
+    "  TextOutA(48, 24, \"Ab\"): ret=1 err=- box x 48..63 y 8..23, green *",
+    "  TextOutA(48, 24, \"Ab\"): ret=1 err=- box x 40..55 y 11..26, green *",
+    "  TextOutA(48, 24, \"Ab\"): ret=1 err=- box x 32..47 y 8..23, green *",
+]
+updatecp = [
+    "TA_LEFT|TA_UPDATECP: MoveToEx(40, 10), TextOutA(5, 30, \"Ab\"): ret=1 err=- position=56,10 box x 40..55 y 10..25, green *",
+    "TA_RIGHT|TA_UPDATECP: MoveToEx(40, 10), TextOutA(5, 30, \"Ab\"): ret=1 err=- position=24,10 box x 24..39 y 10..25, green *",
+    "TA_CENTER|TA_UPDATECP: MoveToEx(40, 10), TextOutA(5, 30, \"Ab\"): ret=1 err=- position=40,10 box x 32..47 y 10..25, green *",
+    "TA_LEFT|TA_BASELINE|TA_UPDATECP: MoveToEx(40, 10), TextOutA(5, 30, \"Ab\"): ret=1 err=- position=56,10 box x 40..55 y 0..12, green *",
+    "TA_LEFT|TA_UPDATECP: MoveToEx(20, 10), ExtTextOutA(\"abc\", dx 10 12 14): ret=1 err=- position=56,10 box x 20..55 y 10..25, green *",
+]
+extra = [
+    "extra 4: TextOutA(10, 8, \"Ab\"): ret=1 err=- box x 10..33 y 8..23, green *",
+    "extra 0: TextOutA(10, 8, \"Ab\"): box x 10..25 y 8..23, green *",
+]
+justify = [
+    "  TextOutA(10, 8, \"a b c\"): box x 10..50 y 8..23, green *",
+    "  drawn again: box x 10..50 y 8..23, green *",
+    "  TextOutA(10, 8, \"a b c\"): box x 10..51 y 8..23, green *",
+]
+polytext = [
+    "  rows 0-23: box x 4..19 y 2..17, green *",
+    "  rows 24-47: box x 30..52 y 26..41, green *",
+    "  rows 24-47: box x 20..89 y 24..45, green *",
+]
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

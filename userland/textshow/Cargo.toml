@@ -1,0 +1,13 @@
+[package]
+name = "textshow"
+version = "0.1.0"
+edition = "2021"
+
+# The program: textshow.exe (the target names its images .dll: the Makefile copies it to its name).
+[[bin]]
+name = "textshow"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+exe = { path = "../exe" }

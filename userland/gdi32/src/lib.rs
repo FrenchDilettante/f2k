@@ -25,10 +25,12 @@
 
 pub mod bitmap;
 pub mod brush;
+pub mod charset;
 pub mod dc;
 pub mod draw;
 pub mod font;
 pub mod imports;
+pub mod layout;
 pub mod mapping;
 pub mod region;
 pub mod stock;

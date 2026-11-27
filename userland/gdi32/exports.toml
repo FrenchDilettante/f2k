@@ -388,7 +388,7 @@ args = ["handle hdc", "i32 X", "i32 Y", "u32 fuOptions", "ptr lprc", "ptr lpStri
 impl = { native = "ExtTextOutW" }
 ordinal = 164
 fails = "FALSE"
-note = "the built-in 8x16 font whatever font is selected; ETO_OPAQUE and ETO_CLIPPED (kernel/src/win32k/dc.rs)"
+note = "the selected font (the built-in 8x16 one without a face); ETO_OPAQUE and ETO_CLIPPED (kernel/src/win32k/dc.rs); the DC's alignment, TA_UPDATECP, character extra and justification (kernel/src/win32k/layout.rs)"
 
 [[export]]
 name = "GetTextExtentPoint32A"
@@ -405,7 +405,7 @@ args = ["handle hdc", "ptr lpString", "i32 c", "ptr lpSize"]
 impl = { native = "GetTextExtentPoint32W" }
 ordinal = 376
 fails = "FALSE"
-note = "the font's cells side by side: 8 pixels a character, 16 high"
+note = "the characters' advances side by side, with the DC's character extra and justification, and the cell's height"
 
 [[export]]
 name = "GetTextExtentPointW"
@@ -476,6 +476,138 @@ name = "NtGdiGetTextMetricsW"
 group = "text"
 args = ["handle Dc", "ptr Metric"]
 impl = { syscall = "crate::win32k::dc::get_text_metrics_w" }
+internal = true
+
+[[export]]
+name = "GetTextAlign"
+group = "text"
+args = ["handle hdc"]
+impl = { native = "GetTextAlign" }
+ordinal = 366
+fails = "0xFFFFFFFF"
+note = "the DC's alignment as SetTextAlign set it; GDI_ERROR, the last error untouched, for a DC that is none"
+
+[[export]]
+name = "SetTextAlign"
+group = "text"
+args = ["handle hdc", "u32 fMode"]
+impl = { native = "SetTextAlign" }
+ordinal = 505
+fails = "0xFFFFFFFF"
+note = "every bit kept as given (TA_RTLREADING and undefined ones too), the previous value answered; the text calls lay out by it (kernel/src/win32k/layout.rs)"
+
+[[export]]
+name = "GetTextCharacterExtra"
+group = "text"
+args = ["handle hdc"]
+impl = { native = "GetTextCharacterExtra" }
+ordinal = 367
+fails = "0x80000000"
+note = "0x80000000, the last error untouched, for a DC that is none"
+
+[[export]]
+name = "SetTextCharacterExtra"
+group = "text"
+args = ["handle hdc", "i32 nCharExtra"]
+impl = { native = "SetTextCharacterExtra" }
+ordinal = 506
+fails = "0x80000000"
+note = "the previous extra; 0x80000000 with ERROR_INVALID_PARAMETER for a DC that is none or the extra 0x80000000"
+
+[[export]]
+name = "SetTextJustification"
+group = "text"
+args = ["handle hdc", "i32 nBreakExtra", "i32 nBreakCount"]
+impl = { native = "SetTextJustification" }
+ordinal = 508
+fails = "FALSE"
+note = "the extra spread over the break count's breaks, the remainder a pixel each to the first; FALSE, the last error untouched, for a DC that is none"
+
+[[export]]
+name = "GetTextExtentPointA"
+group = "text"
+args = ["handle hdc", "ptr lpString", "i32 cbString", "ptr lpSize"]
+impl = { native = "GetTextExtentPointA" }
+ordinal = 377
+fails = "FALSE"
+note = "GetTextExtentPoint32A's SIZE"
+
+[[export]]
+name = "GetTextExtentPointI"
+group = "text"
+args = ["handle hdc", "ptr pgiIn", "i32 cgi", "ptr lpSize"]
+impl = { native = "GetTextExtentPointI" }
+ordinal = 378
+fails = "FALSE"
+note = "the glyphs' advances, as GetTextExtentPoint32W's of their characters"
+
+[[export]]
+name = "GetTextExtentExPointA"
+group = "text"
+args = ["handle hdc", "ptr lpszStr", "i32 cchString", "i32 nMaxExtent", "ptr lpnFit", "ptr alpDx", "ptr lpSize"]
+impl = { native = "GetTextExtentExPointA" }
+ordinal = 371
+fails = "FALSE"
+
+[[export]]
+name = "GetTextExtentExPointW"
+group = "text"
+args = ["handle hdc", "ptr lpszStr", "i32 cchString", "i32 nMaxExtent", "ptr lpnFit", "ptr alpDx", "ptr lpSize"]
+impl = { native = "GetTextExtentExPointW" }
+ordinal = 373
+fails = "FALSE"
+note = "the SIZE, the partial extents and how many fit in the maximum (taken unsigned); FALSE with ERROR_INVALID_PARAMETER for a count of 0"
+
+[[export]]
+name = "GetTextExtentExPointI"
+group = "text"
+args = ["handle hdc", "ptr pgiIn", "i32 cgi", "i32 nMaxExtent", "ptr lpnFit", "ptr alpDx", "ptr lpSize"]
+impl = { native = "GetTextExtentExPointI" }
+ordinal = 372
+fails = "FALSE"
+note = "GetTextExtentExPointW's over glyph indices: the txlayout capture's Windows 2000 answers otherwise over the system font (its extentex block stays pending)"
+
+[[export]]
+name = "GetCharacterPlacementA"
+group = "text"
+args = ["handle hdc", "ptr lpString", "i32 nCount", "i32 nMaxExtent", "ptr lpResults", "u32 dwFlags"]
+impl = { native = "GetCharacterPlacementA" }
+ordinal = 289
+fails = "0"
+note = "the string's bytes copied out"
+
+[[export]]
+name = "GetCharacterPlacementW"
+group = "text"
+args = ["handle hdc", "ptr lpString", "i32 nCount", "i32 nMaxExtent", "ptr lpResults", "u32 dwFlags"]
+impl = { native = "GetCharacterPlacementW" }
+ordinal = 290
+fails = "0"
+note = "left-to-right text alone: the string, its advances, carets and order as given, GCP_MAXEXTENT's fit; no reordering, ligation, kerning or classes; the whole string's SIZE answered"
+
+[[export]]
+name = "PolyTextOutA"
+group = "text"
+args = ["handle hdc", "ptr pptxt", "i32 cStrings"]
+impl = { native = "PolyTextOutA" }
+ordinal = 428
+fails = "FALSE"
+note = "each string ExtTextOutA's"
+
+[[export]]
+name = "PolyTextOutW"
+group = "text"
+args = ["handle hdc", "ptr pptxt", "i32 cStrings"]
+impl = { native = "PolyTextOutW" }
+ordinal = 429
+fails = "FALSE"
+note = "each string ExtTextOutW's, at its point with its options, rectangle and advances, until one fails"
+
+[[export]]
+name = "NtGdiGetTextExtentExW"
+group = "text"
+args = ["handle Dc", "ptr String", "u32 Count", "u32 MaxExtent", "ptr Fit", "ptr Dx", "ptr Size", "u32 Flags"]
+impl = { syscall = "crate::win32k::layout::get_text_extent_ex_w" }
 internal = true
 
 # --- pixels ---------------------------------------------------------------------------------------
@@ -836,6 +968,65 @@ name = "NtGdiEnumFontChunk"
 group = "fonts"
 args = ["handle Dc", "ptr Face", "u32 CharSet", "u32 Flags", "u32 Index", "ptr Record"]
 impl = { syscall = "crate::win32k::fonts::enum_font_chunk" }
+internal = true
+
+[[export]]
+name = "GetGlyphIndicesW"
+group = "fonts"
+args = ["handle hdc", "ptr lpstr", "i32 c", "ptr pgi", "u32 fl"]
+impl = { native = "GetGlyphIndicesW" }
+ordinal = 321
+fails = "0xFFFFFFFF"
+note = "the face's cmap's glyphs (the built-in font's cells); GGI_MARK_NONEXISTING_GLYPHS's 0xFFFF"
+
+[[export]]
+name = "GetTextCharset"
+group = "fonts"
+args = ["handle hdc"]
+impl = { native = "GetTextCharset" }
+ordinal = 368
+fails = "1"
+note = "GetTextCharsetInfo's"
+
+[[export]]
+name = "GetTextCharsetInfo"
+group = "fonts"
+args = ["handle hdc", "ptr lpSig", "u32 dwFlags"]
+impl = { native = "GetTextCharsetInfo" }
+ordinal = 369
+fails = "1"
+note = "the realised font's character set and its OS/2 table's FONTSIGNATURE (zeros for a raster-style face); DEFAULT_CHARSET with the last error for a DC that is none"
+
+[[export]]
+name = "GetFontLanguageInfo"
+group = "fonts"
+args = ["handle hdc"]
+impl = { native = "GetFontLanguageInfo" }
+ordinal = 317
+fails = "0x8000"
+note = "GCP_DBCS, GCP_GLYPHSHAPE and GCP_REORDER from the font's code pages, GCP_REORDER under TA_RTLREADING (Wine's reading; no GCP_USEKERNING yet); GCP_ERROR, the last error untouched, for a DC that is none"
+
+[[export]]
+name = "TranslateCharsetInfo"
+group = "fonts"
+args = ["ptr lpSrc", "ptr lpCs", "u32 dwFlags"]
+impl = { native = "TranslateCharsetInfo" }
+ordinal = 527
+fails = "FALSE"
+note = "Windows 2000's table of character sets, code pages and font-signature bits; a font signature names one code-page bit exactly"
+
+[[export]]
+name = "NtGdiGetGlyphIndicesW"
+group = "fonts"
+args = ["handle Dc", "ptr String", "u32 Count", "ptr Glyphs", "u32 Flags", "ptr<u32> Converted"]
+impl = { syscall = "crate::win32k::layout::get_glyph_indices_w" }
+internal = true
+
+[[export]]
+name = "NtGdiGetTextCharsetInfo"
+group = "fonts"
+args = ["handle Dc", "ptr Signature", "u32 Flags", "ptr<u32> CharSet"]
+impl = { syscall = "crate::win32k::layout::get_text_charset_info" }
 internal = true
 
 # --- bitmaps --------------------------------------------------------------------------------------
@@ -2764,26 +2955,6 @@ name = "GetCharWidthW"
 ordinal = 288
 
 [[export]]
-name = "GetCharacterPlacementA"
-group = "text"
-args = [
-    "handle hdc", "ptr lpString", "i32 nCount", "i32 nMaxExtent", "ptr lpResults", "u32 dwFlags",
-]
-impl = { stub = "not yet implemented" }
-ordinal = 289
-fails = "0"
-
-[[export]]
-name = "GetCharacterPlacementW"
-group = "text"
-args = [
-    "handle hdc", "ptr lpString", "i32 nCount", "i32 nMaxExtent", "ptr lpResults", "u32 dwFlags",
-]
-impl = { stub = "not yet implemented" }
-ordinal = 290
-fails = "0"
-
-[[export]]
 name = "GetColorAdjustment"
 group = "attributes"
 args = ["handle hdc", "ptr lpca"]
@@ -2876,14 +3047,6 @@ name = "GetFontAssocStatus"
 ordinal = 315
 
 [[export]]
-name = "GetFontLanguageInfo"
-group = "fonts"
-args = ["handle hdc"]
-impl = { stub = "not yet implemented" }
-ordinal = 317
-fails = "0x80000000"
-
-[[export]]
 name = "GetFontResourceInfoW"
 ordinal = 318
 
@@ -2894,10 +3057,6 @@ ordinal = 319
 [[export]]
 name = "GetGlyphIndicesA"
 ordinal = 320
-
-[[export]]
-name = "GetGlyphIndicesW"
-ordinal = 321
 
 [[export]]
 name = "GetGlyphOutline"
@@ -3040,78 +3199,8 @@ ordinal = 365
 fails = "0"
 
 [[export]]
-name = "GetTextAlign"
-group = "text"
-args = ["handle hdc"]
-impl = { stub = "not yet implemented" }
-ordinal = 366
-fails = "0xFFFFFFFF"
-
-[[export]]
-name = "GetTextCharacterExtra"
-group = "text"
-args = ["handle hdc"]
-impl = { stub = "not yet implemented" }
-ordinal = 367
-fails = "0x80000000"
-
-[[export]]
-name = "GetTextCharset"
-group = "fonts"
-args = ["handle hdc"]
-impl = { stub = "not yet implemented" }
-ordinal = 368
-fails = "1"
-
-[[export]]
-name = "GetTextCharsetInfo"
-group = "fonts"
-args = ["handle hdc", "ptr lpSig", "u32 dwFlags"]
-impl = { stub = "not yet implemented" }
-ordinal = 369
-fails = "1"
-
-[[export]]
-name = "GetTextExtentExPointA"
-group = "text"
-args = [
-    "handle hdc", "ptr lpszStr", "i32 cchString", "i32 nMaxExtent", "ptr lpnFit", "ptr alpDx",
-    "ptr lpSize",
-]
-impl = { stub = "not yet implemented" }
-ordinal = 371
-fails = "FALSE"
-
-[[export]]
-name = "GetTextExtentExPointI"
-ordinal = 372
-
-[[export]]
-name = "GetTextExtentExPointW"
-group = "text"
-args = [
-    "handle hdc", "ptr lpszStr", "i32 cchString", "i32 nMaxExtent", "ptr lpnFit", "ptr alpDx",
-    "ptr lpSize",
-]
-impl = { stub = "not yet implemented" }
-ordinal = 373
-fails = "FALSE"
-
-[[export]]
 name = "GetTextExtentExPointWPri"
 ordinal = 374
-
-[[export]]
-name = "GetTextExtentPointA"
-group = "text"
-args = ["handle hdc", "ptr lpString", "i32 cbString", "ptr lpSize"]
-impl = { stub = "not yet implemented" }
-ordinal = 377
-fails = "FALSE"
-
-[[export]]
-name = "GetTextExtentPointI"
-ordinal = 378
 
 [[export]]
 name = "GetTextFaceAliasW"
@@ -3280,22 +3369,6 @@ group = "drawing"
 args = ["handle hdc", "ptr lppt", "ptr lpdwPolyPoints", "u32 cCount"]
 impl = { stub = "not yet implemented" }
 ordinal = 427
-fails = "FALSE"
-
-[[export]]
-name = "PolyTextOutA"
-group = "text"
-args = ["handle hdc", "ptr pptxt", "i32 cStrings"]
-impl = { stub = "not yet implemented" }
-ordinal = 428
-fails = "FALSE"
-
-[[export]]
-name = "PolyTextOutW"
-group = "text"
-args = ["handle hdc", "ptr pptxt", "i32 cStrings"]
-impl = { stub = "not yet implemented" }
-ordinal = 429
 fails = "FALSE"
 
 [[export]]
@@ -3559,30 +3632,6 @@ ordinal = 504
 fails = "0"
 
 [[export]]
-name = "SetTextAlign"
-group = "text"
-args = ["handle hdc", "u32 fMode"]
-impl = { stub = "not yet implemented" }
-ordinal = 505
-fails = "0xFFFFFFFF"
-
-[[export]]
-name = "SetTextCharacterExtra"
-group = "text"
-args = ["handle hdc", "i32 nCharExtra"]
-impl = { stub = "not yet implemented" }
-ordinal = 506
-fails = "0x80000000"
-
-[[export]]
-name = "SetTextJustification"
-group = "text"
-args = ["handle hdc", "i32 nBreakExtra", "i32 nBreakCount"]
-impl = { stub = "not yet implemented" }
-ordinal = 508
-fails = "FALSE"
-
-[[export]]
 name = "SetVirtualResolution"
 ordinal = 511
 
@@ -3621,14 +3670,6 @@ ordinal = 523
 [[export]]
 name = "SwapBuffers"
 ordinal = 524
-
-[[export]]
-name = "TranslateCharsetInfo"
-group = "fonts"
-args = ["ptr lpSrc", "ptr lpCs", "u32 dwFlags"]
-impl = { stub = "not yet implemented" }
-ordinal = 527
-fails = "FALSE"
 
 [[export]]
 name = "UnloadNetworkFonts"

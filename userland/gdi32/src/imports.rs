@@ -16,14 +16,14 @@
 
 use core::ffi::CStr;
 
-use rtl::gdi::{Abc, FontEnumRecord, LogFontW, Point, Size, TextMetricW};
+use rtl::gdi::{Abc, FontEnumRecord, FontSignature, LogFontW, Point, Size, TextMetricW};
 use rtl::heap::HEAP_ZERO_MEMORY;
 use rtl::status::{checked, NtStatus};
 
 #[cfg(all(target_arch = "x86", not(test)))]
 mod raw {
     use rtl::dib::BitmapDesc;
-    use rtl::gdi::{Abc, FontEnumRecord, LogFontW, Point, Rect, Size, TextMetricW};
+    use rtl::gdi::{Abc, FontEnumRecord, FontSignature, LogFontW, Point, Rect, Size, TextMetricW};
 
     #[link(
         name = "kernel32",
@@ -149,6 +149,33 @@ mod raw {
             string: *const u16,
             count: u32,
             size: *mut Size,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiGetTextExtentExW"]
+        pub fn NtGdiGetTextExtentExW(
+            dc: usize,
+            string: *const u16,
+            count: u32,
+            max: u32,
+            fit: *mut u32,
+            dx: *mut i32,
+            size: *mut Size,
+            flags: u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiGetGlyphIndicesW"]
+        pub fn NtGdiGetGlyphIndicesW(
+            dc: usize,
+            string: *const u16,
+            count: u32,
+            glyphs: *mut u16,
+            flags: u32,
+            converted: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiGetTextCharsetInfo"]
+        pub fn NtGdiGetTextCharsetInfo(
+            dc: usize,
+            signature: *mut FontSignature,
+            flags: u32,
+            char_set: *mut u32,
         ) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtGdiSetPixel"]
         pub fn NtGdiSetPixel(dc: usize, x: i32, y: i32, color: u32, set: *mut u32) -> u32;
@@ -619,6 +646,74 @@ pub fn text_extent(dc: usize, string: Caller, count: u32, size: Caller) -> Resul
     checked(unsafe {
         raw::NtGdiGetTextExtent(dc, string.0 as *const u16, count, size.0 as *mut Size)
     })
+}
+
+/// NtGdiGetTextExtentExW: the SIZE of `count` UTF-16 units at `string` in `dc`'s font (glyph
+/// indices with GTEEFL_INDICES in `flags`) into the structure at `size`, each one's partial extent
+/// into the array at `dx` and how many are within `max` into the u32 at `fit` (either null for
+/// none).
+#[allow(clippy::too_many_arguments)]
+pub fn text_extent_ex(
+    dc: usize,
+    string: Caller,
+    count: u32,
+    max: u32,
+    fit: Caller,
+    dx: Caller,
+    size: Caller,
+    flags: u32,
+) -> Result<(), NtStatus> {
+    // SAFETY: the kernel reads the string and writes the fit, the extents and the SIZE through
+    // its fault-tolerant copies.
+    checked(unsafe {
+        raw::NtGdiGetTextExtentExW(
+            dc,
+            string.0 as *const u16,
+            count,
+            max,
+            fit.0 as *mut u32,
+            dx.0 as *mut i32,
+            size.0 as *mut Size,
+            flags,
+        )
+    })
+}
+
+/// NtGdiGetGlyphIndicesW: the glyph index of each of `count` UTF-16 units at `string` in `dc`'s
+/// font into the array at `glyphs` (GetGlyphIndices' `flags`); how many were converted.
+pub fn glyph_indices(
+    dc: usize,
+    string: Caller,
+    count: u32,
+    glyphs: Caller,
+    flags: u32,
+) -> Result<u32, NtStatus> {
+    let mut converted = 0u32;
+    // SAFETY: the kernel reads the string and writes the glyphs through its fault-tolerant
+    // copies; the count into the local.
+    checked(unsafe {
+        raw::NtGdiGetGlyphIndicesW(
+            dc,
+            string.0 as *const u16,
+            count,
+            glyphs.0 as *mut u16,
+            flags,
+            &mut converted,
+        )
+    })?;
+    Ok(converted)
+}
+
+/// NtGdiGetTextCharsetInfo: `dc`'s font's character set, its FONTSIGNATURE into the structure at
+/// `signature` (null for none).
+pub fn text_charset_info(dc: usize, signature: Caller, flags: u32) -> Result<u32, NtStatus> {
+    let mut char_set = 0u32;
+    // SAFETY: the kernel writes the signature through its fault-tolerant copies, the character
+    // set into the local.
+    checked(unsafe {
+        raw::NtGdiGetTextCharsetInfo(dc, signature.0 as *mut FontSignature, flags, &mut char_set)
+    })?;
+    Ok(char_set)
 }
 
 /// NtGdiSetPixel: the pixel at (`x`, `y`) of `dc` set to `color`, the color set answered
@@ -1469,6 +1564,11 @@ pub mod host {
         /// How many states are saved, and how many isotropic adjustments were asked for.
         pub saves: u32,
         pub fixes: u32,
+        /// The text layout's attributes, as set.
+        pub text_align: u32,
+        pub char_extra: u32,
+        pub break_extra: u32,
+        pub break_count: u32,
     }
 
     impl HostDc {
@@ -1489,6 +1589,10 @@ pub mod host {
                 viewport_ext: (1, 1),
                 saves: 0,
                 fixes: 0,
+                text_align: 0,
+                char_extra: 0,
+                break_extra: 0,
+                break_count: 0,
             }
         }
     }
@@ -2060,6 +2164,10 @@ pub mod host {
             DC_BK_COLOR => answer(value, state.bk_color),
             DC_BK_MODE => answer(value, state.bk_mode),
             DC_MAP_MODE => answer(value, state.map_mode),
+            DC_TEXT_ALIGN => answer(value, state.text_align),
+            DC_CHAR_EXTRA => answer(value, state.char_extra),
+            DC_BREAK_EXTRA => answer(value, state.break_extra),
+            DC_BREAK_COUNT => answer(value, state.break_count),
             _ => STATUS_INVALID_PARAMETER,
         })
     }
@@ -2094,6 +2202,10 @@ pub mod host {
                 DC_BK_COLOR => &mut state.bk_color,
                 DC_BK_MODE if matches!(value, TRANSPARENT | OPAQUE) => &mut state.bk_mode,
                 DC_MAP_MODE if (MM_TEXT..=MM_ANISOTROPIC).contains(&value) => &mut state.map_mode,
+                DC_TEXT_ALIGN => &mut state.text_align,
+                DC_CHAR_EXTRA => &mut state.char_extra,
+                DC_BREAK_EXTRA => &mut state.break_extra,
+                DC_BREAK_COUNT => &mut state.break_count,
                 _ => return STATUS_INVALID_PARAMETER,
             };
             answer(previous, core::mem::replace(field, value))
@@ -2171,6 +2283,98 @@ pub mod host {
                 });
             }
             0
+        })
+    }
+
+    /// The stand-in's font: every character 8 pixels wide, but 'i', 'l' and the space 4, 16 high;
+    /// a character's glyph index its unit less 0x1D ('H' 0x2B), the missing glyph's 0.
+    pub fn host_advance(unit: u16) -> i32 {
+        match unit {
+            0x20 | 0x69 | 0x6C => 4,
+            _ => 8,
+        }
+    }
+
+    pub unsafe extern "system" fn NtGdiGetTextExtentExW(
+        dc: usize,
+        string: *const u16,
+        count: u32,
+        max: u32,
+        fit: *mut u32,
+        dx: *mut i32,
+        size: *mut Size,
+        flags: u32,
+    ) -> u32 {
+        with_dc(dc, |state| {
+            // SAFETY: the tests' own string (units, or glyph indices with GTEEFL_INDICES).
+            let units = unsafe { items(string, count as usize) }.to_vec();
+            let mut width = 0i32;
+            let mut fitted = 0u32;
+            for (index, &unit) in units.iter().enumerate() {
+                let unit = if flags & GTEEFL_INDICES != 0 {
+                    unit + 0x1D
+                } else {
+                    unit
+                };
+                width += host_advance(unit) + state.char_extra as i32;
+                if i64::from(width) <= i64::from(max) && fitted == index as u32 {
+                    fitted += 1;
+                }
+                if !dx.is_null() {
+                    // SAFETY: the tests' own array, `count` long.
+                    unsafe { dx.add(index).write(width) };
+                }
+            }
+            // SAFETY: the tests' own fit and SIZE.
+            unsafe {
+                if !fit.is_null() {
+                    fit.write(fitted);
+                }
+                size.write(Size {
+                    cx: width,
+                    cy: if count == 0 { 0 } else { 16 },
+                });
+            }
+            0
+        })
+    }
+
+    pub unsafe extern "system" fn NtGdiGetGlyphIndicesW(
+        dc: usize,
+        string: *const u16,
+        count: u32,
+        glyphs: *mut u16,
+        _flags: u32,
+        converted: *mut u32,
+    ) -> u32 {
+        with_dc(dc, |_| {
+            // SAFETY: the tests' own string and array, `count` long.
+            unsafe {
+                for (index, &unit) in items(string, count as usize).iter().enumerate() {
+                    glyphs.add(index).write(unit.saturating_sub(0x1D));
+                }
+            }
+            answer(converted, count)
+        })
+    }
+
+    pub unsafe extern "system" fn NtGdiGetTextCharsetInfo(
+        dc: usize,
+        signature: *mut FontSignature,
+        _flags: u32,
+        char_set: *mut u32,
+    ) -> u32 {
+        with_dc(dc, |_| {
+            if !signature.is_null() {
+                // SAFETY: the tests' own structure.
+                unsafe {
+                    signature.write(FontSignature {
+                        usb: [0; 4],
+                        csb: [0x0000_0060, 0],
+                    })
+                };
+            }
+            answer(char_set, u32::from(ANSI_CHARSET))
         })
     }
 

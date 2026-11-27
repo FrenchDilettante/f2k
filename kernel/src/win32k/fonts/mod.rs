@@ -1288,6 +1288,49 @@ mod selection {
     pub fn text_width(key: Key, units: &[u16]) -> i32 {
         with_table(|table| extent(table, key, units)).unwrap_or(0)
     }
+
+    /// The advance of each of `units` in the realised font `key`, into `out` (as long): the
+    /// characters' glyphs' advances, or the glyphs' own when `indices` (the units glyph indices);
+    /// zeros when the face is gone.
+    pub fn advances(key: Key, units: &[u16], indices: bool, out: &mut [i32]) {
+        out.fill(0);
+        with_table(|table| {
+            let mut glyphs = [0u16; CHUNK];
+            for (units, out) in units.chunks(CHUNK).zip(out.chunks_mut(CHUNK)) {
+                let glyphs = &mut glyphs[..units.len()];
+                if indices {
+                    glyphs.copy_from_slice(units);
+                } else if table.glyph_indices(key.face, units, glyphs).is_none() {
+                    return;
+                }
+                for (&glyph, out) in glyphs.iter().zip(out.iter_mut()) {
+                    *out = table.advance(key, glyph);
+                }
+            }
+        });
+    }
+
+    /// The glyph index of each of `units` in the realised font `key`'s face, into `out` (0, the
+    /// missing glyph, for a character the face lacks); false when the face is gone.
+    pub fn glyph_indices(key: Key, units: &[u16], out: &mut [u16]) -> bool {
+        with_table(|table| table.glyph_indices(key.face, units, out))
+            .flatten()
+            .is_some()
+    }
+
+    /// The realised font `key`'s FONTSIGNATURE: its face's OS/2 ranges; zeros for a raster-style
+    /// face (Windows 2000's raster fonts have none) or a face that is gone.
+    pub fn signature(key: Key) -> FontSignature {
+        if key.raster {
+            return FontSignature::default();
+        }
+        with_table(|table| {
+            let font = table.face(key.face)?.font()?;
+            metrics::signature(&font).ok()
+        })
+        .flatten()
+        .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]

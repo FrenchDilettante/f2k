@@ -294,6 +294,37 @@ pub const DC_WINDOW_EXT_Y: u32 = 15;
 pub const DC_VIEWPORT_EXT_X: u32 = 16;
 pub const DC_VIEWPORT_EXT_Y: u32 = 17;
 
+/// The text layout's attributes (Windows 2000's gdi32 writes them into the DC attributes in user
+/// mode, here win32k's): the text alignment (SetTextAlign's value, every bit kept as given), the
+/// character extra (SetTextCharacterExtra's, signed), and the justification's extra and its break
+/// count (SetTextJustification's, signed).
+pub const DC_TEXT_ALIGN: u32 = 18;
+pub const DC_CHAR_EXTRA: u32 = 19;
+pub const DC_BREAK_EXTRA: u32 = 20;
+pub const DC_BREAK_COUNT: u32 = 21;
+
+/// The text alignment's flags (SetTextAlign): the current position used and moved (TA_UPDATECP);
+/// the reference point's horizontal place, the text's left, right or center (TA_LEFT, TA_RIGHT,
+/// TA_CENTER), and its vertical place, the cell's top, bottom or the baseline (TA_TOP, TA_BOTTOM,
+/// TA_BASELINE); right-to-left reading order (TA_RTLREADING, kept, not drawn).
+pub const TA_NOUPDATECP: u32 = 0;
+pub const TA_UPDATECP: u32 = 1;
+pub const TA_LEFT: u32 = 0;
+pub const TA_RIGHT: u32 = 2;
+pub const TA_CENTER: u32 = 6;
+pub const TA_TOP: u32 = 0;
+pub const TA_BOTTOM: u32 = 8;
+pub const TA_BASELINE: u32 = 24;
+pub const TA_RTLREADING: u32 = 256;
+
+/// NtGdiGetTextExtentExW's flag: the string's units are glyph indices (GetTextExtentPointI's and
+/// GetTextExtentExPointI's), Windows 2000's GTEEFL_INDICES.
+pub const GTEEFL_INDICES: u32 = 1;
+
+/// GetGlyphIndices' flag: a character the font has no glyph for answers 0xFFFF rather than the
+/// missing glyph's index.
+pub const GGI_MARK_NONEXISTING_GLYPHS: u32 = 1;
+
 /// NtGdiGetDCPoint's points: the current position (MoveToEx's, LineTo's, in logical coordinates;
 /// F2K's own index), and Windows 2000's GdiGetViewPortExt, GdiGetWindowExt, GdiGetViewPortOrg and
 /// GdiGetWindowOrg (a SIZE's extents in a POINT's room).
