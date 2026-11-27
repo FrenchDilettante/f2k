@@ -66,6 +66,7 @@ mod params;
 mod process;
 mod registry;
 mod resource;
+mod sec;
 mod service;
 mod status;
 mod strings;
