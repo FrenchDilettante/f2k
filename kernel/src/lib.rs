@@ -129,6 +129,13 @@ mod sec_sid;
 // The access control lists: the ACL and ACE layouts, and the editors over them in a byte buffer
 mod sec_acl;
 
+// Security descriptors: the SECURITY_DESCRIPTOR header in absolute and self-relative form,
+// its accessors, packing/unpacking, and capture from another address space through a seam.
+// Nothing calls it yet (the object-manager wiring lands later), so the unused-item lint is
+// allowed for now.
+#[allow(dead_code)]
+mod sec_sd;
+
 // Wall-clock time and the performance counter: the boot's real-time clock reading, the FILETIME
 // the system services and the shared data page report
 mod time;
