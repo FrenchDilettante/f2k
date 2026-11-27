@@ -137,3 +137,35 @@ rtlself = [
     "kernel32.GetLastError",
     "kernel32.SetLastError",
 ]
+
+[masks]
+# The capture lines whose value is specific to the machine that took it, not the defined answer:
+# a boolean-returning export's ret= is the whole return register, upper bits included, so the
+# captured number is not the BOOLEAN the call returned; a read past the SID's sub-authorities
+# prints heap contents; a call that succeeded can still leave a stale last error behind; and the
+# buffer RtlDefaultNpAcl was handed holds the pointer the call wrote. F2K prints the defined
+# values, so on these lines only the value's shape is compared, the rest of the line exactly.
+rtlsd = [
+    "RtlValidSecurityDescriptor(a bad revision): ret=* err=-",
+    "RtlGetSecurityDescriptorRMControl: ret=* err=-; byte 0x00",
+    "RtlGetSecurityDescriptorRMControl again: ret=* err=-; byte 0x00",
+]
+rtlsid = [
+    "RtlValidSid: ret=* err=-",
+    "RtlEqualSid(it, Everyone): ret=* err=-",
+    "RtlEqualPrefixSid(it, S-1-5-32): ret=* err=-",
+    "RtlEqualPrefixSid(S-1-5-32, it): ret=* err=-",
+    "RtlSubAuthoritySid(5, past the end): *",
+    "RtlValidSid(the hand-initialized): ret=* err=-",
+]
+rtlacl = [
+    "RtlValidAcl(a bad revision): ret=* err=-",
+    "RtlFirstFreeAce: ret=* err=-; the ACE set, 8 bytes into the ACL",
+    "RtlValidAcl after the deletes: ret=* err=-",
+]
+rtlobj = [
+    "RtlDeleteSecurityObject(the SD RtlNewSecurityObject allocated): status=0x00000000 err=*",
+    "RtlConvertToAutoInheritSecurityObject(no parent, the hand-built SD): status=0x00000000 err=*; the new SD set",
+    "RtlCreateAndSetSD(no ACEs, owner admins, group Everyone): status=0x00000000 err=*; the new SD set",
+    "RtlDefaultNpAcl(a 1 KiB buffer): ret=0 err=-; revision *, size 19, AceCount 0",
+]
