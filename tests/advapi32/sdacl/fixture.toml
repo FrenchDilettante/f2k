@@ -6,16 +6,6 @@ description = "sdacl - security descriptors, ACLs and SIDs as advapi32 builds an
 kind = "sectioned"
 gate = true
 
-[pending]
-acl = "[InitializeAcl(NULL, ...): ret=0 err=87], expected [InitializeAcl(NULL, ...): faulted 0xC0000005]"
-initsd = "[InitializeSecurityDescriptor(NULL, REVISION): ret=0 err=87], expected [InitializeSecurityDescriptor(NULL, REVISION): faulted 0xC0000005]"
-privobj = "missing, expected [CreatePrivateObjectSecurity(no parent, the creator SD): ret=0 err=1308"
-saclaudit = "[SetEntriesInAuditListA(1 entry, SET_AUDIT_SUCCESS, no old list): ret=0 err=-"
-sdcorner = "[ConvertAccessToSecurityDescriptorA(empty list, owner/group names): ret=0 err=-"
-selfrel = "missing, expected [IsValidSecurityDescriptor(the absolute SD): ret=0 err=1338]"
-sidmore = "[GetWindowsAccountDomainSid not found], expected [EqualDomainSid(S-1-5-32-544, S-1-5-32): ret=1 err=0 equal=1]"
-trustee = "extra [BuildImpersonateTrusteeA: operation=1 form=1 err=- name=Everyone]"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only what a section calls itself, through its own helpers too, never what the C runtime's
