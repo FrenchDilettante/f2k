@@ -5,9 +5,13 @@
 //! applies no parent inheritance to these in-memory objects, so the parent, token and mapping
 //! arguments are not consulted.
 
-use super::luid::copy_luid;
+use super::luid::{copy_luid, rtl_equal_luid};
 use super::*;
 use crate::sec::convert::rtl_make_self_relative_sd;
+
+// The token information class whose answer carries the modified id.
+#[cfg(not(test))]
+const TOKEN_STATISTICS: u32 = 10;
 
 // --- The in-memory security-object lifecycle
 // ------------------------------------------------------
@@ -128,24 +132,73 @@ pub unsafe extern "system" fn rtl_create_user_security_object(
     STATUS_SUCCESS
 }
 
-/// RtlNewInstanceSecurityObject: a heap self-relative copy of the creator's descriptor (the
-/// parent's when there is no creator) out at `new_descriptor`; the new token-modified id is the
-/// old one — F2K tracks no per-instance modification id.
+/// The token's current modified id (its TokenStatistics' last LUID), or the status the
+/// token query failed with.
+#[cfg(not(test))]
+fn token_modified_id(token: u32) -> Result<[u8; 8], u32> {
+    use rtl::sys::nr;
+    // TOKEN_STATISTICS is 56 bytes; its ModifiedId is the last 8.
+    let stats = [0u8; 56];
+    let mut length = 0u32;
+    let status = service(
+        nr::NtQueryInformationToken,
+        &[
+            token,
+            TOKEN_STATISTICS,
+            address(&stats),
+            stats.len() as u32,
+            address_mut(&mut length),
+        ],
+    );
+    if status != STATUS_SUCCESS {
+        return Err(status);
+    }
+    Ok(stats[48..56].try_into().unwrap())
+}
+
+/// The host tests' stand-in: the modified id the test installed.
+#[cfg(test)]
+fn token_modified_id(_token: u32) -> Result<[u8; 8], u32> {
+    Ok(tests::token::modified_id())
+}
+
+/// RtlNewInstanceSecurityObject: the token's current modified id out at
+/// `new_client_token_modified_id` (written unconditionally — a null slot faults on the
+/// caller); when it equals `old_client_token_modified_id` and neither descriptor changed,
+/// the old descriptor still fits and a null descriptor is passed back, otherwise a new
+/// self-relative descriptor is built as RtlNewSecurityObject would.
 #[unsafe(export_name = "f2k_export_RtlNewInstanceSecurityObject")]
 pub unsafe extern "system" fn rtl_new_instance_security_object(
-    _parent_descriptor_changed: u32,
-    _creator_descriptor_changed: u32,
+    parent_descriptor_changed: u32,
+    creator_descriptor_changed: u32,
     old_client_token_modified_id: *const u8,
     new_client_token_modified_id: *mut u8,
     parent_descriptor: *const u8,
     creator_descriptor: *const u8,
     new_descriptor: *mut *mut u8,
     _is_directory_object: u32,
-    _token: u32,
+    token: u32,
     _generic_mapping: *const u8,
 ) -> u32 {
-    if !new_client_token_modified_id.is_null() && !old_client_token_modified_id.is_null() {
-        copy_luid(new_client_token_modified_id, old_client_token_modified_id);
+    let modified = match token_modified_id(token) {
+        Ok(modified) => modified,
+        Err(status) => return status,
+    };
+    // SAFETY: the caller's out LUID; a null slot raises the access violation, and the
+    // old id is read through its pointer the same way.
+    unsafe {
+        copy_luid(new_client_token_modified_id, modified.as_ptr());
+        if rtl_equal_luid(new_client_token_modified_id, old_client_token_modified_id) == 1
+            && parent_descriptor_changed == 0
+            && creator_descriptor_changed == 0
+        {
+            // Nothing changed: the old descriptor is valid for this instance too.
+            if new_descriptor.is_null() {
+                return STATUS_INVALID_PARAMETER;
+            }
+            new_descriptor.write_unaligned(core::ptr::null_mut());
+            return STATUS_SUCCESS;
+        }
     }
     let source = if creator_descriptor.is_null() {
         parent_descriptor
@@ -156,7 +209,8 @@ pub unsafe extern "system" fn rtl_new_instance_security_object(
 }
 
 /// RtlConvertToAutoInheritSecurityObject: a heap self-relative copy of `current` out at
-/// `new_descriptor`, its ACLs marked auto-inherited (and no longer protected).
+/// `new_descriptor`; each ACL keeps its present and protected bits and gains the
+/// auto-inherited one (a missing DACL is forced protected), and no request bits are set.
 #[unsafe(export_name = "f2k_export_RtlConvertToAutoInheritSecurityObject")]
 pub unsafe extern "system" fn rtl_convert_to_auto_inherit_security_object(
     _parent_descriptor: *const u8,
@@ -169,22 +223,44 @@ pub unsafe extern "system" fn rtl_convert_to_auto_inherit_security_object(
     if current_security_descriptor.is_null() || new_security_descriptor.is_null() {
         return STATUS_INVALID_PARAMETER;
     }
-    let Some(block) = heap_relative_copy(current_security_descriptor) else {
-        return STATUS_NO_MEMORY;
+    // The current descriptor must be valid and carry an owner; the out slot is answered
+    // even on failure.
+    // SAFETY: the caller's descriptor and out slot.
+    let status = unsafe {
+        if rtl_valid_security_descriptor(current_security_descriptor) != 1
+            || sd_fields(current_security_descriptor)[0] == 0
+        {
+            new_security_descriptor.write_unaligned(core::ptr::null_mut());
+            STATUS_INVALID_SECURITY_DESCR
+        } else {
+            match heap_relative_copy(current_security_descriptor) {
+                None => {
+                    new_security_descriptor.write_unaligned(core::ptr::null_mut());
+                    STATUS_NO_MEMORY
+                }
+                Some(block) => {
+                    let at = block as *mut u8;
+                    let control = sd_control(at);
+                    let dacl_missing = sd_fields(at)[3] == 0;
+                    let mut converted = SE_SELF_RELATIVE
+                        | (control
+                            & (SE_SACL_PROTECTED
+                                | SE_SACL_PRESENT
+                                | SE_DACL_PROTECTED
+                                | SE_DACL_PRESENT))
+                        | SE_SACL_AUTO_INHERITED
+                        | SE_DACL_AUTO_INHERITED;
+                    if dacl_missing {
+                        converted |= SE_DACL_PROTECTED;
+                    }
+                    write(at.wrapping_add(2), converted);
+                    new_security_descriptor.write_unaligned(block as *mut u8);
+                    STATUS_SUCCESS
+                }
+            }
+        }
     };
-    let at = block as *mut u8;
-    let control = sd_control(at)
-        | SE_DACL_AUTO_INHERIT_REQ
-        | SE_SACL_AUTO_INHERIT_REQ
-        | SE_DACL_AUTO_INHERITED
-        | SE_SACL_AUTO_INHERITED;
-    write(
-        at.wrapping_add(2),
-        control & !(SE_DACL_PROTECTED | SE_SACL_PROTECTED),
-    );
-    // SAFETY: the caller's out slot.
-    unsafe { new_security_descriptor.write_unaligned(block as *mut u8) };
-    STATUS_SUCCESS
+    status
 }
 
 /// RtlDeleteSecurityObject: the heap descriptor at `*object_descriptor` given back, the slot
@@ -209,6 +285,21 @@ mod tests {
     use super::super::fixtures::{absolute_sd, dacl_with};
     use super::*;
     use crate::sec::test_support::*;
+
+    /// The host stand-in for the token's modified id: the value the test installs.
+    pub(crate) mod token {
+        use std::sync::Mutex;
+
+        static MODIFIED_ID: Mutex<[u8; 8]> = Mutex::new([0; 8]);
+
+        pub(crate) fn set_modified_id(id: [u8; 8]) {
+            *MODIFIED_ID.lock().unwrap() = id;
+        }
+
+        pub(crate) fn modified_id() -> [u8; 8] {
+            *MODIFIED_ID.lock().unwrap()
+        }
+    }
 
     #[test]
     fn a_new_descriptor_is_a_self_relative_copy_and_the_delete_frees_it() {
@@ -409,12 +500,15 @@ mod tests {
     }
 
     #[test]
-    fn a_new_instance_copies_the_creator_and_carries_the_luid() {
+    fn a_new_instance_carries_the_token_modified_id_and_reuses_or_rebuilds() {
         let owner = admins();
         let creator = absolute_sd(&owner, &world(), None);
-        let old_id = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        let modified = [9u8, 8, 7, 6, 5, 4, 3, 2];
+        token::set_modified_id(modified);
+        let old_id = modified;
         let mut new_id = [0u8; 8];
         let mut out = core::ptr::null_mut();
+        // The ids match but a descriptor changed: the long route builds a new SD.
         assert_eq!(
             unsafe {
                 rtl_new_instance_security_object(
@@ -432,11 +526,59 @@ mod tests {
             },
             STATUS_SUCCESS
         );
-        assert_eq!(new_id, old_id);
+        assert_eq!(new_id, modified);
+        assert!(!out.is_null());
         // SAFETY: the block is the call's descriptor.
         let header: SecurityDescriptorRelative = read(out as *const u8);
         assert!(header.control & SE_SELF_RELATIVE != 0);
         assert_ne!(header.owner, 0);
+        assert_eq!(
+            unsafe { rtl_delete_security_object(&mut out) },
+            STATUS_SUCCESS
+        );
+        // The ids match and nothing changed: the old descriptor fits, a null one is out.
+        let mut out = 0x1usize as *mut u8;
+        assert_eq!(
+            unsafe {
+                rtl_new_instance_security_object(
+                    0,
+                    0,
+                    old_id.as_ptr(),
+                    new_id.as_mut_ptr(),
+                    core::ptr::null(),
+                    creator.as_ptr(),
+                    &mut out,
+                    0,
+                    0,
+                    core::ptr::null(),
+                )
+            },
+            STATUS_SUCCESS
+        );
+        assert_eq!(new_id, modified);
+        assert!(out.is_null());
+        // A different old id: the long route even with no changed flags.
+        let stale = [1u8, 1, 1, 1, 1, 1, 1, 1];
+        let mut out = core::ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                rtl_new_instance_security_object(
+                    0,
+                    0,
+                    stale.as_ptr(),
+                    new_id.as_mut_ptr(),
+                    core::ptr::null(),
+                    creator.as_ptr(),
+                    &mut out,
+                    0,
+                    0,
+                    core::ptr::null(),
+                )
+            },
+            STATUS_SUCCESS
+        );
+        assert_eq!(new_id, modified);
+        assert!(!out.is_null());
         assert_eq!(
             unsafe { rtl_delete_security_object(&mut out) },
             STATUS_SUCCESS
@@ -448,8 +590,8 @@ mod tests {
                 rtl_new_instance_security_object(
                     1,
                     0,
-                    core::ptr::null(),
-                    core::ptr::null_mut(),
+                    stale.as_ptr(),
+                    new_id.as_mut_ptr(),
                     creator.as_ptr(),
                     core::ptr::null(),
                     &mut out,
@@ -488,23 +630,55 @@ mod tests {
         );
         // SAFETY: the block is the call's copy.
         let control = sd_control(out as *const u8);
-        assert!(control & SE_SELF_RELATIVE != 0);
-        assert!(control & SE_DACL_PRESENT != 0);
-        for bit in [
-            SE_DACL_AUTO_INHERIT_REQ,
-            SE_SACL_AUTO_INHERIT_REQ,
-            SE_DACL_AUTO_INHERITED,
-            SE_SACL_AUTO_INHERITED,
-        ] {
-            assert!(control & bit != 0, "bit {bit:#x} set");
-        }
-        assert!(control & (SE_DACL_PROTECTED | SE_SACL_PROTECTED) == 0);
+        // Self-relative, the DACL still present, both ACLs auto-inherited, no request
+        // bits, no protected bits (the input had none and its DACL is present).
+        assert_eq!(
+            control,
+            SE_SELF_RELATIVE | SE_DACL_PRESENT | SE_SACL_AUTO_INHERITED | SE_DACL_AUTO_INHERITED
+        );
         // The parts carried over whole.
         // SAFETY: the block holds the copy.
         let header: SecurityDescriptorRelative = read(out as *const u8);
         let all = unsafe { bytes(out as *const u8, 20 + 64 + 16 + 12) };
         assert_eq!(&all[header.dacl as usize..][..64], &dacl[..]);
-        // A null current descriptor is refused.
+        assert_eq!(
+            unsafe { rtl_delete_security_object(&mut out) },
+            STATUS_SUCCESS
+        );
+        // A missing DACL is forced protected; the protected bits of the input are kept.
+        let mut protected = absolute_sd(&owner, &world(), None);
+        write(
+            protected.as_mut_ptr().wrapping_add(2),
+            SE_DACL_PROTECTED | SE_DACL_PRESENT,
+        );
+        let mut out = core::ptr::null_mut();
+        assert_eq!(
+            unsafe {
+                rtl_convert_to_auto_inherit_security_object(
+                    core::ptr::null(),
+                    protected.as_ptr(),
+                    &mut out,
+                    core::ptr::null(),
+                    0,
+                    core::ptr::null(),
+                )
+            },
+            STATUS_SUCCESS
+        );
+        assert_eq!(
+            sd_control(out as *const u8),
+            SE_SELF_RELATIVE
+                | SE_DACL_PROTECTED
+                | SE_DACL_PRESENT
+                | SE_SACL_AUTO_INHERITED
+                | SE_DACL_AUTO_INHERITED
+        );
+        assert_eq!(
+            unsafe { rtl_delete_security_object(&mut out) },
+            STATUS_SUCCESS
+        );
+        // A null current descriptor is refused; an invalid one answers a null
+        // descriptor and STATUS_INVALID_SECURITY_DESCR.
         assert_eq!(
             unsafe {
                 rtl_convert_to_auto_inherit_security_object(
@@ -518,9 +692,22 @@ mod tests {
             },
             STATUS_INVALID_PARAMETER
         );
+        let mut bad = vec![0u8; 20];
+        bad[0] = 7; // a bad revision
+        let mut out = 0x1usize as *mut u8;
         assert_eq!(
-            unsafe { rtl_delete_security_object(&mut out) },
-            STATUS_SUCCESS
+            unsafe {
+                rtl_convert_to_auto_inherit_security_object(
+                    core::ptr::null(),
+                    bad.as_ptr(),
+                    &mut out,
+                    core::ptr::null(),
+                    0,
+                    core::ptr::null(),
+                )
+            },
+            STATUS_INVALID_SECURITY_DESCR
         );
+        assert!(out.is_null());
     }
 }
