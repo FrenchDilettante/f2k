@@ -5,7 +5,10 @@
 //!
 //! The action is checked first: one of ShutdownNoReboot (0), ShutdownReboot (1) and
 //! ShutdownPowerOff (2), anything else STATUS_INVALID_PARAMETER, before the privilege check, as the
-//! user32/exitwin capture shows. Then the steps, in order ([`run`]):
+//! user32/exitwin capture shows. The privilege check comes next: the calling process's token must
+//! hold SeShutdownPrivilege enabled ([`shutdown_privilege`]), STATUS_PRIVILEGE_NOT_HELD otherwise —
+//! the same capture's valid actions answer so while its guard finds the privilege held and
+//! disabled. Then the steps, in order ([`run`]):
 //!
 //! 1. the boot volume closed to changes: a later change is refused with STATUS_TOO_LATE, and a
 //!    writer under way finishes first, holding the volume's lock (`fs::fat32::volume`);
@@ -41,13 +44,46 @@ pub const SAFE_TO_TURN_OFF: &str = "It is now safe to turn off your computer.";
 /// and the test harness takes the exit that follows this line for the boot's end.
 pub const RESTARTING: &str = "F2K: shutdown: restarting";
 
-/// NtShutdownSystem: the action checked, then the shutdown, which does not return (see the
-/// module's documentation).
-pub fn shutdown_system(_call: &mut NtCall, action: u32) -> NtResult {
+/// The shutdown's privilege gate: the token must hold SeShutdownPrivilege enabled — the
+/// single-privilege check over the token's privileges (held and enabled) — refused with
+/// STATUS_PRIVILEGE_NOT_HELD otherwise, as the user32/exitwin capture's valid actions answer
+/// while its guard finds the privilege held and disabled.
+fn shutdown_privilege(token: &crate::se::TokenBody) -> Result<(), NtStatus> {
+    if token.enabled(crate::se::SE_SHUTDOWN_PRIVILEGE) {
+        Ok(())
+    } else {
+        Err(STATUS_PRIVILEGE_NOT_HELD)
+    }
+}
+
+/// The gate on the target: the calling process's token (made at its first open), checked. The
+/// host build has no calling process to take a token from, so there the service goes on to
+/// the stand-in; the host tests pin the gate itself ([`shutdown_privilege`]).
+#[cfg(target_arch = "x86")]
+fn gate(call: &mut NtCall) -> Result<(), NtStatus> {
+    let process = call.process().object();
+    let token = crate::ob::reference_process_token(process).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+    let checked = crate::ob::locked(|directory| {
+        directory
+            .token(token.id())
+            .map(|body| shutdown_privilege(body))
+    });
+    drop(token);
+    checked.ok_or(STATUS_INVALID_HANDLE)?
+}
+
+/// The host build's gate: nothing to check without a calling process (see the target's
+/// [`gate`]).
+#[cfg(not(target_arch = "x86"))]
+fn gate(_call: &mut NtCall) -> Result<(), NtStatus> {
+    Ok(())
+}
+
+/// NtShutdownSystem: the action checked, then the privilege gate, then the shutdown, which
+/// does not return (see the module's documentation).
+pub fn shutdown_system(call: &mut NtCall, action: u32) -> NtResult {
     let action = ShutdownAction::try_from(action)?;
-    // Windows 2000 checks the caller's SeShutdownPrivilege here, after the action: without it
-    // enabled, STATUS_PRIVILEGE_NOT_HELD (the user32/exitwin capture). F2K checks no privilege, a
-    // known deviation: its tokens hold none to check.
+    gate(call)?;
     shut_down(action)
 }
 
@@ -306,9 +342,71 @@ mod tests {
         next_free: Some(36_900),
     })));
 
+    /// A process's token, as the service finds it: the administrator's set, SeShutdownPrivilege
+    /// among it held and disabled (the token fixture's `privs` block's before-state).
+    fn token() -> crate::se::TokenBody {
+        crate::se::TokenBody::of(crate::ob::ObjectId {
+            kind: crate::ob::ObjectType::Process,
+            index: 1,
+            generation: 0,
+        })
+    }
+
+    /// The gate's check is held and enabled: a privilege set not holding SeShutdownPrivilege at
+    /// all fails it, and so does a token's without it enabled.
+    #[test]
+    fn without_the_privilege_enabled_the_gate_refuses() {
+        let shutdown = crate::sec::luid(crate::sec::SE_SHUTDOWN_PRIVILEGE);
+        let not_held = [crate::sec::privilege(
+            crate::sec::SE_LOAD_DRIVER_PRIVILEGE,
+            crate::sec::SE_PRIVILEGE_ENABLED,
+        )];
+        assert!(!crate::sec::held(&not_held, shutdown));
+        assert!(!crate::sec::held_enabled(&not_held, shutdown));
+        let body = token();
+        assert!(
+            crate::sec::held(&body.privileges(), shutdown),
+            "held, as the fixture finds it"
+        );
+        assert_eq!(shutdown_privilege(&body), Err(STATUS_PRIVILEGE_NOT_HELD));
+        assert_eq!(STATUS_PRIVILEGE_NOT_HELD.0, 0xC000_0061);
+    }
+
+    /// Held but disabled is still refused: the gate reads the enabled bit, not just the
+    /// privilege's presence — the exitwin capture's guard token is exactly this.
+    #[test]
+    fn a_held_but_disabled_privilege_is_still_refused() {
+        let body = token();
+        assert!(body.enabled(crate::sec::SE_CHANGE_NOTIFY_PRIVILEGE));
+        assert!(!body.enabled(crate::sec::SE_SHUTDOWN_PRIVILEGE));
+        assert_eq!(shutdown_privilege(&body), Err(STATUS_PRIVILEGE_NOT_HELD));
+    }
+
+    /// With the privilege enabled in the token (as the ntsvc capture's adjust does), the gate
+    /// passes and the shutdown proceeds as before: on the host build, to the stand-in, which
+    /// has nothing to shut down.
+    #[test]
+    fn with_the_privilege_enabled_the_gate_passes_and_the_shutdown_proceeds() {
+        let mut body = token();
+        let mut requests = crate::se::Requests::new();
+        requests.add(crate::sec::privilege(
+            crate::sec::SE_SHUTDOWN_PRIVILEGE,
+            crate::sec::SE_PRIVILEGE_ENABLED,
+        ));
+        body.adjust(&crate::se::Change::Set(requests), None)
+            .unwrap();
+        assert!(body.enabled(crate::sec::SE_SHUTDOWN_PRIVILEGE));
+        assert_eq!(shutdown_privilege(&body), Ok(()));
+        assert_eq!(
+            shut_down(ShutdownAction::NoReboot),
+            Err(STATUS_NOT_IMPLEMENTED)
+        );
+    }
+
     /// The service checks the action before anything else: an action out of range is
     /// STATUS_INVALID_PARAMETER through the service table, as the capture's; a valid one goes on
-    /// (to the host's stand-in, which has nothing to shut down).
+    /// — on the target past the privilege gate, which the host build has no calling process for
+    /// and so passes — to the host's stand-in, which has nothing to shut down.
     #[test]
     fn the_service_refuses_an_action_out_of_range() {
         let entry = super::super::NT_SERVICES
