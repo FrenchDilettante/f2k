@@ -37,7 +37,8 @@ pub fn after(phase: super::subsys::Phase) {
         Phase::Processor => cpu_faults(),
         Phase::Interrupts => interrupts(),
         Phase::Devices => devices(),
-        Phase::Memory | Phase::Executive | Phase::Late => {}
+        Phase::Late => late(),
+        Phase::Memory | Phase::Executive => {}
     }
 }
 
@@ -94,6 +95,14 @@ pub fn cpu_faults() {
 pub fn interrupts() {
     #[cfg(feature = "irq-smoke")]
     crate::interrupt::smoke();
+}
+
+/// The diagnostic boots once every subsystem is up, before the first process: the nonpaged pool's
+/// growth past its old region, with directories made before and after it.
+#[cfg(target_arch = "x86")]
+pub fn late() {
+    #[cfg(feature = "pool-smoke")]
+    crate::mem::pool::smoke();
 }
 
 /// The device diagnostic boots, once the boot volume is mounted: the disk's (read the drive's

@@ -720,6 +720,30 @@ CASES = (
         ordered=True,
         expects=IRQ_SMOKE,
     ),
+    # The nonpaged pool grows on demand (256 MiB, 64 page tables made as blocks first reach their
+    # windows): before the first process, the pool-smoke diagnostic makes a directory, takes blocks
+    # of 1 MiB until they run past the old 16 MiB region, then makes a second directory. Every
+    # live directory holds the new tables, the directory made before the growth reads a new page
+    # through its own entry, and the tables stay when the blocks go. Then the default image runs
+    # and its teardown audit balances, the tables counted.
+    Case(
+        name="pool-smoke",
+        description="the nonpaged pool grows past its old 16 MiB region, each new page table installed in every directory (one made before the growth reads the new pages), then the default image exits 0",
+        image="kernel",
+        features=("pool-smoke",),
+        ordered=True,
+        expects=(
+            *BOOTED,
+            "blocks of 1 MiB, past the old 16 MiB region: yes",
+            "F2K: pool-smoke: tables made for the growth: yes",
+            "F2K: pool-smoke: every directory holds the new tables: yes",
+            "F2K: pool-smoke: a directory made before the growth reads the new pages: yes",
+            "F2K: pool-smoke: blocks given back, tables kept, directories retired: yes",
+            "F2K: image loaded",
+            "F2K: entering ring 3",
+            *EXITED_CLEAN,
+        ),
+    ),
     # IDE driver: the disk-smoke diagnostic boot drives the IRQ14 read path end to end —
     # IDENTIFY, the MBR, the volume boot sector, and the first fixture's sector — then the default
     # image exits 0: coexistence, not just the diagnostic. The disk build copies

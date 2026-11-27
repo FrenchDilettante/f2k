@@ -81,6 +81,13 @@ kbd-smoke = []
 # served and the interrupt audit stay clean; then the normal boot proceeds.
 # The tests/core/kernel nest-smoke case drives the key and pins the lines.
 nest-smoke = []
+# The nonpaged pool's growth diagnostic boot: before the first process, blocks
+# of 1 MiB are taken until they run past the old 16 MiB region, each window's
+# page table made on demand; every live directory must hold the new tables,
+# a directory made before the growth must read the new pages, and the tables
+# must stay when the blocks go. Then the normal boot proceeds. The
+# tests/core/kernel pool-smoke case pins the COM1 lines.
+pool-smoke = []
 # The user-mode callback diagnostic boot: the first win32k service of a
 # process whose callback table user32 set issues callbacks through
 # user32's smoke slot on its way out (simple, nested, a fault handled in

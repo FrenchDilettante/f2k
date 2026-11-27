@@ -559,29 +559,9 @@ pub fn init_kernel_stack_tables() {
     });
 }
 
-/// Make the nonpaged pool's page tables, once, at boot, as [`init_kernel_stack_tables`] makes the
-/// kernel stacks': zeroed frames installed in the boot directory, which every process directory
-/// inherits, so a pool page mapped in them ([`map_pool_page`]) is mapped in every address space.
-/// They are never released.
-#[cfg(target_arch = "x86")]
-pub fn init_pool_tables() {
-    assert!(
-        !KERNEL_HALF_FROZEN.load(Ordering::Relaxed),
-        "the nonpaged pool's tables made after the first process directory"
-    );
-    with_database(|database| {
-        let Parts {
-            frames, scratch, ..
-        } = database.parts();
-        for window in layout::NONPAGED_POOL.first_entry()..layout::NONPAGED_POOL.end_entry() {
-            install_kernel_table(window, new_table_in(frames, scratch));
-        }
-    });
-}
-
-/// Make the framebuffer region's page tables, shared by every address space like the pool's: the
-/// display's linear framebuffer is mapped into them when the graphics mode is set (its frames come
-/// from the VBE mode information, not from here).
+/// Make the framebuffer region's page tables, shared by every address space like the MMIO region's:
+/// the display's linear framebuffer is mapped into them when the graphics mode is set (its frames
+/// come from the VBE mode information, not from here).
 #[cfg(target_arch = "x86")]
 pub fn init_framebuffer_tables() {
     assert!(
@@ -673,10 +653,11 @@ fn install_kernel_table(window: usize, table_phys: PhysAddr) {
 }
 
 /// Set once the first process directory is assembled: from then on the kernel half is frozen, every
-/// directory holding its own copy of the kernel-half directory entries. Nothing propagates a later
-/// one, so a table created afterwards would map its pages in one directory and leave them missing
-/// from the others: the kernel half's tables are all created at boot (the shared data page's, the
-/// kernel stack region's), and only mappings into existing tables come later.
+/// directory holding its own copy of the kernel-half directory entries. A table created afterwards
+/// by [`map_kernel_page`] would map its pages in one directory and leave them missing from the
+/// others: the kernel half's tables are created at boot (the shared data page's, the kernel stack
+/// region's), but for the regions whose tables are made on demand ([`ensure_kernel_tables`]),
+/// which installs each in every directory.
 #[cfg(target_arch = "x86")]
 static KERNEL_HALF_FROZEN: AtomicBool = AtomicBool::new(false);
 
@@ -954,6 +935,9 @@ pub fn assemble_process_directory(
     for i in KERNEL_HALF_START..PT_ENTRIES {
         dir[i] = read_base_entry(i);
     }
+    // The base's own links in the list of live directories are its own: the new directory's are
+    // written when it is linked.
+    dir[super::ktables::LINK_ENTRIES].fill(0);
     // Present and writable, and nothing else: no user bit (the self-map and scratch windows are
     // kernel-only) and no global bit (every entry must drop out of the TLB when CR3 reloads).
     dir[SELF_MAP_SLOT] = Pte::kernel_rw(own_phys).raw();
@@ -996,7 +980,10 @@ pub fn boot_directory_phys() -> PhysAddr {
 pub fn create_address_space() -> PhysAddr {
     let dir_phys = with_database(|database| {
         let Parts {
-            frames, scratch, ..
+            frames,
+            scratch,
+            directories,
+            ..
         } = database.parts();
         // Allocated first: exhaustion fails before any write.
         let dir_phys = allocate_in(frames);
@@ -1010,6 +997,9 @@ pub fn create_address_space() -> PhysAddr {
             scratch_table_phys(),
             |i| self_map::pde(i).raw(),
         );
+        // Linked in the same borrow as the copy: a kernel table made on demand from here on is
+        // installed in it too, and none made before is missing from the copy.
+        directories.link(&mut Live { frames, scratch }, dir_phys);
         dir_phys
     });
     // From here on, a kernel-half table created in one directory would be missing from this one.
@@ -1027,6 +1017,100 @@ pub fn activate_address_space(dir_phys: PhysAddr) {
     // present in it, so execution continues on a mapped kernel window.
     unsafe {
         asm!("mov cr3, {cr3}", cr3 = in(reg) cr3, options(nostack, preserves_flags));
+    }
+}
+
+/// Take the directory at `dir_phys` out of the list of live directories, before its frame goes
+/// back: no kernel table made on demand is installed in it any more. Its address space must never
+/// be loaded again (a process's at its teardown, or a start refused before its first mapping).
+///
+/// # Panics
+///
+/// The directory is not live (made by [`create_address_space`] and not retired yet).
+#[cfg(target_arch = "x86")]
+pub fn retire_address_space(dir_phys: PhysAddr) {
+    with_database(|database| {
+        let Parts {
+            frames,
+            scratch,
+            directories,
+            ..
+        } = database.parts();
+        directories.unlink(&mut Live { frames, scratch }, dir_phys);
+    });
+}
+
+/// Make sure every page table of the kernel addresses `range`, in a region whose tables are made on
+/// demand ([`super::ktables::ON_DEMAND`]), exists in every address space: a missing one is made
+/// from `frames`, zeroed through `scratch`, and installed in the master directory (the boot
+/// directory) and every live process directory before this returns. The interface a region grows
+/// through, whatever the entries' format: a PAE build implements it over its own.
+///
+/// # Errors
+///
+/// No frame is left for a table: what was made is installed everywhere and kept.
+#[cfg(target_arch = "x86")]
+pub fn ensure_kernel_tables(
+    frames: &mut FrameDb,
+    scratch: &mut ScratchWindow,
+    directories: &mut super::ktables::DirectoryList,
+    range: core::ops::Range<u32>,
+) -> Result<(), super::ktables::NoTable> {
+    directories.ensure(&mut Live { frames, scratch }, boot_directory_phys(), range)
+}
+
+/// The page tables made on demand ([`ensure_kernel_tables`]): frames the kernel keeps for good,
+/// which the teardown audit counts beside the free ones.
+#[cfg(target_arch = "x86")]
+pub fn kernel_table_frames() -> u32 {
+    with_database(|database| database.directories.tables_made())
+}
+
+/// Whether every live directory holds the master's tables of the on-demand regions (the pool's
+/// diagnostic's check).
+#[cfg(all(target_arch = "x86", feature = "pool-smoke"))]
+pub fn directories_in_step() -> bool {
+    with_database(|database| {
+        let Parts {
+            frames,
+            scratch,
+            directories,
+            ..
+        } = database.parts();
+        directories.in_step(&mut Live { frames, scratch }, boot_directory_phys())
+    })
+}
+
+/// How many process directories are live.
+#[cfg(all(target_arch = "x86", feature = "pool-smoke"))]
+pub fn live_directories() -> u32 {
+    with_database(|database| database.directories.live())
+}
+
+/// The machine as the on-demand install sees it ([`super::ktables::Directories`]): directories
+/// read and written through the scratch window, tables from the frame database.
+#[cfg(target_arch = "x86")]
+struct Live<'a> {
+    frames: &'a mut FrameDb,
+    scratch: &'a mut ScratchWindow,
+}
+
+#[cfg(target_arch = "x86")]
+impl super::ktables::Directories for Live<'_> {
+    fn with_directory<R>(
+        &mut self,
+        dir: PhysAddr,
+        step: impl FnOnce(&mut [u32; PT_ENTRIES]) -> R,
+    ) -> R {
+        // A directory entry going from not present to present needs no flush: the processor
+        // caches no entry that is not present.
+        step(self.scratch.map_words(dir))
+    }
+
+    fn new_table(&mut self) -> Option<PhysAddr> {
+        let table = try_allocate_frame(self.frames)?;
+        self.scratch.init_frame(table, 0, &[]);
+        Some(table)
     }
 }
 
@@ -1057,7 +1141,9 @@ pub fn map_kernel_page(vaddr: u32, frame_phys: PhysAddr) {
 /// [`unmap_gate_pages`], and at every nonpaged pool block's allocation and release, from
 /// [`map_pool_page`] and [`unmap_pool_page`], each under the memory manager's database borrow,
 /// which masks interrupts: on one processor nothing else touches the entry between the check and
-/// the store. Only the boot creates a table (the frozen-half assertion).
+/// the store. Only the boot creates a table here (the frozen-half assertion); the tables of the
+/// regions that grow on demand are made by [`ensure_kernel_tables`] alone, before their pages are
+/// mapped.
 ///
 /// # Panics
 ///
@@ -1308,7 +1394,8 @@ pub fn try_allocate_frame(frames: &mut FrameDb) -> Option<PhysAddr> {
 ///
 /// # Panics
 ///
-/// `vaddr` lies outside the pool's region, or is mapped already.
+/// `vaddr` lies outside the pool's region, its window's table is not made yet
+/// ([`ensure_kernel_tables`]), or it is mapped already.
 #[cfg(target_arch = "x86")]
 pub fn map_pool_page(
     frames: &mut FrameDb,
@@ -1319,6 +1406,10 @@ pub fn map_pool_page(
     assert!(
         layout::NONPAGED_POOL.holds(vaddr),
         "a pool page outside the nonpaged pool"
+    );
+    assert!(
+        self_map::pde(directory_index(vaddr)).present(),
+        "a pool page mapped before its table is made (ensure_kernel_tables)"
     );
     scratch.init_frame(frame_phys, 0, &[]);
     map_kernel_page_in(frames, scratch, vaddr, frame_phys);

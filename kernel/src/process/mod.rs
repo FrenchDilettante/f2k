@@ -1223,6 +1223,7 @@ pub fn new_client_id() -> u32 {
 #[cfg(target_arch = "x86")]
 fn free_directory(dir_phys: PhysAddr) {
     use crate::mem::frame::FrameState;
+    crate::mem::paging::retire_address_space(dir_phys);
     crate::mem::bootmem::with_frame_db(|db| db.release(dir_phys.pfn(), FrameState::Free));
 }
 
@@ -1419,6 +1420,9 @@ fn release_address_space_of(process: &Process) {
     for mapping in gone.iter().flatten() {
         crate::ob::release_mapping(*mapping);
     }
+    // Out of the list of live directories before its frame goes: a kernel table made from here on
+    // is not installed in it (it is never loaded again).
+    paging::retire_address_space(process.dir_phys());
     release_process(process, paging::read_table_entries, |frame_phys| {
         // A frame goes back with its last holder: the system DLLs' pages and the shared data
         // page are the kernel's, every process one more holder of them.
@@ -1490,8 +1494,9 @@ fn release_record(process: &Process) {
 #[cfg(target_arch = "x86")]
 static BASELINE_FRAMES: crate::sync::InitOnce<u32> = crate::sync::InitOnce::new();
 
-/// The free frames as the teardown audits count them: the frame database's, with the frames the
-/// slot pools' chunks and directory pages hold — permanent allocations made as the pools grow,
+/// The free frames as the teardown audits count them: the frame database's, with the page tables
+/// made on demand for the nonpaged pool (kept once made, see [`crate::mem::ktables`]), the frames
+/// the slot pools' chunks and directory pages hold — permanent allocations made as the pools grow,
 /// kept at their peak, which no process's end gives back: the process records among them (see
 /// [`pool`] and [`crate::slots::chunk_frames`]) — the registry's storage's, which outlive the
 /// process that made them (see [`crate::cm`]), the image cache's frame tables, which outlive
@@ -1502,6 +1507,7 @@ static BASELINE_FRAMES: crate::sync::InitOnce<u32> = crate::sync::InitOnce::new(
 #[cfg(target_arch = "x86")]
 fn audited_frames() -> u32 {
     crate::mem::bootmem::with_frame_db(|db| db.available())
+        + crate::mem::paging::kernel_table_frames()
         + crate::slots::chunk_frames()
         + crate::cm::held_frames()
         + crate::ob::locked(|directory| directory.cached_frames())

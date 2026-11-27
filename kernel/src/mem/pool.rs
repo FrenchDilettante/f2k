@@ -1,30 +1,45 @@
 //! The nonpaged pool, in miniature: blocks of kernel memory taken at runtime and given back with
 //! whatever holds them (a pipe's data queues), as Windows 2000 takes them from its nonpaged pool.
 //!
-//! The pool is a region of its own ([`layout::NONPAGED_POOL`]), its page tables made at boot and
-//! shared by every directory, as the kernel stacks' are: a block mapped in them is mapped in every
-//! address space, so any thread reaches it, whichever process it runs in. A block is a run of
-//! whole pages, the lowest free run that fits; the ledger records which pages blocks hold, and a
-//! block's frames are taken from the frame database and mapped when it is taken, unmapped and
-//! given back when it goes ([`Block`]'s drop). Nothing is mapped in the region but live blocks.
+//! The pool is a region of its own ([`layout::NONPAGED_POOL`], 256 MiB), its page tables shared by
+//! every directory, as the kernel stacks' are: a block mapped in them is mapped in every address
+//! space, so any thread reaches it, whichever process it runs in. The tables are made on demand,
+//! when a block first reaches a window, and installed in every directory before the block is
+//! mapped ([`crate::mem::ktables`]); a table once made is kept. A block is a run of whole pages,
+//! the lowest free run that fits; the ledger records which pages blocks hold, and a block's frames
+//! are taken from the frame database and mapped when it is taken, unmapped and given back when it
+//! goes ([`Block`]'s drop). Nothing is mapped in the region but live blocks.
 //!
 //! Running out is a status, never a panic: a request no free run fits, or one the frame database
-//! has too few frames left for, gets no block (the caller answers STATUS_INSUFFICIENT_RESOURCES,
-//! as Windows 2000's pool allocations fail).
+//! has too few frames left for (its pages' or a new table's), gets no block (the caller answers
+//! STATUS_INSUFFICIENT_RESOURCES, as Windows 2000's pool allocations fail).
 
 use super::layout;
 use super::paging::PAGE_SIZE;
 use super::phys::{self, Pfn};
 
-/// How many pages the region holds: 4096 (16 MiB).
+/// How many pages the region holds: 65,536 (256 MiB).
 pub const PAGES: usize = (layout::NONPAGED_POOL.size() / PAGE_SIZE) as usize;
+
+/// How many pages one directory entry's window holds (a page table's worth).
+pub const ENTRY_PAGES: usize = (layout::ENTRY_SPAN / PAGE_SIZE) as usize;
+
+/// How many directory entries the region spans.
+const ENTRIES: usize = layout::NONPAGED_POOL.entries;
 
 /// How many occupancy words the ledger holds.
 const PAGE_WORDS: usize = PAGES / 64;
 
-/// Which pages of the pool's region blocks hold.
+const _: () = assert!(PAGES == ENTRIES * ENTRY_PAGES && ENTRY_PAGES.is_multiple_of(64));
+const _: () = assert!(ENTRY_PAGES <= u16::MAX as usize);
+
+/// Which pages of the pool's region blocks hold: a bit per page (8 KiB for the 256 MiB region),
+/// and per directory entry's window the count of its free pages, so the search for a free run
+/// steps over a full window, or a wholly free one too short to end the run, without reading its
+/// bits.
 pub struct PoolPages {
     occupied: [u64; PAGE_WORDS],
+    free: [u16; ENTRIES],
 }
 
 impl PoolPages {
@@ -32,6 +47,7 @@ impl PoolPages {
     pub const fn empty() -> Self {
         PoolPages {
             occupied: [0; PAGE_WORDS],
+            free: [ENTRY_PAGES as u16; ENTRIES],
         }
     }
 
@@ -40,35 +56,78 @@ impl PoolPages {
         self.occupied[page / 64] & (1 << (page % 64)) != 0
     }
 
+    /// How many pages of directory entry `entry`'s window (the region's `entry`th) are free.
+    pub fn free_in_entry(&self, entry: usize) -> usize {
+        self.free[entry] as usize
+    }
+
     fn mark(&mut self, page: usize, taken: bool) {
         let bit = 1 << (page % 64);
+        let free = &mut self.free[page / ENTRY_PAGES];
         if taken {
             self.occupied[page / 64] |= bit;
+            *free -= 1;
         } else {
             self.occupied[page / 64] &= !bit;
+            *free += 1;
         }
     }
 
     /// Take the lowest run of `count` free pages (at least one): its first page; none when no free
     /// run is that long.
     pub fn allocate(&mut self, count: usize) -> Option<usize> {
+        let first = self.lowest_run(count)?;
+        for page in first..first + count {
+            self.mark(page, true);
+        }
+        Some(first)
+    }
+
+    /// The first page of the lowest run of `count` free pages. A window with no free page ends any
+    /// run; a wholly free window, or a wholly free word of the bits, that cannot end the run either
+    /// only lengthens it; only the rest is read a page at a time.
+    fn lowest_run(&self, count: usize) -> Option<usize> {
         if count == 0 || count > PAGES {
             return None;
         }
         let mut run = 0;
-        for page in 0..PAGES {
+        let mut page = 0;
+        while page < PAGES {
+            if page.is_multiple_of(ENTRY_PAGES) {
+                let free = self.free_in_entry(page / ENTRY_PAGES);
+                if free == 0 {
+                    run = 0;
+                    page += ENTRY_PAGES;
+                    continue;
+                }
+                if free == ENTRY_PAGES && run + ENTRY_PAGES < count {
+                    run += ENTRY_PAGES;
+                    page += ENTRY_PAGES;
+                    continue;
+                }
+            }
+            if page.is_multiple_of(64) {
+                let word = self.occupied[page / 64];
+                if word == u64::MAX {
+                    run = 0;
+                    page += 64;
+                    continue;
+                }
+                if word == 0 && run + 64 < count {
+                    run += 64;
+                    page += 64;
+                    continue;
+                }
+            }
             if self.is_taken(page) {
                 run = 0;
-                continue;
-            }
-            run += 1;
-            if run == count {
-                let first = page + 1 - count;
-                for taken in first..=page {
-                    self.mark(taken, true);
+            } else {
+                run += 1;
+                if run == count {
+                    return Some(page + 1 - count);
                 }
-                return Some(first);
             }
+            page += 1;
         }
         None
     }
@@ -180,7 +239,7 @@ mod target {
     /// `va` lies outside the pool's region, is not page-aligned, or names no live block.
     pub fn release_block(va: u32, bytes: usize) {
         assert!(
-            layout::NONPAGED_POOL.holds(va) && va % PAGE_SIZE == 0,
+            layout::NONPAGED_POOL.holds(va) && va.is_multiple_of(PAGE_SIZE),
             "a block address outside the nonpaged pool"
         );
         let first = ((va - layout::NONPAGED_POOL.start) / PAGE_SIZE) as usize;
@@ -208,9 +267,15 @@ mod target {
         }
     }
 
+    /// The addresses of the `pages` pages from page `first`.
+    fn span(first: usize, pages: usize) -> core::ops::Range<u32> {
+        page_address(first)..page_address(first + pages)
+    }
+
     /// A block of at least `bytes` bytes, zeroed: the lowest free run of the region's pages, each
-    /// mapped over a fresh frame. None when no free run fits, or the frame database runs out
-    /// before every page has its frame (what was taken is given back).
+    /// mapped over a fresh frame, the run's page tables made first where missing. None when no
+    /// free run fits, or the frame database runs out before every page has its frame or table
+    /// (what was taken is given back; a table made stays).
     pub fn allocate(bytes: usize) -> Option<Block> {
         let pages = pages_for(bytes);
         with_database(|database| {
@@ -218,9 +283,16 @@ mod target {
                 frames,
                 pool,
                 scratch,
+                directories,
                 ..
             } = database.parts();
             let first = pool.allocate(pages)?;
+            if paging::ensure_kernel_tables(frames, scratch, directories, span(first, pages))
+                .is_err()
+            {
+                pool.release(first, pages);
+                return None;
+            }
             for page in first..first + pages {
                 let Some(frame) = paging::try_allocate_frame(frames) else {
                     for mapped in first..page {
@@ -251,9 +323,16 @@ mod target {
                 frames,
                 pool,
                 scratch,
+                directories,
                 ..
             } = database.parts();
             let first = pool.allocate(pages)?;
+            if paging::ensure_kernel_tables(frames, scratch, directories, span(first, pages))
+                .is_err()
+            {
+                pool.release(first, pages);
+                return None;
+            }
             let run = contiguous_run(frames.frame_count(), pages as u32, |frame| {
                 let entry = frames.entry(frame);
                 entry.state.has_color_chain() && entry.flags == FrameFlags::empty()
@@ -273,6 +352,89 @@ mod target {
                 len: bytes,
             })
         })
+    }
+
+    /// The pool's growth diagnostic (the `pool-smoke` boot), once the subsystems are up and before
+    /// the first process: a directory made first, then blocks of 1 MiB until they run past the
+    /// old 16 MiB region (the region before it grew to 256 MiB), each window's table made as a
+    /// block first reaches it; then a second directory. Every live directory must hold every new
+    /// table, the directory made before the growth must read a block's bytes through them, and the
+    /// tables must stay when the blocks go. Reported on COM1; nothing is left behind but the
+    /// tables.
+    #[cfg(feature = "pool-smoke")]
+    pub fn smoke() {
+        use crate::level::{raised, High};
+        const MIB: usize = 0x10_0000;
+        const OLD_END: u32 = layout::NONPAGED_POOL.start + 4096 * PAGE_SIZE;
+        let yes = |ok: bool| if ok { "yes" } else { "no" };
+
+        let directories = paging::live_directories();
+        let early = paging::create_address_space();
+        let tables = paging::kernel_table_frames();
+        let mut blocks: [Option<Block>; 48] = [const { None }; 48];
+        let mut count = 0;
+        while count < blocks.len() {
+            let Some(mut block) = allocate(MIB) else {
+                break;
+            };
+            let marker = 0xF2C0_0000 | count as u32;
+            block.as_mut()[..4].copy_from_slice(&marker.to_le_bytes());
+            let past = block.virtual_address() >= OLD_END;
+            blocks[count] = Some(block);
+            count += 1;
+            if past {
+                break;
+            }
+        }
+        let last = blocks[..count].iter().flatten().last();
+        let grown = last.is_some_and(|block| block.virtual_address() >= OLD_END);
+        crate::serial_println!(
+            "F2K: pool-smoke: {count} blocks of 1 MiB, past the old 16 MiB region: {}",
+            yes(grown)
+        );
+        let made = paging::kernel_table_frames() - tables;
+        crate::serial_println!(
+            "F2K: pool-smoke: tables made for the growth: {}",
+            yes(made > 0)
+        );
+        let late = paging::create_address_space();
+        crate::serial_println!(
+            "F2K: pool-smoke: every directory holds the new tables: {}",
+            yes(paging::directories_in_step())
+        );
+
+        // Read the last block's marker in the directory made before the growth: the processor
+        // walks that directory's own entry for the block's window.
+        let seen = last.map(|block| {
+            let at = block.virtual_address() as *const u32;
+            raised::<High, _>(|_| {
+                let home = paging::current_directory_phys();
+                paging::activate_address_space(early);
+                // SAFETY: the block is live and mapped in every directory (the check above);
+                // interrupts are masked, so nothing runs in the early directory but this read.
+                let word = unsafe { at.read_volatile() };
+                paging::activate_address_space(home);
+                word
+            })
+        });
+        let expected = 0xF2C0_0000 | (count as u32).wrapping_sub(1);
+        crate::serial_println!(
+            "F2K: pool-smoke: a directory made before the growth reads the new pages: {}",
+            yes(seen == Some(expected))
+        );
+
+        for block in blocks.iter_mut() {
+            drop(block.take());
+        }
+        for dir in [early, late] {
+            paging::retire_address_space(dir);
+            paging::release_frame_phys(dir);
+        }
+        crate::serial_println!(
+            "F2K: pool-smoke: blocks given back, tables kept, directories retired: {}",
+            yes(paging::kernel_table_frames() == tables + made
+                && paging::live_directories() == directories)
+        );
     }
 
     impl Drop for Block {
@@ -295,10 +457,12 @@ mod target {
 mod tests {
     use super::*;
 
-    /// The region is 16 MiB of pages, and a page's address lies in it.
+    /// The region is 256 MiB of pages, and a page's address lies in it.
     #[test]
     fn the_ledger_spans_the_region() {
-        assert_eq!(PAGES, 4096);
+        assert_eq!(PAGES, 65_536);
+        assert_eq!(ENTRY_PAGES, 1024);
+        assert_eq!(core::mem::size_of::<PoolPages>(), 8192 + 128);
         assert_eq!(page_address(0), layout::NONPAGED_POOL.start);
         assert!(layout::NONPAGED_POOL.holds(page_address(PAGES - 1)));
         assert!(!layout::NONPAGED_POOL.holds(page_address(PAGES)));
@@ -372,5 +536,114 @@ mod tests {
         let refused =
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| pages.release(100, 1)));
         assert!(refused.is_err(), "a double release is refused");
+    }
+
+    /// The plain search the ledger's skips must agree with: the lowest run of `count` free pages,
+    /// page by page.
+    fn naive_run(pages: &PoolPages, count: usize) -> Option<usize> {
+        let mut run = 0;
+        for page in 0..PAGES {
+            if pages.is_taken(page) {
+                run = 0;
+            } else {
+                run += 1;
+                if run == count {
+                    return Some(page + 1 - count);
+                }
+            }
+        }
+        None
+    }
+
+    /// Blocks go on past the old 16 MiB region's 4,096 pages, into windows the old region never
+    /// had, and each window's free count follows its pages.
+    #[test]
+    fn the_pool_grows_past_its_old_size() {
+        let mut pages = PoolPages::empty();
+        let mut firsts = Vec::new();
+        for _ in 0..20 {
+            firsts.push(pages.allocate(256).expect("room in the region"));
+        }
+        assert_eq!(
+            firsts[16], 4096,
+            "the 17th MiB starts where the old region ended"
+        );
+        assert_eq!(pages.taken(), 20 * 256);
+        assert_eq!(pages.free_in_entry(0), 0);
+        assert_eq!(pages.free_in_entry(3), 0);
+        assert_eq!(pages.free_in_entry(4), ENTRY_PAGES - 4 * 256);
+        assert_eq!(pages.free_in_entry(5), ENTRY_PAGES);
+        assert!(layout::NONPAGED_POOL.holds(page_address(firsts[19] + 255)));
+        pages.release(firsts[2], 256);
+        assert_eq!(pages.free_in_entry(0), 256);
+        assert_eq!(pages.allocate(256), Some(firsts[2]), "the lowest run first");
+        for first in firsts {
+            pages.release(first, 256);
+        }
+        assert_eq!(pages.taken(), 0);
+        assert!((0..ENTRIES).all(|entry| pages.free_in_entry(entry) == ENTRY_PAGES));
+    }
+
+    /// The whole region in one block, then nothing; a run across a window's edge; a run longer
+    /// than a window.
+    #[test]
+    fn runs_cross_windows_and_fill_the_region() {
+        let mut pages = PoolPages::empty();
+        assert_eq!(pages.allocate(ENTRY_PAGES - 10), Some(0));
+        assert_eq!(
+            pages.allocate(20),
+            Some(ENTRY_PAGES - 10),
+            "across the edge"
+        );
+        assert_eq!(pages.free_in_entry(0), 0);
+        assert_eq!(pages.free_in_entry(1), ENTRY_PAGES - 10);
+        assert_eq!(pages.allocate(3 * ENTRY_PAGES), Some(ENTRY_PAGES + 10));
+        pages.release(0, ENTRY_PAGES - 10);
+        pages.release(ENTRY_PAGES - 10, 20);
+        pages.release(ENTRY_PAGES + 10, 3 * ENTRY_PAGES);
+        assert_eq!(pages.allocate(PAGES), Some(0));
+        assert_eq!(pages.allocate(1), None);
+        assert!((0..ENTRIES).all(|entry| pages.free_in_entry(entry) == 0));
+        pages.release(PAGES - 1, 1);
+        assert_eq!(pages.allocate(1), Some(PAGES - 1), "the very last page");
+        assert_eq!(pages.allocate(PAGES + 1), None);
+    }
+
+    /// The skips over full and wholly free windows and words find what the plain search finds,
+    /// over a long run of random takes and releases.
+    #[test]
+    fn the_skipping_search_agrees_with_the_plain_one() {
+        let mut pages = PoolPages::empty();
+        let mut live: Vec<(usize, usize)> = Vec::new();
+        // A small linear congruential generator: the same sequence every run.
+        let mut seed = 0x2545_F491u32;
+        let mut next = move || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            seed >> 8
+        };
+        let rounds = if cfg!(miri) { 40 } else { 3000 };
+        for _ in 0..rounds {
+            if live.is_empty() || next() % 3 != 0 {
+                let count = match next() % 4 {
+                    0 => 1 + next() as usize % 8,
+                    1 => 1 + next() as usize % 100,
+                    2 => 60 + next() as usize % 10,
+                    _ => 900 + next() as usize % 300,
+                };
+                let expected = naive_run(&pages, count);
+                assert_eq!(pages.lowest_run(count), expected, "a run of {count}");
+                if let Some(first) = pages.allocate(count) {
+                    live.push((first, count));
+                }
+            } else {
+                let (first, count) = live.swap_remove(next() as usize % live.len());
+                pages.release(first, count);
+            }
+        }
+        for entry in 0..ENTRIES {
+            let window = entry * ENTRY_PAGES..(entry + 1) * ENTRY_PAGES;
+            let free = window.filter(|&page| !pages.is_taken(page)).count();
+            assert_eq!(pages.free_in_entry(entry), free);
+        }
     }
 }

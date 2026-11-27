@@ -9,6 +9,7 @@ pub mod faultstats;
 pub mod frame;
 pub mod heap;
 pub mod kstacks;
+pub mod ktables;
 pub mod layout;
 pub mod multiboot;
 pub mod pageout;
@@ -32,6 +33,8 @@ use frame::FrameDb;
 #[cfg(target_arch = "x86")]
 use kstacks::KernelStacks;
 #[cfg(target_arch = "x86")]
+use ktables::DirectoryList;
+#[cfg(target_arch = "x86")]
 use paging::ScratchWindow;
 #[cfg(target_arch = "x86")]
 use pool::PoolPages;
@@ -39,8 +42,8 @@ use pool::PoolPages;
 #[cfg(target_arch = "x86")]
 use crate::level::{self, High, LevelCell};
 
-/// The memory manager's database: the frame database, the kernel stacks, the nonpaged pool's pages
-/// and the scratch window.
+/// The memory manager's database: the frame database, the kernel stacks, the nonpaged pool's pages,
+/// the live directories (with the kernel tables made on demand) and the scratch window.
 ///
 /// They are one database because their operations nest. A kernel stack's creation takes a slot,
 /// allocates the stack's frames, zeroes each through the scratch window and maps it, as one step;
@@ -57,6 +60,8 @@ struct Database {
     stacks: KernelStacks,
     /// Which pages of the nonpaged pool blocks hold.
     pool: PoolPages,
+    /// The live process directories, which a kernel table made on demand is installed in.
+    directories: DirectoryList,
     /// The system's one scratch window.
     scratch: ScratchWindow,
 }
@@ -67,6 +72,7 @@ struct Parts<'a> {
     frames: &'a mut FrameDb,
     stacks: &'a mut KernelStacks,
     pool: &'a mut PoolPages,
+    directories: &'a mut DirectoryList,
     scratch: &'a mut ScratchWindow,
 }
 
@@ -79,6 +85,7 @@ impl Database {
             frames: None,
             stacks: KernelStacks::empty(),
             pool: PoolPages::empty(),
+            directories: DirectoryList::empty(),
             scratch: ScratchWindow::new(),
         }
     }
@@ -107,6 +114,7 @@ impl Database {
                 .expect("frame database not initialized"),
             stacks: &mut self.stacks,
             pool: &mut self.pool,
+            directories: &mut self.directories,
             scratch: &mut self.scratch,
         }
     }

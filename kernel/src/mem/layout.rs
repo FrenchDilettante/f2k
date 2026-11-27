@@ -5,18 +5,19 @@
 //! does, it keeps it at Windows 2000's address (the x86 system space as Windows 2000 lays it out
 //! without the /3GB switch):
 //!
-//! | Region             | Address      | Entries   | Windows 2000 there                        |
-//! |--------------------|--------------|-----------|-------------------------------------------|
-//! | [`KERNEL_IMAGE`]   | `0x80000000` | 512-515   | system code (the kernel, the HAL)         |
-//! | [`KERNEL_STACKS`]  | `0xA4000000` | 656-659   | additional system PTEs                    |
-//! | [`PAGE_TABLES`]    | `0xC0000000` | 768       | the process page tables (self-map)        |
-//! | [`HYPERSPACE`]     | `0xC0400000` | 769       | hyperspace                                |
-//! | [`FRAMEBUFFER`]    | `0xC0800000` | 770-777   | the display's linear framebuffer          |
-//! | [`MMIO`]           | `0xC2800000` | 778-793   | device MMIO mappings (MmMapIoSpace)       |
-//! | [`MODULES`]        | `0xC6800000` | 794-825   | loaded driver images (the .sys loader)    |
-//! | [`FRAME_DATABASE`] | `0xFCC00000` | 1011-1018 | nonpaged pool (the PFN database's home)   |
-//! | [`NONPAGED_POOL`]  | `0xFEC00000` | 1019-1022 | nonpaged pool expansion                   |
-//! | [`SHARED_DATA`]    | `0xFFC00000` | 1023      | HAL usage (the shared data page's view)   |
+//! | Region              | Address      | Entries  | Windows 2000 there                         |
+//! |---------------------|--------------|----------|--------------------------------------------|
+//! | [`KERNEL_IMAGE`]    | `0x80000000` | 512-515  | system code (the kernel, the HAL)          |
+//! | [`KERNEL_STACKS`]   | `0xA4000000` | 656-659  | additional system PTEs                     |
+//! | [`PAGE_TABLES`]     | `0xC0000000` | 768      | the process page tables (self-map)         |
+//! | [`HYPERSPACE`]      | `0xC0400000` | 769      | hyperspace                                 |
+//! | [`FRAMEBUFFER`]     | `0xC0800000` | 770-777  | the display's linear framebuffer           |
+//! | [`MMIO`]            | `0xC2800000` | 778-793  | device MMIO mappings (MmMapIoSpace)        |
+//! | [`MODULES`]         | `0xC6800000` | 794-825  | loaded driver images (the .sys loader)     |
+//! | [`DIRECTORY_LINKS`] | `0xCE800000` | 826-827  | (never mapped: the directory list's links) |
+//! | [`FRAME_DATABASE`]  | `0xEDC00000` | 951-958  | nonpaged pool (the PFN database's home)    |
+//! | [`NONPAGED_POOL`]   | `0xEFC00000` | 959-1022 | nonpaged pool expansion                    |
+//! | [`SHARED_DATA`]     | `0xFFC00000` | 1023     | HAL usage (the shared data page's view)    |
 //!
 //! The kernel image window is the only region mapped from the first instruction on: the boot
 //! loader maps it over physical `[0, 16 MiB)`. Its first directory entry's span, the entry span
@@ -35,11 +36,17 @@
 //! MiB, two entries), with as much again to grow into: four entries, 16 MiB. It sits far from the
 //! image window, so the image can keep growing without meeting it.
 //!
-//! The nonpaged pool, in miniature: kernel memory that comes and goes with what holds it (a pipe's
-//! data queues), shared by every address space as the kernel stacks are, its frames mapped when a
-//! block is taken and given back with it ([`crate::mem::pool`]). Windows 2000 grows its nonpaged
-//! pool's expansion down from `0xFFBE0000`, just under the HAL's area; F2K's region is the four
-//! entries below the shared data page's, 16 MiB.
+//! The nonpaged pool: kernel memory that comes and goes with what holds it (a pipe's data queues,
+//! the slot pools' chunks), shared by every address space as the kernel stacks are, its frames
+//! mapped when a block is taken and given back with it ([`crate::mem::pool`]). Windows 2000 grows
+//! its nonpaged pool's expansion down from `0xFFBE0000`, just under the HAL's area, to at most
+//! 256 MB on x86; F2K's region is the 64 entries below the shared data page's, 256 MiB. Its page
+//! tables are made on demand, as blocks first reach a 4 MiB window, and installed in every
+//! directory at once ([`crate::mem::ktables`]); a table once made is kept.
+//!
+//! [`DIRECTORY_LINKS`] is a region of address space nothing ever maps: its two directory entries
+//! hold, in each process directory, the links of the list of live directories (never present, so
+//! the processor ignores them), which a new kernel table is installed through.
 //!
 //! The frame database ([`crate::mem::frame`]), one entry per physical frame, is sized at boot from
 //! the memory map and mapped into its own region, [`FRAME_DATABASE`], right below the nonpaged
@@ -153,7 +160,7 @@ pub const FRAMEBUFFER: Region = Region {
 };
 
 /// Device MMIO mappings (MmMapIoSpace): a reserved kernel region a device's register range maps
-/// into, page tables made at boot and shared by every address space like the pool's. Sixteen
+/// into, page tables made at boot and shared by every address space. Sixteen
 /// entries: 64 MiB, enough for every BAR the PCI scan reports on the development machine. A range
 /// larger than what remains goes unmapped (the caller fails the mapping).
 pub const MMIO: Region = Region {
@@ -169,19 +176,29 @@ pub const MODULES: Region = Region {
     entries: 32,
 };
 
+/// Two directory entries no region maps, ever: in each process directory they hold the links of
+/// the list of live directories ([`crate::mem::ktables`]), never present, so the processor ignores
+/// them. Kept apart from every region so that no table can ever be installed over them.
+pub const DIRECTORY_LINKS: Region = Region {
+    start: 0xCE80_0000,
+    entries: 2,
+};
+
 /// The frame database: one [`crate::mem::frame::FrameEntry`] per physical frame, sized at boot from
 /// the memory map and mapped from the region's start, page tables made at boot and shared by every
-/// address space. Eight entries: 32 MiB, room for a database over 4 GiB.
+/// address space. Eight entries: 32 MiB, room for a database over 4 GiB. Right below the nonpaged
+/// pool, as Windows 2000's PFN database sits at its nonpaged pool's start.
 pub const FRAME_DATABASE: Region = Region {
-    start: 0xFCC0_0000,
+    start: 0xEDC0_0000,
     entries: 8,
 };
 
 /// The nonpaged pool: blocks of kernel memory taken and released at runtime, mapped in every
-/// address space ([`crate::mem::pool`]).
+/// address space ([`crate::mem::pool`]). 64 entries, 256 MiB, Windows 2000's x86 maximum; its page
+/// tables are made as blocks first reach each entry's window ([`crate::mem::ktables`]).
 pub const NONPAGED_POOL: Region = Region {
-    start: 0xFEC0_0000,
-    entries: 4,
+    start: 0xEFC0_0000,
+    entries: 64,
 };
 
 /// The kernel's view of the shared data page (KUSER_SHARED_DATA) at `0xFFDF0000`, Windows 2000's
@@ -209,7 +226,7 @@ const _: () = {
 mod tests {
     use super::*;
 
-    const REGIONS: [(&str, Region); 10] = [
+    const REGIONS: [(&str, Region); 11] = [
         ("kernel image", KERNEL_IMAGE),
         ("kernel stacks", KERNEL_STACKS),
         ("page tables", PAGE_TABLES),
@@ -217,6 +234,7 @@ mod tests {
         ("framebuffer", FRAMEBUFFER),
         ("mmio", MMIO),
         ("modules", MODULES),
+        ("directory links", DIRECTORY_LINKS),
         ("frame database", FRAME_DATABASE),
         ("nonpaged pool", NONPAGED_POOL),
         ("shared data", SHARED_DATA),
@@ -250,14 +268,20 @@ mod tests {
         assert_eq!(MODULES.start, MMIO.end() as u32);
         assert_eq!(MODULES.end(), 0xCE80_0000);
         assert_eq!(
+            (DIRECTORY_LINKS.first_entry(), DIRECTORY_LINKS.end_entry()),
+            (826, 828)
+        );
+        assert_eq!(DIRECTORY_LINKS.start, MODULES.end() as u32);
+        assert_eq!(
             (FRAME_DATABASE.first_entry(), FRAME_DATABASE.end_entry()),
-            (1011, 1019)
+            (951, 959)
         );
         assert_eq!(FRAME_DATABASE.end(), NONPAGED_POOL.start as u64);
         assert_eq!(
             (NONPAGED_POOL.first_entry(), NONPAGED_POOL.end_entry()),
-            (1019, 1023)
+            (959, 1023)
         );
+        assert_eq!(NONPAGED_POOL.size(), 256 * 0x10_0000);
         assert_eq!(NONPAGED_POOL.end(), SHARED_DATA.start as u64);
         assert_eq!(SHARED_DATA.first_entry(), 1023);
         assert_eq!(SHARED_DATA.end(), 0x1_0000_0000);
