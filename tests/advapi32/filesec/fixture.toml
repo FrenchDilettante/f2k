@@ -8,11 +8,7 @@ kind = "sectioned"
 gate = true
 
 [pending]
-errors = "[GetNamedSecurityInfoA(a path that does not exist): ret=2 err=-], expected [GetNamedSecurityInfoA(a path that does not exist): ret=2 err=0]"
-getset = "[GetFileSecurityA(a byte short): ret=0 err=122"
-kernelobj = "[the process's SD: Control 0x8004, owner present: no, DACL present: no, length 20], expected [the process's SD: Control 0x8004, owner present: yes, DACL present: no, length 116]"
-named = "[GetNamedSecurityInfoA(filesec.tmp, file, owner|group|DACL): ret=0 err=122"
-namedex = "[GetNamedSecurityInfoExA(filesec.tmp, file, owner|group|DACL, no provider): ret=0 err=122"
+kernelobj = "[SetKernelObjectSecurity(the process handle, DACL, allow Everyone 0x000F01FF): ret=0 err=122], expected [SetKernelObjectSecurity(the process handle, DACL, allow Everyone 0x000F01FF): ret=1 err=-]"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
