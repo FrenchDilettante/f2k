@@ -402,6 +402,7 @@ mod tests {
     #[test]
     fn a_release_stops_at_the_semaphore_s_maximum() {
         let mut d = testkit::dispatcher();
+        crate::sched::testkit::made(WaitableId::Semaphore(0));
         d.renew_semaphore(0, 1, 3);
         let semaphore = WaitableId::Semaphore(0);
         assert_eq!(release_semaphore(&mut d, semaphore, 2), Ok(1));
@@ -412,6 +413,7 @@ mod tests {
         );
         assert_eq!(d.waitable(semaphore).signal_state(), 3, "unchanged");
 
+        crate::sched::testkit::made(WaitableId::Semaphore(1));
         d.renew_semaphore(1, 1, i32::MAX);
         let wide = WaitableId::Semaphore(1);
         assert_eq!(
@@ -443,6 +445,7 @@ mod tests {
         );
         assert_eq!(event.signal_state(), 1, "a set event stays set");
 
+        crate::sched::testkit::made(WaitableId::Semaphore(0));
         d.renew_semaphore(0, 0, 1);
         let semaphore = WaitableId::Semaphore(0);
         assert_eq!(

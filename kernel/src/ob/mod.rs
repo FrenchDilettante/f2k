@@ -51,8 +51,10 @@
 //!
 //! Most kinds live in slot pools ([`crate::slots`]) that grow a page at a time from the nonpaged
 //! pool and keep their peak, so a record never moves; their only bound is the u16 index, and a
-//! create that finds no page fails as the platform's out-of-memory would. The dispatcher objects
-//! and the processes keep fixed pools until they move too (a create past one fails the same way).
+//! create that finds no page fails as the platform's out-of-memory would. An event's, a
+//! semaphore's, a mutex's or a waitable timer's body is made in the dispatcher database's side
+//! table at its record's index before the id is handed out, from the same pages. The threads and
+//! the processes keep fixed pools until they move too (a create past one fails the same way).
 //! A slot pool's first generation is 1 and moves on at the delete, so no live object's id carries
 //! generation 0.
 
@@ -211,16 +213,6 @@ pub use rtl::nt::access::{PROCESS_ALL_ACCESS, SECTION_ALL_ACCESS, THREAD_ALL_ACC
 /// GetExitCodeProcess's and GetExitCodeThread's answer for one still running.
 pub const STILL_ACTIVE: u32 = 259;
 
-/// How many events can exist at once.
-pub const EVENTS: usize = 256;
-/// How many semaphores can exist at once.
-pub const SEMAPHORES: usize = 64;
-/// How many mutexes can exist at once.
-pub const MUTEXES: usize = 64;
-/// How many waitable timers can exist at once, across every process: a full table refuses a
-/// create (STATUS_INSUFFICIENT_RESOURCES, Windows 2000's answer when its pool has no room for the
-/// object).
-pub const TIMERS: usize = 256;
 /// How many image segments may be live before a new one makes room by purging the least recently
 /// cached ([`Directory::make_room_for_segment`]): the bound on the image cache, two for each
 /// process record. Not a cap: while every segment is active, a new one is made all the same.
@@ -413,8 +405,8 @@ impl Counts {
     }
 }
 
-/// One record's header in a fixed pool (the dispatcher objects' and the processes'): whether it
-/// holds a live object, its generation, the object's counts, and its security descriptor.
+/// One record's header in a fixed pool (the threads' and the processes'): whether it holds a
+/// live object, its generation, the object's counts, and its security descriptor.
 #[derive(Debug)]
 pub struct Header {
     live: bool,
@@ -454,9 +446,9 @@ fn allocate(headers: &mut [Header], range: core::ops::Range<usize>, fallback: Sd
     Some(index as u16)
 }
 
-/// A fixed pool of records of one kind, each behind its header: the dispatcher objects' (headers
-/// alone, `T` is `()`: their bodies are the dispatcher database's) and the processes', until they
-/// move onto slot pools as the other kinds have ([`ObSlots`]).
+/// A fixed pool of records of one kind, each behind its header: the threads' (headers alone, `T`
+/// is `()`: their records are the dispatcher database's) and the processes', until they move onto
+/// slot pools as the other kinds have ([`ObSlots`]).
 pub struct Pool<T, const N: usize> {
     headers: [Header; N],
     records: [T; N],
@@ -588,6 +580,48 @@ where
     record.sd = security::take_pending().unwrap_or_else(|| security::default_sd(kind));
     Some((object_id(kind, id), record))
 }
+
+/// A new dispatcher object of `kind` in `pool`, holding its creator's reference, its body made in
+/// the dispatcher database at the same index (before the id leaves here: every id names a made
+/// body) and renewed there by `renew`, all in one raise to the dispatch level. None, with nothing
+/// made, when no page is left for the record or the body (or the kind's u16 index is spent).
+fn create_dispatcher_object<B, const PER: usize>(
+    pool: &mut ObSlots<B, PER>,
+    kind: ObjectType,
+    renew: impl FnOnce(&mut Dispatcher, u16),
+) -> Option<ObjectId>
+where
+    ObRecord<B>: Record,
+{
+    let (id, _) = allocate_record(pool, kind)?;
+    let body = id.waitable().expect("a dispatcher object's kind");
+    let made = with_bodies(|bodies| {
+        let made = bodies.ensure_body(body, pages()).is_ok();
+        if made {
+            renew(bodies, id.index);
+        }
+        made
+    });
+    if !made {
+        // Undone: the record goes back as a deletion leaves it, its id stale before anyone saw it.
+        let freed = pool.free(slot_id(id));
+        debug_assert!(freed, "the record just taken");
+        return None;
+    }
+    Some(id)
+}
+
+/// A dispatcher object's record in the directory: its counts alone. Its body is the dispatcher
+/// database's ([`crate::sched::database`]), in the kind's side table at the same index, as Windows
+/// 2000 keeps a dispatcher object's DISPATCHER_HEADER apart from its object header. One type per
+/// kind, so each kind has its pool.
+pub struct EventObject;
+/// A semaphore's record in the directory (see [`EventObject`]).
+pub struct SemaphoreObject;
+/// A mutex's record in the directory (see [`EventObject`]).
+pub struct MutexObject;
+/// A waitable timer's record in the directory (see [`EventObject`]).
+pub struct TimerObject;
 
 /// A section object's body: the mapping itself. A data section is its own segment: its frames are
 /// its own, and a view names it by its object, so its frames outlive the handle that made it while
@@ -925,14 +959,15 @@ impl WaitReferences {
     }
 }
 
-/// The kinds' pools, in two tables. The fixed pools' rows (the dispatcher objects and the
-/// processes): the kind, its pool's field, its body (`()` for a dispatcher object: the body is the
-/// dispatcher database's, at the same index; a process keeps its thread ordinals here, since which
+/// The kinds' pools, in two tables. The fixed pools' rows (the threads and the processes): the
+/// kind, its pool's field, its body (`()` for a thread: its record is the dispatcher database's,
+/// at the same index; a process keeps its thread ordinals here, since which
 /// of them are free is its thread objects' lives), how a fresh record is made, and the capacity.
-/// The slot pools' rows: the kind, its pool's field, its body and how a fresh body is made; the
-/// pool holds a page of records a chunk. The tables make the [`Directory`]'s pools, its in-place
-/// builder, and the matches the untyped paths (an object's counts by id, its deletion, the sweep)
-/// reach a kind's pool through.
+/// The slot pools' rows: the kind, its pool's field, its body and how a fresh body is made (a
+/// marker for an event, a semaphore, a mutex and a waitable timer, whose bodies are the dispatcher
+/// database's, at the same index); the pool holds a page of records a chunk. The tables make the
+/// [`Directory`]'s pools, its in-place builder, and the matches the untyped paths (an object's
+/// counts by id, its deletion, the sweep) reach a kind's pool through.
 macro_rules! pools {
     (
         fixed { $($kind:ident => $pool:ident: $body:ty = $fresh:expr, $capacity:expr;)* }
@@ -955,7 +990,7 @@ macro_rules! pools {
         )*
 
         /// Every object, by kind, with the image segments, the namespace and the waits'
-        /// references. The dispatcher objects' pools are their headers alone: the bodies are the
+        /// references. The dispatcher objects' pools hold their counts alone: the bodies are the
         /// dispatcher database's, at the same index.
         pub struct Directory {
             $($pool: Pool<$body, $capacity>,)*
@@ -1074,15 +1109,15 @@ macro_rules! pools {
 
 pools! {
     fixed {
-        Event => events: () = || (), EVENTS;
-        Semaphore => semaphores: () = || (), SEMAPHORES;
-        Mutex => mutexes: () = || (), MUTEXES;
-        Timer => timers: () = || (), TIMERS;
         Thread => threads: () = || (), THREADS;
         Process => processes: crate::process::ordinals::Ordinals =
             crate::process::ordinals::Ordinals::empty, PROCESSES;
     }
     slots {
+        Event => events: EventObject = EventObject;
+        Semaphore => semaphores: SemaphoreObject = SemaphoreObject;
+        Mutex => mutexes: MutexObject = MutexObject;
+        Timer => timers: TimerObject = TimerObject;
         Section => sections: SectionObject = SectionObject::none();
         File => files: crate::fs::file::FileObject = crate::fs::file::FileObject::none();
         Directory => directories: DirectoryObject = DirectoryObject;
@@ -1280,41 +1315,37 @@ impl Directory {
 
     // --- Creation ----------------------------------------------------------------------------
 
-    /// A fresh event of `kind` at `signaled`, holding its creator's reference; none when the pool
-    /// is exhausted.
+    /// A fresh event of `kind` at `signaled`, holding its creator's reference; none when no page is
+    /// left for its record or its body (see [`create_dispatcher_object`]).
     pub fn create_event(&mut self, kind: EventKind, signaled: bool) -> Option<ObjectId> {
-        let index = self.events.allocate_in(0..EVENTS, Sd::NULL_DACL)?;
-        with_bodies(|bodies| {
+        create_dispatcher_object(&mut self.events, ObjectType::Event, |bodies, index| {
             bodies.renew_event(index, kind, signaled);
-        });
-        Some(self.id(ObjectType::Event, index))
+        })
     }
 
     /// A fresh semaphore at `initial` with ceiling `limit`.
     pub fn create_semaphore(&mut self, initial: i32, limit: i32) -> Option<ObjectId> {
-        let index = self.semaphores.allocate_in(0..SEMAPHORES, Sd::NULL_DACL)?;
-        with_bodies(|bodies| {
-            bodies.renew_semaphore(index, initial, limit);
-        });
-        Some(self.id(ObjectType::Semaphore, index))
+        create_dispatcher_object(
+            &mut self.semaphores,
+            ObjectType::Semaphore,
+            |bodies, index| {
+                bodies.renew_semaphore(index, initial, limit);
+            },
+        )
     }
 
     /// A fresh, free mutex.
     pub fn create_mutex(&mut self) -> Option<ObjectId> {
-        let index = self.mutexes.allocate_in(0..MUTEXES, Sd::NULL_DACL)?;
-        with_bodies(|bodies| {
+        create_dispatcher_object(&mut self.mutexes, ObjectType::Mutex, |bodies, index| {
             bodies.renew_mutex(index);
-        });
-        Some(self.id(ObjectType::Mutex, index))
+        })
     }
 
     /// A fresh, unarmed, unsignaled waitable timer.
     pub fn create_timer(&mut self, manual_reset: bool) -> Option<ObjectId> {
-        let index = self.timers.allocate_in(0..TIMERS, Sd::NULL_DACL)?;
-        with_bodies(|bodies| {
+        create_dispatcher_object(&mut self.timers, ObjectType::Timer, |bodies, index| {
             bodies.renew_waitable_timer(index, manual_reset);
-        });
-        Some(self.id(ObjectType::Timer, index))
+        })
     }
 
     /// A thread record for a new thread object, in `range`. The record is returned as it was left;
@@ -2060,11 +2091,9 @@ impl Directory {
     /// queue to it any more).
     pub fn run_down_timers(&mut self, thread: ThreadId) {
         with_bodies(|bodies| {
-            for index in 0..TIMERS as u16 {
-                if self.timers.is_live_at(index)
-                    && bodies.waitable_timer_mut(index).apc_thread() == Some(thread)
-                {
-                    bodies.cancel_timer(TimerId::Waitable(index));
+            for (timer, _) in self.timers.iter() {
+                if bodies.waitable_timer_mut(timer.index).apc_thread() == Some(thread) {
+                    bodies.cancel_timer(TimerId::Waitable(timer.index));
                 }
             }
         });
@@ -2865,6 +2894,9 @@ mod tests {
             .create_event(EventKind::Notification, false)
             .unwrap();
         let second = directory.create_mutex().unwrap();
+        // The semaphores' pages (a record's, a body's), made before the pages run out.
+        let spare = directory.create_semaphore(0, 1).unwrap();
+        assert_eq!(directory.dereference(spare), None);
         for index in 0..300 {
             directory
                 .bind_name(&w(&format!("n{index}")), first)
@@ -3155,37 +3187,88 @@ mod tests {
         assert_eq!(directory.thread_by_client_id(a, 16), None, "B's thread");
     }
 
-    /// The pools refuse past their capacity.
+    /// The dispatcher kinds grow past the caps they once had (64 semaphores and mutexes, 256 events
+    /// and timers), each object's body made at its index; a create is refused only when no page is
+    /// left, for the record or for the body, with nothing made.
     #[test]
-    fn the_pools_exhaust() {
+    fn the_dispatcher_kinds_grow_until_no_page_is_left() {
         let directory = directory();
-        for _ in 0..SEMAPHORES {
-            assert!(directory.create_semaphore(0, 1).is_some());
+        let makers: [fn(&mut Directory) -> Option<ObjectId>; 4] = [
+            |d| d.create_event(EventKind::Notification, false),
+            |d| d.create_semaphore(0, 1),
+            |d| d.create_mutex(),
+            |d| d.create_timer(true),
+        ];
+        let mut made = Vec::new();
+        for make in makers {
+            for _ in 0..300 {
+                let id = make(directory).unwrap();
+                let body = id.waitable().unwrap();
+                assert_eq!(dispatcher().waitable(body).id(), body, "{id:?}'s own body");
+                made.push(id);
+            }
         }
-        assert_eq!(directory.create_semaphore(0, 1), None);
-        assert_eq!(directory.live_objects(), SEMAPHORES);
+        page_budget(0);
+        for make in makers {
+            made.extend(until_refused(|| make(directory)));
+            assert_eq!(make(directory), None);
+        }
+        assert_eq!(
+            directory.live_objects(),
+            made.len(),
+            "the refusals made nothing"
+        );
     }
 
-    /// The timer table fills at its capacity — a create is refused, nothing made — and a deleted
-    /// timer's record serves the next create, disarmed and unsignaled.
+    /// A create whose record is made but whose body finds no page is undone: nothing lives, the
+    /// record's id goes stale, and once a page is there again the record serves the next create.
     #[test]
-    fn the_timer_table_fills_and_reuses() {
+    fn a_body_without_a_page_undoes_its_record() {
+        let directory = directory();
+        // Fill the bodies' first page; as long as that count does not fill the records' pages
+        // exactly, the last record page has a record left, so the next create needs a page for
+        // its body alone.
+        let per = crate::slots::entries_per_page::<crate::sched::event::Event>();
+        assert_ne!(per % per_page::<ObRecord<EventObject>>(), 0);
+        let events: Vec<_> = (0..per)
+            .map(|_| {
+                directory
+                    .create_event(EventKind::Notification, false)
+                    .unwrap()
+            })
+            .collect();
+        page_budget(0);
+        assert_eq!(directory.create_event(EventKind::Notification, false), None);
+        assert_eq!(directory.live_objects(), events.len(), "nothing made");
+        page_budget(usize::MAX);
+        let next = directory
+            .create_event(EventKind::Notification, true)
+            .unwrap();
+        assert_eq!(usize::from(next.index), per, "the undone record serves it");
+        assert_eq!(next.generation, 2, "the undone id is stale");
+        assert_eq!(
+            dispatcher()
+                .waitable(next.waitable().unwrap())
+                .signal_state(),
+            1
+        );
+    }
+
+    /// A deleted timer's record serves the next create, disarmed and unsignaled.
+    #[test]
+    fn a_deleted_timer_s_record_is_reused_disarmed() {
         let directory = directory();
         let mut dispatcher = dispatcher();
-        let timers: Vec<_> = (0..TIMERS)
+        let timers: Vec<_> = (0..300)
             .map(|_| directory.create_timer(true).unwrap())
             .collect();
-        assert_eq!(directory.create_timer(false), None, "the table is full");
-        assert_eq!(directory.live_objects(), TIMERS, "the refusal made nothing");
-
-        let freed = timers[TIMERS / 2];
+        let freed = timers[150];
         dispatcher.set_waitable_timer(directory.timer(freed).unwrap(), 1_000_000, 0, 0, false, 0);
         assert_eq!(directory.dereference(freed), None);
         let reused = directory.create_timer(false).unwrap();
         assert_eq!(reused.index, freed.index, "the freed record is reused");
         assert!(directory.timer(freed).is_none(), "under a new generation");
         assert!(!dispatcher.waitable_timer_mut(reused.index).armed());
-        assert_eq!(directory.create_timer(true), None, "full again");
     }
 
     /// The process table fills at its capacity — a create is refused, nothing made — and a process
@@ -3393,7 +3476,11 @@ mod tests {
     fn slot_kinds_name_only_their_live_objects() {
         use crate::fs::file::{Context, FileRecordId};
         let directory = directory();
-        let makers: [fn(&mut Directory) -> Option<ObjectId>; 11] = [
+        let makers: [fn(&mut Directory) -> Option<ObjectId>; 15] = [
+            |d| d.create_event(EventKind::Notification, false),
+            |d| d.create_semaphore(0, 1),
+            |d| d.create_mutex(),
+            |d| d.create_timer(true),
             |d| d.create_section(SectionObject::none()),
             |d| d.create_file(Context::Disk(FileRecordId::at(1)), 0, 0, 0),
             |d| d.create_window_station("W", 0),

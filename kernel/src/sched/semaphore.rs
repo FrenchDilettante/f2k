@@ -118,6 +118,7 @@ mod tests {
 
     /// A fresh semaphore object of `d`'s pool, at count zero with the ceiling `limit`.
     fn semaphore(mut d: crate::sched::testkit::Disp, limit: i32) -> WaitableId {
+        crate::sched::testkit::made(WaitableId::Semaphore(0));
         d.renew_semaphore(0, 0, limit);
         WaitableId::Semaphore(0)
     }

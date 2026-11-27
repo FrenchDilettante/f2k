@@ -1,4 +1,6 @@
-//! Fixed pools of records, reached by index: the dispatcher database's storage.
+//! Fixed pools of records, reached by index: the dispatcher database's thread records, process
+//! object bodies and user-APC records (the event, semaphore, mutex and waitable-timer bodies are
+//! side tables now, [`crate::slots::SideTable`], made as their objects need them).
 //!
 //! A pool is an array built where it lives (by value a pool of threads would pass through the
 //! caller's stack, which is smaller than it) and never moved again, so a record keeps its address

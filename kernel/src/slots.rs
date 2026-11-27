@@ -615,6 +615,12 @@ pub const fn per_page<T>() -> usize {
     PAGE / core::mem::size_of::<Slot<T>>()
 }
 
+/// How many records of `T` a page holds in a side table: the `PER` of a [`SideTable`] whose chunk
+/// is one page.
+pub const fn entries_per_page<T>() -> usize {
+    PAGE / core::mem::size_of::<Entry<T>>()
+}
+
 /// A slot's state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]

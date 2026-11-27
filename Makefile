@@ -349,7 +349,8 @@ MIRI_MANIFEST = $(CURDIR)/$(KERNEL_DIR)/Cargo.toml
 MIRIFLAGS ?= -Zmiri-ignore-leaks -Zmiri-disable-isolation
 MIRI_JOBS ?= 6
 MIRI_TESTS ?= sched::dispatcher sched::thread sched::switch sched::semaphore sched::process \
-	sched::idle sched::object sched::tests sched::census sched::pool sched::list sched::startup \
+	sched::idle sched::object sched::tests sched::census sched::pool sched::database sched::list \
+	sched::startup \
 	level:: sync:: pcr:: slots:: mem::heap mem::dma mem::pool mem::frame mem::paging:: mem::pte \
 	dev::io hal::exports csr:: win32k::text ob:: process:: fs::file interrupt::clock user::apc \
 	sched::wait:: sched::apc sched::timer sched::waitable_timer sched::mutex sched::event \

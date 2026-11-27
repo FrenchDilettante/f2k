@@ -313,20 +313,47 @@ pub fn event(kind: EventKind, signaled: bool) -> &'static Event {
 /// A fresh, free mutex object of the installed dispatcher.
 pub fn mutex() -> Rec<Mutex> {
     let index = take(1);
-    rebased(installed().renew_mutex(index))
+    made(WaitableId::Mutex(index));
+    let mut dispatcher = installed();
+    dispatcher.renew_mutex(index);
+    side(dispatcher.db.mutexes.address(index.into()))
 }
 
 /// A fresh waitable timer object of the installed dispatcher.
 pub fn waitable_timer(manual_reset: bool) -> Rec<WaitableTimer> {
     let index = take(2);
-    rebased(installed().renew_waitable_timer(index, manual_reset))
+    made(WaitableId::Timer(index));
+    let mut dispatcher = installed();
+    dispatcher.renew_waitable_timer(index, manual_reset);
+    side(dispatcher.db.timers.address(index.into()))
 }
 
 /// A fresh timer of the installed dispatcher, uninserted and unsignaled: a fresh manual-reset
 /// waitable timer's.
 pub fn timer() -> Rec<Timer> {
-    let index = take(2);
-    rebased(&mut installed().renew_waitable_timer(index, true).timer)
+    let timer = waitable_timer(true).as_ptr();
+    // SAFETY: a made record of the installed dispatcher, no borrow of which is live; only the
+    // field's address is taken.
+    let timer = unsafe { core::ptr::addr_of_mut!((*timer).timer) };
+    // SAFETY: as above, the record whole.
+    let id = unsafe { &*timer }.record_id();
+    Rec(timer, id)
+}
+
+/// Make the body `object` names in the installed dispatcher's side table, from the host's pages.
+pub fn made(object: WaitableId) {
+    installed()
+        .ensure_body(object, &crate::slots::KERNEL_PAGES)
+        .expect("the host's pages");
+}
+
+/// A record of one of the installed dispatcher's side tables, by the address the table hands out:
+/// its chunk's own, no borrow of the dispatcher's.
+fn side<T: Record>(address: Option<core::ptr::NonNull<T>>) -> Rec<T> {
+    let record = address.expect("a made record").as_ptr();
+    // SAFETY: a made record of the installed dispatcher, no borrow of which is live.
+    let id = unsafe { &*record }.record_id();
+    Rec(record, id)
 }
 
 /// A fresh user-APC record of the installed dispatcher, unbound.
