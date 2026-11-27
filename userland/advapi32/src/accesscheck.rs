@@ -26,9 +26,7 @@ use rtl::status::{NtStatus, STATUS_BUFFER_TOO_SMALL};
 use rtl::winerror::{ERROR_NOACCESS, ERROR_NOT_ENOUGH_MEMORY, ERROR_OUTOFMEMORY};
 
 use crate::imports::{self as nt, Answer, Counted, HeapBlock};
-use crate::token::{
-    bool_of, deliver_name, failed, name_for_luid, optional_ansi, optional_wide,
-};
+use crate::token::{bool_of, deliver_name, failed, name_for_luid, optional_ansi, optional_wide};
 use crate::{caller_bytes_mut, Out};
 
 /// GetCurrentProcess's pseudo-handle.
@@ -50,16 +48,81 @@ mod raw {
 
     #[link(name = "ntdll", kind = "raw-dylib", import_name_type = "undecorated")]
     unsafe extern "system" {
-        pub fn NtAccessCheck(sd: *const u8, token: u32, desired: u32, mapping: *const u8, priv_set: *mut u8, priv_len: *mut u32, granted: *mut u32, access_status: *mut u32) -> u32;
-        pub fn NtAccessCheckByType(sd: *const u8, self_sid: *const u8, token: u32, desired: u32, list: *const u8, list_len: u32, mapping: *const u8, priv_set: *mut u8, priv_len: *mut u32, granted: *mut u32, access_status: *mut u32) -> u32;
-        pub fn NtAccessCheckByTypeResultList(sd: *const u8, self_sid: *const u8, token: u32, desired: u32, list: *const u8, list_len: u32, mapping: *const u8, priv_set: *mut u8, priv_len: *mut u32, granted_list: *mut u32, status_list: *mut u32) -> u32;
+        pub fn NtAccessCheck(
+            sd: *const u8,
+            token: u32,
+            desired: u32,
+            mapping: *const u8,
+            priv_set: *mut u8,
+            priv_len: *mut u32,
+            granted: *mut u32,
+            access_status: *mut u32,
+        ) -> u32;
+        pub fn NtAccessCheckByType(
+            sd: *const u8,
+            self_sid: *const u8,
+            token: u32,
+            desired: u32,
+            list: *const u8,
+            list_len: u32,
+            mapping: *const u8,
+            priv_set: *mut u8,
+            priv_len: *mut u32,
+            granted: *mut u32,
+            access_status: *mut u32,
+        ) -> u32;
+        pub fn NtAccessCheckByTypeResultList(
+            sd: *const u8,
+            self_sid: *const u8,
+            token: u32,
+            desired: u32,
+            list: *const u8,
+            list_len: u32,
+            mapping: *const u8,
+            priv_set: *mut u8,
+            priv_len: *mut u32,
+            granted_list: *mut u32,
+            status_list: *mut u32,
+        ) -> u32;
         pub fn NtPrivilegeCheck(token: u32, required: *mut u8, result: *mut u8) -> u32;
-        pub fn NtQueryInformationToken(token: u32, class: u32, info: *mut u8, length: u32, result_length: *mut u32) -> u32;
+        pub fn NtQueryInformationToken(
+            token: u32,
+            class: u32,
+            info: *mut u8,
+            length: u32,
+            result_length: *mut u32,
+        ) -> u32;
         pub fn NtSetInformationToken(token: u32, class: u32, info: *const u8, length: u32) -> u32;
-        pub fn NtAdjustGroupsToken(token: u32, reset: u8, new_state: *const u8, length: u32, previous: *mut u8, return_length: *mut u32) -> u32;
-        pub fn NtOpenThreadToken(thread: u32, access: u32, open_as_self: u8, token: *mut u32) -> u32;
-        pub fn NtFilterToken(token: u32, flags: u32, disabled: *const u8, deleted: *const u8, restricted: *const u8, new_token: *mut u32) -> u32;
-        pub fn NtDuplicateToken(token: u32, access: u32, attributes: *const ObjectAttributes, effective_only: u8, kind: u32, new_token: *mut u32) -> u32;
+        pub fn NtAdjustGroupsToken(
+            token: u32,
+            reset: u8,
+            new_state: *const u8,
+            length: u32,
+            previous: *mut u8,
+            return_length: *mut u32,
+        ) -> u32;
+        pub fn NtOpenThreadToken(
+            thread: u32,
+            access: u32,
+            open_as_self: u8,
+            token: *mut u32,
+        ) -> u32;
+        pub fn NtFilterToken(
+            token: u32,
+            flags: u32,
+            disabled: *const u8,
+            deleted: *const u8,
+            restricted: *const u8,
+            new_token: *mut u32,
+        ) -> u32;
+        pub fn NtDuplicateToken(
+            token: u32,
+            access: u32,
+            attributes: *const ObjectAttributes,
+            effective_only: u8,
+            kind: u32,
+            new_token: *mut u32,
+        ) -> u32;
     }
 }
 
@@ -107,19 +170,56 @@ pub(crate) mod host {
         }
     }
 
-    pub unsafe extern "system" fn NtAccessCheck(_: *const u8, token: u32, desired: u32, _: *const u8, _: *mut u8, _: *mut u32, granted: *mut u32, access_status: *mut u32) -> u32 {
+    pub unsafe extern "system" fn NtAccessCheck(
+        _: *const u8,
+        token: u32,
+        desired: u32,
+        _: *const u8,
+        _: *mut u8,
+        _: *mut u32,
+        granted: *mut u32,
+        access_status: *mut u32,
+    ) -> u32 {
         let status = record("NtAccessCheck", token, desired, 0);
-        if status == 0 { unsafe { check_outs(granted, access_status) } }
+        if status == 0 {
+            unsafe { check_outs(granted, access_status) }
+        }
         status
     }
 
-    pub unsafe extern "system" fn NtAccessCheckByType(_: *const u8, _: *const u8, token: u32, desired: u32, _: *const u8, list_len: u32, _: *const u8, _: *mut u8, _: *mut u32, granted: *mut u32, access_status: *mut u32) -> u32 {
+    pub unsafe extern "system" fn NtAccessCheckByType(
+        _: *const u8,
+        _: *const u8,
+        token: u32,
+        desired: u32,
+        _: *const u8,
+        list_len: u32,
+        _: *const u8,
+        _: *mut u8,
+        _: *mut u32,
+        granted: *mut u32,
+        access_status: *mut u32,
+    ) -> u32 {
         let status = record("NtAccessCheckByType", token, desired, list_len);
-        if status == 0 { unsafe { check_outs(granted, access_status) } }
+        if status == 0 {
+            unsafe { check_outs(granted, access_status) }
+        }
         status
     }
 
-    pub unsafe extern "system" fn NtAccessCheckByTypeResultList(_: *const u8, _: *const u8, token: u32, desired: u32, _: *const u8, list_len: u32, _: *const u8, _: *mut u8, _: *mut u32, granted_list: *mut u32, status_list: *mut u32) -> u32 {
+    pub unsafe extern "system" fn NtAccessCheckByTypeResultList(
+        _: *const u8,
+        _: *const u8,
+        token: u32,
+        desired: u32,
+        _: *const u8,
+        list_len: u32,
+        _: *const u8,
+        _: *mut u8,
+        _: *mut u32,
+        granted_list: *mut u32,
+        status_list: *mut u32,
+    ) -> u32 {
         let status = record("NtAccessCheckByTypeResultList", token, desired, list_len);
         if status == 0 {
             // SAFETY: the caller's lists the test gave.
@@ -144,28 +244,58 @@ pub(crate) mod host {
         status
     }
 
-    pub unsafe extern "system" fn NtQueryInformationToken(token: u32, class: u32, info: *mut u8, length: u32, result_length: *mut u32) -> u32 {
+    pub unsafe extern "system" fn NtQueryInformationToken(
+        token: u32,
+        class: u32,
+        info: *mut u8,
+        length: u32,
+        result_length: *mut u32,
+    ) -> u32 {
         record("NtQueryInformationToken", token, class, 0);
         TOKEN_REPLY.with(|reply| match &*reply.borrow() {
             Err(status) => *status,
             Ok(bytes) => {
                 let fits = bytes.len().min(length as usize);
                 // SAFETY: the caller's buffer of `length` bytes and its result length.
-                unsafe { info.copy_from_nonoverlapping(bytes.as_ptr(), fits); result_length.write(bytes.len() as u32) };
-                if fits < bytes.len() { STATUS_BUFFER_TOO_SMALL } else { 0 }
+                unsafe {
+                    info.copy_from_nonoverlapping(bytes.as_ptr(), fits);
+                    result_length.write(bytes.len() as u32)
+                };
+                if fits < bytes.len() {
+                    STATUS_BUFFER_TOO_SMALL
+                } else {
+                    0
+                }
             }
         })
     }
 
-    pub unsafe extern "system" fn NtSetInformationToken(token: u32, class: u32, _: *const u8, _: u32) -> u32 {
+    pub unsafe extern "system" fn NtSetInformationToken(
+        token: u32,
+        class: u32,
+        _: *const u8,
+        _: u32,
+    ) -> u32 {
         record("NtSetInformationToken", token, class, 0)
     }
 
-    pub unsafe extern "system" fn NtAdjustGroupsToken(token: u32, reset: u8, _: *const u8, _: u32, _: *mut u8, _: *mut u32) -> u32 {
+    pub unsafe extern "system" fn NtAdjustGroupsToken(
+        token: u32,
+        reset: u8,
+        _: *const u8,
+        _: u32,
+        _: *mut u8,
+        _: *mut u32,
+    ) -> u32 {
         record("NtAdjustGroupsToken", token, u32::from(reset), 0)
     }
 
-    pub unsafe extern "system" fn NtOpenThreadToken(thread: u32, access: u32, _: u8, token: *mut u32) -> u32 {
+    pub unsafe extern "system" fn NtOpenThreadToken(
+        thread: u32,
+        access: u32,
+        _: u8,
+        token: *mut u32,
+    ) -> u32 {
         let status = record("NtOpenThreadToken", thread, access, 0);
         if status == 0 {
             // SAFETY: the caller's handle slot the test gave.
@@ -174,29 +304,55 @@ pub(crate) mod host {
         status
     }
 
-    pub unsafe extern "system" fn NtFilterToken(token: u32, flags: u32, disabled: *const u8, deleted: *const u8, restricted: *const u8, new_token: *mut u32) -> u32 {
+    pub unsafe extern "system" fn NtFilterToken(
+        token: u32,
+        flags: u32,
+        disabled: *const u8,
+        deleted: *const u8,
+        restricted: *const u8,
+        new_token: *mut u32,
+    ) -> u32 {
         let status = record("NtFilterToken", token, flags, 0);
         FILTER_COUNTS.with(|counts| {
             let mut counts = counts.borrow_mut();
             counts.clear();
             for block in [disabled, deleted, restricted] {
                 // SAFETY: the heap block the body built (null counted as none), its count first.
-                counts.push(if block.is_null() { 0 } else { unsafe { block.cast::<u32>().read_unaligned() } });
+                counts.push(if block.is_null() {
+                    0
+                } else {
+                    unsafe { block.cast::<u32>().read_unaligned() }
+                });
             }
         });
-        if status == 0 { unsafe { new_token.write(HANDLE.with(|handle| handle.get())) } }
+        if status == 0 {
+            unsafe { new_token.write(HANDLE.with(|handle| handle.get())) }
+        }
         status
     }
 
-    pub unsafe extern "system" fn NtDuplicateToken(token: u32, access: u32, attributes: *const ObjectAttributes, _: u8, kind: u32, new_token: *mut u32) -> u32 {
+    pub unsafe extern "system" fn NtDuplicateToken(
+        token: u32,
+        access: u32,
+        attributes: *const ObjectAttributes,
+        _: u8,
+        kind: u32,
+        new_token: *mut u32,
+    ) -> u32 {
         let status = record("NtDuplicateToken", token, access, kind);
         // SAFETY: the attributes the body built, alive across the call.
         let (descriptor, flags, level) = unsafe {
             let attributes = &*attributes;
-            (attributes.security_descriptor as usize, attributes.attributes, (*attributes.security_quality_of_service.cast::<[u32; 3]>())[1])
+            (
+                attributes.security_descriptor as usize,
+                attributes.attributes,
+                (*attributes.security_quality_of_service.cast::<[u32; 3]>())[1],
+            )
         };
         DUP.with(|dup| dup.set((descriptor, flags, level)));
-        if status == 0 { unsafe { new_token.write(HANDLE.with(|handle| handle.get())) } }
+        if status == 0 {
+            unsafe { new_token.write(HANDLE.with(|handle| handle.get())) }
+        }
         status
     }
 }
@@ -213,28 +369,98 @@ pub(crate) mod services {
 
     /// NtAccessCheck: the service's status and the access status it reported (the caller's
     /// memory is handed through, which the service probes).
-    pub fn access_check(sd: *const u8, token: u32, desired: u32, mapping: *const u8, priv_set: *mut u8, priv_len: *mut u32, granted: *mut u32) -> (NtStatus, NtStatus) {
+    pub fn access_check(
+        sd: *const u8,
+        token: u32,
+        desired: u32,
+        mapping: *const u8,
+        priv_set: *mut u8,
+        priv_len: *mut u32,
+        granted: *mut u32,
+    ) -> (NtStatus, NtStatus) {
         let mut access_status = 0u32;
         // SAFETY: as the doc says.
-        let status = unsafe { raw::NtAccessCheck(sd, token, desired, mapping, priv_set, priv_len, granted, &mut access_status) };
+        let status = unsafe {
+            raw::NtAccessCheck(
+                sd,
+                token,
+                desired,
+                mapping,
+                priv_set,
+                priv_len,
+                granted,
+                &mut access_status,
+            )
+        };
         (NtStatus(status), NtStatus(access_status))
     }
 
     /// NtAccessCheckByType: as [`access_check`], with the principal-self SID and type list.
     #[allow(clippy::too_many_arguments)]
-    pub fn access_check_by_type(sd: *const u8, self_sid: *const u8, token: u32, desired: u32, list: *const u8, list_len: u32, mapping: *const u8, priv_set: *mut u8, priv_len: *mut u32, granted: *mut u32) -> (NtStatus, NtStatus) {
+    pub fn access_check_by_type(
+        sd: *const u8,
+        self_sid: *const u8,
+        token: u32,
+        desired: u32,
+        list: *const u8,
+        list_len: u32,
+        mapping: *const u8,
+        priv_set: *mut u8,
+        priv_len: *mut u32,
+        granted: *mut u32,
+    ) -> (NtStatus, NtStatus) {
         let mut access_status = 0u32;
         // SAFETY: as [`access_check`]'s.
-        let status = unsafe { raw::NtAccessCheckByType(sd, self_sid, token, desired, list, list_len, mapping, priv_set, priv_len, granted, &mut access_status) };
+        let status = unsafe {
+            raw::NtAccessCheckByType(
+                sd,
+                self_sid,
+                token,
+                desired,
+                list,
+                list_len,
+                mapping,
+                priv_set,
+                priv_len,
+                granted,
+                &mut access_status,
+            )
+        };
         (NtStatus(status), NtStatus(access_status))
     }
 
     /// NtAccessCheckByTypeResultList: the service's status; the granted and status lists are
     /// written where they point.
     #[allow(clippy::too_many_arguments)]
-    pub fn access_check_by_type_result_list(sd: *const u8, self_sid: *const u8, token: u32, desired: u32, list: *const u8, list_len: u32, mapping: *const u8, priv_set: *mut u8, priv_len: *mut u32, granted_list: *mut u32, status_list: *mut u32) -> NtStatus {
+    pub fn access_check_by_type_result_list(
+        sd: *const u8,
+        self_sid: *const u8,
+        token: u32,
+        desired: u32,
+        list: *const u8,
+        list_len: u32,
+        mapping: *const u8,
+        priv_set: *mut u8,
+        priv_len: *mut u32,
+        granted_list: *mut u32,
+        status_list: *mut u32,
+    ) -> NtStatus {
         // SAFETY: as [`access_check`]'s.
-        NtStatus(unsafe { raw::NtAccessCheckByTypeResultList(sd, self_sid, token, desired, list, list_len, mapping, priv_set, priv_len, granted_list, status_list) })
+        NtStatus(unsafe {
+            raw::NtAccessCheckByTypeResultList(
+                sd,
+                self_sid,
+                token,
+                desired,
+                list,
+                list_len,
+                mapping,
+                priv_set,
+                priv_len,
+                granted_list,
+                status_list,
+            )
+        })
     }
 
     /// NtPrivilegeCheck: the service's status and the result it reported.
@@ -250,37 +476,90 @@ pub(crate) mod services {
     /// a buffer is STATUS_BUFFER_TOO_SMALL, the size in its length).
     pub fn query_information_token(token: u32, class: u32, information: &mut [u8]) -> Answer {
         let mut length = 0u32;
-        // SAFETY: the service writes at most the buffer's length into it, and the length into the local.
-        let status = unsafe { raw::NtQueryInformationToken(token, class, information.as_mut_ptr(), information.len() as u32, &mut length) };
-        Answer { status: NtStatus(status), length }
+        // SAFETY: the service writes at most the buffer's length into it, and the length into the
+        // local.
+        let status = unsafe {
+            raw::NtQueryInformationToken(
+                token,
+                class,
+                information.as_mut_ptr(),
+                information.len() as u32,
+                &mut length,
+            )
+        };
+        Answer {
+            status: NtStatus(status),
+            length,
+        }
     }
 
     /// NtSetInformationToken.
-    pub fn set_information_token(token: u32, class: u32, info: *const u8, length: u32) -> Result<(), NtStatus> {
+    pub fn set_information_token(
+        token: u32,
+        class: u32,
+        info: *const u8,
+        length: u32,
+    ) -> Result<(), NtStatus> {
         // SAFETY: the caller's memory handed through, which the service probes.
         checked(unsafe { raw::NtSetInformationToken(token, class, info, length) })
     }
 
     /// NtAdjustGroupsToken.
-    pub fn adjust_groups_token(token: u32, reset: bool, new_state: *const u8, length: u32, previous: *mut u8, return_length: *mut u32) -> NtStatus {
+    pub fn adjust_groups_token(
+        token: u32,
+        reset: bool,
+        new_state: *const u8,
+        length: u32,
+        previous: *mut u8,
+        return_length: *mut u32,
+    ) -> NtStatus {
         // SAFETY: the caller's memory handed through, which the service probes.
-        NtStatus(unsafe { raw::NtAdjustGroupsToken(token, u8::from(reset), new_state, length, previous, return_length) })
+        NtStatus(unsafe {
+            raw::NtAdjustGroupsToken(
+                token,
+                u8::from(reset),
+                new_state,
+                length,
+                previous,
+                return_length,
+            )
+        })
     }
 
     /// NtOpenThreadToken.
-    pub fn open_thread_token(thread: u32, access: u32, open_as_self: bool, token: *mut u32) -> Result<(), NtStatus> {
+    pub fn open_thread_token(
+        thread: u32,
+        access: u32,
+        open_as_self: bool,
+        token: *mut u32,
+    ) -> Result<(), NtStatus> {
         // SAFETY: the one place the service writes is the caller's, which it probes.
         checked(unsafe { raw::NtOpenThreadToken(thread, access, u8::from(open_as_self), token) })
     }
 
     /// NtFilterToken.
-    pub fn filter_token(token: u32, flags: u32, disabled: *const u8, deleted: *const u8, restricted: *const u8, new_token: *mut u32) -> Result<(), NtStatus> {
+    pub fn filter_token(
+        token: u32,
+        flags: u32,
+        disabled: *const u8,
+        deleted: *const u8,
+        restricted: *const u8,
+        new_token: *mut u32,
+    ) -> Result<(), NtStatus> {
         // SAFETY: the heap blocks live across the call; the one caller place is the handle slot.
-        checked(unsafe { raw::NtFilterToken(token, flags, disabled, deleted, restricted, new_token) })
+        checked(unsafe {
+            raw::NtFilterToken(token, flags, disabled, deleted, restricted, new_token)
+        })
     }
 
     /// NtDuplicateToken with the attributes built.
-    pub fn duplicate_token(token: u32, access: u32, attributes: *const ObjectAttributes, kind: u32, new_token: *mut u32) -> Result<(), NtStatus> {
+    pub fn duplicate_token(
+        token: u32,
+        access: u32,
+        attributes: *const ObjectAttributes,
+        kind: u32,
+        new_token: *mut u32,
+    ) -> Result<(), NtStatus> {
         // SAFETY: the attributes live across the call; the one caller place is the handle slot.
         checked(unsafe { raw::NtDuplicateToken(token, access, attributes, 0, kind, new_token) })
     }
@@ -292,7 +571,12 @@ pub(crate) mod services {
 /// otherwise AccessStatus gets the reported access status (FALSE, with the denial's status as
 /// the last error, for STATUS_ACCESS_DENIED and its kin) and the call returns TRUE. The alarm
 /// wrappers' pfGenerateOnClose is written FALSE (no alarm is ever generated).
-fn answer(service: NtStatus, real: NtStatus, status: Option<&mut Out<'_, u32>>, pf_generate_on_close: *mut u32) -> u32 {
+fn answer(
+    service: NtStatus,
+    real: NtStatus,
+    status: Option<&mut Out<'_, u32>>,
+    pf_generate_on_close: *mut u32,
+) -> u32 {
     if !service.is_success() {
         nt::set_last_error(nt::dos_error(service));
         return 0;
@@ -322,7 +606,11 @@ fn convert_status_list(list: *mut u32, length: u32) {
     };
     for entry in bytes.chunks_exact_mut(4) {
         let status = u32::from_le_bytes(entry.try_into().unwrap());
-        let error = if status == 0 { 0 } else { nt::dos_error(NtStatus(status)) };
+        let error = if status == 0 {
+            0
+        } else {
+            nt::dos_error(NtStatus(status))
+        };
         entry.copy_from_slice(&error.to_le_bytes());
     }
 }
@@ -339,12 +627,26 @@ fn convert_status_list(list: *mut u32, length: u32) {
 #[unsafe(export_name = "f2k_export_AccessCheck")]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "system" fn access_check(
-    security_descriptor: *const u8, client_token: u32, desired_access: u32, generic_mapping: *const u8,
-    privilege_set: *mut u8, privilege_set_length: *mut u32, granted_access: *mut u32, access_status: *mut u32,
+    security_descriptor: *const u8,
+    client_token: u32,
+    desired_access: u32,
+    generic_mapping: *const u8,
+    privilege_set: *mut u8,
+    privilege_set_length: *mut u32,
+    granted_access: *mut u32,
+    access_status: *mut u32,
 ) -> u32 {
     // SAFETY: the caller's place for the status.
     let mut status = unsafe { Out::optional(access_status) };
-    let (service, real) = services::access_check(security_descriptor, client_token, desired_access, generic_mapping, privilege_set, privilege_set_length, granted_access);
+    let (service, real) = services::access_check(
+        security_descriptor,
+        client_token,
+        desired_access,
+        generic_mapping,
+        privilege_set,
+        privilege_set_length,
+        granted_access,
+    );
     answer(service, real, status.as_mut(), core::ptr::null_mut())
 }
 
@@ -357,13 +659,32 @@ pub unsafe extern "system" fn access_check(
 #[unsafe(export_name = "f2k_export_AccessCheckByType")]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "system" fn access_check_by_type(
-    security_descriptor: *const u8, principal_self_sid: *const u8, client_token: u32, desired_access: u32,
-    object_type_list: *const u8, object_type_list_length: u32, generic_mapping: *const u8,
-    privilege_set: *mut u8, privilege_set_length: *mut u32, granted_access: *mut u32, access_status: *mut u32,
+    security_descriptor: *const u8,
+    principal_self_sid: *const u8,
+    client_token: u32,
+    desired_access: u32,
+    object_type_list: *const u8,
+    object_type_list_length: u32,
+    generic_mapping: *const u8,
+    privilege_set: *mut u8,
+    privilege_set_length: *mut u32,
+    granted_access: *mut u32,
+    access_status: *mut u32,
 ) -> u32 {
     // SAFETY: the caller's place for the status.
     let mut status = unsafe { Out::optional(access_status) };
-    let (service, real) = services::access_check_by_type(security_descriptor, principal_self_sid, client_token, desired_access, object_type_list, object_type_list_length, generic_mapping, privilege_set, privilege_set_length, granted_access);
+    let (service, real) = services::access_check_by_type(
+        security_descriptor,
+        principal_self_sid,
+        client_token,
+        desired_access,
+        object_type_list,
+        object_type_list_length,
+        generic_mapping,
+        privilege_set,
+        privilege_set_length,
+        granted_access,
+    );
     answer(service, real, status.as_mut(), core::ptr::null_mut())
 }
 
@@ -377,11 +698,31 @@ pub unsafe extern "system" fn access_check_by_type(
 #[unsafe(export_name = "f2k_export_AccessCheckByTypeResultList")]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "system" fn access_check_by_type_result_list(
-    security_descriptor: *const u8, principal_self_sid: *const u8, client_token: u32, desired_access: u32,
-    object_type_list: *const u8, object_type_list_length: u32, generic_mapping: *const u8,
-    privilege_set: *mut u8, privilege_set_length: *mut u32, granted_access_list: *mut u32, access_status_list: *mut u32,
+    security_descriptor: *const u8,
+    principal_self_sid: *const u8,
+    client_token: u32,
+    desired_access: u32,
+    object_type_list: *const u8,
+    object_type_list_length: u32,
+    generic_mapping: *const u8,
+    privilege_set: *mut u8,
+    privilege_set_length: *mut u32,
+    granted_access_list: *mut u32,
+    access_status_list: *mut u32,
 ) -> u32 {
-    let service = services::access_check_by_type_result_list(security_descriptor, principal_self_sid, client_token, desired_access, object_type_list, object_type_list_length, generic_mapping, privilege_set, privilege_set_length, granted_access_list, access_status_list);
+    let service = services::access_check_by_type_result_list(
+        security_descriptor,
+        principal_self_sid,
+        client_token,
+        desired_access,
+        object_type_list,
+        object_type_list_length,
+        generic_mapping,
+        privilege_set,
+        privilege_set_length,
+        granted_access_list,
+        access_status_list,
+    );
     if !service.is_success() {
         nt::set_last_error(nt::dos_error(service));
         return 0;
@@ -393,14 +734,20 @@ pub unsafe extern "system" fn access_check_by_type_result_list(
 /// AreAllAccessesGranted: whether the granted mask has every bit the desired one has; the last
 /// error is untouched.
 #[unsafe(export_name = "f2k_export_AreAllAccessesGranted")]
-pub unsafe extern "system" fn are_all_accesses_granted(granted_access: u32, desired_access: u32) -> u32 {
+pub unsafe extern "system" fn are_all_accesses_granted(
+    granted_access: u32,
+    desired_access: u32,
+) -> u32 {
     u32::from(granted_access & desired_access == desired_access)
 }
 
 /// AreAnyAccessesGranted: whether the granted mask has any bit the desired one has; the last
 /// error is untouched.
 #[unsafe(export_name = "f2k_export_AreAnyAccessesGranted")]
-pub unsafe extern "system" fn are_any_accesses_granted(granted_access: u32, desired_access: u32) -> u32 {
+pub unsafe extern "system" fn are_any_accesses_granted(
+    granted_access: u32,
+    desired_access: u32,
+) -> u32 {
     u32::from(granted_access & desired_access != 0)
 }
 
@@ -430,24 +777,62 @@ fn private_privilege_set() -> Option<(HeapBlock, u32)> {
 /// The alarm forms' shared work with the alarm skipped: the plain check against `token`, with
 /// pfGenerateOnClose FALSE.
 #[allow(clippy::too_many_arguments)]
-fn alarm_check(sd: *const u8, token: u32, desired: u32, mapping: *const u8, granted: *mut u32, status: *mut u32, pf: *mut u32) -> u32 {
+fn alarm_check(
+    sd: *const u8,
+    token: u32,
+    desired: u32,
+    mapping: *const u8,
+    granted: *mut u32,
+    status: *mut u32,
+    pf: *mut u32,
+) -> u32 {
     let Some((mut set, mut length)) = private_privilege_set() else {
         nt::set_last_error(ERROR_NOT_ENOUGH_MEMORY);
         return 0;
     };
-    let (service, real) = services::access_check(sd, token, desired, mapping, set.bytes_mut().as_mut_ptr(), &mut length, granted);
+    let (service, real) = services::access_check(
+        sd,
+        token,
+        desired,
+        mapping,
+        set.bytes_mut().as_mut_ptr(),
+        &mut length,
+        granted,
+    );
     // SAFETY: the caller's place for the status.
     answer(service, real, unsafe { Out::optional(status) }.as_mut(), pf)
 }
 
 /// The by-type alarm forms' shared work: the plain by-type check against `token`.
 #[allow(clippy::too_many_arguments)]
-fn alarm_check_by_type(sd: *const u8, self_sid: *const u8, token: u32, desired: u32, list: *const u8, list_len: u32, mapping: *const u8, granted: *mut u32, status: *mut u32, pf: *mut u32) -> u32 {
+fn alarm_check_by_type(
+    sd: *const u8,
+    self_sid: *const u8,
+    token: u32,
+    desired: u32,
+    list: *const u8,
+    list_len: u32,
+    mapping: *const u8,
+    granted: *mut u32,
+    status: *mut u32,
+    pf: *mut u32,
+) -> u32 {
     let Some((mut set, mut length)) = private_privilege_set() else {
         nt::set_last_error(ERROR_NOT_ENOUGH_MEMORY);
         return 0;
     };
-    let (service, real) = services::access_check_by_type(sd, self_sid, token, desired, list, list_len, mapping, set.bytes_mut().as_mut_ptr(), &mut length, granted);
+    let (service, real) = services::access_check_by_type(
+        sd,
+        self_sid,
+        token,
+        desired,
+        list,
+        list_len,
+        mapping,
+        set.bytes_mut().as_mut_ptr(),
+        &mut length,
+        granted,
+    );
     // SAFETY: the caller's place for the status.
     answer(service, real, unsafe { Out::optional(status) }.as_mut(), pf)
 }
@@ -455,12 +840,35 @@ fn alarm_check_by_type(sd: *const u8, self_sid: *const u8, token: u32, desired: 
 /// The result-list alarm forms' shared work: the plain result-list check against `token`, the
 /// status list converted to Win32 errors.
 #[allow(clippy::too_many_arguments)]
-fn alarm_check_by_type_result_list(sd: *const u8, self_sid: *const u8, token: u32, desired: u32, list: *const u8, list_len: u32, mapping: *const u8, granted_list: *mut u32, status_list: *mut u32, pf: *mut u32) -> u32 {
+fn alarm_check_by_type_result_list(
+    sd: *const u8,
+    self_sid: *const u8,
+    token: u32,
+    desired: u32,
+    list: *const u8,
+    list_len: u32,
+    mapping: *const u8,
+    granted_list: *mut u32,
+    status_list: *mut u32,
+    pf: *mut u32,
+) -> u32 {
     let Some((mut set, mut length)) = private_privilege_set() else {
         nt::set_last_error(ERROR_NOT_ENOUGH_MEMORY);
         return 0;
     };
-    let service = services::access_check_by_type_result_list(sd, self_sid, token, desired, list, list_len, mapping, set.bytes_mut().as_mut_ptr(), &mut length, granted_list, status_list);
+    let service = services::access_check_by_type_result_list(
+        sd,
+        self_sid,
+        token,
+        desired,
+        list,
+        list_len,
+        mapping,
+        set.bytes_mut().as_mut_ptr(),
+        &mut length,
+        granted_list,
+        status_list,
+    );
     // SAFETY: the caller's place, when it gave one.
     if !pf.is_null() {
         unsafe { pf.write(0) };
@@ -481,15 +889,31 @@ fn alarm_check_by_type_result_list(sd: *const u8, self_sid: *const u8, token: u3
 #[unsafe(export_name = "f2k_export_AccessCheckAndAuditAlarmW")]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "system" fn access_check_and_audit_alarm_w(
-    _subsystem_name: *const u16, _handle_id: *const u8, _object_type_name: *const u16, _object_name: *const u16,
-    security_descriptor: *const u8, desired_access: u32, generic_mapping: *const u8, _object_creation: u32,
-    granted_access: *mut u32, access_status: *mut u32, pf_generate_on_close: *mut u32,
+    _subsystem_name: *const u16,
+    _handle_id: *const u8,
+    _object_type_name: *const u16,
+    _object_name: *const u16,
+    security_descriptor: *const u8,
+    desired_access: u32,
+    generic_mapping: *const u8,
+    _object_creation: u32,
+    granted_access: *mut u32,
+    access_status: *mut u32,
+    pf_generate_on_close: *mut u32,
 ) -> u32 {
     let token = match effective_token() {
         Ok(token) => token,
         Err(status) => return failed(status),
     };
-    alarm_check(security_descriptor, token.0, desired_access, generic_mapping, granted_access, access_status, pf_generate_on_close)
+    alarm_check(
+        security_descriptor,
+        token.0,
+        desired_access,
+        generic_mapping,
+        granted_access,
+        access_status,
+        pf_generate_on_close,
+    )
 }
 
 /// AccessCheckAndAuditAlarmA: the W form, the alarm skipped.
@@ -499,13 +923,33 @@ pub unsafe extern "system" fn access_check_and_audit_alarm_w(
 #[unsafe(export_name = "f2k_export_AccessCheckAndAuditAlarmA")]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "system" fn access_check_and_audit_alarm_a(
-    _subsystem_name: *const u8, _handle_id: *const u8, _object_type_name: *const u8, _object_name: *const u8,
-    security_descriptor: *const u8, desired_access: u32, generic_mapping: *const u8, object_creation: u32,
-    granted_access: *mut u32, access_status: *mut u32, pf_generate_on_close: *mut u32,
+    _subsystem_name: *const u8,
+    _handle_id: *const u8,
+    _object_type_name: *const u8,
+    _object_name: *const u8,
+    security_descriptor: *const u8,
+    desired_access: u32,
+    generic_mapping: *const u8,
+    object_creation: u32,
+    granted_access: *mut u32,
+    access_status: *mut u32,
+    pf_generate_on_close: *mut u32,
 ) -> u32 {
     // SAFETY: the same marshaling as the W form, whose names it drops with the alarm.
     unsafe {
-        access_check_and_audit_alarm_w(core::ptr::null(), core::ptr::null(), core::ptr::null(), core::ptr::null(), security_descriptor, desired_access, generic_mapping, object_creation, granted_access, access_status, pf_generate_on_close)
+        access_check_and_audit_alarm_w(
+            core::ptr::null(),
+            core::ptr::null(),
+            core::ptr::null(),
+            core::ptr::null(),
+            security_descriptor,
+            desired_access,
+            generic_mapping,
+            object_creation,
+            granted_access,
+            access_status,
+            pf_generate_on_close,
+        )
     }
 }
 
@@ -517,16 +961,39 @@ pub unsafe extern "system" fn access_check_and_audit_alarm_a(
 #[unsafe(export_name = "f2k_export_AccessCheckByTypeAndAuditAlarmW")]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "system" fn access_check_by_type_and_audit_alarm_w(
-    _subsystem_name: *const u16, _handle_id: *const u8, _object_type_name: *const u16, _object_name: *const u16,
-    security_descriptor: *const u8, principal_self_sid: *const u8, desired_access: u32, _audit_type: u32, _flags: u32,
-    object_type_list: *const u8, object_type_list_length: u32, generic_mapping: *const u8, _object_creation: u32,
-    granted_access: *mut u32, access_status: *mut u32, pf_generate_on_close: *mut u32,
+    _subsystem_name: *const u16,
+    _handle_id: *const u8,
+    _object_type_name: *const u16,
+    _object_name: *const u16,
+    security_descriptor: *const u8,
+    principal_self_sid: *const u8,
+    desired_access: u32,
+    _audit_type: u32,
+    _flags: u32,
+    object_type_list: *const u8,
+    object_type_list_length: u32,
+    generic_mapping: *const u8,
+    _object_creation: u32,
+    granted_access: *mut u32,
+    access_status: *mut u32,
+    pf_generate_on_close: *mut u32,
 ) -> u32 {
     let token = match effective_token() {
         Ok(token) => token,
         Err(status) => return failed(status),
     };
-    alarm_check_by_type(security_descriptor, principal_self_sid, token.0, desired_access, object_type_list, object_type_list_length, generic_mapping, granted_access, access_status, pf_generate_on_close)
+    alarm_check_by_type(
+        security_descriptor,
+        principal_self_sid,
+        token.0,
+        desired_access,
+        object_type_list,
+        object_type_list_length,
+        generic_mapping,
+        granted_access,
+        access_status,
+        pf_generate_on_close,
+    )
 }
 
 /// AccessCheckByTypeAndAuditAlarmA: the W form, the alarm skipped.
@@ -536,14 +1003,43 @@ pub unsafe extern "system" fn access_check_by_type_and_audit_alarm_w(
 #[unsafe(export_name = "f2k_export_AccessCheckByTypeAndAuditAlarmA")]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "system" fn access_check_by_type_and_audit_alarm_a(
-    _subsystem_name: *const u8, _handle_id: *const u8, _object_type_name: *const u8, _object_name: *const u8,
-    security_descriptor: *const u8, principal_self_sid: *const u8, desired_access: u32, audit_type: u32, flags: u32,
-    object_type_list: *const u8, object_type_list_length: u32, generic_mapping: *const u8, object_creation: u32,
-    granted_access: *mut u32, access_status: *mut u32, pf_generate_on_close: *mut u32,
+    _subsystem_name: *const u8,
+    _handle_id: *const u8,
+    _object_type_name: *const u8,
+    _object_name: *const u8,
+    security_descriptor: *const u8,
+    principal_self_sid: *const u8,
+    desired_access: u32,
+    audit_type: u32,
+    flags: u32,
+    object_type_list: *const u8,
+    object_type_list_length: u32,
+    generic_mapping: *const u8,
+    object_creation: u32,
+    granted_access: *mut u32,
+    access_status: *mut u32,
+    pf_generate_on_close: *mut u32,
 ) -> u32 {
     // SAFETY: as the W form's.
     unsafe {
-        access_check_by_type_and_audit_alarm_w(core::ptr::null(), core::ptr::null(), core::ptr::null(), core::ptr::null(), security_descriptor, principal_self_sid, desired_access, audit_type, flags, object_type_list, object_type_list_length, generic_mapping, object_creation, granted_access, access_status, pf_generate_on_close)
+        access_check_by_type_and_audit_alarm_w(
+            core::ptr::null(),
+            core::ptr::null(),
+            core::ptr::null(),
+            core::ptr::null(),
+            security_descriptor,
+            principal_self_sid,
+            desired_access,
+            audit_type,
+            flags,
+            object_type_list,
+            object_type_list_length,
+            generic_mapping,
+            object_creation,
+            granted_access,
+            access_status,
+            pf_generate_on_close,
+        )
     }
 }
 
@@ -555,16 +1051,39 @@ pub unsafe extern "system" fn access_check_by_type_and_audit_alarm_a(
 #[unsafe(export_name = "f2k_export_AccessCheckByTypeResultListAndAuditAlarmW")]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "system" fn access_check_by_type_result_list_and_audit_alarm_w(
-    _subsystem_name: *const u16, _handle_id: *const u8, _object_type_name: *const u16, _object_name: *const u16,
-    security_descriptor: *const u8, principal_self_sid: *const u8, desired_access: u32, _audit_type: u32, _flags: u32,
-    object_type_list: *const u8, object_type_list_length: u32, generic_mapping: *const u8, _object_creation: u32,
-    granted_access_list: *mut u32, access_status_list: *mut u32, pf_generate_on_close: *mut u32,
+    _subsystem_name: *const u16,
+    _handle_id: *const u8,
+    _object_type_name: *const u16,
+    _object_name: *const u16,
+    security_descriptor: *const u8,
+    principal_self_sid: *const u8,
+    desired_access: u32,
+    _audit_type: u32,
+    _flags: u32,
+    object_type_list: *const u8,
+    object_type_list_length: u32,
+    generic_mapping: *const u8,
+    _object_creation: u32,
+    granted_access_list: *mut u32,
+    access_status_list: *mut u32,
+    pf_generate_on_close: *mut u32,
 ) -> u32 {
     let token = match effective_token() {
         Ok(token) => token,
         Err(status) => return failed(status),
     };
-    alarm_check_by_type_result_list(security_descriptor, principal_self_sid, token.0, desired_access, object_type_list, object_type_list_length, generic_mapping, granted_access_list, access_status_list, pf_generate_on_close)
+    alarm_check_by_type_result_list(
+        security_descriptor,
+        principal_self_sid,
+        token.0,
+        desired_access,
+        object_type_list,
+        object_type_list_length,
+        generic_mapping,
+        granted_access_list,
+        access_status_list,
+        pf_generate_on_close,
+    )
 }
 
 /// AccessCheckByTypeResultListAndAuditAlarmA: the W form, the alarm skipped.
@@ -574,14 +1093,43 @@ pub unsafe extern "system" fn access_check_by_type_result_list_and_audit_alarm_w
 #[unsafe(export_name = "f2k_export_AccessCheckByTypeResultListAndAuditAlarmA")]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "system" fn access_check_by_type_result_list_and_audit_alarm_a(
-    _subsystem_name: *const u8, _handle_id: *const u8, _object_type_name: *const u8, _object_name: *const u8,
-    security_descriptor: *const u8, principal_self_sid: *const u8, desired_access: u32, audit_type: u32, flags: u32,
-    object_type_list: *const u8, object_type_list_length: u32, generic_mapping: *const u8, object_creation: u32,
-    granted_access_list: *mut u32, access_status_list: *mut u32, pf_generate_on_close: *mut u32,
+    _subsystem_name: *const u8,
+    _handle_id: *const u8,
+    _object_type_name: *const u8,
+    _object_name: *const u8,
+    security_descriptor: *const u8,
+    principal_self_sid: *const u8,
+    desired_access: u32,
+    audit_type: u32,
+    flags: u32,
+    object_type_list: *const u8,
+    object_type_list_length: u32,
+    generic_mapping: *const u8,
+    object_creation: u32,
+    granted_access_list: *mut u32,
+    access_status_list: *mut u32,
+    pf_generate_on_close: *mut u32,
 ) -> u32 {
     // SAFETY: as the W form's.
     unsafe {
-        access_check_by_type_result_list_and_audit_alarm_w(core::ptr::null(), core::ptr::null(), core::ptr::null(), core::ptr::null(), security_descriptor, principal_self_sid, desired_access, audit_type, flags, object_type_list, object_type_list_length, generic_mapping, object_creation, granted_access_list, access_status_list, pf_generate_on_close)
+        access_check_by_type_result_list_and_audit_alarm_w(
+            core::ptr::null(),
+            core::ptr::null(),
+            core::ptr::null(),
+            core::ptr::null(),
+            security_descriptor,
+            principal_self_sid,
+            desired_access,
+            audit_type,
+            flags,
+            object_type_list,
+            object_type_list_length,
+            generic_mapping,
+            object_creation,
+            granted_access_list,
+            access_status_list,
+            pf_generate_on_close,
+        )
     }
 }
 
@@ -593,12 +1141,36 @@ pub unsafe extern "system" fn access_check_by_type_result_list_and_audit_alarm_a
 #[unsafe(export_name = "f2k_export_AccessCheckByTypeResultListAndAuditAlarmByHandleW")]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "system" fn access_check_by_type_result_list_and_audit_alarm_by_handle_w(
-    _subsystem_name: *const u16, _handle_id: *const u8, client_token: u32, _object_type_name: *const u16, _object_name: *const u16,
-    security_descriptor: *const u8, principal_self_sid: *const u8, desired_access: u32, _audit_type: u32, _flags: u32,
-    object_type_list: *const u8, object_type_list_length: u32, generic_mapping: *const u8, _object_creation: u32,
-    granted_access_list: *mut u32, access_status_list: *mut u32, pf_generate_on_close: *mut u32,
+    _subsystem_name: *const u16,
+    _handle_id: *const u8,
+    client_token: u32,
+    _object_type_name: *const u16,
+    _object_name: *const u16,
+    security_descriptor: *const u8,
+    principal_self_sid: *const u8,
+    desired_access: u32,
+    _audit_type: u32,
+    _flags: u32,
+    object_type_list: *const u8,
+    object_type_list_length: u32,
+    generic_mapping: *const u8,
+    _object_creation: u32,
+    granted_access_list: *mut u32,
+    access_status_list: *mut u32,
+    pf_generate_on_close: *mut u32,
 ) -> u32 {
-    alarm_check_by_type_result_list(security_descriptor, principal_self_sid, client_token, desired_access, object_type_list, object_type_list_length, generic_mapping, granted_access_list, access_status_list, pf_generate_on_close)
+    alarm_check_by_type_result_list(
+        security_descriptor,
+        principal_self_sid,
+        client_token,
+        desired_access,
+        object_type_list,
+        object_type_list_length,
+        generic_mapping,
+        granted_access_list,
+        access_status_list,
+        pf_generate_on_close,
+    )
 }
 
 /// AccessCheckByTypeResultListAndAuditAlarmByHandleA: the W form, the alarm skipped.
@@ -608,14 +1180,45 @@ pub unsafe extern "system" fn access_check_by_type_result_list_and_audit_alarm_b
 #[unsafe(export_name = "f2k_export_AccessCheckByTypeResultListAndAuditAlarmByHandleA")]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "system" fn access_check_by_type_result_list_and_audit_alarm_by_handle_a(
-    _subsystem_name: *const u8, _handle_id: *const u8, client_token: u32, _object_type_name: *const u8, _object_name: *const u8,
-    security_descriptor: *const u8, principal_self_sid: *const u8, desired_access: u32, audit_type: u32, flags: u32,
-    object_type_list: *const u8, object_type_list_length: u32, generic_mapping: *const u8, object_creation: u32,
-    granted_access_list: *mut u32, access_status_list: *mut u32, pf_generate_on_close: *mut u32,
+    _subsystem_name: *const u8,
+    _handle_id: *const u8,
+    client_token: u32,
+    _object_type_name: *const u8,
+    _object_name: *const u8,
+    security_descriptor: *const u8,
+    principal_self_sid: *const u8,
+    desired_access: u32,
+    audit_type: u32,
+    flags: u32,
+    object_type_list: *const u8,
+    object_type_list_length: u32,
+    generic_mapping: *const u8,
+    object_creation: u32,
+    granted_access_list: *mut u32,
+    access_status_list: *mut u32,
+    pf_generate_on_close: *mut u32,
 ) -> u32 {
     // SAFETY: as the W form's.
     unsafe {
-        access_check_by_type_result_list_and_audit_alarm_by_handle_w(core::ptr::null(), core::ptr::null(), client_token, core::ptr::null(), core::ptr::null(), security_descriptor, principal_self_sid, desired_access, audit_type, flags, object_type_list, object_type_list_length, generic_mapping, object_creation, granted_access_list, access_status_list, pf_generate_on_close)
+        access_check_by_type_result_list_and_audit_alarm_by_handle_w(
+            core::ptr::null(),
+            core::ptr::null(),
+            client_token,
+            core::ptr::null(),
+            core::ptr::null(),
+            security_descriptor,
+            principal_self_sid,
+            desired_access,
+            audit_type,
+            flags,
+            object_type_list,
+            object_type_list_length,
+            generic_mapping,
+            object_creation,
+            granted_access_list,
+            access_status_list,
+            pf_generate_on_close,
+        )
     }
 }
 
@@ -627,7 +1230,9 @@ pub unsafe extern "system" fn access_check_by_type_result_list_and_audit_alarm_b
 /// `required_privileges` is the caller's privilege set (the service reads and marks it).
 #[unsafe(export_name = "f2k_export_PrivilegeCheck")]
 pub unsafe extern "system" fn privilege_check(
-    token: u32, required_privileges: *mut u8, pf_result: *mut u32,
+    token: u32,
+    required_privileges: *mut u8,
+    pf_result: *mut u32,
 ) -> u32 {
     // SAFETY: the caller's place for the result.
     let mut place = unsafe { Out::optional(pf_result) };
@@ -650,7 +1255,10 @@ pub unsafe extern "system" fn privilege_check(
 /// count.
 #[unsafe(export_name = "f2k_export_LookupPrivilegeNameW")]
 pub unsafe extern "system" fn lookup_privilege_name_w(
-    system: *const u16, luid: *const Luid, name: *mut u16, cch_name: *mut u32,
+    system: *const u16,
+    luid: *const Luid,
+    name: *mut u16,
+    cch_name: *mut u32,
 ) -> u32 {
     // SAFETY: the caller's string, LUID and count.
     let (system, luid, mut cch) = unsafe {
@@ -664,7 +1272,9 @@ pub unsafe extern "system" fn lookup_privilege_name_w(
         nt::set_last_error(ERROR_NOACCESS);
         return 0;
     };
-    match name_for_luid(system, luid).and_then(|text| deliver_name(text, true, name as *mut u8, cch)) {
+    match name_for_luid(system, luid)
+        .and_then(|text| deliver_name(text, true, name as *mut u8, cch))
+    {
         Ok(()) => 1,
         Err(error) => bool_of(Err(error)),
     }
@@ -678,7 +1288,10 @@ pub unsafe extern "system" fn lookup_privilege_name_w(
 /// As LookupPrivilegeNameW's, for ANSI strings.
 #[unsafe(export_name = "f2k_export_LookupPrivilegeNameA")]
 pub unsafe extern "system" fn lookup_privilege_name_a(
-    system: *const u8, luid: *const Luid, name: *mut u8, cch_name: *mut u32,
+    system: *const u8,
+    luid: *const Luid,
+    name: *mut u8,
+    cch_name: *mut u32,
 ) -> u32 {
     // SAFETY: the caller's strings, LUID and count.
     let (system, luid, mut cch) = unsafe {
@@ -698,7 +1311,9 @@ pub unsafe extern "system" fn lookup_privilege_name_a(
         Err(status) => return bool_of(Err(nt::dos_error(status))),
     };
     let system = system.as_ref().map(|wide| wide.counted());
-    match name_for_luid(system.as_ref().map(Counted::units), luid).and_then(|text| deliver_name(text, false, name, cch)) {
+    match name_for_luid(system.as_ref().map(Counted::units), luid)
+        .and_then(|text| deliver_name(text, false, name, cch))
+    {
         Ok(()) => 1,
         Err(error) => bool_of(Err(error)),
     }
@@ -747,7 +1362,16 @@ mod tests {
 
     use super::*;
     use crate::accesscheck::host::{
-        CALLS, DUP, FILTER_COUNTS, GRANTED, HANDLE, LIST, REAL, RESULT, STATUS, TOKEN_REPLY,
+        CALLS,
+        DUP,
+        FILTER_COUNTS,
+        GRANTED,
+        HANDLE,
+        LIST,
+        REAL,
+        RESULT,
+        STATUS,
+        TOKEN_REPLY,
     };
     use crate::imports::host::{LAST_ERROR, TOKEN, TOKEN_CALLS, TOKEN_STATUS};
 
@@ -784,10 +1408,16 @@ mod tests {
         arm();
         assert_eq!(unsafe { are_all_accesses_granted(0x000F_01FF, 1) }, 1);
         assert_eq!(unsafe { are_all_accesses_granted(1, 0x000F_01FF) }, 0);
-        assert_eq!(unsafe { are_all_accesses_granted(0x000F_01FF, 0x000F_01FF) }, 1);
+        assert_eq!(
+            unsafe { are_all_accesses_granted(0x000F_01FF, 0x000F_01FF) },
+            1
+        );
         assert_eq!(unsafe { are_any_accesses_granted(1, 0x000F_01FF) }, 1);
         assert_eq!(unsafe { are_any_accesses_granted(0, 0x000F_01FF) }, 0);
-        assert_eq!(unsafe { are_any_accesses_granted(0x0010_0000, 0x000F_01FF) }, 0);
+        assert_eq!(
+            unsafe { are_any_accesses_granted(0x0010_0000, 0x000F_01FF) },
+            0
+        );
         assert_eq!(last_error(), 0xF2F2);
     }
 
@@ -802,22 +1432,53 @@ mod tests {
         let sd = [0u8; 4];
         let mapping = [0u8; 16];
         let call = |granted: *mut u32, status: *mut u32| unsafe {
-            access_check(sd.as_ptr(), 0x58, 0x0002_0000, mapping.as_ptr(), core::ptr::null_mut(), core::ptr::null_mut(), granted, status)
+            access_check(
+                sd.as_ptr(),
+                0x58,
+                0x0002_0000,
+                mapping.as_ptr(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                granted,
+                status,
+            )
         };
         clear();
         STATUS.with(|s| s.set(STATUS_ACCESS_DENIED));
         arm();
-        assert_eq!((call(&mut granted, &mut status), last_error(), status), (0, 5, 0xF2F2));
-        assert_eq!(calls().last(), Some(&("NtAccessCheck", 0x58, 0x0002_0000, 0)));
+        assert_eq!(
+            (call(&mut granted, &mut status), last_error(), status),
+            (0, 5, 0xF2F2)
+        );
+        assert_eq!(
+            calls().last(),
+            Some(&("NtAccessCheck", 0x58, 0x0002_0000, 0))
+        );
         clear();
         REAL.with(|real| real.set(STATUS_ACCESS_DENIED));
         GRANTED.with(|g| g.set(0x1234));
         arm();
-        assert_eq!((call(&mut granted, &mut status), last_error(), status, granted), (1, 5, 0, 0x1234));
+        assert_eq!(
+            (
+                call(&mut granted, &mut status),
+                last_error(),
+                status,
+                granted
+            ),
+            (1, 5, 0, 0x1234)
+        );
         clear();
         GRANTED.with(|g| g.set(0x000F_01FF));
         arm();
-        assert_eq!((call(&mut granted, &mut status), last_error(), status, granted), (1, 0xF2F2, 1, 0x000F_01FF));
+        assert_eq!(
+            (
+                call(&mut granted, &mut status),
+                last_error(),
+                status,
+                granted
+            ),
+            (1, 0xF2F2, 1, 0x000F_01FF)
+        );
     }
 
     /// AccessCheckByType passes the type list's length through with the same answer mapping.
@@ -829,7 +1490,19 @@ mod tests {
         let types = [0u8; 24];
         clear();
         let ok = unsafe {
-            access_check_by_type(core::ptr::null(), sid.as_ptr(), 0x58, 1, types.as_ptr(), 2, core::ptr::null(), core::ptr::null_mut(), core::ptr::null_mut(), &mut granted, &mut status)
+            access_check_by_type(
+                core::ptr::null(),
+                sid.as_ptr(),
+                0x58,
+                1,
+                types.as_ptr(),
+                2,
+                core::ptr::null(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                &mut granted,
+                &mut status,
+            )
         };
         assert_eq!((ok, status), (1, 1));
         assert_eq!(calls().last(), Some(&("NtAccessCheckByType", 0x58, 1, 2)));
@@ -844,18 +1517,40 @@ mod tests {
         let mut statuses = [0xFFFF_FFFFu32; 3];
         let types = [0u8; 24];
         let call = |granted: *mut u32, statuses: *mut u32| unsafe {
-            access_check_by_type_result_list(core::ptr::null(), core::ptr::null(), 0x58, 1, types.as_ptr(), 3, core::ptr::null(), core::ptr::null_mut(), core::ptr::null_mut(), granted, statuses)
+            access_check_by_type_result_list(
+                core::ptr::null(),
+                core::ptr::null(),
+                0x58,
+                1,
+                types.as_ptr(),
+                3,
+                core::ptr::null(),
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+                granted,
+                statuses,
+            )
         };
         clear();
         LIST.with(|list| *list.borrow_mut() = vec![0, STATUS_ACCESS_DENIED, 0xC000_0008]);
         GRANTED.with(|g| g.set(7));
         assert_eq!(call(granted.as_mut_ptr(), statuses.as_mut_ptr()), 1);
         assert_eq!((statuses, granted), ([0, 5, 6], [7, 7, 7]));
-        assert_eq!(calls().last(), Some(&("NtAccessCheckByTypeResultList", 0x58, 1, 3)));
+        assert_eq!(
+            calls().last(),
+            Some(&("NtAccessCheckByTypeResultList", 0x58, 1, 3))
+        );
         clear();
         STATUS.with(|s| s.set(0xC000_0008));
         arm();
-        assert_eq!((call(granted.as_mut_ptr(), statuses.as_mut_ptr()), last_error(), statuses), (0, 6, [0, 5, 6]));
+        assert_eq!(
+            (
+                call(granted.as_mut_ptr(), statuses.as_mut_ptr()),
+                last_error(),
+                statuses
+            ),
+            (0, 6, [0, 5, 6])
+        );
     }
 
     /// The alarm wrappers run the plain check against the process's token (F2K's threads never
@@ -869,31 +1564,89 @@ mod tests {
         let mut generate = 0xF2F2;
         let subsystem = wide_z("File");
         let alarm_w = |granted: *mut u32, status: *mut u32, generate: *mut u32| unsafe {
-            access_check_and_audit_alarm_w(subsystem.as_ptr(), core::ptr::null(), subsystem.as_ptr(), subsystem.as_ptr(), core::ptr::null(), 1, core::ptr::null(), 0, granted, status, generate)
+            access_check_and_audit_alarm_w(
+                subsystem.as_ptr(),
+                core::ptr::null(),
+                subsystem.as_ptr(),
+                subsystem.as_ptr(),
+                core::ptr::null(),
+                1,
+                core::ptr::null(),
+                0,
+                granted,
+                status,
+                generate,
+            )
         };
         clear();
         REAL.with(|real| real.set(STATUS_ACCESS_DENIED));
         arm();
-        assert_eq!((alarm_w(&mut granted, &mut status, &mut generate), last_error(), status, generate), (1, 5, 0, 0));
+        assert_eq!(
+            (
+                alarm_w(&mut granted, &mut status, &mut generate),
+                last_error(),
+                status,
+                generate
+            ),
+            (1, 5, 0, 0)
+        );
         assert_eq!(calls().last(), Some(&("NtAccessCheck", TOKEN, 1, 0)));
-        assert_eq!(TOKEN_CALLS.with(|calls| calls.borrow().clone()).last(), Some(&("NtOpenProcessToken", CURRENT_PROCESS, TOKEN_QUERY)));
+        assert_eq!(
+            TOKEN_CALLS.with(|calls| calls.borrow().clone()).last(),
+            Some(&("NtOpenProcessToken", CURRENT_PROCESS, TOKEN_QUERY))
+        );
         clear();
         REAL.with(|real| real.set(STATUS_ACCESS_DENIED));
         let subsystem_a = b"File\0";
         let ok = unsafe {
-            access_check_and_audit_alarm_a(subsystem_a.as_ptr(), core::ptr::null(), subsystem_a.as_ptr(), subsystem_a.as_ptr(), core::ptr::null(), 1, core::ptr::null(), 0, &mut granted, &mut status, &mut generate)
+            access_check_and_audit_alarm_a(
+                subsystem_a.as_ptr(),
+                core::ptr::null(),
+                subsystem_a.as_ptr(),
+                subsystem_a.as_ptr(),
+                core::ptr::null(),
+                1,
+                core::ptr::null(),
+                0,
+                &mut granted,
+                &mut status,
+                &mut generate,
+            )
         };
         assert_eq!((ok, status, generate), (1, 0, 0));
         assert_eq!(calls().last(), Some(&("NtAccessCheck", TOKEN, 1, 0)));
         clear();
         TOKEN_STATUS.with(|s| s.set(0xC000_0008));
         arm();
-        assert_eq!((alarm_w(&mut granted, &mut status, &mut generate), last_error()), (0, 6));
+        assert_eq!(
+            (
+                alarm_w(&mut granted, &mut status, &mut generate),
+                last_error()
+            ),
+            (0, 6)
+        );
         assert!(calls().is_empty());
         clear();
         let types = [0u8; 24];
         let ok = unsafe {
-            access_check_by_type_and_audit_alarm_w(core::ptr::null(), core::ptr::null(), core::ptr::null(), core::ptr::null(), core::ptr::null(), core::ptr::null(), 1, 0, 0, types.as_ptr(), 2, core::ptr::null(), 0, &mut granted, &mut status, &mut generate)
+            access_check_by_type_and_audit_alarm_w(
+                core::ptr::null(),
+                core::ptr::null(),
+                core::ptr::null(),
+                core::ptr::null(),
+                core::ptr::null(),
+                core::ptr::null(),
+                1,
+                0,
+                0,
+                types.as_ptr(),
+                2,
+                core::ptr::null(),
+                0,
+                &mut granted,
+                &mut status,
+                &mut generate,
+            )
         };
         assert_eq!((ok, status, generate), (1, 1, 0));
         assert_eq!(calls().last(), Some(&("NtAccessCheckByType", TOKEN, 1, 2)));
@@ -902,10 +1655,31 @@ mod tests {
         let mut status_list = [0u32; 2];
         LIST.with(|list| *list.borrow_mut() = vec![0, STATUS_ACCESS_DENIED]);
         let ok = unsafe {
-            access_check_by_type_result_list_and_audit_alarm_by_handle_w(core::ptr::null(), core::ptr::null(), 0x1234, core::ptr::null(), core::ptr::null(), core::ptr::null(), core::ptr::null(), 1, 0, 0, types.as_ptr(), 2, core::ptr::null(), 0, granted_list.as_mut_ptr(), status_list.as_mut_ptr(), &mut generate)
+            access_check_by_type_result_list_and_audit_alarm_by_handle_w(
+                core::ptr::null(),
+                core::ptr::null(),
+                0x1234,
+                core::ptr::null(),
+                core::ptr::null(),
+                core::ptr::null(),
+                core::ptr::null(),
+                1,
+                0,
+                0,
+                types.as_ptr(),
+                2,
+                core::ptr::null(),
+                0,
+                granted_list.as_mut_ptr(),
+                status_list.as_mut_ptr(),
+                &mut generate,
+            )
         };
         assert_eq!((ok, status_list, generate), (1, [0, 5], 0));
-        assert_eq!(calls().last(), Some(&("NtAccessCheckByTypeResultList", 0x1234, 1, 2)));
+        assert_eq!(
+            calls().last(),
+            Some(&("NtAccessCheckByTypeResultList", 0x1234, 1, 2))
+        );
         assert!(TOKEN_CALLS.with(|calls| calls.borrow().is_empty()));
     }
 
@@ -915,7 +1689,9 @@ mod tests {
     #[test]
     fn privilege_check_writes_the_result_and_maps_the_status() {
         let required = [0u8; 20];
-        let call = |result: *mut u32| unsafe { privilege_check(TOKEN, required.as_ptr() as *mut u8, result) };
+        let call = |result: *mut u32| unsafe {
+            privilege_check(TOKEN, required.as_ptr() as *mut u8, result)
+        };
         clear();
         RESULT.with(|result| result.set(1));
         let mut result = 0xF2F2;
@@ -942,38 +1718,88 @@ mod tests {
     #[test]
     fn name_lookups_answer_as_the_capture() {
         clear();
-        let luid = Luid { low_part: 19, high_part: 0 };
+        let luid = Luid {
+            low_part: 19,
+            high_part: 0,
+        };
         let mut buffer = [0xCCu16; 32];
         let name_w = |luid: *const Luid, buffer: *mut u16, cch: *mut u32| unsafe {
             lookup_privilege_name_w(core::ptr::null(), luid, buffer, cch)
         };
         let mut cch = 0u32;
         arm();
-        assert_eq!((name_w(&luid, buffer.as_mut_ptr(), &mut cch), last_error(), cch), (0, 122, 20), "the size query");
+        assert_eq!(
+            (
+                name_w(&luid, buffer.as_mut_ptr(), &mut cch),
+                last_error(),
+                cch
+            ),
+            (0, 122, 20),
+            "the size query"
+        );
         let mut cch = 20u32;
         arm();
-        assert_eq!((name_w(&luid, buffer.as_mut_ptr(), &mut cch), last_error(), cch), (1, 997, 19));
+        assert_eq!(
+            (
+                name_w(&luid, buffer.as_mut_ptr(), &mut cch),
+                last_error(),
+                cch
+            ),
+            (1, 997, 19)
+        );
         assert_eq!(&buffer[..20], wide_z("SeShutdownPrivilege").as_slice());
         let mut cch = 19u32;
         arm();
-        assert_eq!((name_w(&luid, buffer.as_mut_ptr(), &mut cch), last_error(), cch), (0, 122, 20), "one short");
-        let unknown = Luid { low_part: 65536, high_part: 0 };
+        assert_eq!(
+            (
+                name_w(&luid, buffer.as_mut_ptr(), &mut cch),
+                last_error(),
+                cch
+            ),
+            (0, 122, 20),
+            "one short"
+        );
+        let unknown = Luid {
+            low_part: 65536,
+            high_part: 0,
+        };
         let mut cch = 128u32;
         arm();
-        assert_eq!((name_w(&unknown, buffer.as_mut_ptr(), &mut cch), last_error(), cch), (0, 1313, 128), "an unknown LUID");
-        let high = Luid { low_part: 19, high_part: 1 };
-        assert_eq!((name_w(&high, buffer.as_mut_ptr(), &mut cch), last_error()), (0, 1313), "a nonzero high part");
+        assert_eq!(
+            (
+                name_w(&unknown, buffer.as_mut_ptr(), &mut cch),
+                last_error(),
+                cch
+            ),
+            (0, 1313, 128),
+            "an unknown LUID"
+        );
+        let high = Luid {
+            low_part: 19,
+            high_part: 1,
+        };
+        assert_eq!(
+            (name_w(&high, buffer.as_mut_ptr(), &mut cch), last_error()),
+            (0, 1313),
+            "a nonzero high part"
+        );
         let remote = wide_z("\\\\ELSEWHERE");
-        let ok = unsafe { lookup_privilege_name_w(remote.as_ptr(), &luid, buffer.as_mut_ptr(), &mut cch) };
+        let ok = unsafe {
+            lookup_privilege_name_w(remote.as_ptr(), &luid, buffer.as_mut_ptr(), &mut cch)
+        };
         assert_eq!((ok, last_error()), (0, 1722), "a remote system");
         let mut ansi = [0xCCu8; 32];
         let mut cch = 20u32;
         arm();
-        let ok = unsafe { lookup_privilege_name_a(b"qemu\0".as_ptr(), &luid, ansi.as_mut_ptr(), &mut cch) };
+        let ok = unsafe {
+            lookup_privilege_name_a(b"qemu\0".as_ptr(), &luid, ansi.as_mut_ptr(), &mut cch)
+        };
         assert_eq!((ok, last_error(), cch), (1, 997, 19));
         assert_eq!(&ansi[..20], b"SeShutdownPrivilege\0");
         let mut cch = 0u32;
-        let ok = unsafe { lookup_privilege_name_a(core::ptr::null(), &luid, ansi.as_mut_ptr(), &mut cch) };
+        let ok = unsafe {
+            lookup_privilege_name_a(core::ptr::null(), &luid, ansi.as_mut_ptr(), &mut cch)
+        };
         assert_eq!((ok, last_error(), cch), (0, 122, 20), "the A size query");
     }
 
@@ -990,15 +1816,26 @@ mod tests {
         };
         TOKEN_REPLY.with(|reply| *reply.borrow_mut() = Ok(groups(2)));
         arm();
-        assert_eq!((unsafe { is_token_restricted(TOKEN) }, last_error()), (1, 0xF2F2));
+        assert_eq!(
+            (unsafe { is_token_restricted(TOKEN) }, last_error()),
+            (1, 0xF2F2)
+        );
         TOKEN_REPLY.with(|reply| *reply.borrow_mut() = Ok(groups(0)));
         arm();
-        assert_eq!((unsafe { is_token_restricted(TOKEN) }, last_error()), (0, 0xF2F2));
-        assert_eq!(calls().last(), Some(&("NtQueryInformationToken", TOKEN, 11, 0)));
+        assert_eq!(
+            (unsafe { is_token_restricted(TOKEN) }, last_error()),
+            (0, 0xF2F2)
+        );
+        assert_eq!(
+            calls().last(),
+            Some(&("NtQueryInformationToken", TOKEN, 11, 0))
+        );
         TOKEN_REPLY.with(|reply| *reply.borrow_mut() = Err(0xC000_0008));
         arm();
-        assert_eq!((unsafe { is_token_restricted(TOKEN) }, last_error()), (0, 6));
+        assert_eq!(
+            (unsafe { is_token_restricted(TOKEN) }, last_error()),
+            (0, 6)
+        );
         clear();
     }
-
 }

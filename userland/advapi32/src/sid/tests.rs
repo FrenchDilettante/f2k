@@ -138,19 +138,31 @@ fn a_sid_is_initialized_measured_and_validated() {
     assert_eq!((ok, last_error()), (0, 87));
     arm();
     assert_eq!(
-        (unsafe { initialize_sid(core::ptr::null_mut(), NT_AUTHORITY.as_ptr(), 1) }, last_error()),
+        (
+            unsafe { initialize_sid(core::ptr::null_mut(), NT_AUTHORITY.as_ptr(), 1) },
+            last_error()
+        ),
         (0, 87)
     );
     hand[8..16].copy_from_slice(&[32u32.to_le_bytes(), 545u32.to_le_bytes()].concat());
     let hand = &hand[..];
     arm();
-    assert_eq!((unsafe { get_length_sid(hand.as_ptr()) }, last_error()), (16, 0));
+    assert_eq!(
+        (unsafe { get_length_sid(hand.as_ptr()) }, last_error()),
+        (16, 0)
+    );
     arm();
-    assert_eq!((unsafe { is_valid_sid(hand.as_ptr()) }, last_error()), (1, 0xF2F2));
+    assert_eq!(
+        (unsafe { is_valid_sid(hand.as_ptr()) }, last_error()),
+        (1, 0xF2F2)
+    );
     let mut bad = hand.to_vec();
     bad[1] = 16;
     arm();
-    assert_eq!((unsafe { is_valid_sid(bad.as_ptr()) }, last_error()), (0, 1337));
+    assert_eq!(
+        (unsafe { is_valid_sid(bad.as_ptr()) }, last_error()),
+        (0, 1337)
+    );
     bad[1] = 2;
     bad[0] = 9;
     assert_eq!(unsafe { is_valid_sid(bad.as_ptr()) }, 0);
@@ -166,10 +178,25 @@ fn prefixes_and_copies() {
     let builtin = sid(5, &[32]);
     let admins2 = sid(5, &[32, 545]);
     arm();
-    assert_eq!((unsafe { equal_prefix_sid(admins.as_ptr(), builtin.as_ptr()) }, last_error()), (0, 0));
-    assert_eq!(unsafe { equal_prefix_sid(admins.as_ptr(), admins.as_ptr()) }, 1);
-    assert_eq!(unsafe { equal_prefix_sid(admins.as_ptr(), admins2.as_ptr()) }, 1);
-    assert_eq!(unsafe { equal_prefix_sid(admins.as_ptr(), core::ptr::null()) }, 0);
+    assert_eq!(
+        (
+            unsafe { equal_prefix_sid(admins.as_ptr(), builtin.as_ptr()) },
+            last_error()
+        ),
+        (0, 0)
+    );
+    assert_eq!(
+        unsafe { equal_prefix_sid(admins.as_ptr(), admins.as_ptr()) },
+        1
+    );
+    assert_eq!(
+        unsafe { equal_prefix_sid(admins.as_ptr(), admins2.as_ptr()) },
+        1
+    );
+    assert_eq!(
+        unsafe { equal_prefix_sid(admins.as_ptr(), core::ptr::null()) },
+        0
+    );
     let mut copy = [0u8; 256];
     arm();
     let ok = unsafe { copy_sid(256, copy.as_mut_ptr(), admins.as_ptr()) };
@@ -190,8 +217,14 @@ fn a_sid_is_stringed() {
     arm();
     let ok = unsafe { convert_sid_to_string_sid_w(admins.as_ptr(), &mut wide) };
     assert_eq!((ok, last_error()), (1, 0));
-    let text: Vec<u16> = (0..).map(|at| unsafe { *wide.add(at) }).take_while(|&u| u != 0).collect();
-    let text: String = text.iter().map(|&u| char::from_u32(u32::from(u)).unwrap()).collect();
+    let text: Vec<u16> = (0..)
+        .map(|at| unsafe { *wide.add(at) })
+        .take_while(|&u| u != 0)
+        .collect();
+    let text: String = text
+        .iter()
+        .map(|&u| char::from_u32(u32::from(u)).unwrap())
+        .collect();
     assert_eq!(text, "S-1-5-32-544");
     unsafe { ProcessHeap::free(wide.cast()) };
     let mut narrow: *mut u8 = core::ptr::null_mut();
@@ -206,7 +239,10 @@ fn a_sid_is_stringed() {
     wide_auth.extend(0xDEADBEEFu32.to_le_bytes());
     wide_auth.extend(0x1234u32.to_le_bytes());
     let mut out: *mut u16 = core::ptr::null_mut();
-    assert_eq!(unsafe { convert_sid_to_string_sid_w(wide_auth.as_ptr(), &mut out) }, 1);
+    assert_eq!(
+        unsafe { convert_sid_to_string_sid_w(wide_auth.as_ptr(), &mut out) },
+        1
+    );
     let text: String = (0..)
         .map(|at| unsafe { *out.add(at) })
         .take_while(|&u| u != 0)
@@ -216,14 +252,20 @@ fn a_sid_is_stringed() {
     unsafe { ProcessHeap::free(out.cast()) };
     arm();
     assert_eq!(
-        (unsafe { convert_sid_to_string_sid_w(core::ptr::null(), &mut out) }, last_error()),
+        (
+            unsafe { convert_sid_to_string_sid_w(core::ptr::null(), &mut out) },
+            last_error()
+        ),
         (0, 87)
     );
     let mut bad = sid(5, &[32]);
     bad[0] = 7;
     arm();
     assert_eq!(
-        (unsafe { convert_sid_to_string_sid_w(bad.as_ptr(), &mut out) }, last_error()),
+        (
+            unsafe { convert_sid_to_string_sid_w(bad.as_ptr(), &mut out) },
+            last_error()
+        ),
         (0, 1337)
     );
 }
@@ -236,7 +278,8 @@ fn a_sid_is_stringed() {
 fn well_known_sids_are_made_and_recognized() {
     let mut room = 0u32;
     arm();
-    let ok = unsafe { create_well_known_sid(26, core::ptr::null(), core::ptr::null_mut(), &mut room) };
+    let ok =
+        unsafe { create_well_known_sid(26, core::ptr::null(), core::ptr::null_mut(), &mut room) };
     assert_eq!((ok, last_error(), room), (0, 122, 16));
     let mut buf = [0xCCu8; 64];
     room = 64;
@@ -245,15 +288,27 @@ fn well_known_sids_are_made_and_recognized() {
     assert_eq!((ok, last_error(), room), (1, 0xF2F2, 64));
     assert_eq!(&buf[..16], sid(5, &[32, 544]).as_slice());
     room = 64;
-    assert_eq!(unsafe { create_well_known_sid(1, core::ptr::null(), buf.as_mut_ptr(), &mut room) }, 1);
+    assert_eq!(
+        unsafe { create_well_known_sid(1, core::ptr::null(), buf.as_mut_ptr(), &mut room) },
+        1
+    );
     assert_eq!(&buf[..12], sid(1, &[0]).as_slice());
     room = 64;
     arm();
-    assert_eq!((unsafe { create_well_known_sid(99, core::ptr::null(), buf.as_mut_ptr(), &mut room) }, last_error()), (0, 87));
+    assert_eq!(
+        (
+            unsafe { create_well_known_sid(99, core::ptr::null(), buf.as_mut_ptr(), &mut room) },
+            last_error()
+        ),
+        (0, 87)
+    );
     // A domain kind with no domain is ERROR_INVALID_PARAMETER.
     arm();
     assert_eq!(
-        (unsafe { create_well_known_sid(15, core::ptr::null(), buf.as_mut_ptr(), &mut room) }, last_error()),
+        (
+            unsafe { create_well_known_sid(15, core::ptr::null(), buf.as_mut_ptr(), &mut room) },
+            last_error()
+        ),
         (0, 87)
     );
     // With a domain, the domain kind is the domain's prefix plus the RID.
@@ -265,10 +320,22 @@ fn well_known_sids_are_made_and_recognized() {
     let everyone = sid(1, &[0]);
     let admins = sid(5, &[32, 544]);
     arm();
-    assert_eq!((unsafe { is_well_known_sid(everyone.as_ptr(), 1) }, last_error()), (1, 0));
+    assert_eq!(
+        (
+            unsafe { is_well_known_sid(everyone.as_ptr(), 1) },
+            last_error()
+        ),
+        (1, 0)
+    );
     assert_eq!(unsafe { is_well_known_sid(admins.as_ptr(), 26) }, 1);
     arm();
-    assert_eq!((unsafe { is_well_known_sid(everyone.as_ptr(), 26) }, last_error()), (0, 0));
+    assert_eq!(
+        (
+            unsafe { is_well_known_sid(everyone.as_ptr(), 26) },
+            last_error()
+        ),
+        (0, 0)
+    );
 }
 
 /// EqualDomainSid: S-1-5-32 is the domain of S-1-5-32-544 (TRUE, *equal 1, the last error
@@ -288,7 +355,10 @@ fn domain_sids_are_compared() {
     assert_eq!((ok, last_error(), equal), (0, 1258, 0xF2F2F2F2));
     arm();
     assert_eq!(
-        (unsafe { equal_domain_sid(core::ptr::null(), everyone.as_ptr(), &mut equal) }, last_error()),
+        (
+            unsafe { equal_domain_sid(core::ptr::null(), everyone.as_ptr(), &mut equal) },
+            last_error()
+        ),
         (0, 87)
     );
 }

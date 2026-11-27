@@ -245,9 +245,7 @@ impl se::TokenBody {
         self.session = session;
         Ok(())
     }
-
 }
-
 
 /// The rights an open asking for `desired` is granted: the rights it names, the generic ones
 /// mapped to the token rights, MAXIMUM_ALLOWED as every token right.
@@ -284,10 +282,10 @@ mod services {
         PROCESS_QUERY_INFORMATION,
     };
     use super::*;
-    use crate::sec::sid::{is_valid, length};
     use crate::ob::{self, ObRef, ObjectType};
-    use crate::sec::*;
     use crate::se::{privileges_size, Change, Requests};
+    use crate::sec::sid::{is_valid, length};
+    use crate::sec::*;
 
     /// NewState's entries copied in at a time, through a buffer on the stack (384 bytes).
     const CHUNK: usize = 32;
@@ -651,7 +649,11 @@ mod services {
             .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
         drop(token);
         let caller = call.process();
-        let access = if desired == 0 { access } else { granted(desired) };
+        let access = if desired == 0 {
+            access
+        } else {
+            granted(desired)
+        };
         let handle = ob::publish(caller, copy, access, inherit)
             .ok_or(STATUS_INSUFFICIENT_RESOURCES)?
             .get();
@@ -728,7 +730,6 @@ mod tests {
         u32::from_le_bytes(reply[at..at + 4].try_into().unwrap())
     }
 
-
     /// The rights asked for are granted, the generic ones mapped to the token rights: TOKEN_QUERY
     /// alone is 0x8, with TOKEN_ADJUST_PRIVILEGES 0x28 (the capture's granted access); no right
     /// asked for is none granted.
@@ -797,7 +798,10 @@ mod tests {
     #[test]
     fn the_adjust_default_rights_are_granted() {
         assert_eq!(granted(TOKEN_ADJUST_DEFAULT), 0x80);
-        assert_eq!(granted(TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID), 0x180);
+        assert_eq!(
+            granted(TOKEN_ADJUST_DEFAULT | TOKEN_ADJUST_SESSIONID),
+            0x180
+        );
         assert!(TOKEN_WRITE & TOKEN_ADJUST_DEFAULT != 0);
         assert!(TOKEN_ALL_ACCESS & TOKEN_ADJUST_SESSIONID != 0);
     }
@@ -820,7 +824,10 @@ mod tests {
         let mut token = token();
         token.set_owner(&se::sid_bytes(&se::USER)).unwrap();
         let owner = answer(&token, Class::Owner);
-        assert_eq!((owner.len(), word(&owner, 0)), (4 + se::USER.size(), BASE + 4));
+        assert_eq!(
+            (owner.len(), word(&owner, 0)),
+            (4 + se::USER.size(), BASE + 4)
+        );
         assert!(se::USER.matches(&owner[4..]));
         token.set_primary_group(&se::sid_bytes(&se::USERS)).unwrap();
         assert!(se::USERS.matches(&answer(&token, Class::PrimaryGroup)[4..]));
@@ -832,14 +839,24 @@ mod tests {
         assert_eq!(&dacl[4..], empty);
         token.set_default_dacl(None).unwrap();
         let none = answer(&token, Class::DefaultDacl);
-        assert_eq!((none.len(), word(&none, 0)), (4, 0), "a NULL DACL's pointer");
+        assert_eq!(
+            (none.len(), word(&none, 0)),
+            (4, 0),
+            "a NULL DACL's pointer"
+        );
         assert_eq!(
             token.set_session_id(7, false),
             Err(STATUS_PRIVILEGE_NOT_HELD)
         );
-        assert_eq!(answer(&token, Class::SessionId).as_slice(), 0u32.to_le_bytes());
+        assert_eq!(
+            answer(&token, Class::SessionId).as_slice(),
+            0u32.to_le_bytes()
+        );
         token.set_session_id(7, true).unwrap();
-        assert_eq!(answer(&token, Class::SessionId).as_slice(), 7u32.to_le_bytes());
+        assert_eq!(
+            answer(&token, Class::SessionId).as_slice(),
+            7u32.to_le_bytes()
+        );
     }
 
     /// The set paths' refusals: a malformed SID is STATUS_INVALID_SID; an owner that is neither
@@ -852,14 +869,23 @@ mod tests {
         let mut token = token();
         let malformed = [0u8, 1, 0, 0, 0, 0, 0, 5, 32, 0, 0, 0];
         assert_eq!(token.set_owner(&malformed), Err(se::STATUS_INVALID_SID));
-        assert_eq!(token.set_primary_group(&malformed), Err(se::STATUS_INVALID_SID));
-        assert_eq!(token.set_owner(&se::sid_bytes(&se::USERS)), Err(se::STATUS_INVALID_OWNER));
+        assert_eq!(
+            token.set_primary_group(&malformed),
+            Err(se::STATUS_INVALID_SID)
+        );
+        assert_eq!(
+            token.set_owner(&se::sid_bytes(&se::USERS)),
+            Err(se::STATUS_INVALID_OWNER)
+        );
         let stranger = se::sid_bytes(&se::Sid {
             authority: 5,
             sub: &[99],
         });
         assert_eq!(token.set_owner(&stranger), Err(se::STATUS_INVALID_OWNER));
-        assert_eq!(token.set_primary_group(&stranger), Err(se::STATUS_INVALID_PRIMARY_GROUP));
+        assert_eq!(
+            token.set_primary_group(&stranger),
+            Err(se::STATUS_INVALID_PRIMARY_GROUP)
+        );
         // A size that disagrees with the buffer, an unknown revision, an ACE past the ACL's end,
         // a known ACE whose SID is malformed.
         assert_eq!(
@@ -902,6 +928,4 @@ mod tests {
             Err(se::STATUS_ALLOTTED_SPACE_EXCEEDED)
         );
     }
-
-
 }

@@ -25,9 +25,9 @@ use rtl::status::{NtStatus, STATUS_BUFFER_TOO_SMALL, STATUS_NO_MEMORY};
 // ERROR_BAD_IMPERSONATION_LEVEL: an anonymous token.
 use rtl::winerror::{
     ERROR_BAD_IMPERSONATION_LEVEL,
+    ERROR_INSUFFICIENT_BUFFER,
     ERROR_INVALID_PARAMETER,
     ERROR_INVALID_SID,
-    ERROR_INSUFFICIENT_BUFFER,
     ERROR_NOT_ENOUGH_MEMORY,
     ERROR_NO_IMPERSONATION_TOKEN,
 };
@@ -212,7 +212,10 @@ pub(crate) fn well_known_sid(kind: u32, domain: Option<&[u8]>) -> Option<SidPart
             };
             for (index, slot) in parts.subs.iter_mut().enumerate().take(count) {
                 *slot = u32::from_le_bytes(
-                    domain.get(SID_HEADER + 4 * index..SID_HEADER + 4 * index + 4)?.try_into().ok()?,
+                    domain
+                        .get(SID_HEADER + 4 * index..SID_HEADER + 4 * index + 4)?
+                        .try_into()
+                        .ok()?,
                 );
             }
             parts.subs[count] = rid;
@@ -376,14 +379,15 @@ pub unsafe extern "system" fn free_sid(sid: *mut u8) -> *mut u8 {
 ///
 /// `sid` is a writable SID header of eight bytes at least; `authority` six readable bytes.
 #[unsafe(export_name = "f2k_export_InitializeSid")]
-pub unsafe extern "system" fn initialize_sid(
-    sid: *mut u8,
-    authority: *const u8,
-    count: u8,
-) -> u32 {
+pub unsafe extern "system" fn initialize_sid(sid: *mut u8, authority: *const u8, count: u8) -> u32 {
     let count = count as usize;
     // SAFETY: the caller's SID header and authority.
-    let (sid, authority) = unsafe { (caller_bytes_mut(sid, SID_HEADER), caller_bytes(authority, 6)) };
+    let (sid, authority) = unsafe {
+        (
+            caller_bytes_mut(sid, SID_HEADER),
+            caller_bytes(authority, 6),
+        )
+    };
     let (Some(sid), Some(authority)) = (sid, authority) else {
         nt::set_last_error(ERROR_INVALID_PARAMETER);
         return 0;
@@ -455,9 +459,18 @@ pub unsafe extern "system" fn equal_prefix_sid(first: *const u8, second: *const 
 ///
 /// `destination` is `length` writable bytes; `source` a SID the call may read.
 #[unsafe(export_name = "f2k_export_CopySid")]
-pub unsafe extern "system" fn copy_sid(length: u32, destination: *mut u8, source: *const u8) -> u32 {
+pub unsafe extern "system" fn copy_sid(
+    length: u32,
+    destination: *mut u8,
+    source: *const u8,
+) -> u32 {
     // SAFETY: the caller's SID and destination.
-    let (source, destination) = unsafe { (caller_sid(source), caller_bytes_mut(destination, length as usize)) };
+    let (source, destination) = unsafe {
+        (
+            caller_sid(source),
+            caller_bytes_mut(destination, length as usize),
+        )
+    };
     let (Some(source), Some(destination)) = (source, destination) else {
         nt::set_last_error(ERROR_INVALID_PARAMETER);
         return 0;
@@ -734,7 +747,9 @@ pub unsafe extern "system" fn equal_domain_sid(
         let count = usize::from(*sid.get(1)?);
         let last = count.checked_sub(1)?;
         let mut prefix = ArrayVec::new();
-        prefix.try_extend_from_slice(sid.get(..sid_len(last))?).ok()?;
+        prefix
+            .try_extend_from_slice(sid.get(..sid_len(last))?)
+            .ok()?;
         prefix[1] = last as u8;
         Some(prefix)
     }

@@ -64,8 +64,6 @@ pub unsafe extern "system" fn get_sid_length_required(count: u32) -> u32 {
     services::length_required_sid(count & 0xFF)
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,6 +116,4 @@ mod tests {
         );
         assert_eq!(last_error(), 0);
     }
-
-
 }

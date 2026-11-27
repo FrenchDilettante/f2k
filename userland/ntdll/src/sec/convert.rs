@@ -421,4 +421,3 @@ mod tests {
         assert!(heap_free(copy as usize));
     }
 }
-

@@ -1,4 +1,5 @@
-//! The security-descriptor helpers: create, validate, length, control and attribute bits, the owner/group/SACL/DACL get and set, and RtlCreateAndSetSD.
+//! The security-descriptor helpers: create, validate, length, control and attribute bits, the
+//! owner/group/SACL/DACL get and set, and RtlCreateAndSetSD.
 
 use super::*;
 
@@ -296,7 +297,13 @@ pub(crate) fn get_acl_sd(
 }
 
 /// Set the owner (`owner` true) or group of the absolute SD at `sd`.
-pub(crate) fn set_sid_sd(sd: *mut u8, owner: bool, defaulted_bit: u16, sid: *const u8, defaulted: u32) -> u32 {
+pub(crate) fn set_sid_sd(
+    sd: *mut u8,
+    owner: bool,
+    defaulted_bit: u16,
+    sid: *const u8,
+    defaulted: u32,
+) -> u32 {
     let mut view: SecurityDescriptor = read(sd);
     if view.revision != SECURITY_DESCRIPTOR_REVISION {
         return STATUS_UNKNOWN_REVISION;
@@ -887,4 +894,3 @@ mod tests {
         );
     }
 }
-

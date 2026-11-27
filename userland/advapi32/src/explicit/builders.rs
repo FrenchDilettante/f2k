@@ -3,13 +3,7 @@
 //! one whole structure in the caller's memory, stores the caller's string or SID pointer as the
 //! trustee's name, and leaves the last error untouched.
 
-use super::{
-    ExplicitAccess,
-    Trustee,
-    NO_MULTIPLE_TRUSTEE,
-    TRUSTEE_IS_NAME,
-    TRUSTEE_IS_UNKNOWN,
-};
+use super::{ExplicitAccess, Trustee, NO_MULTIPLE_TRUSTEE, TRUSTEE_IS_NAME, TRUSTEE_IS_UNKNOWN};
 
 /// Fill a whole EXPLICIT_ACCESS over the trustee given (the name one when none).
 fn fill_explicit_access(
@@ -39,10 +33,6 @@ fn fill_explicit_access(
     // SAFETY: the caller's entry, written unaligned.
     unsafe { (p_explicit_access as *mut ExplicitAccess).write_unaligned(entry) };
 }
-
-
-
-
 
 /// BuildExplicitAccessWithNameA: the entry grants (or denies, or sets) `access_permissions` to
 /// the narrow-named trustee, inheriting as `inheritance` says.
@@ -89,8 +79,6 @@ pub unsafe extern "system" fn build_explicit_access_with_name_w(
         None,
     );
 }
-
-
 
 #[cfg(test)]
 mod tests {

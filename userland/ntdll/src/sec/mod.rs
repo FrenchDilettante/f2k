@@ -409,4 +409,3 @@ mod tests {
         assert_eq!(Acl::from_bytes(&[2, 0, 64, 0, 3, 0, 0, 0]), Some(acl));
     }
 }
-

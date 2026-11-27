@@ -46,11 +46,12 @@ pub fn allocate_locally_unique_id(_: &mut NtCall, luid: UserAddr) -> NtResult {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::user::TrapFrame;
-    use crate::user::syscall::host::{install, UserMemory};
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    use super::*;
+    use crate::user::syscall::host::{install, UserMemory};
+    use crate::user::TrapFrame;
 
     /// Mapped user memory at [BASE, BASE + len): anything else faults.
     const BASE: u32 = 0x0040_0000;

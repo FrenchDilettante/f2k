@@ -19,24 +19,38 @@
 //! the parent carries them, protected otherwise, keeping the owner and group.
 
 use rtl::heap::ProcessHeap as _;
-use rtl::winerror::{
-    ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, ERROR_NOT_ENOUGH_MEMORY,
-};
+use rtl::winerror::{ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, ERROR_NOT_ENOUGH_MEMORY};
 
+use super::{
+    present_bits,
+    propagate_bits,
+    read_parts,
+    read_sd,
+    sd_parts,
+    storage_size,
+    target_size,
+    write_self_relative,
+    FIELD_INFO,
+    SEF_DACL_AUTO_INHERIT,
+    SEF_SACL_AUTO_INHERIT,
+};
 use crate::imports::{self as nt, ProcessHeap};
 use crate::sd::{
-    control, FIELD_DACL, FIELD_SACL,
-    SE_DACL_AUTO_INHERITED, SE_DACL_AUTO_INHERIT_REQ, SE_DACL_PRESENT, SE_DACL_PROTECTED,
-    SE_SACL_AUTO_INHERITED, SE_SACL_AUTO_INHERIT_REQ, SE_SACL_PRESENT, SE_SACL_PROTECTED,
+    control,
+    FIELD_DACL,
+    FIELD_SACL,
+    SE_DACL_AUTO_INHERITED,
+    SE_DACL_AUTO_INHERIT_REQ,
+    SE_DACL_PRESENT,
+    SE_DACL_PROTECTED,
+    SE_SACL_AUTO_INHERITED,
+    SE_SACL_AUTO_INHERIT_REQ,
+    SE_SACL_PRESENT,
+    SE_SACL_PROTECTED,
     SE_SELF_RELATIVE,
 };
 use crate::sid::ERROR_INVALID_SECURITY_DESCR;
 use crate::{caller_bytes_mut, Out};
-
-use super::{
-    present_bits, propagate_bits, read_parts, read_sd, sd_parts, storage_size, target_size,
-    write_self_relative, FIELD_INFO, SEF_DACL_AUTO_INHERIT, SEF_SACL_AUTO_INHERIT,
-};
 
 // --- The cores
 
@@ -73,7 +87,9 @@ fn create_core(parent: *const u8, creator: *const u8, new_out: *mut usize, sef_f
         }
     };
     let parent_given = !parent.is_null();
-    let parts = creator_parts.or(parent_parts).unwrap_or([None, None, None, None]);
+    let parts = creator_parts
+        .or(parent_parts)
+        .unwrap_or([None, None, None, None]);
     let parent = parent_parts.unwrap_or([None, None, None, None]);
     let mut control_bits = present_bits(&parts);
     if parent_given {
@@ -449,13 +465,21 @@ mod tests {
 
     use super::*;
     use crate::filesec::{
-        DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+        DACL_SECURITY_INFORMATION,
+        GROUP_SECURITY_INFORMATION,
+        OWNER_SECURITY_INFORMATION,
     };
     use crate::imports::host::LAST_ERROR;
     use crate::private::testkit::{acl, control_of, parts_of, priv_sd, sid};
     use crate::sd::{
-        long_align, sd_field, SD_HEADER, SD_REVISION, FIELD_GROUP, FIELD_OWNER,
-        SE_DACL_DEFAULTED, SE_OWNER_DEFAULTED,
+        long_align,
+        sd_field,
+        FIELD_GROUP,
+        FIELD_OWNER,
+        SD_HEADER,
+        SD_REVISION,
+        SE_DACL_DEFAULTED,
+        SE_OWNER_DEFAULTED,
     };
     use crate::sid::{ptr_field, set_ptr_field};
 
@@ -480,31 +504,54 @@ mod tests {
         let owner = sid(5, &[32, 544]);
         let group = sid(1, &[0]);
         let dacl = acl(&sid(1, &[]));
-        let creator = priv_sd(SE_DACL_PRESENT, Some(&owner), Some(&group), None, Some(&dacl));
+        let creator = priv_sd(
+            SE_DACL_PRESENT,
+            Some(&owner),
+            Some(&group),
+            None,
+            Some(&dacl),
+        );
         let parent_dacl = acl(&sid(5, &[]));
         let parent = priv_sd(SE_DACL_PRESENT, None, None, None, Some(&parent_dacl));
 
         // The creator given, no parent: its components, no request flags.
         let mut slot = 0usize;
         arm();
-        assert_eq!(create_core(core::ptr::null(), creator.as_ptr(), &mut slot, 0), 1);
+        assert_eq!(
+            create_core(core::ptr::null(), creator.as_ptr(), &mut slot, 0),
+            1
+        );
         assert_eq!(last_error(), 0xF2F2, "untouched on success");
         assert_ne!(slot, 0);
         assert_eq!(
             parts_of(slot),
-            [Some(owner.clone()), Some(group.clone()), None, Some(dacl.clone())]
+            [
+                Some(owner.clone()),
+                Some(group.clone()),
+                None,
+                Some(dacl.clone())
+            ]
         );
         let bits = control_of(slot);
         assert_eq!(bits & SE_SELF_RELATIVE, SE_SELF_RELATIVE);
         assert_eq!(bits & SE_DACL_PRESENT, SE_DACL_PRESENT);
-        assert_eq!(bits & (SE_DACL_AUTO_INHERIT_REQ | SE_SACL_AUTO_INHERIT_REQ), 0);
+        assert_eq!(
+            bits & (SE_DACL_AUTO_INHERIT_REQ | SE_SACL_AUTO_INHERIT_REQ),
+            0
+        );
         assert_eq!(destroy_core(&mut slot), 1);
         assert_eq!(slot, 0);
 
         // No creator: the parent's components, with the request flags.
         let mut slot = 0usize;
-        assert_eq!(create_core(parent.as_ptr(), core::ptr::null(), &mut slot, 0), 1);
-        assert_eq!(parts_of(slot), [None, None, None, Some(parent_dacl.clone())]);
+        assert_eq!(
+            create_core(parent.as_ptr(), core::ptr::null(), &mut slot, 0),
+            1
+        );
+        assert_eq!(
+            parts_of(slot),
+            [None, None, None, Some(parent_dacl.clone())]
+        );
         let bits = control_of(slot);
         assert_eq!(
             bits & (SE_DACL_AUTO_INHERIT_REQ | SE_SACL_AUTO_INHERIT_REQ),
@@ -514,14 +561,23 @@ mod tests {
 
         // Both given: the creator's components win, the parent still sets the request flags.
         let mut slot = 0usize;
-        assert_eq!(create_core(parent.as_ptr(), creator.as_ptr(), &mut slot, 0), 1);
+        assert_eq!(
+            create_core(parent.as_ptr(), creator.as_ptr(), &mut slot, 0),
+            1
+        );
         assert_eq!(parts_of(slot)[3], Some(dacl.clone()), "the creator's DACL");
-        assert_eq!(control_of(slot) & SE_DACL_AUTO_INHERIT_REQ, SE_DACL_AUTO_INHERIT_REQ);
+        assert_eq!(
+            control_of(slot) & SE_DACL_AUTO_INHERIT_REQ,
+            SE_DACL_AUTO_INHERIT_REQ
+        );
         assert_eq!(destroy_core(&mut slot), 1);
 
         // Neither: the bare header.
         let mut slot = 0usize;
-        assert_eq!(create_core(core::ptr::null(), core::ptr::null(), &mut slot, 0), 1);
+        assert_eq!(
+            create_core(core::ptr::null(), core::ptr::null(), &mut slot, 0),
+            1
+        );
         assert_eq!(parts_of(slot), [None, None, None, None]);
         assert_eq!(control_of(slot), SE_SELF_RELATIVE);
         assert_eq!(destroy_core(&mut slot), 1);
@@ -529,7 +585,12 @@ mod tests {
         // The Ex form: SEF_DACL_AUTO_INHERIT marks the DACL inherited when the parent has one.
         let mut slot = 0usize;
         assert_eq!(
-            create_core(parent.as_ptr(), core::ptr::null(), &mut slot, SEF_DACL_AUTO_INHERIT),
+            create_core(
+                parent.as_ptr(),
+                core::ptr::null(),
+                &mut slot,
+                SEF_DACL_AUTO_INHERIT
+            ),
             1
         );
         let bits = control_of(slot);
@@ -540,7 +601,12 @@ mod tests {
         // The error paths.
         arm();
         assert_eq!(
-            create_core(core::ptr::null(), creator.as_ptr(), core::ptr::null_mut(), 0),
+            create_core(
+                core::ptr::null(),
+                creator.as_ptr(),
+                core::ptr::null_mut(),
+                0
+            ),
             0
         );
         assert_eq!(last_error(), ERROR_INVALID_PARAMETER);
@@ -548,7 +614,10 @@ mod tests {
         broken[0] = 0;
         let mut slot = 0usize;
         arm();
-        assert_eq!(create_core(core::ptr::null(), broken.as_ptr(), &mut slot, 0), 0);
+        assert_eq!(
+            create_core(core::ptr::null(), broken.as_ptr(), &mut slot, 0),
+            0
+        );
         assert_eq!(last_error(), ERROR_INVALID_SECURITY_DESCR);
         assert_eq!(slot, 0);
     }
@@ -572,7 +641,10 @@ mod tests {
         );
         let selected: [Option<&[u8]>; 4] = [Some(&owner), Some(&group), None, Some(&dacl)];
         let needed = target_size(&selected) as u32;
-        assert_eq!(needed, 20 + owner.len() as u32 + group.len() as u32 + dacl.len() as u32);
+        assert_eq!(
+            needed,
+            20 + owner.len() as u32 + group.len() as u32 + dacl.len() as u32
+        );
         let group_at = SD_HEADER + owner.len();
         let dacl_at = long_align(group_at + group.len());
 
@@ -580,17 +652,32 @@ mod tests {
         let mut reported = 0xF2F2u32;
         arm();
         assert_eq!(
-            get_core(object.as_ptr(), WANT, core::ptr::null_mut(), 0, &mut reported),
+            get_core(
+                object.as_ptr(),
+                WANT,
+                core::ptr::null_mut(),
+                0,
+                &mut reported
+            ),
             0
         );
-        assert_eq!((last_error(), reported), (ERROR_INSUFFICIENT_BUFFER, needed));
+        assert_eq!(
+            (last_error(), reported),
+            (ERROR_INSUFFICIENT_BUFFER, needed)
+        );
 
         // With the room asked for: the parts copied, the propagated bits.
         let mut buffer = vec![0xCCu8; storage_size(&selected)];
         let mut reported = 0u32;
         arm();
         assert_eq!(
-            get_core(object.as_ptr(), WANT, buffer.as_mut_ptr(), needed, &mut reported),
+            get_core(
+                object.as_ptr(),
+                WANT,
+                buffer.as_mut_ptr(),
+                needed,
+                &mut reported
+            ),
             1
         );
         assert_eq!((last_error(), reported), (0xF2F2, needed));
@@ -636,7 +723,13 @@ mod tests {
         // The error paths.
         arm();
         assert_eq!(
-            get_core(core::ptr::null(), WANT, buffer.as_mut_ptr(), 64, &mut reported),
+            get_core(
+                core::ptr::null(),
+                WANT,
+                buffer.as_mut_ptr(),
+                64,
+                &mut reported
+            ),
             0
         );
         assert_eq!(last_error(), ERROR_INVALID_PARAMETER);
@@ -644,7 +737,13 @@ mod tests {
         broken[0] = 9;
         arm();
         assert_eq!(
-            get_core(broken.as_ptr(), WANT, buffer.as_mut_ptr(), 64, &mut reported),
+            get_core(
+                broken.as_ptr(),
+                WANT,
+                buffer.as_mut_ptr(),
+                64,
+                &mut reported
+            ),
             0
         );
         assert_eq!(last_error(), ERROR_INVALID_SECURITY_DESCR);
@@ -660,7 +759,10 @@ mod tests {
             ),
             0
         );
-        assert_eq!((last_error(), untouched), (ERROR_INSUFFICIENT_BUFFER, 0xF2F2));
+        assert_eq!(
+            (last_error(), untouched),
+            (ERROR_INSUFFICIENT_BUFFER, 0xF2F2)
+        );
     }
 
     /// SetPrivateObjectSecurity(Ex): the parts the mask names are taken from the modification (a
@@ -673,9 +775,18 @@ mod tests {
         let owner = sid(5, &[32, 544]);
         let group = sid(1, &[0]);
         let dacl = acl(&sid(1, &[]));
-        let creator = priv_sd(SE_DACL_PRESENT, Some(&owner), Some(&group), None, Some(&dacl));
+        let creator = priv_sd(
+            SE_DACL_PRESENT,
+            Some(&owner),
+            Some(&group),
+            None,
+            Some(&dacl),
+        );
         let mut slot = 0usize;
-        assert_eq!(create_core(core::ptr::null(), creator.as_ptr(), &mut slot, 0), 1);
+        assert_eq!(
+            create_core(core::ptr::null(), creator.as_ptr(), &mut slot, 0),
+            1
+        );
         let first = slot;
 
         // The DACL replaced, the owner and group kept, the slot repointed.
@@ -683,14 +794,24 @@ mod tests {
         let modification = priv_sd(SE_DACL_PRESENT, None, None, None, Some(&new_dacl));
         arm();
         assert_eq!(
-            set_core(DACL_SECURITY_INFORMATION, modification.as_ptr(), &mut slot, 0),
+            set_core(
+                DACL_SECURITY_INFORMATION,
+                modification.as_ptr(),
+                &mut slot,
+                0
+            ),
             1
         );
         assert_eq!(last_error(), 0xF2F2);
         assert_ne!(slot, first, "reallocated");
         assert_eq!(
             parts_of(slot),
-            [Some(owner.clone()), Some(group.clone()), None, Some(new_dacl.clone())]
+            [
+                Some(owner.clone()),
+                Some(group.clone()),
+                None,
+                Some(new_dacl.clone())
+            ]
         );
         assert_eq!(
             control_of(slot) & (SE_SELF_RELATIVE | SE_DACL_PRESENT),
@@ -701,17 +822,33 @@ mod tests {
         let new_owner = sid(1, &[0]);
         let modification = priv_sd(0, Some(&new_owner), None, None, None);
         assert_eq!(
-            set_core(OWNER_SECURITY_INFORMATION, modification.as_ptr(), &mut slot, 0),
+            set_core(
+                OWNER_SECURITY_INFORMATION,
+                modification.as_ptr(),
+                &mut slot,
+                0
+            ),
             1
         );
         assert_eq!(
             parts_of(slot),
-            [Some(new_owner.clone()), Some(group.clone()), None, Some(new_dacl.clone())]
+            [
+                Some(new_owner.clone()),
+                Some(group.clone()),
+                None,
+                Some(new_dacl.clone())
+            ]
         );
 
         // A null modification clears the named part.
-        assert_eq!(set_core(DACL_SECURITY_INFORMATION, core::ptr::null(), &mut slot, 0), 1);
-        assert_eq!(parts_of(slot), [Some(new_owner.clone()), Some(group.clone()), None, None]);
+        assert_eq!(
+            set_core(DACL_SECURITY_INFORMATION, core::ptr::null(), &mut slot, 0),
+            1
+        );
+        assert_eq!(
+            parts_of(slot),
+            [Some(new_owner.clone()), Some(group.clone()), None, None]
+        );
         assert_eq!(control_of(slot) & SE_DACL_PRESENT, 0);
 
         // The Ex form's flag sets the request bit.
@@ -725,22 +862,36 @@ mod tests {
             ),
             1
         );
-        assert_eq!(control_of(slot) & SE_DACL_AUTO_INHERIT_REQ, SE_DACL_AUTO_INHERIT_REQ);
+        assert_eq!(
+            control_of(slot) & SE_DACL_AUTO_INHERIT_REQ,
+            SE_DACL_AUTO_INHERIT_REQ
+        );
         assert_eq!(destroy_core(&mut slot), 1);
 
         // The error paths.
         arm();
         assert_eq!(
-            set_core(DACL_SECURITY_INFORMATION, modification.as_ptr(), core::ptr::null_mut(), 0),
+            set_core(
+                DACL_SECURITY_INFORMATION,
+                modification.as_ptr(),
+                core::ptr::null_mut(),
+                0
+            ),
             0
         );
         assert_eq!(last_error(), ERROR_INVALID_PARAMETER);
         let mut slot = 0usize;
-        assert_eq!(create_core(core::ptr::null(), creator.as_ptr(), &mut slot, 0), 1);
+        assert_eq!(
+            create_core(core::ptr::null(), creator.as_ptr(), &mut slot, 0),
+            1
+        );
         let mut broken = modification.clone();
         broken[0] = 0;
         arm();
-        assert_eq!(set_core(DACL_SECURITY_INFORMATION, broken.as_ptr(), &mut slot, 0), 0);
+        assert_eq!(
+            set_core(DACL_SECURITY_INFORMATION, broken.as_ptr(), &mut slot, 0),
+            0
+        );
         assert_eq!(last_error(), ERROR_INVALID_SECURITY_DESCR);
         assert_eq!(destroy_core(&mut slot), 1);
 
@@ -748,11 +899,20 @@ mod tests {
         let abs_owner = sid(5, &[1]);
         let mut absolute = vec![0u8; SD_HEADER];
         absolute[0] = SD_REVISION;
-        set_ptr_field(&mut absolute, sd_field(FIELD_OWNER), abs_owner.as_ptr() as usize);
+        set_ptr_field(
+            &mut absolute,
+            sd_field(FIELD_OWNER),
+            abs_owner.as_ptr() as usize,
+        );
         let mut slot = absolute.as_ptr() as usize;
         arm();
         assert_eq!(
-            set_core(OWNER_SECURITY_INFORMATION, modification.as_ptr(), &mut slot, 0),
+            set_core(
+                OWNER_SECURITY_INFORMATION,
+                modification.as_ptr(),
+                &mut slot,
+                0
+            ),
             0
         );
         assert_eq!(last_error(), ERROR_INVALID_SECURITY_DESCR);
@@ -765,7 +925,10 @@ mod tests {
         let owner = sid(5, &[32]);
         let creator = priv_sd(0, Some(&owner), None, None, None);
         let mut slot = 0usize;
-        assert_eq!(create_core(core::ptr::null(), creator.as_ptr(), &mut slot, 0), 1);
+        assert_eq!(
+            create_core(core::ptr::null(), creator.as_ptr(), &mut slot, 0),
+            1
+        );
         arm();
         assert_eq!(destroy_core(&mut slot), 1);
         assert_eq!((slot, last_error()), (0, 0xF2F2));
@@ -797,7 +960,10 @@ mod tests {
         // The parent carries the DACL only: the DACL inherited, the SACL protected.
         let mut slot = 0usize;
         arm();
-        assert_eq!(convert_core(parent.as_ptr(), current.as_ptr(), &mut slot), 1);
+        assert_eq!(
+            convert_core(parent.as_ptr(), current.as_ptr(), &mut slot),
+            1
+        );
         assert_eq!(last_error(), 0xF2F2);
         assert_ne!(slot, 0);
         let bits = control_of(slot);
@@ -807,7 +973,12 @@ mod tests {
         assert_eq!(bits & SE_SACL_AUTO_INHERITED, 0);
         assert_eq!(
             parts_of(slot),
-            [Some(owner.clone()), Some(group.clone()), Some(sacl.clone()), Some(dacl.clone())],
+            [
+                Some(owner.clone()),
+                Some(group.clone()),
+                Some(sacl.clone()),
+                Some(dacl.clone())
+            ],
             "the owner and group kept"
         );
         assert_eq!(destroy_core(&mut slot), 1);
@@ -821,7 +992,10 @@ mod tests {
             Some(&parent_dacl),
         );
         let mut slot = 0usize;
-        assert_eq!(convert_core(parent_both.as_ptr(), current.as_ptr(), &mut slot), 1);
+        assert_eq!(
+            convert_core(parent_both.as_ptr(), current.as_ptr(), &mut slot),
+            1
+        );
         let bits = control_of(slot);
         assert_eq!(
             bits & (SE_DACL_AUTO_INHERITED | SE_SACL_AUTO_INHERITED),
@@ -829,7 +1003,10 @@ mod tests {
         );
         assert_eq!(destroy_core(&mut slot), 1);
         let mut slot = 0usize;
-        assert_eq!(convert_core(core::ptr::null(), current.as_ptr(), &mut slot), 1);
+        assert_eq!(
+            convert_core(core::ptr::null(), current.as_ptr(), &mut slot),
+            1
+        );
         let bits = control_of(slot);
         assert_eq!(
             bits & (SE_DACL_PROTECTED | SE_SACL_PROTECTED),
@@ -840,12 +1017,18 @@ mod tests {
         // The error paths: a null current, an invalid current, a null out place.
         let mut slot = 0usize;
         arm();
-        assert_eq!(convert_core(core::ptr::null(), core::ptr::null(), &mut slot), 0);
+        assert_eq!(
+            convert_core(core::ptr::null(), core::ptr::null(), &mut slot),
+            0
+        );
         assert_eq!(last_error(), ERROR_INVALID_PARAMETER);
         let mut broken = current.clone();
         broken[0] = 3;
         arm();
-        assert_eq!(convert_core(core::ptr::null(), broken.as_ptr(), &mut slot), 0);
+        assert_eq!(
+            convert_core(core::ptr::null(), broken.as_ptr(), &mut slot),
+            0
+        );
         assert_eq!(last_error(), ERROR_INVALID_SECURITY_DESCR);
         arm();
         assert_eq!(
@@ -942,7 +1125,10 @@ mod tests {
                 ),
                 1
             );
-            assert_eq!(control_of(slot) & SE_DACL_AUTO_INHERIT_REQ, SE_DACL_AUTO_INHERIT_REQ);
+            assert_eq!(
+                control_of(slot) & SE_DACL_AUTO_INHERIT_REQ,
+                SE_DACL_AUTO_INHERIT_REQ
+            );
             assert_eq!(
                 convert_to_auto_inherit_private_object_security(
                     core::ptr::null(),

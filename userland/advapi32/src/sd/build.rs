@@ -11,31 +11,66 @@ use rtl::array_vec::ArrayVec;
 use rtl::edge::{InBuf, InStr, InWStr};
 use rtl::heap::ProcessHeap as _;
 use rtl::pod::Pod;
-use rtl::winerror::{
-    ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, ERROR_NOT_ENOUGH_MEMORY,
-};
+use rtl::winerror::{ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_PARAMETER, ERROR_NOT_ENOUGH_MEMORY};
 
+use super::{
+    long_align,
+    set_control,
+    set_sd_field_value,
+    FIELD_DACL,
+    FIELD_GROUP,
+    FIELD_OWNER,
+    FIELD_SACL,
+    SD_HEADER,
+    SD_REVISION,
+    SD_TARGET_HEADER,
+    SE_DACL_AUTO_INHERIT_REQ,
+    SE_DACL_PRESENT,
+    SE_SACL_AUTO_INHERIT_REQ,
+    SE_SACL_PRESENT,
+};
 use crate::acl::{
-    set_word, ACE_SIZE_OFF, ACL_COUNT_OFF, ACL_HEADER, ACL_REV_OFF, ACL_REVISION, ACL_SIZE_OFF,
-    ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE, FAILED_ACCESS_ACE_FLAG, KNOWN_ACE_FIXED,
-    SUCCESSFUL_ACCESS_ACE_FLAG, SYSTEM_AUDIT_ACE_TYPE,
+    set_word,
+    ACCESS_ALLOWED_ACE_TYPE,
+    ACCESS_DENIED_ACE_TYPE,
+    ACE_SIZE_OFF,
+    ACL_COUNT_OFF,
+    ACL_HEADER,
+    ACL_REVISION,
+    ACL_REV_OFF,
+    ACL_SIZE_OFF,
+    FAILED_ACCESS_ACE_FLAG,
+    KNOWN_ACE_FIXED,
+    SUCCESSFUL_ACCESS_ACE_FLAG,
+    SYSTEM_AUDIT_ACE_TYPE,
 };
 use crate::imports::{self as nt, ProcessHeap};
 use crate::sid::{
-    caller_sid, ptr_field, sid_len, sid_parts_bytes, well_known_sid, ERROR_INVALID_PRIMARY_GROUP,
-    ERROR_NONE_MAPPED, MAX_SUB_AUTHORITIES, SID_HEADER,
+    caller_sid,
+    ptr_field,
+    sid_len,
+    sid_parts_bytes,
+    well_known_sid,
+    ERROR_INVALID_PRIMARY_GROUP,
+    ERROR_NONE_MAPPED,
+    MAX_SUB_AUTHORITIES,
+    SID_HEADER,
 };
 use crate::trustee::{
-    EA_MODE, EA_PERMS, EA_SIZE, EA_TRUSTEE, FORM_NAME, FORM_OBJECTS_AND_SID, FORM_SID, OAS_SID,
-    OAS_SIZE, TRUSTEE_FORM, TRUSTEE_NAME, TRUSTEE_SIZE,
+    EA_MODE,
+    EA_PERMS,
+    EA_SIZE,
+    EA_TRUSTEE,
+    FORM_NAME,
+    FORM_OBJECTS_AND_SID,
+    FORM_SID,
+    OAS_SID,
+    OAS_SIZE,
+    TRUSTEE_FORM,
+    TRUSTEE_NAME,
+    TRUSTEE_SIZE,
 };
 use crate::{caller_bytes, caller_bytes_mut, Out};
-
-use super::{
-    long_align, set_control, set_sd_field_value, FIELD_DACL, FIELD_GROUP, FIELD_OWNER, FIELD_SACL,
-    SD_HEADER, SD_REVISION, SD_TARGET_HEADER, SE_DACL_AUTO_INHERIT_REQ, SE_DACL_PRESENT,
-    SE_SACL_AUTO_INHERIT_REQ, SE_SACL_PRESENT,
-};
 
 /// The most bytes a SID takes: its header and the most sub-authorities.
 const SID_MAX: usize = SID_HEADER + 4 * MAX_SUB_AUTHORITIES;
@@ -190,8 +225,8 @@ unsafe fn entries_of(list: *const u8, count: u32, wide: bool) -> Result<Entries,
         let mode = dword(bytes, at + EA_MODE).ok_or(ERROR_NONE_MAPPED)?;
         let mask = dword(bytes, at + EA_PERMS).ok_or(ERROR_NONE_MAPPED)?;
         // SAFETY: the entry's trustee.
-        let sid =
-            unsafe { trustee_sid(bytes[at + EA_TRUSTEE..].as_ptr(), wide) }.ok_or(ERROR_NONE_MAPPED)?;
+        let sid = unsafe { trustee_sid(bytes[at + EA_TRUSTEE..].as_ptr(), wide) }
+            .ok_or(ERROR_NONE_MAPPED)?;
         entries
             .try_push(Access { mode, mask, sid })
             .map_err(|_| ERROR_INSUFFICIENT_BUFFER)?;
@@ -211,12 +246,14 @@ fn build_acls(access: &[Access], audit: &[Access]) -> Result<(AclBytes, AclBytes
     fn push(acl: &mut AclBytes, kind: u8, flags: u32, mask: u32, sid: &[u8]) -> Result<(), u32> {
         let ace_size = KNOWN_ACE_FIXED + sid.len();
         acl.try_push(kind).map_err(|_| ERROR_INSUFFICIENT_BUFFER)?;
-        acl.try_push(flags as u8).map_err(|_| ERROR_INSUFFICIENT_BUFFER)?;
+        acl.try_push(flags as u8)
+            .map_err(|_| ERROR_INSUFFICIENT_BUFFER)?;
         acl.try_extend_from_slice(&(ace_size as u16).to_le_bytes())
             .map_err(|_| ERROR_INSUFFICIENT_BUFFER)?;
         acl.try_extend_from_slice(&mask.to_le_bytes())
             .map_err(|_| ERROR_INSUFFICIENT_BUFFER)?;
-        acl.try_extend_from_slice(sid).map_err(|_| ERROR_INSUFFICIENT_BUFFER)?;
+        acl.try_extend_from_slice(sid)
+            .map_err(|_| ERROR_INSUFFICIENT_BUFFER)?;
         Ok(())
     }
     fn wrap(body: AclBytes) -> Result<AclBytes, u32> {
@@ -239,7 +276,8 @@ fn build_acls(access: &[Access], audit: &[Access]) -> Result<(AclBytes, AclBytes
             count += 1;
         }
         set_word(&mut acl, ACL_COUNT_OFF, count);
-        acl.try_extend_from_slice(&body).map_err(|_| ERROR_INSUFFICIENT_BUFFER)?;
+        acl.try_extend_from_slice(&body)
+            .map_err(|_| ERROR_INSUFFICIENT_BUFFER)?;
         Ok(acl)
     }
     let mut dacl = AclBytes::new();
@@ -247,7 +285,13 @@ fn build_acls(access: &[Access], audit: &[Access]) -> Result<(AclBytes, AclBytes
     for entry in access {
         match entry.mode {
             AM_DENY => push(&mut dacl, ACCESS_DENIED_ACE_TYPE, 0, entry.mask, &entry.sid)?,
-            _ => push(&mut dacl, ACCESS_ALLOWED_ACE_TYPE, 0, entry.mask, &entry.sid)?,
+            _ => push(
+                &mut dacl,
+                ACCESS_ALLOWED_ACE_TYPE,
+                0,
+                entry.mask,
+                &entry.sid,
+            )?,
         }
     }
     for entry in audit {
@@ -256,7 +300,13 @@ fn build_acls(access: &[Access], audit: &[Access]) -> Result<(AclBytes, AclBytes
             AM_SET_AUDIT_FAILURE => FAILED_ACCESS_ACE_FLAG,
             _ => SUCCESSFUL_ACCESS_ACE_FLAG | FAILED_ACCESS_ACE_FLAG,
         };
-        push(&mut sacl, SYSTEM_AUDIT_ACE_TYPE, flags, entry.mask, &entry.sid)?;
+        push(
+            &mut sacl,
+            SYSTEM_AUDIT_ACE_TYPE,
+            flags,
+            entry.mask,
+            &entry.sid,
+        )?;
     }
     Ok((wrap(dacl)?, wrap(sacl)?))
 }
@@ -284,7 +334,11 @@ fn components_of(
 /// The size a built absolute descriptor takes on the target, and the storage it takes on the
 /// host: the header plus the long-aligned components.
 fn built_sizes(components: &[Option<AclBytes>; 4]) -> (usize, usize) {
-    let sum: usize = components.iter().flatten().map(|c| long_align(c.len())).sum();
+    let sum: usize = components
+        .iter()
+        .flatten()
+        .map(|c| long_align(c.len()))
+        .sum();
     (SD_TARGET_HEADER + sum, SD_HEADER + sum)
 }
 
@@ -485,7 +539,8 @@ unsafe fn convert_access_to_sd(
             .map_err(|_| ERROR_INVALID_PARAMETER)
     }
     // SAFETY: the caller's lists.
-    let (Ok(access), Ok(audit)) = (read_list(access_list, wide), read_list(audit_list, wide)) else {
+    let (Ok(access), Ok(audit)) = (read_list(access_list, wide), read_list(audit_list, wide))
+    else {
         return ERROR_INVALID_PARAMETER;
     };
     let owner = name_sid(owner_name, wide);
@@ -565,7 +620,14 @@ pub unsafe extern "system" fn convert_access_to_security_descriptor_a(
     new_sd: *mut *mut u8,
 ) -> u32 {
     unsafe {
-        convert_access_to_sd(access_list, audit_list, owner_name, group_name, new_sd, false)
+        convert_access_to_sd(
+            access_list,
+            audit_list,
+            owner_name,
+            group_name,
+            new_sd,
+            false,
+        )
     }
 }
 
@@ -676,4 +738,3 @@ pub unsafe extern "system" fn convert_security_descriptor_to_access_named_w(
 ) -> u32 {
     unsafe { convert_sd_to_access() }
 }
-

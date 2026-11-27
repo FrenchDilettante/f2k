@@ -19,14 +19,32 @@
 pub(crate) mod infoex;
 pub(crate) mod objects;
 
-use crate::sd::{
-    caller_sd, long_align, packed_size, sd_components, sd_field, valid_sd, SD_HEADER, SD_REVISION,
-    FIELD_DACL, FIELD_GROUP, FIELD_OWNER, FIELD_SACL, SE_DACL_DEFAULTED, SE_DACL_PRESENT,
-    SE_GROUP_DEFAULTED, SE_OWNER_DEFAULTED, SE_SACL_DEFAULTED, SE_SACL_PRESENT, SE_SELF_RELATIVE,
-};
 use crate::filesec::{
-    DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+    DACL_SECURITY_INFORMATION,
+    GROUP_SECURITY_INFORMATION,
+    OWNER_SECURITY_INFORMATION,
     SACL_SECURITY_INFORMATION,
+};
+use crate::sd::{
+    caller_sd,
+    long_align,
+    packed_size,
+    sd_components,
+    sd_field,
+    valid_sd,
+    FIELD_DACL,
+    FIELD_GROUP,
+    FIELD_OWNER,
+    FIELD_SACL,
+    SD_HEADER,
+    SD_REVISION,
+    SE_DACL_DEFAULTED,
+    SE_DACL_PRESENT,
+    SE_GROUP_DEFAULTED,
+    SE_OWNER_DEFAULTED,
+    SE_SACL_DEFAULTED,
+    SE_SACL_PRESENT,
+    SE_SELF_RELATIVE,
 };
 use crate::sid::set_ptr_field;
 
@@ -75,10 +93,7 @@ pub(crate) unsafe fn read_sd<'a>(sd: *const u8) -> Option<(usize, &'a [u8])> {
 /// # Safety
 ///
 /// The descriptor and its components are readable.
-pub(crate) unsafe fn sd_parts<'a>(
-    base: usize,
-    header: &'a [u8],
-) -> Option<[Option<&'a [u8]>; 4]> {
+pub(crate) unsafe fn sd_parts<'a>(base: usize, header: &'a [u8]) -> Option<[Option<&'a [u8]>; 4]> {
     if !valid_sd(base, header) {
         return None;
     }
@@ -105,7 +120,12 @@ pub(crate) unsafe fn read_parts<'a>(sd: *const u8) -> Option<[Option<&'a [u8]>; 
 /// The bytes a self-relative descriptor takes in memory: the header's storage plus each present
 /// component, long-aligned.
 pub(crate) fn storage_size(parts: &[Option<&[u8]>; 4]) -> usize {
-    SD_HEADER + parts.iter().flatten().map(|part| long_align(part.len())).sum::<usize>()
+    SD_HEADER
+        + parts
+            .iter()
+            .flatten()
+            .map(|part| long_align(part.len()))
+            .sum::<usize>()
 }
 
 /// Write a self-relative descriptor into `out` (zeroed first): revision 1, the control word with
@@ -215,11 +235,18 @@ pub(crate) mod testkit {
 
 #[cfg(test)]
 mod tests {
+    use rtl::winerror::{
+        ERROR_INSUFFICIENT_BUFFER,
+        ERROR_INVALID_HANDLE,
+        ERROR_INVALID_PARAMETER,
+        ERROR_INVALID_SID,
+        ERROR_NOT_ENOUGH_MEMORY,
+    };
+
     use super::testkit::*;
     use super::*;
     use crate::sd::{sd_field, SD_TARGET_HEADER, SE_DACL_AUTO_INHERIT_REQ};
     use crate::sid::{ptr_field, valid_sid, ERROR_INVALID_ACL, ERROR_INVALID_SECURITY_DESCR};
-    use rtl::winerror::{ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_HANDLE, ERROR_INVALID_PARAMETER, ERROR_NOT_ENOUGH_MEMORY, ERROR_INVALID_SID};
 
     /// The error codes and flag values are the platform's public ones, and each descriptor field
     /// carries its SECURITY_INFORMATION bit (owner 1, group 2, SACL 8, DACL 4).
@@ -229,11 +256,19 @@ mod tests {
         assert_eq!((SEF_DACL_AUTO_INHERIT, SEF_SACL_AUTO_INHERIT), (0x01, 0x02));
         assert_eq!(FIELD_INFO, [1, 2, 8, 4]);
         assert_eq!(
-            (ERROR_INVALID_PARAMETER, ERROR_INSUFFICIENT_BUFFER, ERROR_NOT_ENOUGH_MEMORY),
+            (
+                ERROR_INVALID_PARAMETER,
+                ERROR_INSUFFICIENT_BUFFER,
+                ERROR_NOT_ENOUGH_MEMORY
+            ),
             (87, 122, 8)
         );
         assert_eq!(
-            (ERROR_INVALID_SID, ERROR_INVALID_ACL, ERROR_INVALID_SECURITY_DESCR),
+            (
+                ERROR_INVALID_SID,
+                ERROR_INVALID_ACL,
+                ERROR_INVALID_SECURITY_DESCR
+            ),
             (1337, 1336, 1338)
         );
         assert_eq!(ERROR_INVALID_HANDLE, 6);
@@ -282,7 +317,12 @@ mod tests {
         assert!(unsafe { valid_sd(ptr, read_sd(ptr as *const u8).unwrap().1) });
         assert_eq!(
             parts_of(ptr),
-            [Some(owner.clone()), Some(group.clone()), None, Some(dacl.clone())]
+            [
+                Some(owner.clone()),
+                Some(group.clone()),
+                None,
+                Some(dacl.clone())
+            ]
         );
         // The sizes: the target's 20-byte header plus the aligned components.
         assert_eq!(target_size(&parts), SD_TARGET_HEADER + 16 + 8 + dacl.len());
@@ -290,11 +330,20 @@ mod tests {
             present_bits(&[Some(&owner), None, None, Some(&dacl)]),
             SE_DACL_PRESENT
         );
-        assert_eq!(present_bits(&[None, None, None, Some(&dacl)]), SE_DACL_PRESENT);
-        assert_eq!(present_bits(&[None, None, Some(&dacl), None]), SE_SACL_PRESENT);
+        assert_eq!(
+            present_bits(&[None, None, None, Some(&dacl)]),
+            SE_DACL_PRESENT
+        );
+        assert_eq!(
+            present_bits(&[None, None, Some(&dacl), None]),
+            SE_SACL_PRESENT
+        );
         // The propagation of each field's PRESENT/DEFAULTED bits.
         assert_eq!(
-            propagate_bits(SE_DACL_PRESENT | SE_DACL_DEFAULTED | SE_SACL_PRESENT, FIELD_DACL),
+            propagate_bits(
+                SE_DACL_PRESENT | SE_DACL_DEFAULTED | SE_SACL_PRESENT,
+                FIELD_DACL
+            ),
             SE_DACL_PRESENT | SE_DACL_DEFAULTED
         );
         assert_eq!(

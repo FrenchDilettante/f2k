@@ -24,26 +24,51 @@
 #![allow(dead_code)]
 
 use rtl::nt::access::{
-    GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ, GENERIC_WRITE, MAXIMUM_ALLOWED, READ_CONTROL,
-    WRITE_DAC, WRITE_OWNER,
+    GENERIC_ALL,
+    GENERIC_EXECUTE,
+    GENERIC_READ,
+    GENERIC_WRITE,
+    MAXIMUM_ALLOWED,
+    READ_CONTROL,
+    WRITE_DAC,
+    WRITE_OWNER,
 };
 use rtl::nt::LuidAndAttributes;
 
-use crate::sec::{
-    ace_count, equal, held_enabled, luid, AceView, AceViews, Guid, SecurityDescriptor,
-    ACCESS_ALLOWED_ACE_TYPE, ACCESS_ALLOWED_COMPOUND_ACE_TYPE, ACCESS_ALLOWED_OBJECT_ACE_TYPE,
-    ACCESS_DENIED_ACE_TYPE, ACCESS_DENIED_OBJECT_ACE_TYPE, INHERIT_ONLY_ACE, PRINCIPAL_SELF_SID,
-    SE_DACL_PRESENT, SE_SECURITY_PRIVILEGE, SE_TAKE_OWNERSHIP_PRIVILEGE,
-    SECURITY_DESCRIPTOR_MIN_LENGTH, SECURITY_DESCRIPTOR_REVISION, STATUS_INVALID_SECURITY_DESCR,
-    STATUS_UNKNOWN_REVISION,
-};
 // A few names exist in both the ACL and the SD (or SID) module, so the glob above cannot
 // disambiguate them; take those from their module.
 use crate::sec::acl::{is_valid as acl_is_valid, STATUS_INVALID_ACL};
 use crate::sec::sd::STATUS_INVALID_SID;
 use crate::sec::sid::length as sid_length;
+use crate::sec::{
+    ace_count,
+    equal,
+    held_enabled,
+    luid,
+    AceView,
+    AceViews,
+    Guid,
+    SecurityDescriptor,
+    ACCESS_ALLOWED_ACE_TYPE,
+    ACCESS_ALLOWED_COMPOUND_ACE_TYPE,
+    ACCESS_ALLOWED_OBJECT_ACE_TYPE,
+    ACCESS_DENIED_ACE_TYPE,
+    ACCESS_DENIED_OBJECT_ACE_TYPE,
+    INHERIT_ONLY_ACE,
+    PRINCIPAL_SELF_SID,
+    SECURITY_DESCRIPTOR_MIN_LENGTH,
+    SECURITY_DESCRIPTOR_REVISION,
+    SE_DACL_PRESENT,
+    SE_SECURITY_PRIVILEGE,
+    SE_TAKE_OWNERSHIP_PRIVILEGE,
+    STATUS_INVALID_SECURITY_DESCR,
+    STATUS_UNKNOWN_REVISION,
+};
 use crate::status::{
-    NtStatus, STATUS_ACCESS_DENIED, STATUS_BUFFER_TOO_SMALL, STATUS_PRIVILEGE_NOT_HELD,
+    NtStatus,
+    STATUS_ACCESS_DENIED,
+    STATUS_BUFFER_TOO_SMALL,
+    STATUS_PRIVILEGE_NOT_HELD,
     STATUS_SUCCESS,
 };
 
@@ -240,7 +265,12 @@ fn object_ace_applies(ace_type: Option<Guid>, object_types: &[Guid], deny: bool)
 /// the ACE is a deny one.
 fn ace_sid_matches(check: &AccessCheck<'_>, ace: &AceView<'_>, deny_ace: bool) -> bool {
     match ace.sid() {
-        Some(sid) => sid_in_token(&check.subject.effective, check.principal_self, sid, deny_ace),
+        Some(sid) => sid_in_token(
+            &check.subject.effective,
+            check.principal_self,
+            sid,
+            deny_ace,
+        ),
         None => false,
     }
 }
@@ -271,8 +301,12 @@ fn normal_walk(dacl: &[u8], check: &AccessCheck<'_>, mut remaining: u32) -> u32 
                 if let (Some(mask), Some(client), Some(server)) =
                     (mask, ace.second_sid(), ace.sid())
                 {
-                    if sid_in_token(&check.subject.effective, check.principal_self, client, false)
-                        && sid_in_token(&check.subject.primary, None, server, false)
+                    if sid_in_token(
+                        &check.subject.effective,
+                        check.principal_self,
+                        client,
+                        false,
+                    ) && sid_in_token(&check.subject.primary, None, server, false)
                     {
                         remaining &= !mask;
                     }
@@ -325,8 +359,12 @@ fn maximum_walk(dacl: &[u8], check: &AccessCheck<'_>) -> u32 {
                 if let (Some(mask), Some(client), Some(server)) =
                     (mask, ace.second_sid(), ace.sid())
                 {
-                    if sid_in_token(&check.subject.effective, check.principal_self, client, false)
-                        && sid_in_token(&check.subject.primary, None, server, false)
+                    if sid_in_token(
+                        &check.subject.effective,
+                        check.principal_self,
+                        client,
+                        false,
+                    ) && sid_in_token(&check.subject.primary, None, server, false)
                     {
                         granted |= mask & !denied;
                     }
@@ -416,7 +454,10 @@ pub fn access_check(check: &AccessCheck<'_>) -> Outcome {
 
     // ACCESS_SYSTEM_SECURITY needs the security privilege enabled.
     if desired & ACCESS_SYSTEM_SECURITY != 0 {
-        if !held_enabled(check.subject.effective.privileges, luid(SE_SECURITY_PRIVILEGE)) {
+        if !held_enabled(
+            check.subject.effective.privileges,
+            luid(SE_SECURITY_PRIVILEGE),
+        ) {
             return outcome(0, STATUS_PRIVILEGE_NOT_HELD);
         }
         desired &= !ACCESS_SYSTEM_SECURITY;
@@ -492,17 +533,27 @@ pub fn access_check(check: &AccessCheck<'_>) -> Outcome {
 
 #[cfg(test)]
 mod tests {
+    use std::vec::Vec;
+
+    use rtl::nt::access::{DELETE, STANDARD_RIGHTS_REQUIRED, SYNCHRONIZE};
+
     use super::*;
     use crate::sec::acl::STATUS_INVALID_ACL;
     use crate::sec::sd::STATUS_INVALID_SID;
     use crate::sec::{
-        ACL_REVISION2, ACL_REVISION3, ACL_REVISION_DS, COMPOUND_ACE_IMPERSONATION,
-        SE_PRIVILEGE_ENABLED, SE_SELF_RELATIVE, SYSTEM_AUDIT_ACE_TYPE, WORLD_SID,
-        ALIAS_ADMINS_SID, PRINCIPAL_SELF_SID as SELF_SID, privilege,
+        privilege,
+        ACL_REVISION2,
+        ACL_REVISION3,
+        ACL_REVISION_DS,
+        ALIAS_ADMINS_SID,
+        COMPOUND_ACE_IMPERSONATION,
+        PRINCIPAL_SELF_SID as SELF_SID,
+        SE_PRIVILEGE_ENABLED,
+        SE_SELF_RELATIVE,
+        SYSTEM_AUDIT_ACE_TYPE,
+        WORLD_SID,
     };
     use crate::status::STATUS_BUFFER_TOO_SMALL;
-    use rtl::nt::access::{DELETE, STANDARD_RIGHTS_REQUIRED, SYNCHRONIZE};
-    use std::vec::Vec;
 
     // -- the byte builders -------------------------------------------------------
 
@@ -545,7 +596,12 @@ mod tests {
 
     /// A GUID, named by its first field.
     fn guid(data1: u32) -> Guid {
-        Guid { data1, data2: 0, data3: 0, data4: [0; 8] }
+        Guid {
+            data1,
+            data2: 0,
+            data3: 0,
+            data4: [0; 8],
+        }
     }
 
     /// A GUID's bytes: the first three fields little-endian, the last eight as they are.
@@ -661,8 +717,15 @@ mod tests {
         owner: &'a [u8],
         privileges: &'a [LuidAndAttributes],
     ) -> Subject<'a> {
-        let token = TokenView { sids, owner, privileges };
-        Subject { effective: token, primary: token }
+        let token = TokenView {
+            sids,
+            owner,
+            privileges,
+        };
+        Subject {
+            effective: token,
+            primary: token,
+        }
     }
 
     /// The test object type's mapping: read 0x1, write 0x2, execute 0x4, all 0xF, each with
@@ -676,12 +739,18 @@ mod tests {
 
     /// The expected outcome of a fully granted check.
     fn ok(granted: u32) -> Outcome {
-        Outcome { granted, status: STATUS_SUCCESS }
+        Outcome {
+            granted,
+            status: STATUS_SUCCESS,
+        }
     }
 
     /// The expected outcome of a denied check: nothing granted at all.
     fn denied_outcome() -> Outcome {
-        Outcome { granted: 0, status: STATUS_ACCESS_DENIED }
+        Outcome {
+            granted: 0,
+            status: STATUS_ACCESS_DENIED,
+        }
     }
 
     /// The plain user-mode check of a subject that is just `user`: no previously granted
@@ -701,8 +770,19 @@ mod tests {
         principal_self: Option<&[u8]>,
         object_types: &[Guid],
     ) -> Outcome {
-        let sids = [SidAndAttributes { sid: user, attributes: 0 }];
-        full_s(sd, same_tokens(&sids, user, &[]), desired, previously, mode, principal_self, object_types)
+        let sids = [SidAndAttributes {
+            sid: user,
+            attributes: 0,
+        }];
+        full_s(
+            sd,
+            same_tokens(&sids, user, &[]),
+            desired,
+            previously,
+            mode,
+            principal_self,
+            object_types,
+        )
     }
 
     /// The check of an already-built subject, with every knob.
@@ -735,9 +815,16 @@ mod tests {
     fn generic_mapping_maps_the_generic_rights() {
         assert_eq!(MAPPING.map(GENERIC_READ), READ_CONTROL | 0x1);
         assert_eq!(MAPPING.map(GENERIC_READ | 0x8), READ_CONTROL | 0x9);
-        assert_eq!(MAPPING.map(GENERIC_ALL | GENERIC_WRITE), MAPPING.generic_all | MAPPING.generic_write);
+        assert_eq!(
+            MAPPING.map(GENERIC_ALL | GENERIC_WRITE),
+            MAPPING.generic_all | MAPPING.generic_write
+        );
         assert_eq!(MAPPING.map(0), 0);
-        assert_eq!(MAPPING.map(MAXIMUM_ALLOWED), MAXIMUM_ALLOWED, "MAXIMUM_ALLOWED is the check's to handle");
+        assert_eq!(
+            MAPPING.map(MAXIMUM_ALLOWED),
+            MAXIMUM_ALLOWED,
+            "MAXIMUM_ALLOWED is the check's to handle"
+        );
     }
 
     /// Kernel-mode callers are granted whatever they ask for, without the descriptor being
@@ -746,10 +833,31 @@ mod tests {
     fn kernel_mode_is_granted_unconditionally() {
         let user = user_sid();
         let d = sd(&user, &[denied(0xFFFF_FFFF, &user)]);
-        assert_eq!(full(&d, &user, 0x7, 0, CallerMode::Kernel, None, &[]), ok(0x7));
-        assert_eq!(full(&d, &user, MAXIMUM_ALLOWED | DELETE, 0, CallerMode::Kernel, None, &[]), ok(MAPPING.generic_all | DELETE));
-        assert_eq!(full(&d, &user, 0x7, 0x100, CallerMode::Kernel, None, &[]), ok(0x107));
-        assert_eq!(full(&[], &user, 0x7, 0, CallerMode::Kernel, None, &[]), ok(0x7), "even with no descriptor");
+        assert_eq!(
+            full(&d, &user, 0x7, 0, CallerMode::Kernel, None, &[]),
+            ok(0x7)
+        );
+        assert_eq!(
+            full(
+                &d,
+                &user,
+                MAXIMUM_ALLOWED | DELETE,
+                0,
+                CallerMode::Kernel,
+                None,
+                &[]
+            ),
+            ok(MAPPING.generic_all | DELETE)
+        );
+        assert_eq!(
+            full(&d, &user, 0x7, 0x100, CallerMode::Kernel, None, &[]),
+            ok(0x107)
+        );
+        assert_eq!(
+            full(&[], &user, 0x7, 0, CallerMode::Kernel, None, &[]),
+            ok(0x7),
+            "even with no descriptor"
+        );
     }
 
     /// A plain allow ACE for the token's user grants its mask; an ACE for a SID the token
@@ -779,9 +887,15 @@ mod tests {
     fn previously_granted_is_added_and_zeroed_on_denial() {
         let user = user_sid();
         let d = sd(&user, &[allowed(0x1, &user)]);
-        assert_eq!(full(&d, &user, 0x1, DELETE, CallerMode::User, None, &[]), ok(0x1 | DELETE));
+        assert_eq!(
+            full(&d, &user, 0x1, DELETE, CallerMode::User, None, &[]),
+            ok(0x1 | DELETE)
+        );
         // 0x2 is granted by no ACE: the whole check is denied, granted mask and all.
-        assert_eq!(full(&d, &user, 0x1 | 0x2, DELETE, CallerMode::User, None, &[]), denied_outcome());
+        assert_eq!(
+            full(&d, &user, 0x1 | 0x2, DELETE, CallerMode::User, None, &[]),
+            denied_outcome()
+        );
     }
 
     /// A zero desired mask is denied unless something was already granted.
@@ -790,7 +904,10 @@ mod tests {
         let user = user_sid();
         let d = descriptor(Some(&user), true, None);
         assert_eq!(run(&d, &user, 0), denied_outcome());
-        assert_eq!(full(&d, &user, 0, DELETE, CallerMode::User, None, &[]), ok(DELETE));
+        assert_eq!(
+            full(&d, &user, 0, DELETE, CallerMode::User, None, &[]),
+            ok(DELETE)
+        );
     }
 
     /// Deny-first ordering: a matching deny whose mask intersects the remaining mask denies
@@ -800,9 +917,23 @@ mod tests {
     fn deny_first_wins_over_a_later_allow() {
         let user = user_sid();
         // Deny 0x1 first, then allow 0x1|0x2: desired 0x1|0x2 is denied.
-        assert_eq!(run(&sd(&user, &[denied(0x1, &user), allowed(0x3, &user)]), &user, 0x3), denied_outcome());
+        assert_eq!(
+            run(
+                &sd(&user, &[denied(0x1, &user), allowed(0x3, &user)]),
+                &user,
+                0x3
+            ),
+            denied_outcome()
+        );
         // Allow 0x1 first, then deny 0x1: desired 0x1 is granted (the walk ends at zero).
-        assert_eq!(run(&sd(&user, &[allowed(0x1, &user), denied(0x1, &user)]), &user, 0x1), ok(0x1));
+        assert_eq!(
+            run(
+                &sd(&user, &[allowed(0x1, &user), denied(0x1, &user)]),
+                &user,
+                0x1
+            ),
+            ok(0x1)
+        );
         // Deny 0x1, allow 0x2: desired 0x2 is granted (the deny's mask does not intersect),
         // desired 0x1|0x2 is denied.
         let d = sd(&user, &[denied(0x1, &user), allowed(0x2, &user)]);
@@ -819,29 +950,63 @@ mod tests {
         let allow_group = sd(&user, &[allowed(0x7, &group)]);
         let deny_then_allow = sd(&user, &[denied(0x7, &group), allowed(0x7, &user)]);
         let check = |sids: &[SidAndAttributes<'_>], d: &[u8]| {
-            full_s(d, same_tokens(sids, &user, &[]), 0x7, 0, CallerMode::User, None, &[])
+            full_s(
+                d,
+                same_tokens(sids, &user, &[]),
+                0x7,
+                0,
+                CallerMode::User,
+                None,
+                &[],
+            )
         };
         // Enabled: both its allow and its deny match.
         let enabled = [
-            SidAndAttributes { sid: &user, attributes: 0 },
-            SidAndAttributes { sid: &group, attributes: SE_GROUP_ENABLED },
+            SidAndAttributes {
+                sid: &user,
+                attributes: 0,
+            },
+            SidAndAttributes {
+                sid: &group,
+                attributes: SE_GROUP_ENABLED,
+            },
         ];
         assert_eq!(check(&enabled, &allow_group), ok(0x7));
         assert_eq!(check(&enabled, &deny_then_allow), denied_outcome());
         // No attributes: neither matches.
         let plain = [
-            SidAndAttributes { sid: &user, attributes: 0 },
-            SidAndAttributes { sid: &group, attributes: 0 },
+            SidAndAttributes {
+                sid: &user,
+                attributes: 0,
+            },
+            SidAndAttributes {
+                sid: &group,
+                attributes: 0,
+            },
         ];
         assert_eq!(check(&plain, &allow_group), denied_outcome());
-        assert_eq!(check(&plain, &deny_then_allow), ok(0x7), "a not-enabled group's deny does not fire");
+        assert_eq!(
+            check(&plain, &deny_then_allow),
+            ok(0x7),
+            "a not-enabled group's deny does not fire"
+        );
         // Deny-only: its deny matches, its allow does not.
         let deny_only = [
-            SidAndAttributes { sid: &user, attributes: 0 },
-            SidAndAttributes { sid: &group, attributes: SE_GROUP_USE_FOR_DENY_ONLY },
+            SidAndAttributes {
+                sid: &user,
+                attributes: 0,
+            },
+            SidAndAttributes {
+                sid: &group,
+                attributes: SE_GROUP_USE_FOR_DENY_ONLY,
+            },
         ];
         assert_eq!(check(&deny_only, &deny_then_allow), denied_outcome());
-        assert_eq!(check(&deny_only, &allow_group), denied_outcome(), "a deny-only group's allow does not");
+        assert_eq!(
+            check(&deny_only, &allow_group),
+            denied_outcome(),
+            "a deny-only group's allow does not"
+        );
         // The user at index 0 matches with no attributes at all.
         assert_eq!(run(&sd(&user, &[allowed(0x7, &user)]), &user, 0x7), ok(0x7));
     }
@@ -853,19 +1018,45 @@ mod tests {
     fn owner_gets_read_control_and_write_dac() {
         let user = user_sid();
         let deny_all = sd(&user, &[denied(0xFFFF_FFFF, &user)]);
-        assert_eq!(run(&deny_all, &user, READ_CONTROL | WRITE_DAC), ok(READ_CONTROL | WRITE_DAC));
+        assert_eq!(
+            run(&deny_all, &user, READ_CONTROL | WRITE_DAC),
+            ok(READ_CONTROL | WRITE_DAC)
+        );
         assert_eq!(run(&deny_all, &user, READ_CONTROL), ok(READ_CONTROL));
-        assert_eq!(run(&deny_all, &user, MAXIMUM_ALLOWED), ok(READ_CONTROL | WRITE_DAC));
+        assert_eq!(
+            run(&deny_all, &user, MAXIMUM_ALLOWED),
+            ok(READ_CONTROL | WRITE_DAC)
+        );
         // A subject that is not the owner gets nothing implicitly.
-        assert_eq!(run(&deny_all, &other_sid(), READ_CONTROL | WRITE_DAC), denied_outcome());
+        assert_eq!(
+            run(&deny_all, &other_sid(), READ_CONTROL | WRITE_DAC),
+            denied_outcome()
+        );
         // The owner SID may sit in an enabled group, not just at index 0.
         let admins = ALIAS_ADMINS_SID.to_vec();
         let sids = [
-            SidAndAttributes { sid: &user, attributes: 0 },
-            SidAndAttributes { sid: &admins, attributes: SE_GROUP_ENABLED },
+            SidAndAttributes {
+                sid: &user,
+                attributes: 0,
+            },
+            SidAndAttributes {
+                sid: &admins,
+                attributes: SE_GROUP_ENABLED,
+            },
         ];
         let s = same_tokens(&sids, &user, &[]);
-        assert_eq!(full_s(&sd(&admins, &[]), s, READ_CONTROL | WRITE_DAC, 0, CallerMode::User, None, &[]), ok(READ_CONTROL | WRITE_DAC));
+        assert_eq!(
+            full_s(
+                &sd(&admins, &[]),
+                s,
+                READ_CONTROL | WRITE_DAC,
+                0,
+                CallerMode::User,
+                None,
+                &[]
+            ),
+            ok(READ_CONTROL | WRITE_DAC)
+        );
     }
 
     /// MAXIMUM_ALLOWED walks the DACL once, OR-ing the matching allows' masks minus what
@@ -875,18 +1066,68 @@ mod tests {
         let user = user_sid();
         let other = other_sid();
         let sids = [
-            SidAndAttributes { sid: &user, attributes: 0 },
-            SidAndAttributes { sid: WORLD_SID, attributes: SE_GROUP_ENABLED },
+            SidAndAttributes {
+                sid: &user,
+                attributes: 0,
+            },
+            SidAndAttributes {
+                sid: WORLD_SID,
+                attributes: SE_GROUP_ENABLED,
+            },
         ];
         let s = same_tokens(&sids, &user, &[]);
         // Deny 0x1 first, then allow 0x1|0x2|0x4 to everyone: the maximum is 0x2|0x4.
-        assert_eq!(full_s(&sd(&other, &[denied(0x1, &user), allowed(0x7, WORLD_SID)]), s, MAXIMUM_ALLOWED, 0, CallerMode::User, None, &[]), ok(0x6));
+        assert_eq!(
+            full_s(
+                &sd(&other, &[denied(0x1, &user), allowed(0x7, WORLD_SID)]),
+                s,
+                MAXIMUM_ALLOWED,
+                0,
+                CallerMode::User,
+                None,
+                &[]
+            ),
+            ok(0x6)
+        );
         // Allow first, then deny: the deny only takes what was not already granted.
-        assert_eq!(full_s(&sd(&other, &[allowed(0x3, WORLD_SID), denied(0x1, &user)]), s, MAXIMUM_ALLOWED, 0, CallerMode::User, None, &[]), ok(0x3));
+        assert_eq!(
+            full_s(
+                &sd(&other, &[allowed(0x3, WORLD_SID), denied(0x1, &user)]),
+                s,
+                MAXIMUM_ALLOWED,
+                0,
+                CallerMode::User,
+                None,
+                &[]
+            ),
+            ok(0x3)
+        );
         // Extra bits asked alongside MAXIMUM_ALLOWED must be granted too, or all is denied.
         let all = sd(&other, &[allowed(0x7, WORLD_SID)]);
-        assert_eq!(full_s(&all, s, MAXIMUM_ALLOWED | DELETE, 0, CallerMode::User, None, &[]), denied_outcome());
-        assert_eq!(full_s(&all, s, MAXIMUM_ALLOWED | 0x1, 0, CallerMode::User, None, &[]), ok(0x7));
+        assert_eq!(
+            full_s(
+                &all,
+                s,
+                MAXIMUM_ALLOWED | DELETE,
+                0,
+                CallerMode::User,
+                None,
+                &[]
+            ),
+            denied_outcome()
+        );
+        assert_eq!(
+            full_s(
+                &all,
+                s,
+                MAXIMUM_ALLOWED | 0x1,
+                0,
+                CallerMode::User,
+                None,
+                &[]
+            ),
+            ok(0x7)
+        );
     }
 
     /// A missing DACL (flag clear) or a null DACL (present, field zero) grants everything;
@@ -896,7 +1137,10 @@ mod tests {
         let user = user_sid();
         let d = descriptor(Some(&user), false, None);
         assert_eq!(run(&d, &user, 0x7 | READ_CONTROL), ok(0x7 | READ_CONTROL));
-        assert_eq!(run(&d, &user, MAXIMUM_ALLOWED | 0x1), ok(MAPPING.generic_all | 0x1));
+        assert_eq!(
+            run(&d, &user, MAXIMUM_ALLOWED | 0x1),
+            ok(MAPPING.generic_all | 0x1)
+        );
         let null_dacl = descriptor(Some(&user), true, None);
         assert_eq!(run(&null_dacl, &user, 0x7), ok(0x7));
     }
@@ -908,8 +1152,22 @@ mod tests {
         let user = user_sid();
         let d = sd(&other_sid(), &[]);
         assert_eq!(run(&d, &user, 0x1), denied_outcome());
-        assert_eq!(full(&d, &user, MAXIMUM_ALLOWED, 0, CallerMode::User, None, &[]), denied_outcome());
-        assert_eq!(full(&d, &user, MAXIMUM_ALLOWED, DELETE, CallerMode::User, None, &[]), ok(DELETE));
+        assert_eq!(
+            full(&d, &user, MAXIMUM_ALLOWED, 0, CallerMode::User, None, &[]),
+            denied_outcome()
+        );
+        assert_eq!(
+            full(
+                &d,
+                &user,
+                MAXIMUM_ALLOWED,
+                DELETE,
+                CallerMode::User,
+                None,
+                &[]
+            ),
+            ok(DELETE)
+        );
     }
 
     /// ACCESS_SYSTEM_SECURITY needs the security privilege enabled: held but disabled is not
@@ -919,16 +1177,78 @@ mod tests {
         let user = user_sid();
         let d = sd(&user, &[allowed(0x1, &user)]);
         let no_dacl = descriptor(Some(&user), false, None);
-        let not_held = Outcome { granted: 0, status: STATUS_PRIVILEGE_NOT_HELD };
-        let sids = [SidAndAttributes { sid: &user, attributes: 0 }];
-        assert_eq!(full_s(&d, same_tokens(&sids, &user, &[]), ACCESS_SYSTEM_SECURITY, 0, CallerMode::User, None, &[]), not_held);
-        assert_eq!(full_s(&no_dacl, same_tokens(&sids, &user, &[]), ACCESS_SYSTEM_SECURITY, 0, CallerMode::User, None, &[]), not_held, "a null DACL grants everything but ACCESS_SYSTEM_SECURITY");
+        let not_held = Outcome {
+            granted: 0,
+            status: STATUS_PRIVILEGE_NOT_HELD,
+        };
+        let sids = [SidAndAttributes {
+            sid: &user,
+            attributes: 0,
+        }];
+        assert_eq!(
+            full_s(
+                &d,
+                same_tokens(&sids, &user, &[]),
+                ACCESS_SYSTEM_SECURITY,
+                0,
+                CallerMode::User,
+                None,
+                &[]
+            ),
+            not_held
+        );
+        assert_eq!(
+            full_s(
+                &no_dacl,
+                same_tokens(&sids, &user, &[]),
+                ACCESS_SYSTEM_SECURITY,
+                0,
+                CallerMode::User,
+                None,
+                &[]
+            ),
+            not_held,
+            "a null DACL grants everything but ACCESS_SYSTEM_SECURITY"
+        );
         let disabled = [privilege(SE_SECURITY_PRIVILEGE, 0)];
-        assert_eq!(full_s(&d, same_tokens(&sids, &user, &disabled), ACCESS_SYSTEM_SECURITY, 0, CallerMode::User, None, &[]), not_held);
+        assert_eq!(
+            full_s(
+                &d,
+                same_tokens(&sids, &user, &disabled),
+                ACCESS_SYSTEM_SECURITY,
+                0,
+                CallerMode::User,
+                None,
+                &[]
+            ),
+            not_held
+        );
         let enabled = [privilege(SE_SECURITY_PRIVILEGE, SE_PRIVILEGE_ENABLED)];
         let s = same_tokens(&sids, &user, &enabled);
-        assert_eq!(full_s(&d, s, ACCESS_SYSTEM_SECURITY, 0, CallerMode::User, None, &[]), ok(ACCESS_SYSTEM_SECURITY));
-        assert_eq!(full_s(&d, s, ACCESS_SYSTEM_SECURITY | 0x1, 0, CallerMode::User, None, &[]), ok(ACCESS_SYSTEM_SECURITY | 0x1));
+        assert_eq!(
+            full_s(
+                &d,
+                s,
+                ACCESS_SYSTEM_SECURITY,
+                0,
+                CallerMode::User,
+                None,
+                &[]
+            ),
+            ok(ACCESS_SYSTEM_SECURITY)
+        );
+        assert_eq!(
+            full_s(
+                &d,
+                s,
+                ACCESS_SYSTEM_SECURITY | 0x1,
+                0,
+                CallerMode::User,
+                None,
+                &[]
+            ),
+            ok(ACCESS_SYSTEM_SECURITY | 0x1)
+        );
     }
 
     /// WRITE_OWNER is granted to the owner or to a subject holding the take-ownership
@@ -940,20 +1260,59 @@ mod tests {
         // The owner, against an empty DACL.
         assert_eq!(run(&sd(&user, &[]), &user, WRITE_OWNER), ok(WRITE_OWNER));
         // Not the owner, but the privilege enabled.
-        let sids = [SidAndAttributes { sid: &other, attributes: 0 }];
+        let sids = [SidAndAttributes {
+            sid: &other,
+            attributes: 0,
+        }];
         let privs = [privilege(SE_TAKE_OWNERSHIP_PRIVILEGE, SE_PRIVILEGE_ENABLED)];
-        assert_eq!(full_s(&sd(&user, &[]), same_tokens(&sids, &other, &privs), WRITE_OWNER, 0, CallerMode::User, None, &[]), ok(WRITE_OWNER));
+        assert_eq!(
+            full_s(
+                &sd(&user, &[]),
+                same_tokens(&sids, &other, &privs),
+                WRITE_OWNER,
+                0,
+                CallerMode::User,
+                None,
+                &[]
+            ),
+            ok(WRITE_OWNER)
+        );
         // Not the owner, privilege held but disabled: the DACL walk decides.
         let disabled = [privilege(SE_TAKE_OWNERSHIP_PRIVILEGE, 0)];
-        assert_eq!(full_s(&sd(&user, &[allowed(WRITE_OWNER, &other)]), same_tokens(&sids, &other, &disabled), WRITE_OWNER, 0, CallerMode::User, None, &[]), ok(WRITE_OWNER));
-        assert_eq!(full_s(&sd(&user, &[]), same_tokens(&sids, &other, &[]), WRITE_OWNER, 0, CallerMode::User, None, &[]), denied_outcome());
+        assert_eq!(
+            full_s(
+                &sd(&user, &[allowed(WRITE_OWNER, &other)]),
+                same_tokens(&sids, &other, &disabled),
+                WRITE_OWNER,
+                0,
+                CallerMode::User,
+                None,
+                &[]
+            ),
+            ok(WRITE_OWNER)
+        );
+        assert_eq!(
+            full_s(
+                &sd(&user, &[]),
+                same_tokens(&sids, &other, &[]),
+                WRITE_OWNER,
+                0,
+                CallerMode::User,
+                None,
+                &[]
+            ),
+            denied_outcome()
+        );
     }
 
     /// An object ACE with no object-type GUID applies to the object itself, like a plain ACE.
     #[test]
     fn object_ace_without_a_type_applies_to_the_object() {
         let user = user_sid();
-        let d = sd(&user, &[object_ace(ACCESS_ALLOWED_OBJECT_ACE_TYPE, 0x5, None, &user)]);
+        let d = sd(
+            &user,
+            &[object_ace(ACCESS_ALLOWED_OBJECT_ACE_TYPE, 0x5, None, &user)],
+        );
         assert_eq!(run(&d, &user, 0x5), ok(0x5));
     }
 
@@ -964,10 +1323,28 @@ mod tests {
         let user = user_sid();
         let g1 = guid(0x1111);
         let g2 = guid(0x2222);
-        let d = sd(&user, &[object_ace(ACCESS_ALLOWED_OBJECT_ACE_TYPE, 0x5, Some(g1), &user)]);
-        assert_eq!(run(&d, &user, 0x5), denied_outcome(), "no type list: no grant");
-        assert_eq!(full(&d, &user, 0x5, 0, CallerMode::User, None, &[g1]), ok(0x5));
-        assert_eq!(full(&d, &user, 0x5, 0, CallerMode::User, None, &[g2]), denied_outcome());
+        let d = sd(
+            &user,
+            &[object_ace(
+                ACCESS_ALLOWED_OBJECT_ACE_TYPE,
+                0x5,
+                Some(g1),
+                &user,
+            )],
+        );
+        assert_eq!(
+            run(&d, &user, 0x5),
+            denied_outcome(),
+            "no type list: no grant"
+        );
+        assert_eq!(
+            full(&d, &user, 0x5, 0, CallerMode::User, None, &[g1]),
+            ok(0x5)
+        );
+        assert_eq!(
+            full(&d, &user, 0x5, 0, CallerMode::User, None, &[g2]),
+            denied_outcome()
+        );
     }
 
     /// A typed object deny ACE applies to the whole object when the caller has no type list,
@@ -977,13 +1354,27 @@ mod tests {
         let user = user_sid();
         let g1 = guid(0x1111);
         let g2 = guid(0x2222);
-        let d = sd(&user, &[
-            object_ace(ACCESS_DENIED_OBJECT_ACE_TYPE, 0x1, Some(g1), &user),
-            allowed(0x7, &user),
-        ]);
-        assert_eq!(run(&d, &user, 0x1 | 0x2), denied_outcome(), "no list: the typed deny applies to the object");
-        assert_eq!(full(&d, &user, 0x1, 0, CallerMode::User, None, &[g1]), denied_outcome());
-        assert_eq!(full(&d, &user, 0x1 | 0x2, 0, CallerMode::User, None, &[g2]), ok(0x3), "a list without the GUID: the deny does not apply");
+        let d = sd(
+            &user,
+            &[
+                object_ace(ACCESS_DENIED_OBJECT_ACE_TYPE, 0x1, Some(g1), &user),
+                allowed(0x7, &user),
+            ],
+        );
+        assert_eq!(
+            run(&d, &user, 0x1 | 0x2),
+            denied_outcome(),
+            "no list: the typed deny applies to the object"
+        );
+        assert_eq!(
+            full(&d, &user, 0x1, 0, CallerMode::User, None, &[g1]),
+            denied_outcome()
+        );
+        assert_eq!(
+            full(&d, &user, 0x1 | 0x2, 0, CallerMode::User, None, &[g2]),
+            ok(0x3),
+            "a list without the GUID: the deny does not apply"
+        );
     }
 
     /// A compound ACE grants only when its client SID is in the effective token and its
@@ -993,23 +1384,96 @@ mod tests {
         let user = user_sid();
         let client = other_sid();
         let server = sid(5, &[32, 544]);
-        let eff = [SidAndAttributes { sid: &client, attributes: 0 }];
-        let eff_token = TokenView { sids: &eff, owner: &client, privileges: &[] };
+        let eff = [SidAndAttributes {
+            sid: &client,
+            attributes: 0,
+        }];
+        let eff_token = TokenView {
+            sids: &eff,
+            owner: &client,
+            privileges: &[],
+        };
         let prim = [
-            SidAndAttributes { sid: &user, attributes: 0 },
-            SidAndAttributes { sid: &server, attributes: SE_GROUP_ENABLED },
+            SidAndAttributes {
+                sid: &user,
+                attributes: 0,
+            },
+            SidAndAttributes {
+                sid: &server,
+                attributes: SE_GROUP_ENABLED,
+            },
         ];
-        let prim_token = TokenView { sids: &prim, owner: &user, privileges: &[] };
+        let prim_token = TokenView {
+            sids: &prim,
+            owner: &user,
+            privileges: &[],
+        };
         let d = sd(&user, &[compound(0x9, &server, &client)]);
-        assert_eq!(full_s(&d, Subject { effective: eff_token, primary: prim_token }, 0x9, 0, CallerMode::User, None, &[]), ok(0x9));
+        assert_eq!(
+            full_s(
+                &d,
+                Subject {
+                    effective: eff_token,
+                    primary: prim_token
+                },
+                0x9,
+                0,
+                CallerMode::User,
+                None,
+                &[]
+            ),
+            ok(0x9)
+        );
         // The server SID not in the primary token: no grant.
-        let prim2 = [SidAndAttributes { sid: &user, attributes: 0 }];
-        let no_server = TokenView { sids: &prim2, owner: &user, privileges: &[] };
-        assert_eq!(full_s(&d, Subject { effective: eff_token, primary: no_server }, 0x9, 0, CallerMode::User, None, &[]), denied_outcome());
+        let prim2 = [SidAndAttributes {
+            sid: &user,
+            attributes: 0,
+        }];
+        let no_server = TokenView {
+            sids: &prim2,
+            owner: &user,
+            privileges: &[],
+        };
+        assert_eq!(
+            full_s(
+                &d,
+                Subject {
+                    effective: eff_token,
+                    primary: no_server
+                },
+                0x9,
+                0,
+                CallerMode::User,
+                None,
+                &[]
+            ),
+            denied_outcome()
+        );
         // The client SID not in the effective token: no grant.
-        let eff2 = [SidAndAttributes { sid: &user, attributes: 0 }];
-        let no_client = TokenView { sids: &eff2, owner: &user, privileges: &[] };
-        assert_eq!(full_s(&d, Subject { effective: no_client, primary: prim_token }, 0x9, 0, CallerMode::User, None, &[]), denied_outcome());
+        let eff2 = [SidAndAttributes {
+            sid: &user,
+            attributes: 0,
+        }];
+        let no_client = TokenView {
+            sids: &eff2,
+            owner: &user,
+            privileges: &[],
+        };
+        assert_eq!(
+            full_s(
+                &d,
+                Subject {
+                    effective: no_client,
+                    primary: prim_token
+                },
+                0x9,
+                0,
+                CallerMode::User,
+                None,
+                &[]
+            ),
+            denied_outcome()
+        );
     }
 
     /// An ACE's principal-self SID is replaced by the object's own SID when the object
@@ -1019,26 +1483,57 @@ mod tests {
         let user = user_sid();
         let other = other_sid();
         let d = sd(&user, &[allowed(0x3, SELF_SID)]);
-        assert_eq!(full(&d, &user, 0x3, 0, CallerMode::User, Some(&user), &[]), ok(0x3), "the object is the user");
-        assert_eq!(full(&d, &user, 0x3, 0, CallerMode::User, Some(&other), &[]), denied_outcome());
-        assert_eq!(run(&d, &user, 0x3), denied_outcome(), "the object represents no principal");
+        assert_eq!(
+            full(&d, &user, 0x3, 0, CallerMode::User, Some(&user), &[]),
+            ok(0x3),
+            "the object is the user"
+        );
+        assert_eq!(
+            full(&d, &user, 0x3, 0, CallerMode::User, Some(&other), &[]),
+            denied_outcome()
+        );
+        assert_eq!(
+            run(&d, &user, 0x3),
+            denied_outcome(),
+            "the object represents no principal"
+        );
         // A deny ACE with the principal-self SID denies the object's own SID.
         let d2 = sd(&user, &[denied(0x1, SELF_SID), allowed(0x3, &user)]);
-        assert_eq!(full(&d2, &user, 0x3, 0, CallerMode::User, Some(&user), &[]), denied_outcome());
+        assert_eq!(
+            full(&d2, &user, 0x3, 0, CallerMode::User, Some(&user), &[]),
+            denied_outcome()
+        );
     }
 
     /// ACEs that apply to children only are skipped, and the audit/alarm types are ignored.
     #[test]
     fn inherit_only_and_audit_aces_are_skipped() {
         let user = user_sid();
-        let inherit_only = sd(&user, &[
-            plain_ace(ACCESS_ALLOWED_ACE_TYPE, INHERIT_ONLY_ACE, 0x7, &user),
-            allowed(0x1, &user),
-        ]);
-        assert_eq!(run(&inherit_only, &user, 0x7), denied_outcome(), "the inherit-only ACE grants nothing, so 0x6 remains");
+        let inherit_only = sd(
+            &user,
+            &[
+                plain_ace(ACCESS_ALLOWED_ACE_TYPE, INHERIT_ONLY_ACE, 0x7, &user),
+                allowed(0x1, &user),
+            ],
+        );
+        assert_eq!(
+            run(&inherit_only, &user, 0x7),
+            denied_outcome(),
+            "the inherit-only ACE grants nothing, so 0x6 remains"
+        );
         assert_eq!(run(&inherit_only, &user, 0x1), ok(0x1));
-        let audit = sd(&user, &[plain_ace(SYSTEM_AUDIT_ACE_TYPE, 0, 0x2, &user), allowed(0x1, &user)]);
-        assert_eq!(run(&audit, &user, 0x1 | 0x2), denied_outcome(), "the audit ACE grants nothing, so 0x2 remains");
+        let audit = sd(
+            &user,
+            &[
+                plain_ace(SYSTEM_AUDIT_ACE_TYPE, 0, 0x2, &user),
+                allowed(0x1, &user),
+            ],
+        );
+        assert_eq!(
+            run(&audit, &user, 0x1 | 0x2),
+            denied_outcome(),
+            "the audit ACE grants nothing, so 0x2 remains"
+        );
         assert_eq!(run(&audit, &user, 0x1), ok(0x1));
         assert_eq!(run(&audit, &user, 0x2), denied_outcome());
     }
@@ -1049,9 +1544,16 @@ mod tests {
     #[test]
     fn malformed_parts_report_their_status() {
         let user = user_sid();
-        assert_eq!(run(&[], &user, 0x1), denied_outcome(), "no descriptor at all");
+        assert_eq!(
+            run(&[], &user, 0x1),
+            denied_outcome(),
+            "no descriptor at all"
+        );
         let header_only = descriptor(Some(&user), true, None);
-        assert_eq!(run(&header_only[..10], &user, 0x1).status, STATUS_BUFFER_TOO_SMALL);
+        assert_eq!(
+            run(&header_only[..10], &user, 0x1).status,
+            STATUS_BUFFER_TOO_SMALL
+        );
         let mut bad = header_only.clone();
         bad[0] = 2;
         assert_eq!(run(&bad, &user, 0x1).status, STATUS_UNKNOWN_REVISION);
@@ -1062,16 +1564,25 @@ mod tests {
         // A DACL whose size word runs past the end of the descriptor's bytes.
         let dacl = acl(&[allowed(0x1, &user)]);
         let whole = descriptor(None, true, Some(&dacl));
-        assert_eq!(run(&whole[..whole.len() - 4], &user, 0x1).status, STATUS_INVALID_ACL);
+        assert_eq!(
+            run(&whole[..whole.len() - 4], &user, 0x1).status,
+            STATUS_INVALID_ACL
+        );
         // A DACL offset outside the descriptor's bytes.
         let dacl = acl(&[allowed(0x1, &user)]);
         let mut out_of_range = descriptor(Some(&user), true, Some(&dacl));
         let mut h = SecurityDescriptor::parse(&out_of_range).unwrap();
         h.dacl = 0xF000;
         assert!(h.write(&mut out_of_range[..]));
-        assert_eq!(run(&out_of_range, &user, 0x1).status, STATUS_INVALID_SECURITY_DESCR);
+        assert_eq!(
+            run(&out_of_range, &user, 0x1).status,
+            STATUS_INVALID_SECURITY_DESCR
+        );
         // An owner SID that is truncated.
         let owner = user_sid();
-        assert_eq!(run(&descriptor(Some(&owner[..10]), true, None), &user, 0x1).status, STATUS_INVALID_SID);
+        assert_eq!(
+            run(&descriptor(Some(&owner[..10]), true, None), &user, 0x1).status,
+            STATUS_INVALID_SID
+        );
     }
 }

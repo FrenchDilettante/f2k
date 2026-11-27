@@ -60,7 +60,11 @@ fn heap_relative_sd(
         let mut offsets = [0u32; 4];
         for index in [2usize, 3, 0, 1] {
             if sizes[index] > 0 {
-                core::ptr::copy_nonoverlapping(addrs[index] as *const u8, field as *mut u8, sizes[index]);
+                core::ptr::copy_nonoverlapping(
+                    addrs[index] as *const u8,
+                    field as *mut u8,
+                    sizes[index],
+                );
                 offsets[index] = (field - block) as u32;
                 field += sizes[index];
             }
@@ -289,7 +293,13 @@ mod tests {
         // Too small a buffer: the size comes out, nothing is written.
         assert_eq!(
             unsafe {
-                rtl_query_security_object(object.as_ptr(), info, buffer.as_mut_ptr(), 0, &mut needed)
+                rtl_query_security_object(
+                    object.as_ptr(),
+                    info,
+                    buffer.as_mut_ptr(),
+                    0,
+                    &mut needed,
+                )
             },
             STATUS_BUFFER_TOO_SMALL
         );
@@ -299,7 +309,13 @@ mod tests {
         // SACL, DACL, owner, group order — the DACL at 20, the owner at 84.
         assert_eq!(
             unsafe {
-                rtl_query_security_object(object.as_ptr(), info, buffer.as_mut_ptr(), 256, &mut needed)
+                rtl_query_security_object(
+                    object.as_ptr(),
+                    info,
+                    buffer.as_mut_ptr(),
+                    256,
+                    &mut needed,
+                )
             },
             STATUS_SUCCESS
         );
@@ -308,7 +324,10 @@ mod tests {
         assert_eq!(header.revision, 1);
         assert!(header.control & SE_SELF_RELATIVE != 0);
         assert!(header.control & SE_DACL_PRESENT != 0);
-        assert_eq!((header.owner, header.group, header.sacl, header.dacl), (84, 0, 0, 20));
+        assert_eq!(
+            (header.owner, header.group, header.sacl, header.dacl),
+            (84, 0, 0, 20)
+        );
         assert_eq!(&buffer[20..84], &dacl[..]);
         assert_eq!(&buffer[84..100], &owner[..]);
         // Naming nothing answers the header alone.

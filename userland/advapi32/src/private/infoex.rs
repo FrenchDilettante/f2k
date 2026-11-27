@@ -12,22 +12,29 @@
 use rtl::heap::ProcessHeap as _;
 use rtl::pod::Pod;
 use rtl::status::{NtStatus, STATUS_BUFFER_TOO_SMALL};
-use rtl::winerror::{
-    ERROR_INVALID_SID, ERROR_NOT_ENOUGH_MEMORY, ERROR_SUCCESS,
-};
+use rtl::winerror::{ERROR_INVALID_SID, ERROR_NOT_ENOUGH_MEMORY, ERROR_SUCCESS};
 
+use super::ERROR_BAD_PROVIDER;
 use crate::acl::caller_acl;
 use crate::acl::edit::valid_acl;
 use crate::filesec::{
-    self, DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+    self,
+    DACL_SECURITY_INFORMATION,
+    GROUP_SECURITY_INFORMATION,
+    OWNER_SECURITY_INFORMATION,
     SACL_SECURITY_INFORMATION,
 };
 use crate::imports::{self as nt};
-use crate::sd::{long_align, SD_REVISION, SD_TARGET_HEADER, SE_DACL_PRESENT, SE_SACL_PRESENT, SE_SELF_RELATIVE};
+use crate::sd::{
+    long_align,
+    SD_REVISION,
+    SD_TARGET_HEADER,
+    SE_DACL_PRESENT,
+    SE_SACL_PRESENT,
+    SE_SELF_RELATIVE,
+};
 use crate::sid::{caller_sid, valid_sid, ERROR_INVALID_ACL};
 use crate::Out;
-
-use super::ERROR_BAD_PROVIDER;
 
 /// One component the `info` mask names: the part when it is well formed, none for a null part or
 /// a bit the mask does not name, the error for a part that is no SID or no ACL.
@@ -59,10 +66,34 @@ fn build_service_sd(
     dacl: Option<&[u8]>,
     sacl: Option<&[u8]>,
 ) -> Result<nt::HeapBlock, u32> {
-    let owner = pick(info, OWNER_SECURITY_INFORMATION, owner, valid_sid, ERROR_INVALID_SID)?;
-    let group = pick(info, GROUP_SECURITY_INFORMATION, group, valid_sid, ERROR_INVALID_SID)?;
-    let sacl = pick(info, SACL_SECURITY_INFORMATION, sacl, valid_acl, ERROR_INVALID_ACL)?;
-    let dacl = pick(info, DACL_SECURITY_INFORMATION, dacl, valid_acl, ERROR_INVALID_ACL)?;
+    let owner = pick(
+        info,
+        OWNER_SECURITY_INFORMATION,
+        owner,
+        valid_sid,
+        ERROR_INVALID_SID,
+    )?;
+    let group = pick(
+        info,
+        GROUP_SECURITY_INFORMATION,
+        group,
+        valid_sid,
+        ERROR_INVALID_SID,
+    )?;
+    let sacl = pick(
+        info,
+        SACL_SECURITY_INFORMATION,
+        sacl,
+        valid_acl,
+        ERROR_INVALID_ACL,
+    )?;
+    let dacl = pick(
+        info,
+        DACL_SECURITY_INFORMATION,
+        dacl,
+        valid_acl,
+        ERROR_INVALID_ACL,
+    )?;
     let mut at = SD_TARGET_HEADER;
     let mut place = |size: Option<usize>| {
         let here = at;
@@ -87,7 +118,12 @@ fn build_service_sd(
     for (at4, placed) in [(4, owner_at), (8, group_at), (12, sacl_at), (16, dacl_at)] {
         bytes[at4..at4 + 4].copy_from_slice(&placed.map_or(0, |at| at as u32).to_le_bytes());
     }
-    for (placed, part) in [(owner_at, owner), (group_at, group), (sacl_at, sacl), (dacl_at, dacl)] {
+    for (placed, part) in [
+        (owner_at, owner),
+        (group_at, group),
+        (sacl_at, sacl),
+        (dacl_at, dacl),
+    ] {
         if let (Some(at), Some(part)) = (placed, part) {
             bytes[at..at + part.len()].copy_from_slice(part);
         }
@@ -169,10 +205,34 @@ fn info_ex_get_core(handle: u32, info: u32, outs: &mut ExOuts<'_>) -> u32 {
     // SAFETY: the block holds the descriptor's `needed` bytes.
     let bytes = unsafe { core::slice::from_raw_parts(block, size) };
     let base = block as usize;
-    give_part(outs.owner.as_mut(), base, bytes, 4, info & OWNER_SECURITY_INFORMATION != 0);
-    give_part(outs.group.as_mut(), base, bytes, 8, info & GROUP_SECURITY_INFORMATION != 0);
-    give_part(outs.access.as_mut(), base, bytes, 16, info & DACL_SECURITY_INFORMATION != 0);
-    give_part(outs.audit.as_mut(), base, bytes, 12, info & SACL_SECURITY_INFORMATION != 0);
+    give_part(
+        outs.owner.as_mut(),
+        base,
+        bytes,
+        4,
+        info & OWNER_SECURITY_INFORMATION != 0,
+    );
+    give_part(
+        outs.group.as_mut(),
+        base,
+        bytes,
+        8,
+        info & GROUP_SECURITY_INFORMATION != 0,
+    );
+    give_part(
+        outs.access.as_mut(),
+        base,
+        bytes,
+        16,
+        info & DACL_SECURITY_INFORMATION != 0,
+    );
+    give_part(
+        outs.audit.as_mut(),
+        base,
+        bytes,
+        12,
+        info & SACL_SECURITY_INFORMATION != 0,
+    );
     ERROR_SUCCESS
 }
 
@@ -362,8 +422,7 @@ mod tests {
     }
 
     fn reset() {
-        sec_host::SEC_REPLY
-            .with(|reply| *reply.borrow_mut() = Err(STATUS_NOT_IMPLEMENTED));
+        sec_host::SEC_REPLY.with(|reply| *reply.borrow_mut() = Err(STATUS_NOT_IMPLEMENTED));
         sec_host::SEC_SET_STATUS.with(|status| status.set(0));
         sec_host::SEC_CALLS.with(|calls| calls.borrow_mut().clear());
     }
@@ -394,7 +453,10 @@ mod tests {
         let dacl = acl(&sid(1, &[]));
         let block = build_service_sd(WANT, Some(&owner), Some(&group), Some(&dacl), None).unwrap();
         let bytes = block.bytes();
-        assert_eq!(bytes.len(), SD_TARGET_HEADER + owner.len() + group.len() + dacl.len());
+        assert_eq!(
+            bytes.len(),
+            SD_TARGET_HEADER + owner.len() + group.len() + dacl.len()
+        );
         assert_eq!(bytes[0], SD_REVISION);
         assert_eq!(
             u16::from_le_bytes(bytes[2..4].try_into().unwrap()),
@@ -412,9 +474,14 @@ mod tests {
         assert_eq!(&bytes[group_at..group_at + group.len()], &group[..]);
         assert_eq!(&bytes[dacl_at..dacl_at + dacl.len()], &dacl[..]);
         // Only the DACL named.
-        let block =
-            build_service_sd(DACL_SECURITY_INFORMATION, Some(&owner), None, Some(&dacl), None)
-                .unwrap();
+        let block = build_service_sd(
+            DACL_SECURITY_INFORMATION,
+            Some(&owner),
+            None,
+            Some(&dacl),
+            None,
+        )
+        .unwrap();
         let bytes = block.bytes();
         let word = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
         assert_eq!((word(4), word(8), word(16)), (0, 0, 20));
@@ -426,9 +493,15 @@ mod tests {
             ERROR_INVALID_SID
         );
         assert_eq!(
-            build_service_sd(DACL_SECURITY_INFORMATION, None, None, Some(&[2, 0, 4, 0]), None)
-                .err()
-                .unwrap(),
+            build_service_sd(
+                DACL_SECURITY_INFORMATION,
+                None,
+                None,
+                Some(&[2, 0, 4, 0]),
+                None
+            )
+            .err()
+            .unwrap(),
             ERROR_INVALID_ACL
         );
     }
@@ -461,7 +534,10 @@ mod tests {
             ]
         );
         let base = owner - 20;
-        assert_eq!((owner, group, access, audit), (base + 20, base + 28, base + 36, 0));
+        assert_eq!(
+            (owner, group, access, audit),
+            (base + 20, base + 28, base + 36, 0)
+        );
         // SAFETY: the block the call handed out.
         let bytes = unsafe { core::slice::from_raw_parts(base as *const u8, 52) };
         assert_eq!(&bytes[..], &sd[..]);
@@ -571,7 +647,10 @@ mod tests {
                 &mut group,
             )
         };
-        assert_eq!((code, last_error()), (ERROR_BAD_PROVIDER, ERROR_BAD_PROVIDER));
+        assert_eq!(
+            (code, last_error()),
+            (ERROR_BAD_PROVIDER, ERROR_BAD_PROVIDER)
+        );
         assert!(sec_host::SEC_CALLS.with(|calls| calls.borrow().is_empty()));
         // The A form's ANSI provider likewise.
         arm();
@@ -588,12 +667,14 @@ mod tests {
                 &mut group,
             )
         };
-        assert_eq!((code, last_error()), (ERROR_BAD_PROVIDER, ERROR_BAD_PROVIDER));
+        assert_eq!(
+            (code, last_error()),
+            (ERROR_BAD_PROVIDER, ERROR_BAD_PROVIDER)
+        );
 
         // A NULL provider goes to the service.
         reset();
-        sec_host::SEC_REPLY
-            .with(|reply| *reply.borrow_mut() = Ok(service_sd(20, 0, 0, 36, 52)));
+        sec_host::SEC_REPLY.with(|reply| *reply.borrow_mut() = Ok(service_sd(20, 0, 0, 36, 52)));
         arm();
         let code = unsafe {
             get_security_info_ex_w(
@@ -632,7 +713,10 @@ mod tests {
                 core::ptr::null(),
             )
         };
-        assert_eq!((code, last_error()), (ERROR_BAD_PROVIDER, ERROR_BAD_PROVIDER));
+        assert_eq!(
+            (code, last_error()),
+            (ERROR_BAD_PROVIDER, ERROR_BAD_PROVIDER)
+        );
         assert!(sec_host::SEC_CALLS.with(|calls| calls.borrow().is_empty()));
         arm();
         let code = unsafe {

@@ -16,7 +16,12 @@
 
 use rtl::cstr;
 use rtl::nt::Luid;
-use rtl::status::{NtStatus, STATUS_BUFFER_TOO_SMALL, STATUS_INSUFFICIENT_RESOURCES, STATUS_INVALID_PARAMETER};
+use rtl::status::{
+    NtStatus,
+    STATUS_BUFFER_TOO_SMALL,
+    STATUS_INSUFFICIENT_RESOURCES,
+    STATUS_INVALID_PARAMETER,
+};
 // ERROR_IO_PENDING: the last error a successful lookup leaves (see
 // [`lookup_privilege_value`]). ERROR_NOACCESS: a LUID the lookup cannot write.
 // ERROR_NO_SUCH_PRIVILEGE: a name no privilege has.
@@ -434,9 +439,18 @@ fn filtered(
     let deleted = counted_copy(delete_privilege_count, privileges_to_delete)?;
     let restricted = counted_copy(restricted_sid_count, sids_to_restrict)?;
     let at = |block: &Option<HeapBlock>| {
-        block.as_ref().map_or(core::ptr::null(), |block| block.bytes().as_ptr())
+        block
+            .as_ref()
+            .map_or(core::ptr::null(), |block| block.bytes().as_ptr())
     };
-    services::filter_token(token, flags, at(&disabled), at(&deleted), at(&restricted), new_token)
+    services::filter_token(
+        token,
+        flags,
+        at(&disabled),
+        at(&deleted),
+        at(&restricted),
+        new_token,
+    )
 }
 
 /// CreateRestrictedToken: NtFilterToken over the token, with the SIDs to disable, the privileges
@@ -460,7 +474,17 @@ pub unsafe extern "system" fn create_restricted_token(
     sids_to_restrict: *const u8,
     new_token: *mut u32,
 ) -> u32 {
-    match filtered(token, flags, disable_sid_count, sids_to_disable, delete_privilege_count, privileges_to_delete, restricted_sid_count, sids_to_restrict, new_token) {
+    match filtered(
+        token,
+        flags,
+        disable_sid_count,
+        sids_to_disable,
+        delete_privilege_count,
+        privileges_to_delete,
+        restricted_sid_count,
+        sids_to_restrict,
+        new_token,
+    ) {
         Ok(()) => 1,
         Err(status) => failed(status),
     }
@@ -482,7 +506,14 @@ pub unsafe extern "system" fn adjust_token_groups(
     previous_state: *mut u8,
     return_length: *mut u32,
 ) -> u32 {
-    let status = services::adjust_groups_token(token, reset_to_default != 0, new_state, length, previous_state, return_length);
+    let status = services::adjust_groups_token(
+        token,
+        reset_to_default != 0,
+        new_state,
+        length,
+        previous_state,
+        return_length,
+    );
     nt::set_last_error(nt::dos_error(status));
     u32::from(status.is_success())
 }
@@ -545,7 +576,12 @@ pub fn privilege_name(luid: &Luid) -> Option<&'static str> {
 /// (ANSI), terminator included: too small a room fails ERROR_INSUFFICIENT_BUFFER with `*cch` the
 /// needed count including the terminator; a fitting room gets the name, `*cch` the count without
 /// it, and ERROR_IO_PENDING as the last error (a successful lookup's leftover).
-pub(crate) fn deliver_name(name: &str, wide: bool, buffer: *mut u8, cch: &mut Out<'_, u32>) -> Result<(), u32> {
+pub(crate) fn deliver_name(
+    name: &str,
+    wide: bool,
+    buffer: *mut u8,
+    cch: &mut Out<'_, u32>,
+) -> Result<(), u32> {
     let needed = name.len() + 1;
     if needed > cch.get() as usize {
         cch.set(needed as u32);
@@ -573,7 +609,10 @@ pub(crate) fn deliver_name(name: &str, wide: bool, buffer: *mut u8, cch: &mut Ou
 /// LookupPrivilegeName's answer: the privilege's name for `luid`, or the error (a non-local
 /// system RPC_S_SERVER_UNAVAILABLE, no LUID ERROR_NOACCESS, an unknown LUID
 /// ERROR_NO_SUCH_PRIVILEGE; the count untouched on every failure).
-pub(crate) fn name_for_luid(system: Option<&[u16]>, luid: Option<Luid>) -> Result<&'static str, u32> {
+pub(crate) fn name_for_luid(
+    system: Option<&[u16]>,
+    luid: Option<Luid>,
+) -> Result<&'static str, u32> {
     if !system.is_none_or(is_local) {
         return Err(RPC_S_SERVER_UNAVAILABLE);
     }
@@ -594,8 +633,14 @@ pub(crate) fn display_name_for(
     if !system.is_none_or(is_local) {
         return Err(RPC_S_SERVER_UNAVAILABLE);
     }
-    let luid = name.and_then(privilege_luid).ok_or(ERROR_NO_SUCH_PRIVILEGE)?;
-    privilege_name(&Luid { low_part: luid, high_part: 0 }).ok_or(ERROR_NO_SUCH_PRIVILEGE)
+    let luid = name
+        .and_then(privilege_luid)
+        .ok_or(ERROR_NO_SUCH_PRIVILEGE)?;
+    privilege_name(&Luid {
+        low_part: luid,
+        high_part: 0,
+    })
+    .ok_or(ERROR_NO_SUCH_PRIVILEGE)
 }
 
 /// LookupPrivilegeDisplayNameW: the privilege's display name for the name, into the caller's
@@ -606,7 +651,11 @@ pub(crate) fn display_name_for(
 /// As LookupPrivilegeNameW's, plus the caller's display-name buffer and language id.
 #[unsafe(export_name = "f2k_export_LookupPrivilegeDisplayNameW")]
 pub unsafe extern "system" fn lookup_privilege_display_name_w(
-    system: *const u16, name: *const u16, display_name: *mut u16, cch_display_name: *mut u32, lp_language_id: *mut u32,
+    system: *const u16,
+    name: *const u16,
+    display_name: *mut u16,
+    cch_display_name: *mut u32,
+    lp_language_id: *mut u32,
 ) -> u32 {
     // SAFETY: the caller's strings, count and language id.
     let (system, name, mut cch, mut language) = unsafe {
@@ -621,7 +670,9 @@ pub unsafe extern "system" fn lookup_privilege_display_name_w(
         nt::set_last_error(ERROR_NOACCESS);
         return 0;
     };
-    match display_name_for(system, name, language.as_mut()).and_then(|text| deliver_name(text, true, display_name as *mut u8, cch)) {
+    match display_name_for(system, name, language.as_mut())
+        .and_then(|text| deliver_name(text, true, display_name as *mut u8, cch))
+    {
         Ok(()) => 1,
         Err(error) => bool_of(Err(error)),
     }
@@ -634,7 +685,11 @@ pub unsafe extern "system" fn lookup_privilege_display_name_w(
 /// As LookupPrivilegeDisplayNameW's, for ANSI strings.
 #[unsafe(export_name = "f2k_export_LookupPrivilegeDisplayNameA")]
 pub unsafe extern "system" fn lookup_privilege_display_name_a(
-    system: *const u8, name: *const u8, display_name: *mut u8, cch_display_name: *mut u32, lp_language_id: *mut u32,
+    system: *const u8,
+    name: *const u8,
+    display_name: *mut u8,
+    cch_display_name: *mut u32,
+    lp_language_id: *mut u32,
 ) -> u32 {
     // SAFETY: the caller's strings, count and language id.
     let (system, name, mut cch, mut language) = unsafe {
@@ -842,7 +897,13 @@ mod tests {
     }
 
     use crate::accesscheck::host::{
-        CALLS, DUP, FILTER_COUNTS, HANDLE, RESULT, STATUS, TOKEN_REPLY,
+        CALLS,
+        DUP,
+        FILTER_COUNTS,
+        HANDLE,
+        RESULT,
+        STATUS,
+        TOKEN_REPLY,
     };
 
     fn service_calls() -> Vec<(&'static str, u32, u32, u32)> {
@@ -870,16 +931,31 @@ mod tests {
         arm();
         let ok = unsafe { duplicate_token_ex(TOKEN, 0x0C, core::ptr::null(), 2, 2, &mut copy) };
         assert_eq!((ok, copy, last_error()), (1, 0x60, 0xF2F2));
-        assert_eq!(service_calls().last(), Some(&("NtDuplicateToken", TOKEN, 0x0C, 2)));
-        assert_eq!(DUP.with(|dup| dup.get()), (0, 0, 2), "no attributes: no descriptor, no inherit, the level");
+        assert_eq!(
+            service_calls().last(),
+            Some(&("NtDuplicateToken", TOKEN, 0x0C, 2))
+        );
+        assert_eq!(
+            DUP.with(|dup| dup.get()),
+            (0, 0, 2),
+            "no attributes: no descriptor, no inherit, the level"
+        );
         let attributes = [12u32, 0x1000, 1];
-        let ok = unsafe { duplicate_token_ex(TOKEN, 8, attributes.as_ptr() as *const u8, 3, 1, &mut copy) };
+        let ok = unsafe {
+            duplicate_token_ex(TOKEN, 8, attributes.as_ptr() as *const u8, 3, 1, &mut copy)
+        };
         assert_eq!(ok, 1);
         assert_eq!(DUP.with(|dup| dup.get()), (0x1000, rtl::nt::OBJ_INHERIT, 3));
         clear_services();
         STATUS.with(|status| status.set(0xC000_0022));
         arm();
-        assert_eq!((unsafe { duplicate_token_ex(TOKEN, 8, core::ptr::null(), 2, 2, &mut copy) }, last_error()), (0, 5));
+        assert_eq!(
+            (
+                unsafe { duplicate_token_ex(TOKEN, 8, core::ptr::null(), 2, 2, &mut copy) },
+                last_error()
+            ),
+            (0, 5)
+        );
         clear_services();
     }
 
@@ -891,24 +967,79 @@ mod tests {
         clear_services();
         let mut token = 0;
         arm();
-        let ok = unsafe { create_restricted_token(TOKEN, 0, 0, core::ptr::null(), 0, core::ptr::null(), 0, core::ptr::null(), &mut token) };
+        let ok = unsafe {
+            create_restricted_token(
+                TOKEN,
+                0,
+                0,
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                &mut token,
+            )
+        };
         assert_eq!((ok, token, last_error()), (1, 0x60, 0xF2F2));
-        assert_eq!(FILTER_COUNTS.with(|counts| counts.borrow().clone()), vec![0, 0, 0]);
-        assert_eq!(service_calls().last(), Some(&("NtFilterToken", TOKEN, 0, 0)));
+        assert_eq!(
+            FILTER_COUNTS.with(|counts| counts.borrow().clone()),
+            vec![0, 0, 0]
+        );
+        assert_eq!(
+            service_calls().last(),
+            Some(&("NtFilterToken", TOKEN, 0, 0))
+        );
         let sids = [0x1111u32, 0x4, 0x2222, 0x4];
         let privs = [0u64, 0];
         let ok = unsafe {
-            create_restricted_token(TOKEN, 1, 1, sids.as_ptr() as *const u8, 1, privs.as_ptr() as *const u8, 0, core::ptr::null(), &mut token)
+            create_restricted_token(
+                TOKEN,
+                1,
+                1,
+                sids.as_ptr() as *const u8,
+                1,
+                privs.as_ptr() as *const u8,
+                0,
+                core::ptr::null(),
+                &mut token,
+            )
         };
         assert_eq!(ok, 1);
-        assert_eq!(FILTER_COUNTS.with(|counts| counts.borrow().clone()), vec![1, 1, 0]);
+        assert_eq!(
+            FILTER_COUNTS.with(|counts| counts.borrow().clone()),
+            vec![1, 1, 0]
+        );
         clear_services();
         arm();
-        let ok = unsafe { create_restricted_token(TOKEN, 0, 1, core::ptr::null(), 0, core::ptr::null(), 0, core::ptr::null(), &mut token) };
+        let ok = unsafe {
+            create_restricted_token(
+                TOKEN,
+                0,
+                1,
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                &mut token,
+            )
+        };
         assert_eq!((ok, last_error()), (0, 87), "a count with no array");
         assert!(service_calls().is_empty());
         STATUS.with(|status| status.set(0xC000_0022));
-        let ok = unsafe { create_restricted_token(TOKEN, 0, 0, core::ptr::null(), 0, core::ptr::null(), 0, core::ptr::null(), &mut token) };
+        let ok = unsafe {
+            create_restricted_token(
+                TOKEN,
+                0,
+                0,
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                0,
+                core::ptr::null(),
+                &mut token,
+            )
+        };
         assert_eq!((ok, last_error()), (0, 5));
         clear_services();
     }
@@ -920,7 +1051,14 @@ mod tests {
     fn adjust_token_groups_reports_its_status() {
         clear_services();
         let call = |reset| unsafe {
-            adjust_token_groups(TOKEN, reset, core::ptr::null(), 0, core::ptr::null_mut(), core::ptr::null_mut())
+            adjust_token_groups(
+                TOKEN,
+                reset,
+                core::ptr::null(),
+                0,
+                core::ptr::null_mut(),
+                core::ptr::null_mut(),
+            )
         };
         for (status, answer, error, reset) in [
             (0, 1, 0, 0),
@@ -930,7 +1068,10 @@ mod tests {
             STATUS.with(|next| next.set(status));
             arm();
             assert_eq!((call(reset), last_error()), (answer, error), "{status:#x}");
-            assert_eq!(service_calls().last(), Some(&("NtAdjustGroupsToken", TOKEN, reset, 0)));
+            assert_eq!(
+                service_calls().last(),
+                Some(&("NtAdjustGroupsToken", TOKEN, reset, 0))
+            );
         }
         clear_services();
     }
@@ -944,7 +1085,10 @@ mod tests {
         arm();
         let ok = unsafe { set_token_information(TOKEN, 0xFFFF, info.as_ptr(), 4) };
         assert_eq!((ok, last_error()), (1, 0xF2F2));
-        assert_eq!(service_calls().last(), Some(&("NtSetInformationToken", TOKEN, 0xFFFF, 0)));
+        assert_eq!(
+            service_calls().last(),
+            Some(&("NtSetInformationToken", TOKEN, 0xFFFF, 0))
+        );
         STATUS.with(|status| status.set(0xC000_000D));
         arm();
         let ok = unsafe { set_token_information(TOKEN, 1, info.as_ptr(), 4) };
@@ -961,11 +1105,18 @@ mod tests {
         arm();
         let ok = unsafe { open_thread_token(0xFFFF_FFFE, 8, 1, &mut token) };
         assert_eq!((ok, token, last_error()), (1, 0x60, 0xF2F2));
-        assert_eq!(service_calls().last(), Some(&("NtOpenThreadToken", 0xFFFF_FFFE, 8, 0)));
+        assert_eq!(
+            service_calls().last(),
+            Some(&("NtOpenThreadToken", 0xFFFF_FFFE, 8, 0))
+        );
         STATUS.with(|status| status.set(0xC000_007C));
         arm();
         let ok = unsafe { open_thread_token(0xFFFF_FFFE, 8, 0, &mut token) };
-        assert_eq!((ok, last_error()), (0, 1008), "STATUS_NO_TOKEN (0xC000007C)");
+        assert_eq!(
+            (ok, last_error()),
+            (0, 1008),
+            "STATUS_NO_TOKEN (0xC000007C)"
+        );
         clear_services();
     }
     /// LookupPrivilegeDisplayName answers like the name lookup, with the language id written
@@ -981,21 +1132,57 @@ mod tests {
         let mut cch = 0u32;
         let mut lang = 0xF2F2;
         arm();
-        assert_eq!((disp_w(name.as_ptr(), buffer.as_mut_ptr(), &mut cch, &mut lang), last_error(), cch, lang), (0, 122, 20, 0x0409), "the size query sets the language");
+        assert_eq!(
+            (
+                disp_w(name.as_ptr(), buffer.as_mut_ptr(), &mut cch, &mut lang),
+                last_error(),
+                cch,
+                lang
+            ),
+            (0, 122, 20, 0x0409),
+            "the size query sets the language"
+        );
         let mut cch = 20u32;
         let mut lang = 0xF2F2;
         arm();
-        assert_eq!((disp_w(name.as_ptr(), buffer.as_mut_ptr(), &mut cch, &mut lang), last_error(), cch, lang), (1, 997, 19, 0x0409));
+        assert_eq!(
+            (
+                disp_w(name.as_ptr(), buffer.as_mut_ptr(), &mut cch, &mut lang),
+                last_error(),
+                cch,
+                lang
+            ),
+            (1, 997, 19, 0x0409)
+        );
         let unknown = wide_z("SeNoSuchPrivilege");
         let mut cch = 128u32;
         let mut lang = 0xF2F2;
-        assert_eq!((disp_w(unknown.as_ptr(), buffer.as_mut_ptr(), &mut cch, &mut lang), last_error(), cch), (0, 1313, 128));
+        assert_eq!(
+            (
+                disp_w(unknown.as_ptr(), buffer.as_mut_ptr(), &mut cch, &mut lang),
+                last_error(),
+                cch
+            ),
+            (0, 1313, 128)
+        );
         let mut ansi = [0xCCu8; 32];
         let mut cch = 20u32;
         let mut lang = 0xF2F2;
         arm();
-        let ok = unsafe { lookup_privilege_display_name_a(b"\0".as_ptr(), b"SeShutdownPrivilege\0".as_ptr(), ansi.as_mut_ptr(), &mut cch, &mut lang) };
-        assert_eq!((ok, last_error(), cch, lang), (1, 997, 19, 0x0409), "the A form");
+        let ok = unsafe {
+            lookup_privilege_display_name_a(
+                b"\0".as_ptr(),
+                b"SeShutdownPrivilege\0".as_ptr(),
+                ansi.as_mut_ptr(),
+                &mut cch,
+                &mut lang,
+            )
+        };
+        assert_eq!(
+            (ok, last_error(), cch, lang),
+            (1, 997, 19, 0x0409),
+            "the A form"
+        );
         assert_eq!(&ansi[..20], b"SeShutdownPrivilege\0");
     }
 }

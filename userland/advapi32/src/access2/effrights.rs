@@ -13,16 +13,14 @@
 
 use rtl::winerror::{ERROR_ENVVAR_NOT_FOUND, ERROR_INVALID_PARAMETER};
 
-use crate::sid::ERROR_INVALID_ACL;
-
+use super::{effective_rights, trustee_sid};
 use crate::acl::{caller_acl, edit};
 use crate::explicit::fail;
 use crate::imports::{self as nt};
 use crate::sid::ptr_field;
+use crate::sid::ERROR_INVALID_ACL;
 use crate::trustee::{TRUSTEE_MULTIPLE, TRUSTEE_OP, TRUSTEE_SIZE};
 use crate::{caller_bytes, Out};
-
-use super::{effective_rights, trustee_sid};
 
 /// GetEffectiveRightsFromAclA/W's body: the ACL walked for the trustee's SID, the effective mask
 /// into the caller's place. `wide` says the trustee's name form is a wide string.
@@ -167,16 +165,20 @@ fn multiple_trustee_operation(trustee: *const u8) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use rtl::winerror::{
-        ERROR_ENVVAR_NOT_FOUND, ERROR_INVALID_PARAMETER, ERROR_INVALID_SID,
-    };
-
-    use crate::sid::ERROR_INVALID_ACL;
+    use rtl::winerror::{ERROR_ENVVAR_NOT_FOUND, ERROR_INVALID_PARAMETER, ERROR_INVALID_SID};
 
     use super::*;
     use crate::explicit::tests_support::{make_acl, sid};
     use crate::imports::host::LAST_ERROR;
-    use crate::trustee::{FORM_NAME, FORM_SID, TRUSTEE_FORM, TRUSTEE_MULTIPLE, TRUSTEE_NAME, TRUSTEE_OP};
+    use crate::sid::ERROR_INVALID_ACL;
+    use crate::trustee::{
+        FORM_NAME,
+        FORM_SID,
+        TRUSTEE_FORM,
+        TRUSTEE_MULTIPLE,
+        TRUSTEE_NAME,
+        TRUSTEE_OP,
+    };
 
     fn last_error() -> u32 {
         LAST_ERROR.with(|error| error.get())
@@ -225,9 +227,8 @@ mod tests {
         let trustee = trustee_by_sid(&everyone);
         let mut mask = 0xF2F2;
         arm();
-        let code = unsafe {
-            get_effective_rights_from_acl_a(allow.as_ptr(), trustee.as_ptr(), &mut mask)
-        };
+        let code =
+            unsafe { get_effective_rights_from_acl_a(allow.as_ptr(), trustee.as_ptr(), &mut mask) };
         assert_eq!((code, mask, last_error()), (0, 0x000F_01FF, 0xF2F2));
         let mut mask = 0;
         arm();
@@ -262,10 +263,12 @@ mod tests {
         let trustee = trustee_by_name(name);
         let mut mask = 0;
         arm();
-        let code = unsafe {
-            get_effective_rights_from_acl_a(allow.as_ptr(), trustee.as_ptr(), &mut mask)
-        };
-        assert_eq!((code, mask, last_error()), (0, 0x000F_01FF, ERROR_ENVVAR_NOT_FOUND));
+        let code =
+            unsafe { get_effective_rights_from_acl_a(allow.as_ptr(), trustee.as_ptr(), &mut mask) };
+        assert_eq!(
+            (code, mask, last_error()),
+            (0, 0x000F_01FF, ERROR_ENVVAR_NOT_FOUND)
+        );
         let wname: Vec<u16> = "BUILTIN\\Administrators\0".encode_utf16().collect();
         let admins = sid(5, &[32, 544]);
         let allow_admins = make_acl(&[(0, 0, 0x1234, &admins)]);
@@ -275,15 +278,20 @@ mod tests {
         let code = unsafe {
             get_effective_rights_from_acl_w(allow_admins.as_ptr(), trustee.as_ptr(), &mut mask)
         };
-        assert_eq!((code, mask, last_error()), (0, 0x1234, ERROR_ENVVAR_NOT_FOUND));
+        assert_eq!(
+            (code, mask, last_error()),
+            (0, 0x1234, ERROR_ENVVAR_NOT_FOUND)
+        );
         let unknown = b"NoSuchAccount\0";
         let trustee = trustee_by_name(unknown);
         let mut mask = 0xF2F2;
         arm();
-        let code = unsafe {
-            get_effective_rights_from_acl_a(allow.as_ptr(), trustee.as_ptr(), &mut mask)
-        };
-        assert_eq!((code, mask, last_error()), (0, 0xF2F2, ERROR_ENVVAR_NOT_FOUND));
+        let code =
+            unsafe { get_effective_rights_from_acl_a(allow.as_ptr(), trustee.as_ptr(), &mut mask) };
+        assert_eq!(
+            (code, mask, last_error()),
+            (0, 0xF2F2, ERROR_ENVVAR_NOT_FOUND)
+        );
     }
 
     /// The failures: a null ACL, trustee or mask is ERROR_INVALID_PARAMETER, an invalid ACL
@@ -297,40 +305,59 @@ mod tests {
         let mut mask = 0;
         arm();
         assert_eq!(
-            (unsafe {
-                get_effective_rights_from_acl_a(core::ptr::null(), trustee.as_ptr(), &mut mask)
-            }, last_error()),
+            (
+                unsafe {
+                    get_effective_rights_from_acl_a(core::ptr::null(), trustee.as_ptr(), &mut mask)
+                },
+                last_error()
+            ),
             (ERROR_INVALID_PARAMETER, ERROR_INVALID_PARAMETER)
         );
         arm();
         assert_eq!(
-            (unsafe {
-                get_effective_rights_from_acl_a(allow.as_ptr(), core::ptr::null(), &mut mask)
-            }, last_error()),
+            (
+                unsafe {
+                    get_effective_rights_from_acl_a(allow.as_ptr(), core::ptr::null(), &mut mask)
+                },
+                last_error()
+            ),
             (ERROR_INVALID_PARAMETER, ERROR_INVALID_PARAMETER)
         );
         arm();
         assert_eq!(
-            (unsafe {
-                get_effective_rights_from_acl_a(allow.as_ptr(), trustee.as_ptr(), core::ptr::null_mut())
-            }, last_error()),
+            (
+                unsafe {
+                    get_effective_rights_from_acl_a(
+                        allow.as_ptr(),
+                        trustee.as_ptr(),
+                        core::ptr::null_mut(),
+                    )
+                },
+                last_error()
+            ),
             (ERROR_INVALID_PARAMETER, ERROR_INVALID_PARAMETER)
         );
         let junk = [0xFFu8; 16];
         arm();
         assert_eq!(
-            (unsafe {
-                get_effective_rights_from_acl_a(junk.as_ptr(), trustee.as_ptr(), &mut mask)
-            }, last_error()),
+            (
+                unsafe {
+                    get_effective_rights_from_acl_a(junk.as_ptr(), trustee.as_ptr(), &mut mask)
+                },
+                last_error()
+            ),
             (ERROR_INVALID_ACL, ERROR_INVALID_ACL)
         );
         let bad_sid = [0xFFu8; 12];
         let trustee = trustee_by_sid(&bad_sid);
         arm();
         assert_eq!(
-            (unsafe {
-                get_effective_rights_from_acl_a(allow.as_ptr(), trustee.as_ptr(), &mut mask)
-            }, last_error()),
+            (
+                unsafe {
+                    get_effective_rights_from_acl_a(allow.as_ptr(), trustee.as_ptr(), &mut mask)
+                },
+                last_error()
+            ),
             (ERROR_INVALID_SID, ERROR_INVALID_SID)
         );
     }
@@ -348,14 +375,29 @@ mod tests {
             unsafe { get_multiple_trustee_a(trustee.as_ptr()) },
             multiple.as_ptr() as *mut u8
         );
-        assert_eq!(unsafe { get_multiple_trustee_w(trustee.as_ptr()) }, multiple.as_ptr() as *mut u8);
-        assert_eq!(unsafe { get_multiple_trustee_operation_a(trustee.as_ptr()) }, 1);
-        assert_eq!(unsafe { get_multiple_trustee_operation_w(trustee.as_ptr()) }, 1);
+        assert_eq!(
+            unsafe { get_multiple_trustee_w(trustee.as_ptr()) },
+            multiple.as_ptr() as *mut u8
+        );
+        assert_eq!(
+            unsafe { get_multiple_trustee_operation_a(trustee.as_ptr()) },
+            1
+        );
+        assert_eq!(
+            unsafe { get_multiple_trustee_operation_w(trustee.as_ptr()) },
+            1
+        );
         assert_eq!(last_error(), 0xF2F2, "no error touched");
         assert!(unsafe { get_multiple_trustee_a(core::ptr::null()) }.is_null());
-        assert_eq!(unsafe { get_multiple_trustee_operation_a(core::ptr::null()) }, 0);
+        assert_eq!(
+            unsafe { get_multiple_trustee_operation_a(core::ptr::null()) },
+            0
+        );
         let plain = [0u8; TRUSTEE_SIZE];
         assert!(unsafe { get_multiple_trustee_a(plain.as_ptr()) }.is_null());
-        assert_eq!(unsafe { get_multiple_trustee_operation_w(plain.as_ptr()) }, 0);
+        assert_eq!(
+            unsafe { get_multiple_trustee_operation_w(plain.as_ptr()) },
+            0
+        );
     }
 }

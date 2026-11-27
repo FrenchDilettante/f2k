@@ -14,13 +14,12 @@ use rtl::heap::ProcessHeap as _;
 use rtl::nt::access::TOKEN_QUERY;
 use rtl::winerror::ERROR_INVALID_PARAMETER;
 
+use super::trustee_sid;
 use crate::accesscheck::services;
 use crate::explicit::fail;
 use crate::filesec::get_named_security_info_w;
 use crate::imports::{self as nt, HeapBlock, ProcessHeap};
 use crate::sd::DACL_SECURITY_INFORMATION;
-
-use super::trustee_sid;
 
 /// GetCurrentProcess's pseudo-handle.
 const CURRENT_PROCESS: u32 = 0xFFFF_FFFF;
@@ -169,7 +168,10 @@ pub unsafe extern "system" fn trustee_access_to_object_a(
     guid_count: u32,
     p_object_class_guids: *const u8,
 ) -> u32 {
-    if p_object_name.is_null() || p_trustee.is_null() || (guid_count > 0 && p_object_class_guids.is_null()) {
+    if p_object_name.is_null()
+        || p_trustee.is_null()
+        || (guid_count > 0 && p_object_class_guids.is_null())
+    {
         return fail(ERROR_INVALID_PARAMETER);
     }
     // SAFETY: the caller's ANSI name, converted; the wide name lives across the call.
@@ -205,7 +207,9 @@ mod tests {
     use crate::filesec::SE_FILE_OBJECT;
     use crate::imports::host::{LAST_ERROR, TOKEN, TOKEN_CALLS};
     use crate::sd::{
-        initialize_security_descriptor, make_self_relative_sd, set_security_descriptor_dacl,
+        initialize_security_descriptor,
+        make_self_relative_sd,
+        set_security_descriptor_dacl,
     };
     use crate::trustee::{FORM_SID, TRUSTEE_FORM, TRUSTEE_NAME, TRUSTEE_SIZE};
 
@@ -229,11 +233,20 @@ mod tests {
     /// A self-relative descriptor carrying the DACL, as the named-security call would read it.
     fn sd_with_dacl(dacl: &[u8]) -> Vec<u8> {
         let mut buf = vec![0u8; 1024];
-        assert_eq!(unsafe { initialize_security_descriptor(buf.as_mut_ptr(), 1) }, 1);
-        assert_eq!(unsafe { set_security_descriptor_dacl(buf.as_mut_ptr(), 1, dacl.as_ptr(), 0) }, 1);
+        assert_eq!(
+            unsafe { initialize_security_descriptor(buf.as_mut_ptr(), 1) },
+            1
+        );
+        assert_eq!(
+            unsafe { set_security_descriptor_dacl(buf.as_mut_ptr(), 1, dacl.as_ptr(), 0) },
+            1
+        );
         let mut rel = vec![0u8; 1024];
         let mut len = 1024u32;
-        assert_eq!(unsafe { make_self_relative_sd(buf.as_ptr(), rel.as_mut_ptr(), &mut len) }, 1);
+        assert_eq!(
+            unsafe { make_self_relative_sd(buf.as_ptr(), rel.as_mut_ptr(), &mut len) },
+            1
+        );
         rel.truncate(len as usize);
         rel
     }
@@ -253,7 +266,12 @@ mod tests {
     fn the_check_runs_over_the_served_service() {
         let everyone = sid(1, &[0]);
         let dacl = make_acl(&[(0, 0, 0x000F_01FF, &everyone)]);
-        let dacl = { let mut d = dacl; let size = usize::from(crate::acl::word(&d, crate::acl::ACL_SIZE_OFF).unwrap()); d.truncate(size); d };
+        let dacl = {
+            let mut d = dacl;
+            let size = usize::from(crate::acl::word(&d, crate::acl::ACL_SIZE_OFF).unwrap());
+            d.truncate(size);
+            d
+        };
         let sd = sd_with_dacl(&dacl);
         let trustee = trustee_by_sid(&everyone);
         let name: Vec<u16> = "C:\\tmp\\thing.txt\0".encode_utf16().collect();
@@ -271,7 +289,11 @@ mod tests {
                 guids.as_ptr(),
             )
         };
-        assert_eq!((code, last_error()), (0, 122), "the descriptor query's sizing leftover");
+        assert_eq!(
+            (code, last_error()),
+            (0, 122),
+            "the descriptor query's sizing leftover"
+        );
         assert_eq!(
             CALLS.with(|calls| calls.borrow().clone()).last(),
             Some(&("NtAccessCheck", TOKEN, MAXIMUM_ALLOWED, 0))
@@ -331,29 +353,35 @@ mod tests {
         clear();
         arm();
         assert_eq!(
-            (unsafe {
-                trustee_access_to_object_w(
-                    core::ptr::null(),
-                    SE_FILE_OBJECT,
-                    core::ptr::null(),
-                    trustee.as_ptr(),
-                    0,
-                    core::ptr::null(),
-                )
-            }, last_error()),
+            (
+                unsafe {
+                    trustee_access_to_object_w(
+                        core::ptr::null(),
+                        SE_FILE_OBJECT,
+                        core::ptr::null(),
+                        trustee.as_ptr(),
+                        0,
+                        core::ptr::null(),
+                    )
+                },
+                last_error()
+            ),
             (87, 87)
         );
         assert_eq!(
-            (unsafe {
-                trustee_access_to_object_w(
-                    name.as_ptr(),
-                    SE_FILE_OBJECT,
-                    core::ptr::null(),
-                    core::ptr::null(),
-                    1,
-                    guids.as_ptr(),
-                )
-            }, last_error()),
+            (
+                unsafe {
+                    trustee_access_to_object_w(
+                        name.as_ptr(),
+                        SE_FILE_OBJECT,
+                        core::ptr::null(),
+                        core::ptr::null(),
+                        1,
+                        guids.as_ptr(),
+                    )
+                },
+                last_error()
+            ),
             (87, 87)
         );
         clear();
@@ -364,7 +392,12 @@ mod tests {
     fn the_a_form_converts_the_name() {
         let everyone = sid(1, &[0]);
         let dacl = make_acl(&[(0, 0, 1, &everyone)]);
-        let dacl = { let mut d = dacl; let size = usize::from(crate::acl::word(&d, crate::acl::ACL_SIZE_OFF).unwrap()); d.truncate(size); d };
+        let dacl = {
+            let mut d = dacl;
+            let size = usize::from(crate::acl::word(&d, crate::acl::ACL_SIZE_OFF).unwrap());
+            d.truncate(size);
+            d
+        };
         let sd = sd_with_dacl(&dacl);
         let trustee = trustee_by_sid(&everyone);
         clear();
@@ -380,7 +413,11 @@ mod tests {
                 core::ptr::null(),
             )
         };
-        assert_eq!((code, last_error()), (0, 122), "the descriptor query's sizing leftover");
+        assert_eq!(
+            (code, last_error()),
+            (0, 122),
+            "the descriptor query's sizing leftover"
+        );
         assert!(!CALLS.with(|calls| calls.borrow().is_empty()));
         clear();
     }

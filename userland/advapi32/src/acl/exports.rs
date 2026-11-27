@@ -1,15 +1,20 @@
 //! The ACL exports: InitializeAcl, IsValidAcl, AddAce and the Add*ACE family, GetAce, DeleteAce,
-//! FindFirstFreeAce, and the audit pair (GetAuditedPermissionsFromAclA/W, SetEntriesInAuditListA/W).
+//! FindFirstFreeAce, and the audit pair (GetAuditedPermissionsFromAclA/W,
+//! SetEntriesInAuditListA/W).
 
 use rtl::status::{NtStatus, STATUS_INVALID_PARAMETER, STATUS_SUCCESS};
-use rtl::winerror::{ERROR_ENVVAR_NOT_FOUND, ERROR_INVALID_FLAGS, ERROR_INVALID_PARAMETER, ERROR_INVALID_SID};
-
-use crate::imports::{self as nt};
-use crate::sid::{caller_sid, sid_equal, ERROR_INVALID_ACL};
-use crate::{caller_bytes, Out};
+use rtl::winerror::{
+    ERROR_ENVVAR_NOT_FOUND,
+    ERROR_INVALID_FLAGS,
+    ERROR_INVALID_PARAMETER,
+    ERROR_INVALID_SID,
+};
 
 use super::edit::*;
 use super::*;
+use crate::imports::{self as nt};
+use crate::sid::{caller_sid, sid_equal, ERROR_INVALID_ACL};
+use crate::{caller_bytes, Out};
 
 /// Map an editor's status to the Win32 error, set it, and answer FALSE.
 fn fail(status: NtStatus) -> u32 {
@@ -65,7 +70,8 @@ unsafe fn add_ace_call(
     fn to_guid(bytes: Option<&[u8]>) -> Option<&[u8; GUID_SIZE]> {
         bytes.and_then(|b| <&[u8; GUID_SIZE]>::try_from(b).ok())
     }
-    let (object_type, inherited_object_type) = (to_guid(object_type), to_guid(inherited_object_type));
+    let (object_type, inherited_object_type) =
+        (to_guid(object_type), to_guid(inherited_object_type));
     let (Some(buffer), Some(sid)) = (buffer, sid) else {
         nt::set_last_error(ERROR_INVALID_PARAMETER);
         return 0;
@@ -92,7 +98,6 @@ unsafe fn add_ace_call(
         }
     }
 }
-
 
 // --- The exports -------------------------------------------------------------------------------
 
@@ -154,8 +159,12 @@ pub unsafe extern "system" fn add_ace(
     list_length: u32,
 ) -> u32 {
     // SAFETY: the caller's ACL and ACE list.
-    let (buffer, list) =
-        unsafe { (caller_acl_mut(acl), caller_bytes(list, list_length as usize)) };
+    let (buffer, list) = unsafe {
+        (
+            caller_acl_mut(acl),
+            caller_bytes(list, list_length as usize),
+        )
+    };
     let (Some(buffer), Some(list)) = (buffer, list) else {
         nt::set_last_error(ERROR_INVALID_PARAMETER);
         return 0;
@@ -223,7 +232,9 @@ pub unsafe extern "system" fn find_first_free_ace(acl: *const u8, ace: *mut *mut
     };
     match first_free(buffer) {
         Ok(free) => {
-            place.set(free.map_or(::core::ptr::null_mut(), |at| unsafe { acl.add(at) }.cast_mut()));
+            place.set(free.map_or(::core::ptr::null_mut(), |at| {
+                unsafe { acl.add(at) }.cast_mut()
+            }));
             1
         }
         Err(()) => {
@@ -537,7 +548,6 @@ unsafe fn audit_ace_call(
         ex,
     )
 }
-
 
 // --- The audit pair ----------------------------------------------------------------------------
 

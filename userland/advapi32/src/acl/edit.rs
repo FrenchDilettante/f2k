@@ -1,13 +1,37 @@
 //! The ACL editors over a byte slice: the well-formedness check, the free-byte walk, and the
 //! ACE list and ACE add/remove operations the exports call, answering an NTSTATUS.
 
-use rtl::status::{NtStatus, STATUS_BUFFER_TOO_SMALL, STATUS_INVALID_PARAMETER, STATUS_REVISION_MISMATCH, STATUS_SUCCESS};
-
-use crate::sid::{caller_sid, ptr_field, valid_sid, MAX_SUB_AUTHORITIES, SID_HEADER, SID_REVISION, STATUS_ALLOTTED_SPACE_EXCEEDED, STATUS_INVALID_ACL, STATUS_INVALID_SID};
-use crate::trustee::{FORM_NAME, FORM_OBJECTS_AND_SID, FORM_SID, OAS_SID, OAS_SIZE, TRUSTEE_FORM, TRUSTEE_NAME, TRUSTEE_SIZE};
-use crate::caller_bytes;
+use rtl::status::{
+    NtStatus,
+    STATUS_BUFFER_TOO_SMALL,
+    STATUS_INVALID_PARAMETER,
+    STATUS_REVISION_MISMATCH,
+    STATUS_SUCCESS,
+};
 
 use super::*;
+use crate::caller_bytes;
+use crate::sid::{
+    caller_sid,
+    ptr_field,
+    valid_sid,
+    MAX_SUB_AUTHORITIES,
+    SID_HEADER,
+    SID_REVISION,
+    STATUS_ALLOTTED_SPACE_EXCEEDED,
+    STATUS_INVALID_ACL,
+    STATUS_INVALID_SID,
+};
+use crate::trustee::{
+    FORM_NAME,
+    FORM_OBJECTS_AND_SID,
+    FORM_SID,
+    OAS_SID,
+    OAS_SIZE,
+    TRUSTEE_FORM,
+    TRUSTEE_NAME,
+    TRUSTEE_SIZE,
+};
 
 /// IsValidAcl's check: the revision in 2..=4, the size even and at least the header, and every
 /// ACE inside the size, its size even, and — for the known kinds — its SID(s) in bounds.
@@ -63,7 +87,8 @@ pub(crate) fn valid_acl(acl: &[u8]) -> bool {
                 let Some(first) = sid_at(acl, at + 12) else {
                     return false;
                 };
-                if first.first() != Some(&SID_REVISION) || usize::from(first[1]) > MAX_SUB_AUTHORITIES
+                if first.first() != Some(&SID_REVISION)
+                    || usize::from(first[1]) > MAX_SUB_AUTHORITIES
                 {
                     return false;
                 }
@@ -73,7 +98,8 @@ pub(crate) fn valid_acl(acl: &[u8]) -> bool {
                 let Some(second) = sid_at(acl, at + 12 + first.len()) else {
                     return false;
                 };
-                if second.first() != Some(&SID_REVISION) || usize::from(second[1]) > MAX_SUB_AUTHORITIES
+                if second.first() != Some(&SID_REVISION)
+                    || usize::from(second[1]) > MAX_SUB_AUTHORITIES
                 {
                     return false;
                 }

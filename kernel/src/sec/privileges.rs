@@ -97,19 +97,31 @@ pub const fn equal_luid(a: Luid, b: Luid) -> bool {
 /// LUID answers.
 const NAMES: [(&str, u32); 27] = [
     ("SeCreateTokenPrivilege", SE_CREATE_TOKEN_PRIVILEGE),
-    ("SeAssignPrimaryTokenPrivilege", SE_ASSIGN_PRIMARY_TOKEN_PRIVILEGE),
+    (
+        "SeAssignPrimaryTokenPrivilege",
+        SE_ASSIGN_PRIMARY_TOKEN_PRIVILEGE,
+    ),
     ("SeLockMemoryPrivilege", SE_LOCK_MEMORY_PRIVILEGE),
     ("SeIncreaseQuotaPrivilege", SE_INCREASE_QUOTA_PRIVILEGE),
     ("SeMachineAccountPrivilege", SE_MACHINE_ACCOUNT_PRIVILEGE),
-    ("SeUnsolicitedInputPrivilege", SE_UNSOLICITED_INPUT_PRIVILEGE),
+    (
+        "SeUnsolicitedInputPrivilege",
+        SE_UNSOLICITED_INPUT_PRIVILEGE,
+    ),
     ("SeTcbPrivilege", SE_TCB_PRIVILEGE),
     ("SeSecurityPrivilege", SE_SECURITY_PRIVILEGE),
     ("SeTakeOwnershipPrivilege", SE_TAKE_OWNERSHIP_PRIVILEGE),
     ("SeLoadDriverPrivilege", SE_LOAD_DRIVER_PRIVILEGE),
     ("SeSystemProfilePrivilege", SE_SYSTEM_PROFILE_PRIVILEGE),
     ("SeSystemtimePrivilege", SE_SYSTEMTIME_PRIVILEGE),
-    ("SeProfileSingleProcessPrivilege", SE_PROF_SINGLE_PROCESS_PRIVILEGE),
-    ("SeIncreaseBasePriorityPrivilege", SE_INC_BASE_PRIORITY_PRIVILEGE),
+    (
+        "SeProfileSingleProcessPrivilege",
+        SE_PROF_SINGLE_PROCESS_PRIVILEGE,
+    ),
+    (
+        "SeIncreaseBasePriorityPrivilege",
+        SE_INC_BASE_PRIORITY_PRIVILEGE,
+    ),
     ("SeCreatePagefilePrivilege", SE_CREATE_PAGEFILE_PRIVILEGE),
     ("SeCreatePermanentPrivilege", SE_CREATE_PERMANENT_PRIVILEGE),
     ("SeBackupPrivilege", SE_BACKUP_PRIVILEGE),
@@ -117,12 +129,18 @@ const NAMES: [(&str, u32); 27] = [
     ("SeShutdownPrivilege", SE_SHUTDOWN_PRIVILEGE),
     ("SeDebugPrivilege", SE_DEBUG_PRIVILEGE),
     ("SeAuditPrivilege", SE_AUDIT_PRIVILEGE),
-    ("SeSystemEnvironmentPrivilege", SE_SYSTEM_ENVIRONMENT_PRIVILEGE),
+    (
+        "SeSystemEnvironmentPrivilege",
+        SE_SYSTEM_ENVIRONMENT_PRIVILEGE,
+    ),
     ("SeChangeNotifyPrivilege", SE_CHANGE_NOTIFY_PRIVILEGE),
     ("SeRemoteShutdownPrivilege", SE_REMOTE_SHUTDOWN_PRIVILEGE),
     ("SeUndockPrivilege", SE_UNDOCK_PRIVILEGE),
     ("SeSyncAgentPrivilege", SE_SYNC_AGENT_PRIVILEGE),
-    ("SeEnableDelegationPrivilege", SE_ENABLE_DELEGATION_PRIVILEGE),
+    (
+        "SeEnableDelegationPrivilege",
+        SE_ENABLE_DELEGATION_PRIVILEGE,
+    ),
 ];
 
 /// Whether `name` is the ANSI form of the public name `known`: same length, ASCII letters equal
@@ -395,8 +413,20 @@ mod tests {
             assert_eq!(privilege.low_part, low);
             assert_eq!(privilege.high_part, 0);
         }
-        assert!(equal_luid(luid(19), Luid { low_part: 19, high_part: 0 }));
-        assert!(!equal_luid(luid(19), Luid { low_part: 19, high_part: 1 }));
+        assert!(equal_luid(
+            luid(19),
+            Luid {
+                low_part: 19,
+                high_part: 0
+            }
+        ));
+        assert!(!equal_luid(
+            luid(19),
+            Luid {
+                low_part: 19,
+                high_part: 1
+            }
+        ));
         assert!(!equal_luid(luid(19), luid(20)));
     }
 
@@ -417,7 +447,10 @@ mod tests {
             assert_eq!(luid_of_name_w(&wide(name)), Some(luid(low)), "{name}");
         }
         // The first name of LUID 6 is the one a lookup by LUID answers.
-        assert_eq!(luid_of_name_a(b"SeUnsolicitedInputPrivilege"), Some(luid(6)));
+        assert_eq!(
+            luid_of_name_a(b"SeUnsolicitedInputPrivilege"),
+            Some(luid(6))
+        );
         assert_eq!(name_of_luid_a(luid(6)), Some("SeMachineAccountPrivilege"));
         // Every LUID answers the first of its names in the table's order.
         for &(_, low) in &NAMES {
@@ -443,7 +476,13 @@ mod tests {
         assert_eq!(luid_of_name_w(&[]), None);
         assert_eq!(luid_of_name_w(&[0x100]), None);
         assert_eq!(name_of_luid_a(luid(65536)), None);
-        assert_eq!(name_of_luid_a(Luid { low_part: 19, high_part: 1 }), None);
+        assert_eq!(
+            name_of_luid_a(Luid {
+                low_part: 19,
+                high_part: 1
+            }),
+            None
+        );
         assert_eq!(name_of_luid_a(luid(1)), None);
         assert_eq!(name_of_luid_a(luid(28)), None);
     }
@@ -457,7 +496,10 @@ mod tests {
         assert_eq!(written, "SeShutdownPrivilege".len());
         assert_eq!(&out[..written], wide("SeShutdownPrivilege").as_slice());
         assert_eq!(out[written], 0, "no terminator is written");
-        assert_eq!(name_of_luid_w(luid(SE_SHUTDOWN_PRIVILEGE), &mut out[..5]), None);
+        assert_eq!(
+            name_of_luid_w(luid(SE_SHUTDOWN_PRIVILEGE), &mut out[..5]),
+            None
+        );
         assert_eq!(name_of_luid_w(luid(65536), &mut out), None);
     }
 
@@ -518,8 +560,12 @@ mod tests {
     #[test]
     fn an_unheld_privilege_is_not_all_assigned() {
         let mut set = DEFAULT_PRIVILEGES;
-        let tcb = adjust(&mut set, &change(&[(SE_TCB_PRIVILEGE, SE_PRIVILEGE_ENABLED)]), Some(256))
-            .unwrap();
+        let tcb = adjust(
+            &mut set,
+            &change(&[(SE_TCB_PRIVILEGE, SE_PRIVILEGE_ENABLED)]),
+            Some(256),
+        )
+        .unwrap();
         assert!(tcb.not_all_assigned);
         assert!(tcb.previous.is_empty());
         assert_eq!(attributes_of(&set, SE_TCB_PRIVILEGE), None);

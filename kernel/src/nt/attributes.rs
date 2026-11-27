@@ -11,9 +11,9 @@
 use core::mem::size_of;
 
 use rtl::array_vec::ArrayVec;
+use rtl::nt::{ObjectAttributes, UnicodeString};
 // OBJECT_ATTRIBUTES' Attributes: OBJ_INHERIT, OBJ_CASE_INSENSITIVE and OBJ_OPENIF.
 pub use rtl::nt::{OBJ_CASE_INSENSITIVE, OBJ_INHERIT, OBJ_OPENIF};
-use rtl::nt::{ObjectAttributes, UnicodeString};
 
 use super::call::UserAddr;
 use crate::status::*;
@@ -328,7 +328,7 @@ mod tests {
 
         use rtl::pod::Pod;
 
-        use crate::user::syscall::host::{UserMemory, install};
+        use crate::user::syscall::host::{install, UserMemory};
         const BASE: u32 = 0x10000;
         struct Page(std::vec::Vec<u8>);
         impl UserMemory for Page {
@@ -405,7 +405,7 @@ mod tests {
 
         use rtl::pod::Pod;
 
-        use crate::user::syscall::host::{UserMemory, install};
+        use crate::user::syscall::host::{install, UserMemory};
         const BASE: u32 = 0x20000;
         struct Page(std::vec::Vec<u8>);
         impl UserMemory for Page {

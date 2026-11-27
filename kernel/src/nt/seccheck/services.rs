@@ -2,13 +2,14 @@
 //! the captures (the descriptor, the SID, the type list, the mapping), the handle lookup, and
 //! the out-param writes.
 
+use rtl::nt::access::TOKEN_QUERY;
+
 use super::super::call::{calling_process, Handle, NtCall, NtResult, UserAddr, UserPtr};
 use super::super::object::{is_console_handle, CURRENT_PROCESS, CURRENT_THREAD};
 use super::*;
 use crate::ob::{self, ObRef};
 use crate::sec::sd::{self, Memory};
 use crate::sec::{self, Owned};
-use rtl::nt::access::TOKEN_QUERY;
 
 /// The most object types a captured list holds.
 const MAX_TYPE_LIST: usize = 128;
@@ -31,8 +32,7 @@ fn token_of(handle: u32, needed: u32) -> Result<(ObRef, se::TokenBody), NtStatus
         .ok_or(STATUS_INVALID_HANDLE)?;
     let id = token_of_entry(Some(entry), needed)?;
     let reference = ob::reference(id).ok_or(STATUS_INVALID_HANDLE)?;
-    let body = ob::locked(|directory| directory.token(id).copied())
-        .ok_or(STATUS_INVALID_HANDLE)?;
+    let body = ob::locked(|directory| directory.token(id).copied()).ok_or(STATUS_INVALID_HANDLE)?;
     Ok((reference, body))
 }
 
@@ -68,7 +68,14 @@ fn capture_sd(at: UserAddr) -> Result<Option<Owned>, NtStatus> {
     let len = sd::length(&mem, at.raw()).ok_or(STATUS_ACCESS_VIOLATION)?;
     let mut out = sec::allocate(len as usize).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
     let mut written = 0u32;
-    let status = sd::capture(&mem, at.raw(), true, false, sec::bytes_mut(&mut out), &mut written);
+    let status = sd::capture(
+        &mem,
+        at.raw(),
+        true,
+        false,
+        sec::bytes_mut(&mut out),
+        &mut written,
+    );
     if status != STATUS_SUCCESS {
         return Err(status);
     }
@@ -83,8 +90,7 @@ fn read_sid(ptr: UserAddr) -> Result<Option<se::SidBytes>, NtStatus> {
     }
     let mut header = [0u8; 2];
     ptr.read(&mut header)?;
-    if header[0] & 0x0F != sec::REVISION || usize::from(header[1]) > sec::MAX_SUB_AUTHORITIES
-    {
+    if header[0] & 0x0F != sec::REVISION || usize::from(header[1]) > sec::MAX_SUB_AUTHORITIES {
         return Err(sd::STATUS_INVALID_SID);
     }
     let mut sid = se::SidBytes::new();
@@ -124,8 +130,9 @@ fn capture_type_list(
         if u16::from_le_bytes([entries[at], entries[at + 1]]) > MAX_LEVEL {
             return Err(STATUS_INVALID_PARAMETER);
         }
-        let guid_at =
-            UserAddr(u32::from_le_bytes(entries[at + 4..at + 8].try_into().unwrap()));
+        let guid_at = UserAddr(u32::from_le_bytes(
+            entries[at + 4..at + 8].try_into().unwrap(),
+        ));
         let mut raw = [0u8; 16];
         guid_at.read(&mut raw)?;
         guids.push(Guid {
@@ -411,7 +418,9 @@ pub fn privilege_check(
     };
     let held = check_privileges(sec::bytes_mut(&mut set), privileges.as_slice());
     // The entries go back with their used-for-access bits; the header is untouched.
-    required_privileges.offset(8).write(&sec::bytes(&set)[8..])?;
+    required_privileges
+        .offset(8)
+        .write(&sec::bytes(&set)[8..])?;
     result.write(u32::from(held))?;
     Ok(STATUS_SUCCESS)
 }

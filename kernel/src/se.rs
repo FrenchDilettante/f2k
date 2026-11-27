@@ -42,17 +42,16 @@ use rtl::array_vec::ArrayVec;
 use rtl::nt::LuidAndAttributes;
 
 use crate::ob::ObjectId;
+// The privilege side — the attributes, the well-known LUIDs and their public names, the
+// name<->LUID lookups, the single-privilege check, the adjustment and the default set — lives
+// in `sec`; re-exported here where the token reads it.
+pub use crate::sec::*;
 use crate::status::{
     NtStatus,
     STATUS_BUFFER_TOO_SMALL,
     STATUS_INFO_LENGTH_MISMATCH,
     STATUS_INVALID_PARAMETER,
 };
-
-// The privilege side — the attributes, the well-known LUIDs and their public names, the
-// name<->LUID lookups, the single-privilege check, the adjustment and the default set — lives in
-// `sec`; re-exported here where the token reads it.
-pub use crate::sec::*;
 
 /// The token-set error codes the shared status table does not name (documented NTSTATUS values).
 pub const STATUS_INVALID_OWNER: NtStatus = NtStatus(0xC000_005A);
@@ -878,8 +877,14 @@ mod tests {
             let size = answer(&token, class).len() as u32;
             assert!(fits(class, size, size).is_ok(), "{class:?}");
             if class == Class::SessionId {
-                assert_eq!(fits(class, size, size - 1), Err(STATUS_INFO_LENGTH_MISMATCH));
-                assert_eq!(fits(class, size, size + 1), Err(STATUS_INFO_LENGTH_MISMATCH));
+                assert_eq!(
+                    fits(class, size, size - 1),
+                    Err(STATUS_INFO_LENGTH_MISMATCH)
+                );
+                assert_eq!(
+                    fits(class, size, size + 1),
+                    Err(STATUS_INFO_LENGTH_MISMATCH)
+                );
             } else {
                 assert!(fits(class, size, size + 64).is_ok(), "{class:?}");
                 assert_eq!(
@@ -941,7 +946,8 @@ mod tests {
             .duplicate(TOKEN_IMPERSONATION, SECURITY_ANONYMOUS)
             .unwrap();
         assert_eq!(
-            anon.duplicate(TOKEN_IMPERSONATION, SECURITY_IMPERSONATION).err(),
+            anon.duplicate(TOKEN_IMPERSONATION, SECURITY_IMPERSONATION)
+                .err(),
             Some(STATUS_BAD_IMPERSONATION_LEVEL)
         );
         assert_eq!(
@@ -953,7 +959,8 @@ mod tests {
             .duplicate(TOKEN_IMPERSONATION, SECURITY_IMPERSONATION)
             .unwrap();
         assert_eq!(
-            imp.duplicate(TOKEN_IMPERSONATION, SECURITY_DELEGATION).err(),
+            imp.duplicate(TOKEN_IMPERSONATION, SECURITY_DELEGATION)
+                .err(),
             Some(STATUS_BAD_IMPERSONATION_LEVEL)
         );
         let primary = imp.duplicate(TOKEN_PRIMARY, SECURITY_ANONYMOUS).unwrap();

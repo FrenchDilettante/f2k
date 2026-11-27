@@ -1,19 +1,33 @@
 //! The security descriptor, builder and string conversion tests.
 
+use rtl::heap::ProcessHeap as _;
+
 use super::build::*;
 use super::sddl::*;
 use super::*;
-use rtl::heap::ProcessHeap as _;
-
 use crate::acl::edit::valid_acl;
 use crate::acl::exports::initialize_acl;
 use crate::acl::{
-    dword, word, ACE_MASK_OFF, ACE_TYPE_OFF, ACL_COUNT_OFF, ACL_HEADER, ACL_REVISION,
+    dword,
+    word,
+    ACE_MASK_OFF,
+    ACE_TYPE_OFF,
+    ACL_COUNT_OFF,
+    ACL_HEADER,
+    ACL_REVISION,
 };
-use crate::imports::ProcessHeap;
 use crate::imports::host::LAST_ERROR;
+use crate::imports::ProcessHeap;
 use crate::sid::{sid_len, PTR};
-use crate::trustee::{build_trustee_with_name_a, EA_INHERITANCE, EA_MODE, EA_PERMS, EA_SIZE, EA_TRUSTEE, TRUSTEE_SIZE};
+use crate::trustee::{
+    build_trustee_with_name_a,
+    EA_INHERITANCE,
+    EA_MODE,
+    EA_PERMS,
+    EA_SIZE,
+    EA_TRUSTEE,
+    TRUSTEE_SIZE,
+};
 
 fn last_error() -> u32 {
     LAST_ERROR.with(|error| error.get())
@@ -52,7 +66,10 @@ fn a_descriptor_is_initialized_measured_and_validated() {
     let mut buf = vec![0xCCu8; 256];
     arm();
     assert_eq!(
-        (unsafe { initialize_security_descriptor(buf.as_mut_ptr(), 1) }, last_error()),
+        (
+            unsafe { initialize_security_descriptor(buf.as_mut_ptr(), 1) },
+            last_error()
+        ),
         (1, 0xF2F2)
     );
     assert_eq!(buf[0], 1);
@@ -60,33 +77,51 @@ fn a_descriptor_is_initialized_measured_and_validated() {
     assert!(buf[1..SD_HEADER].iter().all(|&b| b == 0));
     arm();
     assert_eq!(
-        (unsafe { is_valid_security_descriptor(buf.as_ptr()) }, last_error()),
+        (
+            unsafe { is_valid_security_descriptor(buf.as_ptr()) },
+            last_error()
+        ),
         (1, 0xF2F2)
     );
     arm();
     assert_eq!(
-        (unsafe { get_security_descriptor_length(buf.as_ptr()) }, last_error()),
+        (
+            unsafe { get_security_descriptor_length(buf.as_ptr()) },
+            last_error()
+        ),
         (20, 0xF2F2)
     );
     buf[0] = 0x99;
     arm();
     assert_eq!(
-        (unsafe { is_valid_security_descriptor(buf.as_ptr()) }, last_error()),
+        (
+            unsafe { is_valid_security_descriptor(buf.as_ptr()) },
+            last_error()
+        ),
         (0, 1338)
     );
     arm();
     assert_eq!(
-        (unsafe { initialize_security_descriptor(buf.as_mut_ptr(), 9) }, last_error()),
+        (
+            unsafe { initialize_security_descriptor(buf.as_mut_ptr(), 9) },
+            last_error()
+        ),
         (0, 1305)
     );
     arm();
     assert_eq!(
-        (unsafe { is_valid_security_descriptor(core::ptr::null()) }, last_error()),
+        (
+            unsafe { is_valid_security_descriptor(core::ptr::null()) },
+            last_error()
+        ),
         (0, 1338)
     );
     arm();
     assert_eq!(
-        (unsafe { get_security_descriptor_length(core::ptr::null()) }, last_error()),
+        (
+            unsafe { get_security_descriptor_length(core::ptr::null()) },
+            last_error()
+        ),
         (0, 87)
     );
     buf[0] = 1;
@@ -104,25 +139,37 @@ fn a_descriptor_is_initialized_measured_and_validated() {
     );
     arm();
     assert_eq!(
-        (unsafe { set_security_descriptor_control(buf.as_mut_ptr(), 0x1000, 0x1000) }, last_error()),
+        (
+            unsafe { set_security_descriptor_control(buf.as_mut_ptr(), 0x1000, 0x1000) },
+            last_error()
+        ),
         (1, 0xF2F2)
     );
     assert_eq!(control(&buf), 0x1000);
     arm();
     assert_eq!(
-        (unsafe { set_security_descriptor_control(buf.as_mut_ptr(), 0x1000, 0) }, last_error()),
+        (
+            unsafe { set_security_descriptor_control(buf.as_mut_ptr(), 0x1000, 0) },
+            last_error()
+        ),
         (1, 0xF2F2)
     );
     assert_eq!(control(&buf), 0);
     // The self-relative bit is not a valid control bit; a to-set bit outside the interest is not.
     arm();
     assert_eq!(
-        (unsafe { set_security_descriptor_control(buf.as_mut_ptr(), 0x8000, 0) }, last_error()),
+        (
+            unsafe { set_security_descriptor_control(buf.as_mut_ptr(), 0x8000, 0) },
+            last_error()
+        ),
         (0, 87)
     );
     arm();
     assert_eq!(
-        (unsafe { set_security_descriptor_control(buf.as_mut_ptr(), 0x1000, 0x2000) }, last_error()),
+        (
+            unsafe { set_security_descriptor_control(buf.as_mut_ptr(), 0x1000, 0x2000) },
+            last_error()
+        ),
         (0, 87)
     );
     // A bad revision: the getter writes the revision and fails with ERROR_UNKNOWN_REVISION.
@@ -145,20 +192,32 @@ fn a_descriptor_is_initialized_measured_and_validated() {
 #[test]
 fn rm_control_round_trips() {
     let mut buf = vec![0u8; 256];
-    assert_eq!(unsafe { initialize_security_descriptor(buf.as_mut_ptr(), 1) }, 1);
+    assert_eq!(
+        unsafe { initialize_security_descriptor(buf.as_mut_ptr(), 1) },
+        1
+    );
     let mut rm = 0xCCu8;
-    assert_eq!(unsafe { get_security_descriptor_rm_control(buf.as_ptr(), &mut rm) }, 13);
+    assert_eq!(
+        unsafe { get_security_descriptor_rm_control(buf.as_ptr(), &mut rm) },
+        13
+    );
     assert_eq!(rm, 0);
     rm = 0x5A;
     arm();
     assert_eq!(
-        (unsafe { set_security_descriptor_rm_control(buf.as_mut_ptr(), &rm) }, last_error()),
+        (
+            unsafe { set_security_descriptor_rm_control(buf.as_mut_ptr(), &rm) },
+            last_error()
+        ),
         (0, 0xF2F2)
     );
     assert_eq!(control(&buf) & SE_RM_CONTROL_VALID, SE_RM_CONTROL_VALID);
     assert_eq!(buf[1], 0x5A);
     let mut rm = 0xCCu8;
-    assert_eq!(unsafe { get_security_descriptor_rm_control(buf.as_ptr(), &mut rm) }, 0);
+    assert_eq!(
+        unsafe { get_security_descriptor_rm_control(buf.as_ptr(), &mut rm) },
+        0
+    );
     assert_eq!(rm, 0x5A);
     assert_eq!(
         unsafe { set_security_descriptor_rm_control(buf.as_mut_ptr(), core::ptr::null()) },
@@ -173,14 +232,23 @@ fn rm_control_round_trips() {
 #[test]
 fn components_are_set_and_gotten() {
     let mut buf = vec![0u8; 256];
-    assert_eq!(unsafe { initialize_security_descriptor(buf.as_mut_ptr(), 1) }, 1);
+    assert_eq!(
+        unsafe { initialize_security_descriptor(buf.as_mut_ptr(), 1) },
+        1
+    );
     let admins = sid(5, &[32, 544]);
     let everyone = sid(1, &[0]);
     let mut acl = vec![0u8; 64];
-    assert_eq!(unsafe { initialize_acl(acl.as_mut_ptr(), 64, ACL_REVISION) }, 1);
+    assert_eq!(
+        unsafe { initialize_acl(acl.as_mut_ptr(), 64, ACL_REVISION) },
+        1
+    );
     arm();
     assert_eq!(
-        (unsafe { set_security_descriptor_owner(buf.as_mut_ptr(), admins.as_ptr(), 0) }, last_error()),
+        (
+            unsafe { set_security_descriptor_owner(buf.as_mut_ptr(), admins.as_ptr(), 0) },
+            last_error()
+        ),
         (1, 0xF2F2)
     );
     let mut owner: *mut u8 = core::ptr::null_mut();
@@ -211,7 +279,10 @@ fn components_are_set_and_gotten() {
     assert_eq!(defaulted, 1);
     arm();
     assert_eq!(
-        (unsafe { set_security_descriptor_dacl(buf.as_mut_ptr(), 1, acl.as_ptr(), 0) }, last_error()),
+        (
+            unsafe { set_security_descriptor_dacl(buf.as_mut_ptr(), 1, acl.as_ptr(), 0) },
+            last_error()
+        ),
         (1, 0xF2F2)
     );
     assert_eq!(control(&buf) & SE_DACL_PRESENT, SE_DACL_PRESENT);
@@ -221,7 +292,9 @@ fn components_are_set_and_gotten() {
     arm();
     assert_eq!(
         (
-            unsafe { get_security_descriptor_dacl(buf.as_ptr(), &mut present, &mut dacl, &mut defaulted) },
+            unsafe {
+                get_security_descriptor_dacl(buf.as_ptr(), &mut present, &mut dacl, &mut defaulted)
+            },
             last_error(),
             present,
             dacl == acl.as_ptr() as *mut u8,
@@ -237,22 +310,38 @@ fn components_are_set_and_gotten() {
     // A null present clears only the PRESENT flag.
     arm();
     assert_eq!(
-        (unsafe { set_security_descriptor_dacl(buf.as_mut_ptr(), 0, core::ptr::null(), 0) }, last_error()),
+        (
+            unsafe { set_security_descriptor_dacl(buf.as_mut_ptr(), 0, core::ptr::null(), 0) },
+            last_error()
+        ),
         (1, 0xF2F2)
     );
     assert_eq!(control(&buf) & SE_DACL_PRESENT, 0);
-    assert_eq!(sd_field_value(&buf, FIELD_DACL), acl.as_ptr() as usize, "the field untouched");
+    assert_eq!(
+        sd_field_value(&buf, FIELD_DACL),
+        acl.as_ptr() as usize,
+        "the field untouched"
+    );
     let mut present = 1u32;
     let mut dacl: *mut u8 = core::ptr::null_mut();
     assert_eq!(
-        unsafe { get_security_descriptor_dacl(buf.as_ptr(), &mut present, &mut dacl, &mut defaulted) },
+        unsafe {
+            get_security_descriptor_dacl(buf.as_ptr(), &mut present, &mut dacl, &mut defaulted)
+        },
         1
     );
-    assert_eq!((present, dacl.is_null()), (0, true), "not present: the ACL reported NULL");
+    assert_eq!(
+        (present, dacl.is_null()),
+        (0, true),
+        "not present: the ACL reported NULL"
+    );
     // The length counts the named components: 20 + 16 (owner) + 12 (group) + 64 (sacl).
     arm();
     assert_eq!(
-        (unsafe { get_security_descriptor_length(buf.as_ptr()) }, last_error()),
+        (
+            unsafe { get_security_descriptor_length(buf.as_ptr()) },
+            last_error()
+        ),
         (20 + 16 + 12 + 64, 0xF2F2)
     );
     assert_eq!(unsafe { is_valid_security_descriptor(buf.as_ptr()) }, 1);
@@ -261,7 +350,10 @@ fn components_are_set_and_gotten() {
     set_control(&mut buf, c);
     arm();
     assert_eq!(
-        (unsafe { set_security_descriptor_owner(buf.as_mut_ptr(), admins.as_ptr(), 0) }, last_error()),
+        (
+            unsafe { set_security_descriptor_owner(buf.as_mut_ptr(), admins.as_ptr(), 0) },
+            last_error()
+        ),
         (0, 1338)
     );
     let c = control(&buf) & !SE_SELF_RELATIVE;
@@ -269,7 +361,10 @@ fn components_are_set_and_gotten() {
     buf[0] = 9;
     arm();
     assert_eq!(
-        (unsafe { set_security_descriptor_owner(buf.as_mut_ptr(), admins.as_ptr(), 0) }, last_error()),
+        (
+            unsafe { set_security_descriptor_owner(buf.as_mut_ptr(), admins.as_ptr(), 0) },
+            last_error()
+        ),
         (0, 1305)
     );
 }
@@ -280,35 +375,67 @@ fn components_are_set_and_gotten() {
 #[test]
 fn self_relative_round_trips() {
     let mut buf = vec![0u8; 256];
-    assert_eq!(unsafe { initialize_security_descriptor(buf.as_mut_ptr(), 1) }, 1);
+    assert_eq!(
+        unsafe { initialize_security_descriptor(buf.as_mut_ptr(), 1) },
+        1
+    );
     let admins = sid(5, &[32, 544]);
     let everyone = sid(1, &[0]);
     let mut acl = vec![0u8; 28];
-    assert_eq!(unsafe { initialize_acl(acl.as_mut_ptr(), 28, ACL_REVISION) }, 1);
-    assert_eq!(unsafe { set_security_descriptor_owner(buf.as_mut_ptr(), admins.as_ptr(), 0) }, 1);
-    assert_eq!(unsafe { set_security_descriptor_group(buf.as_mut_ptr(), everyone.as_ptr(), 0) }, 1);
-    assert_eq!(unsafe { set_security_descriptor_dacl(buf.as_mut_ptr(), 1, acl.as_ptr(), 0) }, 1);
+    assert_eq!(
+        unsafe { initialize_acl(acl.as_mut_ptr(), 28, ACL_REVISION) },
+        1
+    );
+    assert_eq!(
+        unsafe { set_security_descriptor_owner(buf.as_mut_ptr(), admins.as_ptr(), 0) },
+        1
+    );
+    assert_eq!(
+        unsafe { set_security_descriptor_group(buf.as_mut_ptr(), everyone.as_ptr(), 0) },
+        1
+    );
+    assert_eq!(
+        unsafe { set_security_descriptor_dacl(buf.as_mut_ptr(), 1, acl.as_ptr(), 0) },
+        1
+    );
     let needed = 20 + 16 + 12 + 28;
     let mut rel = vec![0xCCu8; 256];
     let mut len = 0u32;
     arm();
     assert_eq!(
-        (unsafe { make_self_relative_sd(buf.as_ptr(), rel.as_mut_ptr(), &mut len) }, last_error(), len),
+        (
+            unsafe { make_self_relative_sd(buf.as_ptr(), rel.as_mut_ptr(), &mut len) },
+            last_error(),
+            len
+        ),
         (0, 122, needed as u32)
     );
     len = 256;
     arm();
     assert_eq!(
-        (unsafe { make_self_relative_sd(buf.as_ptr(), rel.as_mut_ptr(), &mut len) }, last_error(), len),
+        (
+            unsafe { make_self_relative_sd(buf.as_ptr(), rel.as_mut_ptr(), &mut len) },
+            last_error(),
+            len
+        ),
         (1, 0xF2F2, needed as u32)
     );
     assert_eq!(control(&rel) & SE_SELF_RELATIVE, SE_SELF_RELATIVE);
     assert_eq!(rel[0], 1);
     arm();
-    assert_eq!((unsafe { is_valid_security_descriptor(rel.as_ptr()) }, last_error()), (1, 0xF2F2));
+    assert_eq!(
+        (
+            unsafe { is_valid_security_descriptor(rel.as_ptr()) },
+            last_error()
+        ),
+        (1, 0xF2F2)
+    );
     arm();
     assert_eq!(
-        (unsafe { get_security_descriptor_length(rel.as_ptr()) }, last_error()),
+        (
+            unsafe { get_security_descriptor_length(rel.as_ptr()) },
+            last_error()
+        ),
         (needed as u32, 0xF2F2)
     );
     // The owner resolves to the descriptor's own address plus the offset, with its bytes.
@@ -326,7 +453,10 @@ fn self_relative_round_trips() {
     // The setters reject the self-relative form.
     arm();
     assert_eq!(
-        (unsafe { set_security_descriptor_owner(rel.as_mut_ptr(), admins.as_ptr(), 0) }, last_error()),
+        (
+            unsafe { set_security_descriptor_owner(rel.as_mut_ptr(), admins.as_ptr(), 0) },
+            last_error()
+        ),
         (0, 1338)
     );
 }
@@ -466,7 +596,11 @@ fn access_conversions() {
     assert_eq!(u32::from(control(sd)), 0x0104);
     assert!(valid_sd(newsd as usize, sd));
     let dacl_off = sd_field_value(sd, FIELD_DACL) - newsd as usize;
-    assert_eq!(word(&sd[dacl_off..], ACL_COUNT_OFF), Some(0), "the empty DACL");
+    assert_eq!(
+        word(&sd[dacl_off..], ACL_COUNT_OFF),
+        Some(0),
+        "the empty DACL"
+    );
     unsafe { ProcessHeap::free(newsd) };
     let wname = wide("Everyone");
     let mut newsd: *mut u8 = core::ptr::null_mut();
@@ -490,7 +624,17 @@ fn access_conversions() {
     arm();
     assert_eq!(
         (
-            unsafe { convert_security_descriptor_to_access_a(0x58, 6, core::ptr::null(), &mut a, &mut b, &mut c, &mut d) },
+            unsafe {
+                convert_security_descriptor_to_access_a(
+                    0x58,
+                    6,
+                    core::ptr::null(),
+                    &mut a,
+                    &mut b,
+                    &mut c,
+                    &mut d,
+                )
+            },
             last_error(),
             a.is_null()
         ),
@@ -498,7 +642,20 @@ fn access_conversions() {
     );
     arm();
     assert_eq!(
-        (unsafe { convert_security_descriptor_to_access_named_w(core::ptr::null(), 6, core::ptr::null(), &mut a, &mut b, &mut c, &mut d) }, last_error()),
+        (
+            unsafe {
+                convert_security_descriptor_to_access_named_w(
+                    core::ptr::null(),
+                    6,
+                    core::ptr::null(),
+                    &mut a,
+                    &mut b,
+                    &mut c,
+                    &mut d,
+                )
+            },
+            last_error()
+        ),
         (1308, 0xF2F2)
     );
 }
@@ -514,12 +671,18 @@ fn sddl_round_trips() {
     let mut size = 0u32;
     arm();
     assert_eq!(
-        (unsafe { convert_string_sd_to_sd_w(wtext.as_ptr(), 1, &mut sd, &mut size) }, last_error()),
+        (
+            unsafe { convert_string_sd_to_sd_w(wtext.as_ptr(), 1, &mut sd, &mut size) },
+            last_error()
+        ),
         (1, 0)
     );
     assert!(!sd.is_null());
     arm();
-    assert_eq!((unsafe { is_valid_security_descriptor(sd) }, last_error()), (1, 0xF2F2));
+    assert_eq!(
+        (unsafe { is_valid_security_descriptor(sd) }, last_error()),
+        (1, 0xF2F2)
+    );
     arm();
     assert_eq!(
         (unsafe { get_security_descriptor_length(sd) }, last_error()),
@@ -536,15 +699,23 @@ fn sddl_round_trips() {
     let dacl_bytes = unsafe { core::slice::from_raw_parts(dacl, 28) };
     assert_eq!(word(dacl_bytes, ACL_COUNT_OFF), Some(1));
     assert_eq!(dacl_bytes[ACL_HEADER + ACE_TYPE_OFF], 0);
-    assert_eq!(dword(dacl_bytes, ACL_HEADER + ACE_MASK_OFF), Some(0x000F01FF));
-    assert_eq!(&dacl_bytes[ACL_HEADER + 8..ACL_HEADER + 20], sid(1, &[0]).as_slice());
+    assert_eq!(
+        dword(dacl_bytes, ACL_HEADER + ACE_MASK_OFF),
+        Some(0x000F01FF)
+    );
+    assert_eq!(
+        &dacl_bytes[ACL_HEADER + 8..ACL_HEADER + 20],
+        sid(1, &[0]).as_slice()
+    );
     // Back to a string: the DACL section with the ACE.
     let mut s: *mut u16 = core::ptr::null_mut();
     let mut slen = 0u32;
     arm();
     assert_eq!(
         (
-            unsafe { convert_sd_to_string_sd_w(sd, 1, DACL_SECURITY_INFORMATION, &mut s, &mut slen) },
+            unsafe {
+                convert_sd_to_string_sd_w(sd, 1, DACL_SECURITY_INFORMATION, &mut s, &mut slen)
+            },
             last_error()
         ),
         (1, 0)
@@ -557,7 +728,10 @@ fn sddl_round_trips() {
     let wback = wide(&back);
     let mut sd2: *mut u8 = core::ptr::null_mut();
     let mut size2 = 0u32;
-    assert_eq!(unsafe { convert_string_sd_to_sd_w(wback.as_ptr(), 1, &mut sd2, &mut size2) }, 1);
+    assert_eq!(
+        unsafe { convert_string_sd_to_sd_w(wback.as_ptr(), 1, &mut sd2, &mut size2) },
+        1
+    );
     let mut dacl2: *mut u8 = core::ptr::null_mut();
     let mut present2 = 0u32;
     let mut defaulted2 = 0u32;
@@ -566,13 +740,22 @@ fn sddl_round_trips() {
         1
     );
     let dacl2_bytes = unsafe { core::slice::from_raw_parts(dacl2, 28) };
-    assert_eq!(dword(dacl2_bytes, ACL_HEADER + ACE_MASK_OFF), Some(0x000F01FF));
-    assert_eq!(&dacl2_bytes[ACL_HEADER + 8..ACL_HEADER + 20], sid(1, &[0]).as_slice());
+    assert_eq!(
+        dword(dacl2_bytes, ACL_HEADER + ACE_MASK_OFF),
+        Some(0x000F01FF)
+    );
+    assert_eq!(
+        &dacl2_bytes[ACL_HEADER + 8..ACL_HEADER + 20],
+        sid(1, &[0]).as_slice()
+    );
     // The moniker form, both directions.
     let moniker = wide("O:BAD:(A;;FA;;;WD)");
     let mut sd3: *mut u8 = core::ptr::null_mut();
     let mut size3 = 0u32;
-    assert_eq!(unsafe { convert_string_sd_to_sd_w(moniker.as_ptr(), 1, &mut sd3, &mut size3) }, 1);
+    assert_eq!(
+        unsafe { convert_string_sd_to_sd_w(moniker.as_ptr(), 1, &mut sd3, &mut size3) },
+        1
+    );
     let mut owner: *mut u8 = core::ptr::null_mut();
     let mut defaulted3 = 0u32;
     assert_eq!(
@@ -580,11 +763,23 @@ fn sddl_round_trips() {
         1
     );
     let owner_sid = unsafe { core::slice::from_raw_parts(owner, sid_len(2)) };
-    assert_eq!(owner_sid, sid(5, &[32, 544]).as_slice(), "BA: the builtin administrators");
+    assert_eq!(
+        owner_sid,
+        sid(5, &[32, 544]).as_slice(),
+        "BA: the builtin administrators"
+    );
     let mut s3: *mut u16 = core::ptr::null_mut();
     let mut slen3 = 0u32;
     assert_eq!(
-        unsafe { convert_sd_to_string_sd_w(sd3, 1, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION, &mut s3, &mut slen3) },
+        unsafe {
+            convert_sd_to_string_sd_w(
+                sd3,
+                1,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                &mut s3,
+                &mut slen3,
+            )
+        },
         1
     );
     let back3 = read_wide(s3);
@@ -598,17 +793,26 @@ fn sddl_round_trips() {
     let mut size4 = 0u32;
     arm();
     assert_eq!(
-        (unsafe { convert_string_sd_to_sd_a(text.as_ptr(), 1, &mut sd4, &mut size4) }, last_error()),
+        (
+            unsafe { convert_string_sd_to_sd_a(text.as_ptr(), 1, &mut sd4, &mut size4) },
+            last_error()
+        ),
         (1, 0)
     );
     let mut s4: *mut u8 = core::ptr::null_mut();
     let mut slen4 = 0u32;
     assert_eq!(
-        unsafe { convert_sd_to_string_sd_a(sd4, 1, DACL_SECURITY_INFORMATION, &mut s4, &mut slen4) },
+        unsafe {
+            convert_sd_to_string_sd_a(sd4, 1, DACL_SECURITY_INFORMATION, &mut s4, &mut slen4)
+        },
         1
     );
     let back4 = unsafe { core::slice::from_raw_parts(s4, slen4 as usize) };
-    assert!(back4.starts_with(b"D:(A;;"), "{}", String::from_utf8_lossy(back4));
+    assert!(
+        back4.starts_with(b"D:(A;;"),
+        "{}",
+        String::from_utf8_lossy(back4)
+    );
     unsafe { ProcessHeap::free(s4) };
     unsafe { ProcessHeap::free(sd4) };
     // Error paths: a bad revision, nulls, a bad string, no information bits.
@@ -616,31 +820,56 @@ fn sddl_round_trips() {
     let mut size = 0u32;
     arm();
     assert_eq!(
-        (unsafe { convert_string_sd_to_sd_w(wtext.as_ptr(), 9, &mut out, &mut size) }, last_error()),
+        (
+            unsafe { convert_string_sd_to_sd_w(wtext.as_ptr(), 9, &mut out, &mut size) },
+            last_error()
+        ),
         (0, 1305)
     );
     arm();
     assert_eq!(
-        (unsafe { convert_string_sd_to_sd_a(core::ptr::null(), 1, &mut out, &mut size) }, last_error()),
+        (
+            unsafe { convert_string_sd_to_sd_a(core::ptr::null(), 1, &mut out, &mut size) },
+            last_error()
+        ),
         (0, 87)
     );
     arm();
     assert_eq!(
-        (unsafe { convert_string_sd_to_sd_a(b"not a security descriptor\0".as_ptr(), 1, &mut out, &mut size) }, last_error()),
+        (
+            unsafe {
+                convert_string_sd_to_sd_a(
+                    b"not a security descriptor\0".as_ptr(),
+                    1,
+                    &mut out,
+                    &mut size,
+                )
+            },
+            last_error()
+        ),
         (0, 87)
     );
     let mut s: *mut u16 = core::ptr::null_mut();
     let mut slen = 0u32;
     arm();
     assert_eq!(
-        (unsafe { convert_sd_to_string_sd_w(core::ptr::null(), 1, 4, &mut s, &mut slen) }, last_error()),
+        (
+            unsafe { convert_sd_to_string_sd_w(core::ptr::null(), 1, 4, &mut s, &mut slen) },
+            last_error()
+        ),
         (0, 87)
     );
     arm();
     let mut simple = vec![0u8; SD_HEADER];
-    assert_eq!(unsafe { initialize_security_descriptor(simple.as_mut_ptr(), 1) }, 1);
     assert_eq!(
-        (unsafe { convert_sd_to_string_sd_w(simple.as_ptr(), 1, 0, &mut s, &mut slen) }, last_error()),
+        unsafe { initialize_security_descriptor(simple.as_mut_ptr(), 1) },
+        1
+    );
+    assert_eq!(
+        (
+            unsafe { convert_sd_to_string_sd_w(simple.as_ptr(), 1, 0, &mut s, &mut slen) },
+            last_error()
+        ),
         (0, 87)
     );
     unsafe { ProcessHeap::free(sd) };

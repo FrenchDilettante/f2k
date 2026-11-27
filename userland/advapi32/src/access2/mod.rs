@@ -23,12 +23,19 @@ pub mod parts;
 pub mod toobject;
 
 use crate::acl::{ace_count, dword, object_ace_sid_offset, sid_at, word};
-use crate::sid::{sid_equal, well_known_sid, SidParts, sid_parts_bytes, MAX_SUB_AUTHORITIES};
-use crate::trustee::{
-    FORM_NAME, FORM_OBJECTS_AND_SID, FORM_SID, OAS_SID, TRUSTEE_FORM, TRUSTEE_MULTIPLE,
-    TRUSTEE_NAME, TRUSTEE_OP, TRUSTEE_SIZE,
-};
 use crate::caller_bytes;
+use crate::sid::{sid_equal, sid_parts_bytes, well_known_sid, SidParts, MAX_SUB_AUTHORITIES};
+use crate::trustee::{
+    FORM_NAME,
+    FORM_OBJECTS_AND_SID,
+    FORM_SID,
+    OAS_SID,
+    TRUSTEE_FORM,
+    TRUSTEE_MULTIPLE,
+    TRUSTEE_NAME,
+    TRUSTEE_OP,
+    TRUSTEE_SIZE,
+};
 
 // --- The trustee's SID ---------------------------------------------------------------------
 
@@ -83,7 +90,9 @@ fn well_known_kind(name: &[u8]) -> Option<u32> {
             None
         }
     };
-    let bare = strip("BUILTIN").or_else(|| strip("NT AUTHORITY")).unwrap_or(name);
+    let bare = strip("BUILTIN")
+        .or_else(|| strip("NT AUTHORITY"))
+        .unwrap_or(name);
     WELL_KNOWN_NAMES
         .iter()
         .find(|(known, _)| name_is(bare, known))
@@ -203,9 +212,16 @@ pub(crate) unsafe fn trustee_sid<'a>(
 /// rights here.
 pub(crate) fn effective_rights(acl: &[u8], sid: &[u8]) -> u32 {
     use crate::acl::{
-        ACCESS_ALLOWED_ACE_TYPE, ACCESS_ALLOWED_OBJECT_ACE_TYPE, ACCESS_DENIED_ACE_TYPE,
-        ACCESS_DENIED_OBJECT_ACE_TYPE, ACE_HEADER, ACE_MASK_OFF, ACE_SIZE_OFF, ACE_TYPE_OFF,
-        ACL_HEADER, KNOWN_ACE_FIXED,
+        ACCESS_ALLOWED_ACE_TYPE,
+        ACCESS_ALLOWED_OBJECT_ACE_TYPE,
+        ACCESS_DENIED_ACE_TYPE,
+        ACCESS_DENIED_OBJECT_ACE_TYPE,
+        ACE_HEADER,
+        ACE_MASK_OFF,
+        ACE_SIZE_OFF,
+        ACE_TYPE_OFF,
+        ACL_HEADER,
+        KNOWN_ACE_FIXED,
     };
     let mut allowed = 0u32;
     let mut denied = 0u32;

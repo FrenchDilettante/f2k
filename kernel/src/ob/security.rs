@@ -15,8 +15,8 @@
 //! MAXIMUM_ALLOWED takes the check's own fast path.
 
 use rtl::array_vec::ArrayVec;
-use rtl::nt::LuidAndAttributes;
 use rtl::nt::access::{GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ, GENERIC_WRITE};
+use rtl::nt::LuidAndAttributes;
 
 use super::{ObjectId, ObjectType};
 use crate::sec::{
@@ -149,12 +149,14 @@ pub fn take_pending() -> Option<Sd> {
 /// that reserved one.
 #[cfg(any(target_arch = "x86", test))]
 fn slot_index(thread: Option<u16>) -> usize {
-    thread.map_or(crate::sched::database::THREAD_RECORDS, |index| index as usize)
+    thread.map_or(crate::sched::database::THREAD_RECORDS, |index| {
+        index as usize
+    })
 }
 
 #[cfg(target_arch = "x86")]
 mod pending {
-    use super::{Sd, slot_index};
+    use super::{slot_index, Sd};
     use crate::sched::database::THREAD_RECORDS;
 
     /// One slot per thread record, plus the reserved slot for a service reached with no
@@ -446,13 +448,13 @@ mod tests {
     use super::super::access::EVENT_MAPPING;
     use super::*;
     use crate::sec::{
+        SecurityDescriptor,
         ACCESS_ALLOWED_ACE_TYPE,
         ACCESS_DENIED_ACE_TYPE,
         ACL_REVISION2,
         SE_DACL_PRESENT,
         SE_GROUP_ENABLED,
         SE_SELF_RELATIVE,
-        SecurityDescriptor,
         WORLD_SID,
     };
     use crate::status::{STATUS_ACCESS_DENIED, STATUS_ACCESS_VIOLATION};
@@ -815,7 +817,10 @@ mod tests {
     #[test]
     fn the_pending_slot_index_covers_every_thread_record() {
         use crate::sched::database::{
-            CONSOLE_CONTROL_THREAD, IDLE_THREAD, RAW_INPUT_THREAD, THREAD_RECORDS,
+            CONSOLE_CONTROL_THREAD,
+            IDLE_THREAD,
+            RAW_INPUT_THREAD,
+            THREAD_RECORDS,
         };
         let last_thread = crate::ob::THREADS as u16 - 1;
         for index in [
@@ -831,7 +836,11 @@ mod tests {
         // The highest real record, the raw-input thread's, takes the last slot a thread can
         // reach; the reserved slot sits one past it.
         assert_eq!(RAW_INPUT_THREAD.index() as usize, THREAD_RECORDS - 1);
-        assert_eq!(slot_index(None), THREAD_RECORDS, "the reserved no-thread slot");
+        assert_eq!(
+            slot_index(None),
+            THREAD_RECORDS,
+            "the reserved no-thread slot"
+        );
     }
 
     // -- the grant's check ----------------------------------------------------------
@@ -955,7 +964,7 @@ mod tests {
     /// attributes, the owner, the privilege set — and a group's allow ACE matches through it.
     #[test]
     fn the_subject_is_the_processs_token() {
-        use crate::se::{ADMINISTRATORS, GROUPS, TokenBody, USER};
+        use crate::se::{TokenBody, ADMINISTRATORS, GROUPS, USER};
         let process = ObjectId {
             kind: ObjectType::Process,
             index: 3,

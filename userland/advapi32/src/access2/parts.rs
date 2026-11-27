@@ -12,20 +12,40 @@
 use rtl::heap::ProcessHeap as _;
 use rtl::winerror::{ERROR_INVALID_PARAMETER, ERROR_NOT_ENOUGH_MEMORY};
 
+use crate::acl::FAILED_ACCESS_ACE_FLAG;
 use crate::acl::{
-    ace_count, dword, object_ace_sid_offset, sid_at, word, ACE_FLAGS_OFF, ACE_HEADER,
-    ACE_MASK_OFF, ACE_SIZE_OFF, ACE_TYPE_OFF, ACL_HEADER,
+    ace_count,
+    dword,
+    object_ace_sid_offset,
+    sid_at,
+    word,
+    ACE_FLAGS_OFF,
+    ACE_HEADER,
+    ACE_MASK_OFF,
+    ACE_SIZE_OFF,
+    ACE_TYPE_OFF,
+    ACL_HEADER,
 };
 use crate::explicit::{
-    ExplicitAccess, Trustee, DENY_ACCESS, ENTRY_SIZE, GRANT_ACCESS, SET_AUDIT_FAILURE,
-    SET_AUDIT_SUCCESS, fail,
+    fail,
+    ExplicitAccess,
+    Trustee,
+    DENY_ACCESS,
+    ENTRY_SIZE,
+    GRANT_ACCESS,
+    SET_AUDIT_FAILURE,
+    SET_AUDIT_SUCCESS,
 };
-use crate::acl::FAILED_ACCESS_ACE_FLAG;
 use crate::imports::{self as nt, ProcessHeap};
 use crate::sd::{caller_sd, sd_components, FIELD_DACL, FIELD_GROUP, FIELD_OWNER, FIELD_SACL};
-use crate::sid::{ERROR_INVALID_SECURITY_DESCR, set_ptr_field};
+use crate::sid::{set_ptr_field, ERROR_INVALID_SECURITY_DESCR};
 use crate::trustee::{
-    FORM_SID, TRUSTEE_FORM, TRUSTEE_MULTIPLE, TRUSTEE_NAME, TRUSTEE_OP, TRUSTEE_SIZE,
+    FORM_SID,
+    TRUSTEE_FORM,
+    TRUSTEE_MULTIPLE,
+    TRUSTEE_NAME,
+    TRUSTEE_OP,
+    TRUSTEE_SIZE,
     TRUSTEE_TYPE,
 };
 use crate::Out;
@@ -34,9 +54,14 @@ use crate::Out;
 /// failed flag).
 fn entry_mode(kind: u8, flags: u32) -> Option<u32> {
     use crate::acl::{
-        ACCESS_ALLOWED_ACE_TYPE, ACCESS_ALLOWED_OBJECT_ACE_TYPE, ACCESS_DENIED_ACE_TYPE,
-        ACCESS_DENIED_OBJECT_ACE_TYPE, SYSTEM_ALARM_ACE_TYPE, SYSTEM_ALARM_OBJECT_ACE_TYPE,
-        SYSTEM_AUDIT_ACE_TYPE, SYSTEM_AUDIT_OBJECT_ACE_TYPE,
+        ACCESS_ALLOWED_ACE_TYPE,
+        ACCESS_ALLOWED_OBJECT_ACE_TYPE,
+        ACCESS_DENIED_ACE_TYPE,
+        ACCESS_DENIED_OBJECT_ACE_TYPE,
+        SYSTEM_ALARM_ACE_TYPE,
+        SYSTEM_ALARM_OBJECT_ACE_TYPE,
+        SYSTEM_AUDIT_ACE_TYPE,
+        SYSTEM_AUDIT_OBJECT_ACE_TYPE,
     };
     match kind {
         ACCESS_ALLOWED_ACE_TYPE | ACCESS_ALLOWED_OBJECT_ACE_TYPE => Some(GRANT_ACCESS),
@@ -60,9 +85,15 @@ fn entry_mode(kind: u8, flags: u32) -> Option<u32> {
 /// lists nothing).
 fn ace_sid_offset(acl: &[u8], at: usize, kind: u8) -> Option<usize> {
     use crate::acl::{
-        ACCESS_ALLOWED_ACE_TYPE, ACCESS_ALLOWED_OBJECT_ACE_TYPE, ACCESS_DENIED_ACE_TYPE,
-        ACCESS_DENIED_OBJECT_ACE_TYPE, KNOWN_ACE_FIXED, SYSTEM_ALARM_ACE_TYPE,
-        SYSTEM_ALARM_OBJECT_ACE_TYPE, SYSTEM_AUDIT_ACE_TYPE, SYSTEM_AUDIT_OBJECT_ACE_TYPE,
+        ACCESS_ALLOWED_ACE_TYPE,
+        ACCESS_ALLOWED_OBJECT_ACE_TYPE,
+        ACCESS_DENIED_ACE_TYPE,
+        ACCESS_DENIED_OBJECT_ACE_TYPE,
+        KNOWN_ACE_FIXED,
+        SYSTEM_ALARM_ACE_TYPE,
+        SYSTEM_ALARM_OBJECT_ACE_TYPE,
+        SYSTEM_AUDIT_ACE_TYPE,
+        SYSTEM_AUDIT_OBJECT_ACE_TYPE,
     };
     match kind {
         ACCESS_ALLOWED_ACE_TYPE
@@ -197,7 +228,10 @@ fn entries_block(acl: Option<&[u8]>) -> (usize, u32) {
                         ptstr_name: block as usize + sid_place,
                     },
                 };
-                core::ptr::write_unaligned(entries.add(written as usize * ENTRY_SIZE).cast(), entry);
+                core::ptr::write_unaligned(
+                    entries.add(written as usize * ENTRY_SIZE).cast(),
+                    entry,
+                );
                 bytes[sid_place..sid_place + sid.len()].copy_from_slice(sid);
                 sid_place += sid.len();
                 written += 1;
@@ -291,7 +325,9 @@ pub unsafe extern "system" fn lookup_security_descriptor_parts_a(
 ) -> u32 {
     // SAFETY: the caller's arguments.
     unsafe {
-        lookup_parts(pp_owner, pp_group, pc_access, pp_access, pc_audit, pp_audit, sd)
+        lookup_parts(
+            pp_owner, pp_group, pc_access, pp_access, pc_audit, pp_audit, sd,
+        )
     }
 }
 
@@ -313,7 +349,9 @@ pub unsafe extern "system" fn lookup_security_descriptor_parts_w(
 ) -> u32 {
     // SAFETY: as the A form's.
     unsafe {
-        lookup_parts(pp_owner, pp_group, pc_access, pp_access, pc_audit, pp_audit, sd)
+        lookup_parts(
+            pp_owner, pp_group, pc_access, pp_access, pc_audit, pp_audit, sd,
+        )
     }
 }
 
@@ -322,13 +360,16 @@ mod tests {
     use super::*;
     use crate::acl::exports::{add_access_allowed_ace, add_audit_access_ace, initialize_acl};
     use crate::explicit::tests_support::sid;
-    use crate::sid::ptr_field;
     use crate::imports::host::LAST_ERROR;
     use crate::sd::{
-        initialize_security_descriptor, make_self_relative_sd,
-        set_security_descriptor_dacl, set_security_descriptor_group,
-        set_security_descriptor_owner, set_security_descriptor_sacl,
+        initialize_security_descriptor,
+        make_self_relative_sd,
+        set_security_descriptor_dacl,
+        set_security_descriptor_group,
+        set_security_descriptor_owner,
+        set_security_descriptor_sacl,
     };
+    use crate::sid::ptr_field;
 
     fn last_error() -> u32 {
         LAST_ERROR.with(|error| error.get())
@@ -341,14 +382,32 @@ mod tests {
     /// A self-relative descriptor with the owner, group, DACL and SACL given, in a buffer.
     fn make_sd(owner: &[u8], group: &[u8], dacl: &[u8], sacl: &[u8]) -> Vec<u8> {
         let mut buf = vec![0u8; 1024];
-        assert_eq!(unsafe { initialize_security_descriptor(buf.as_mut_ptr(), 1) }, 1);
-        assert_eq!(unsafe { set_security_descriptor_owner(buf.as_mut_ptr(), owner.as_ptr(), 0) }, 1);
-        assert_eq!(unsafe { set_security_descriptor_group(buf.as_mut_ptr(), group.as_ptr(), 0) }, 1);
-        assert_eq!(unsafe { set_security_descriptor_dacl(buf.as_mut_ptr(), 1, dacl.as_ptr(), 0) }, 1);
-        assert_eq!(unsafe { set_security_descriptor_sacl(buf.as_mut_ptr(), 1, sacl.as_ptr(), 0) }, 1);
+        assert_eq!(
+            unsafe { initialize_security_descriptor(buf.as_mut_ptr(), 1) },
+            1
+        );
+        assert_eq!(
+            unsafe { set_security_descriptor_owner(buf.as_mut_ptr(), owner.as_ptr(), 0) },
+            1
+        );
+        assert_eq!(
+            unsafe { set_security_descriptor_group(buf.as_mut_ptr(), group.as_ptr(), 0) },
+            1
+        );
+        assert_eq!(
+            unsafe { set_security_descriptor_dacl(buf.as_mut_ptr(), 1, dacl.as_ptr(), 0) },
+            1
+        );
+        assert_eq!(
+            unsafe { set_security_descriptor_sacl(buf.as_mut_ptr(), 1, sacl.as_ptr(), 0) },
+            1
+        );
         let mut rel = vec![0u8; 1024];
         let mut len = 1024u32;
-        assert_eq!(unsafe { make_self_relative_sd(buf.as_ptr(), rel.as_mut_ptr(), &mut len) }, 1);
+        assert_eq!(
+            unsafe { make_self_relative_sd(buf.as_ptr(), rel.as_mut_ptr(), &mut len) },
+            1
+        );
         rel.truncate(len as usize);
         rel
     }
@@ -424,7 +483,8 @@ mod tests {
         assert_eq!(entry.trustee.trustee_form, FORM_SID);
         let sid_copy = entry.trustee.ptstr_name;
         assert_eq!(sid_copy, access_list + ENTRY_SIZE);
-        let sid_bytes = unsafe { core::slice::from_raw_parts(sid_copy as *const u8, everyone.len()) };
+        let sid_bytes =
+            unsafe { core::slice::from_raw_parts(sid_copy as *const u8, everyone.len()) };
         assert_eq!(sid_bytes, everyone.as_slice());
         // The audit entry: SET_AUDIT_SUCCESS for the successful flag.
         let audit = unsafe { core::ptr::read_unaligned(audit_list as *const ExplicitAccess) };
@@ -448,7 +508,10 @@ mod tests {
                 sd.as_ptr(),
             )
         };
-        assert_eq!((code, owner != 0, group != 0, access_count, audit_count), (0, true, true, 1, 1));
+        assert_eq!(
+            (code, owner != 0, group != 0, access_count, audit_count),
+            (0, true, true, 1, 1)
+        );
     }
 
     /// A descriptor without a DACL or SACL: the counts zero and the lists null, the owner and
@@ -461,11 +524,20 @@ mod tests {
         let _ = make_sd(&admins, &admins, &empty, &empty);
         // No DACL: build one without the present flag.
         let mut buf = vec![0u8; 1024];
-        assert_eq!(unsafe { initialize_security_descriptor(buf.as_mut_ptr(), 1) }, 1);
-        assert_eq!(unsafe { set_security_descriptor_owner(buf.as_mut_ptr(), admins.as_ptr(), 0) }, 1);
+        assert_eq!(
+            unsafe { initialize_security_descriptor(buf.as_mut_ptr(), 1) },
+            1
+        );
+        assert_eq!(
+            unsafe { set_security_descriptor_owner(buf.as_mut_ptr(), admins.as_ptr(), 0) },
+            1
+        );
         let mut rel = vec![0u8; 1024];
         let mut len = 1024u32;
-        assert_eq!(unsafe { make_self_relative_sd(buf.as_ptr(), rel.as_mut_ptr(), &mut len) }, 1);
+        assert_eq!(
+            unsafe { make_self_relative_sd(buf.as_ptr(), rel.as_mut_ptr(), &mut len) },
+            1
+        );
         rel.truncate(len as usize);
         let mut owner = 0xF2F2usize;
         let mut access_count = 0xF2F2u32;
@@ -482,35 +554,44 @@ mod tests {
                 rel.as_ptr(),
             )
         };
-        assert_eq!((code, owner != 0, access_count, access_list, last_error()), (0, true, 0, 0, 0xF2F2));
+        assert_eq!(
+            (code, owner != 0, access_count, access_list, last_error()),
+            (0, true, 0, 0, 0xF2F2)
+        );
         arm();
         assert_eq!(
-            (unsafe {
-                lookup_security_descriptor_parts_a(
-                    core::ptr::null_mut(),
-                    core::ptr::null_mut(),
-                    core::ptr::null_mut(),
-                    core::ptr::null_mut(),
-                    core::ptr::null_mut(),
-                    core::ptr::null_mut(),
-                    core::ptr::null(),
-                )
-            }, last_error()),
+            (
+                unsafe {
+                    lookup_security_descriptor_parts_a(
+                        core::ptr::null_mut(),
+                        core::ptr::null_mut(),
+                        core::ptr::null_mut(),
+                        core::ptr::null_mut(),
+                        core::ptr::null_mut(),
+                        core::ptr::null_mut(),
+                        core::ptr::null(),
+                    )
+                },
+                last_error()
+            ),
             (ERROR_INVALID_PARAMETER, ERROR_INVALID_PARAMETER)
         );
         arm();
         assert_eq!(
-            (unsafe {
-                lookup_security_descriptor_parts_a(
-                    core::ptr::null_mut(),
-                    core::ptr::null_mut(),
-                    &mut access_count,
-                    core::ptr::null_mut(),
-                    core::ptr::null_mut(),
-                    core::ptr::null_mut(),
-                    rel.as_ptr(),
-                )
-            }, last_error()),
+            (
+                unsafe {
+                    lookup_security_descriptor_parts_a(
+                        core::ptr::null_mut(),
+                        core::ptr::null_mut(),
+                        &mut access_count,
+                        core::ptr::null_mut(),
+                        core::ptr::null_mut(),
+                        core::ptr::null_mut(),
+                        rel.as_ptr(),
+                    )
+                },
+                last_error()
+            ),
             (ERROR_INVALID_PARAMETER, ERROR_INVALID_PARAMETER),
             "a count with no list"
         );

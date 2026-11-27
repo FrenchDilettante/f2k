@@ -37,17 +37,30 @@ use rtl::nt::access::WRITE_OWNER;
 use rtl::nt::{Luid, LuidAndAttributes};
 use rtl::pod::Pod;
 
-use crate::sec::sd::STATUS_INVALID_SECURITY_DESCR;
-use crate::sec::sid;
+use crate::se;
 // The walk itself, under a name of its own: the services below are the access_check the
 // service table calls.
 use crate::sec::check::access_check as walk;
+use crate::sec::sd::STATUS_INVALID_SECURITY_DESCR;
+use crate::sec::sid;
 use crate::sec::{
-    AccessCheck, CallerMode, GenericMapping, Guid, SecurityDescriptor, SidAndAttributes,
-    Subject, TokenView, ACCESS_SYSTEM_SECURITY, held_enabled, luid, privilege, HELD,
-    SE_PRIVILEGE_USED_FOR_ACCESS, SE_SECURITY_PRIVILEGE, SE_TAKE_OWNERSHIP_PRIVILEGE,
+    held_enabled,
+    luid,
+    privilege,
+    AccessCheck,
+    CallerMode,
+    GenericMapping,
+    Guid,
+    SecurityDescriptor,
+    SidAndAttributes,
+    Subject,
+    TokenView,
+    ACCESS_SYSTEM_SECURITY,
+    HELD,
+    SE_PRIVILEGE_USED_FOR_ACCESS,
+    SE_SECURITY_PRIVILEGE,
+    SE_TAKE_OWNERSHIP_PRIVILEGE,
 };
-use crate::se;
 use crate::status::*;
 
 /// PRIVILEGE_SET_ALL_NECESSARY (winnt.h): a privilege set's Control asks for every listed
@@ -179,7 +192,10 @@ pub fn run(input: &CheckInput<'_>) -> Answer {
         return refused(STATUS_INVALID_PARAMETER);
     };
     // The user first (index 0 always matches), then the groups with their attributes.
-    let mut sids = [SidAndAttributes { sid: &[], attributes: 0 }; 16];
+    let mut sids = [SidAndAttributes {
+        sid: &[],
+        attributes: 0,
+    }; 16];
     let mut count = 1;
     sids[0] = SidAndAttributes {
         sid: reply_sid(&user, 0),
@@ -310,15 +326,23 @@ pub use host::*;
 
 #[cfg(test)]
 mod tests {
+    use std::vec::Vec;
+
+    use rtl::nt::access::{MAXIMUM_ALLOWED, READ_CONTROL, TOKEN_QUERY, WRITE_DAC};
+
     use super::*;
     use crate::ob::{Entry, ObjectId, ObjectType};
+    use crate::se::{sid_bytes, Change, Requests, PRIMARY_GROUP, USER};
     use crate::sec::{
-        ACL_REVISION2, ACCESS_ALLOWED_ACE_TYPE, ACCESS_ALLOWED_OBJECT_ACE_TYPE, SE_DACL_PRESENT,
-        SE_PRIVILEGE_ENABLED, SE_SELF_RELATIVE, SE_SHUTDOWN_PRIVILEGE, SE_CHANGE_NOTIFY_PRIVILEGE,
+        ACCESS_ALLOWED_ACE_TYPE,
+        ACCESS_ALLOWED_OBJECT_ACE_TYPE,
+        ACL_REVISION2,
+        SE_CHANGE_NOTIFY_PRIVILEGE,
+        SE_DACL_PRESENT,
+        SE_PRIVILEGE_ENABLED,
+        SE_SELF_RELATIVE,
+        SE_SHUTDOWN_PRIVILEGE,
     };
-    use crate::se::{Change, Requests, sid_bytes, PRIMARY_GROUP, USER};
-    use rtl::nt::access::{MAXIMUM_ALLOWED, READ_CONTROL, TOKEN_QUERY, WRITE_DAC};
-    use std::vec::Vec;
 
     /// The test object type's mapping: read 0x1, write 0x2, execute 0x4, all 0xF.
     const MAPPING: GenericMapping = GenericMapping {
@@ -437,7 +461,12 @@ mod tests {
 
     /// A check input over `sd` and `token`, wanting `desired`, with a privilege-set buffer of
     /// `room` bytes.
-    fn input<'a>(sd: &'a [u8], token: &'a se::TokenBody, desired: u32, room: u32) -> CheckInput<'a> {
+    fn input<'a>(
+        sd: &'a [u8],
+        token: &'a se::TokenBody,
+        desired: u32,
+        room: u32,
+    ) -> CheckInput<'a> {
         CheckInput {
             sd: Some(sd),
             token: Some(token),
@@ -468,7 +497,10 @@ mod tests {
             index: 1,
             generation: 0,
         };
-        assert_eq!(token_of_entry(None, TOKEN_QUERY), Err(STATUS_INVALID_HANDLE));
+        assert_eq!(
+            token_of_entry(None, TOKEN_QUERY),
+            Err(STATUS_INVALID_HANDLE)
+        );
         assert_eq!(
             token_of_entry(Some(Entry::object(event, TOKEN_QUERY, false)), TOKEN_QUERY),
             Err(STATUS_OBJECT_TYPE_MISMATCH)
@@ -478,7 +510,10 @@ mod tests {
             Err(STATUS_ACCESS_DENIED)
         );
         assert_eq!(
-            token_of_entry(Some(Entry::object(token_id, TOKEN_QUERY, false)), TOKEN_QUERY),
+            token_of_entry(
+                Some(Entry::object(token_id, TOKEN_QUERY, false)),
+                TOKEN_QUERY
+            ),
             Ok(token_id)
         );
     }
@@ -490,13 +525,21 @@ mod tests {
         let token = token();
         let user = sid_bytes(&USER);
         let group = sid_bytes(&PRIMARY_GROUP);
-        let sd = sd_of(&user, &group, &acl(&[ace(ACCESS_ALLOWED_ACE_TYPE, 0x7, &user)]));
+        let sd = sd_of(
+            &user,
+            &group,
+            &acl(&[ace(ACCESS_ALLOWED_ACE_TYPE, 0x7, &user)]),
+        );
         let mut no_token = input(&sd, &token, 0x7, 64);
         no_token.token = None;
-        assert!(matches!(run(&no_token), Answer::Refused { status, .. } if status == STATUS_INVALID_HANDLE));
+        assert!(
+            matches!(run(&no_token), Answer::Refused { status, .. } if status == STATUS_INVALID_HANDLE)
+        );
         let mut null_sd = input(&sd, &token, 0x7, 64);
         null_sd.sd = None;
-        assert!(matches!(run(&null_sd), Answer::Refused { status, .. } if status == STATUS_INVALID_SECURITY_DESCR));
+        assert!(
+            matches!(run(&null_sd), Answer::Refused { status, .. } if status == STATUS_INVALID_SECURITY_DESCR)
+        );
         for sd in [
             descriptor(None, Some(&group), Some(&acl(&[]))),
             descriptor(Some(&user), None, Some(&acl(&[]))),
@@ -514,7 +557,11 @@ mod tests {
         let token = token();
         let user = sid_bytes(&USER);
         let group = sid_bytes(&PRIMARY_GROUP);
-        let sd = sd_of(&user, &group, &acl(&[ace(ACCESS_ALLOWED_ACE_TYPE, 0x7, &user)]));
+        let sd = sd_of(
+            &user,
+            &group,
+            &acl(&[ace(ACCESS_ALLOWED_ACE_TYPE, 0x7, &user)]),
+        );
         match run(&input(&sd, &token, 0x7, 64)) {
             Answer::Checked(answer) => {
                 assert_eq!(answer.granted, 0x7);
@@ -533,7 +580,11 @@ mod tests {
         let user = sid_bytes(&USER);
         let group = sid_bytes(&PRIMARY_GROUP);
         let stranger = sid(5, &[32, 546]);
-        let sd = sd_of(&user, &group, &acl(&[ace(ACCESS_ALLOWED_ACE_TYPE, 0x7, &stranger)]));
+        let sd = sd_of(
+            &user,
+            &group,
+            &acl(&[ace(ACCESS_ALLOWED_ACE_TYPE, 0x7, &stranger)]),
+        );
         match run(&input(&sd, &token, 0x7, 64)) {
             Answer::Checked(answer) => {
                 assert_eq!(answer.granted, 0);
@@ -569,12 +620,26 @@ mod tests {
     /// size it takes, a big enough one lets the check run and reports the privileges used.
     #[test]
     fn the_privilege_set_length_protocol() {
-        assert_eq!((privilege_set_size(0), privilege_set_size(1), privilege_set_size(2)), (20, 20, 32));
+        assert_eq!(
+            (
+                privilege_set_size(0),
+                privilege_set_size(1),
+                privilege_set_size(2)
+            ),
+            (20, 20, 32)
+        );
         let mut token = token();
-        enable(&mut token, &[SE_SECURITY_PRIVILEGE, SE_TAKE_OWNERSHIP_PRIVILEGE]);
+        enable(
+            &mut token,
+            &[SE_SECURITY_PRIVILEGE, SE_TAKE_OWNERSHIP_PRIVILEGE],
+        );
         let user = sid_bytes(&USER);
         let group = sid_bytes(&PRIMARY_GROUP);
-        let sd = sd_of(&user, &group, &acl(&[ace(ACCESS_ALLOWED_ACE_TYPE, 0x7, &user)]));
+        let sd = sd_of(
+            &user,
+            &group,
+            &acl(&[ace(ACCESS_ALLOWED_ACE_TYPE, 0x7, &user)]),
+        );
         // No privilege used: the empty set still takes 20 bytes.
         match run(&input(&sd, &token, 0x7, 19)) {
             Answer::Refused {
@@ -591,7 +656,10 @@ mod tests {
             Answer::Refused {
                 status,
                 privilege_length,
-            } => assert_eq!((status, privilege_length), (STATUS_BUFFER_TOO_SMALL, Some(20))),
+            } => assert_eq!(
+                (status, privilege_length),
+                (STATUS_BUFFER_TOO_SMALL, Some(20))
+            ),
             Answer::Checked(_) => panic!("the check ran"),
         }
         match run(&input(&sd, &token, ACCESS_SYSTEM_SECURITY, 20)) {
@@ -600,7 +668,10 @@ mod tests {
                 assert_eq!(answer.access_status, STATUS_SUCCESS);
                 assert_eq!(
                     answer.used.as_slice(),
-                    [privilege(SE_SECURITY_PRIVILEGE, SE_PRIVILEGE_USED_FOR_ACCESS)]
+                    [privilege(
+                        SE_SECURITY_PRIVILEGE,
+                        SE_PRIVILEGE_USED_FOR_ACCESS
+                    )]
                 );
             }
             Answer::Refused { status, .. } => panic!("refused: {status:?}"),
@@ -608,7 +679,9 @@ mod tests {
         // Both privileges used: 32 bytes, the take-ownership entry first.
         let both = ACCESS_SYSTEM_SECURITY | WRITE_OWNER;
         match run(&input(&sd, &token, both, 31)) {
-            Answer::Refused { privilege_length, .. } => assert_eq!(privilege_length, Some(32)),
+            Answer::Refused {
+                privilege_length, ..
+            } => assert_eq!(privilege_length, Some(32)),
             Answer::Checked(_) => panic!("the check ran"),
         }
         match run(&input(&sd, &token, both, 32)) {
@@ -634,7 +707,11 @@ mod tests {
         let token = token();
         let user = sid_bytes(&USER);
         let group = sid_bytes(&PRIMARY_GROUP);
-        let sd = sd_of(&user, &group, &acl(&[ace(ACCESS_ALLOWED_ACE_TYPE, 0x7, &user)]));
+        let sd = sd_of(
+            &user,
+            &group,
+            &acl(&[ace(ACCESS_ALLOWED_ACE_TYPE, 0x7, &user)]),
+        );
         match run(&input(&sd, &token, ACCESS_SYSTEM_SECURITY, 0)) {
             Answer::Checked(answer) => {
                 assert_eq!(answer.granted, 0);
@@ -679,7 +756,10 @@ mod tests {
         with_types.object_types = &types;
         match run(&with_types) {
             Answer::Checked(answer) => {
-                assert_eq!((answer.granted, answer.access_status), (0x5, STATUS_SUCCESS));
+                assert_eq!(
+                    (answer.granted, answer.access_status),
+                    (0x5, STATUS_SUCCESS)
+                );
             }
             Answer::Refused { status, .. } => panic!("refused: {status:?}"),
         }

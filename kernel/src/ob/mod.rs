@@ -70,8 +70,8 @@ use crate::sched::event::EventKind;
 use crate::sched::mutex::MutexId;
 use crate::sched::thread::ThreadId;
 use crate::sched::timer::TimerId;
-use crate::sched::wait::{MAXIMUM_WAIT_OBJECTS, WaitableId};
-use crate::slots::{Id, KernelId, Record, Slots, per_page};
+use crate::sched::wait::{WaitableId, MAXIMUM_WAIT_OBJECTS};
+use crate::slots::{per_page, Id, KernelId, Record, Slots};
 use crate::status::NtStatus;
 
 /// Run `f` on the dispatcher database, where the dispatcher objects' bodies live: the kernel's one
@@ -1994,12 +1994,10 @@ impl Directory {
     /// returning. False, and nothing held, when one of them is gone already (a handle another
     /// thread closed meanwhile).
     pub fn hold_wait(&mut self, thread: u16, objects: &[ObjectId]) -> bool {
-        debug_assert!(
-            self.waits[thread as usize]
-                .objects
-                .iter()
-                .all(Option::is_none)
-        );
+        debug_assert!(self.waits[thread as usize]
+            .objects
+            .iter()
+            .all(Option::is_none));
         debug_assert!(
             objects
                 .iter()
@@ -3339,7 +3337,7 @@ mod tests {
     /// left for it — nothing made — and a file object's close frees its record for the next open.
     #[test]
     fn the_file_object_table_fills_and_reuses() {
-        use crate::fs::file::{ACCESS_READ, Context, FileRecordId, SHARE_ALL};
+        use crate::fs::file::{Context, FileRecordId, ACCESS_READ, SHARE_ALL};
         let directory = directory();
         let open = |directory: &mut Directory, record: u16| {
             directory.create_file(
@@ -4163,11 +4161,11 @@ mod tests {
     /// of one allowed ACE, the owner after it.
     fn test_sd(owner: &[u8], aces: &[Vec<u8>]) -> Vec<u8> {
         use crate::sec::{
+            SecurityDescriptor,
             ACCESS_ALLOWED_ACE_TYPE,
             ACL_REVISION2,
             SE_DACL_PRESENT,
             SE_SELF_RELATIVE,
-            SecurityDescriptor,
         };
         let mut dacl = vec![ACL_REVISION2, 0];
         let size = (8 + aces.iter().map(|a| a.len()).sum::<usize>()) as u16;
@@ -4376,6 +4374,8 @@ mod tests {
             ),
             Ok(event.granted(GENERIC_ALL))
         );
+    }
+
     // --- The counts' protocol (see `Counts`) --------------------------------------------------
 
     /// Holders on several processors take and drop references while look-ups try to take theirs:

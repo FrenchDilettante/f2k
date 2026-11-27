@@ -235,7 +235,10 @@ mod tests {
         assert_eq!(unsafe { core::slice::from_raw_parts(out, 16) }, &admins[..]);
         let mut printed: *mut u16 = core::ptr::null_mut();
         arm();
-        assert_eq!(unsafe { crate::sid::convert_sid_to_string_sid_w(out, &mut printed) }, 1);
+        assert_eq!(
+            unsafe { crate::sid::convert_sid_to_string_sid_w(out, &mut printed) },
+            1
+        );
         assert_eq!(wide_of(printed), wide("S-1-5-32-544"));
         // SAFETY: the blocks the calls made, freed once.
         unsafe { ProcessHeap::free(printed.cast()) };

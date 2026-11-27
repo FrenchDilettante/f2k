@@ -138,7 +138,11 @@ mod tests {
     fn impersonate_self_answers_per_level() {
         for level in 0..=3 {
             arm();
-            assert_eq!((unsafe { impersonate_self(level) }, last_error()), (1, 0xF2F2), "{level}");
+            assert_eq!(
+                (unsafe { impersonate_self(level) }, last_error()),
+                (1, 0xF2F2),
+                "{level}"
+            );
         }
         arm();
         assert_eq!(
@@ -161,7 +165,10 @@ mod tests {
         let thread = 0xFFFF_FFFEu32;
         arm();
         assert_eq!(
-            (unsafe { set_thread_token(core::ptr::null(), 0) }, last_error()),
+            (
+                unsafe { set_thread_token(core::ptr::null(), 0) },
+                last_error()
+            ),
             (1, 0xF2F2)
         );
         arm();
@@ -171,7 +178,10 @@ mod tests {
         );
         arm();
         assert_eq!(
-            (unsafe { set_thread_token(core::ptr::null(), TOKEN) }, last_error()),
+            (
+                unsafe { set_thread_token(core::ptr::null(), TOKEN) },
+                last_error()
+            ),
             (0, ERROR_NOT_SUPPORTED)
         );
     }
@@ -182,7 +192,10 @@ mod tests {
     fn the_attaching_forms_answer_not_supported() {
         arm();
         assert_eq!(
-            (unsafe { impersonate_anonymous_token(0xFFFF_FFFE) }, last_error()),
+            (
+                unsafe { impersonate_anonymous_token(0xFFFF_FFFE) },
+                last_error()
+            ),
             (0, ERROR_NOT_SUPPORTED)
         );
         arm();
@@ -199,7 +212,10 @@ mod tests {
     fn impersonate_logged_on_user_reads_the_token_type() {
         TOKEN_REPLY.with(|reply| *reply.borrow_mut() = Ok(vec![2, 0, 0, 0]));
         arm();
-        assert_eq!((unsafe { impersonate_logged_on_user(TOKEN) }, last_error()), (1, 0xF2F2));
+        assert_eq!(
+            (unsafe { impersonate_logged_on_user(TOKEN) }, last_error()),
+            (1, 0xF2F2)
+        );
         TOKEN_REPLY.with(|reply| *reply.borrow_mut() = Err(STATUS_INVALID_HANDLE));
         arm();
         assert_eq!(

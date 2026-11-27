@@ -1,6 +1,6 @@
 //! The ACL calls: InitializeAcl, IsValidAcl, AddAce and the Add*ACE family, GetAce, DeleteAce,
-//! FindFirstFreeAce, and the audit pair (GetAuditedPermissionsFromAclA/W, SetEntriesInAuditListA/W),
-//! as Windows 2000's advapi32 answers them.
+//! FindFirstFreeAce, and the audit pair (GetAuditedPermissionsFromAclA/W,
+//! SetEntriesInAuditListA/W), as Windows 2000's advapi32 answers them.
 //!
 //! An ACL is winnt.h's: an eight-byte header (a revision, a size, an ACE count), then the ACEs
 //! back to back. An ACE is a four-byte header (a type, flags, a size) then its body: an access
@@ -14,7 +14,6 @@ pub mod exports;
 mod tests;
 
 use rtl::pod::Pod;
-
 
 use crate::{caller_bytes, caller_bytes_mut};
 
@@ -79,7 +78,6 @@ pub(crate) fn sid_at(bytes: &[u8], at: usize) -> Option<&[u8]> {
     bytes.get(at..at + crate::sid::sid_len(count))
 }
 
-
 // --- Small readers and writers over the byte slices -------------------------------------------
 
 pub(crate) fn word(bytes: &[u8], at: usize) -> Option<u16> {
@@ -138,6 +136,7 @@ pub(crate) fn ace_count(acl: &[u8]) -> usize {
 
 /// Whether the ACL's revision is one the editors know (2 through 4).
 pub(crate) fn valid_revision(acl: &[u8]) -> bool {
-    acl.first()
-        .is_some_and(|&revision| (MIN_ACL_REVISION..=MAX_ACL_REVISION).contains(&u32::from(revision)))
+    acl.first().is_some_and(|&revision| {
+        (MIN_ACL_REVISION..=MAX_ACL_REVISION).contains(&u32::from(revision))
+    })
 }

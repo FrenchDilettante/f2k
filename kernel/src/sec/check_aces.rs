@@ -9,12 +9,19 @@
 //! None.
 #![allow(dead_code)]
 
-use crate::sec::{
-    Guid, ACE_HEADER_SIZE, ACE_INHERITED_OBJECT_TYPE_PRESENT, ACE_OBJECT_TYPE_PRESENT,
-    ACCESS_ALLOWED_COMPOUND_ACE_TYPE, ACCESS_MAX_MS_OBJECT_ACE_TYPE, ACCESS_MAX_MS_V2_ACE_TYPE,
-    ACCESS_MIN_MS_OBJECT_ACE_TYPE, ACL_HEADER_SIZE, GUID_SIZE,
-};
 use crate::sec::sid::length as sid_length;
+use crate::sec::{
+    Guid,
+    ACCESS_ALLOWED_COMPOUND_ACE_TYPE,
+    ACCESS_MAX_MS_OBJECT_ACE_TYPE,
+    ACCESS_MAX_MS_V2_ACE_TYPE,
+    ACCESS_MIN_MS_OBJECT_ACE_TYPE,
+    ACE_HEADER_SIZE,
+    ACE_INHERITED_OBJECT_TYPE_PRESENT,
+    ACE_OBJECT_TYPE_PRESENT,
+    ACL_HEADER_SIZE,
+    GUID_SIZE,
+};
 
 /// The little-endian word at `at` in `bytes`.
 fn u16_at(bytes: &[u8], at: usize) -> u16 {
@@ -56,8 +63,7 @@ impl<'a> AceView<'a> {
         let ace_type = self.ace_type();
         ace_type <= ACCESS_MAX_MS_V2_ACE_TYPE
             || ace_type == ACCESS_ALLOWED_COMPOUND_ACE_TYPE
-            || (ACCESS_MIN_MS_OBJECT_ACE_TYPE..=ACCESS_MAX_MS_OBJECT_ACE_TYPE)
-                .contains(&ace_type)
+            || (ACCESS_MIN_MS_OBJECT_ACE_TYPE..=ACCESS_MAX_MS_OBJECT_ACE_TYPE).contains(&ace_type)
     }
 
     /// The ACE's access mask, when its type carries one.
@@ -179,15 +185,24 @@ impl<'a> Iterator for AceViews<'a> {
 
 #[cfg(test)]
 mod tests {
+    use std::vec::Vec;
+
     use super::*;
     use crate::sec::acl::is_valid as acl_is_valid;
     use crate::sec::{
-        equal, ACL_REVISION2, ACL_REVISION3, ACL_REVISION_DS, ACCESS_ALLOWED_ACE_TYPE,
-        ACCESS_ALLOWED_COMPOUND_ACE_TYPE, ACCESS_ALLOWED_OBJECT_ACE_TYPE,
-        ACCESS_DENIED_ACE_TYPE, ACE_OBJECT_TYPE_PRESENT, COMPOUND_ACE_IMPERSONATION,
-        INHERIT_ONLY_ACE, WORLD_SID,
+        equal,
+        ACCESS_ALLOWED_ACE_TYPE,
+        ACCESS_ALLOWED_COMPOUND_ACE_TYPE,
+        ACCESS_ALLOWED_OBJECT_ACE_TYPE,
+        ACCESS_DENIED_ACE_TYPE,
+        ACE_OBJECT_TYPE_PRESENT,
+        ACL_REVISION2,
+        ACL_REVISION3,
+        ACL_REVISION_DS,
+        COMPOUND_ACE_IMPERSONATION,
+        INHERIT_ONLY_ACE,
+        WORLD_SID,
     };
-    use std::vec::Vec;
 
     /// A SID's bytes.
     fn sid(authority: u8, subs: &[u32]) -> Vec<u8> {
@@ -289,7 +304,12 @@ mod tests {
         let client = sid(5, &[1001]);
         let g = guid(0xABCD);
         let dacl = acl(&[
-            plain(ACCESS_ALLOWED_ACE_TYPE, INHERIT_ONLY_ACE, 0x1234_5678, &user),
+            plain(
+                ACCESS_ALLOWED_ACE_TYPE,
+                INHERIT_ONLY_ACE,
+                0x1234_5678,
+                &user,
+            ),
             plain(ACCESS_DENIED_ACE_TYPE, 0, 0x55, WORLD_SID),
             compound(0x9, &user, &client),
             object(ACCESS_ALLOWED_OBJECT_ACE_TYPE, 0x7, Some(g), &user),
@@ -313,8 +333,14 @@ mod tests {
 
         assert_eq!(aces[2].ace_type(), ACCESS_ALLOWED_COMPOUND_ACE_TYPE);
         assert_eq!(aces[2].mask(), Some(0x9));
-        assert!(equal(aces[2].sid().unwrap(), &user), "the first SID is the server's");
-        assert!(equal(aces[2].second_sid().unwrap(), &client), "the second is the client's");
+        assert!(
+            equal(aces[2].sid().unwrap(), &user),
+            "the first SID is the server's"
+        );
+        assert!(
+            equal(aces[2].second_sid().unwrap(), &client),
+            "the second is the client's"
+        );
 
         assert_eq!(aces[3].object_type(), Some(g));
         assert_eq!(aces[3].mask(), Some(0x7));
@@ -330,7 +356,10 @@ mod tests {
     #[test]
     fn the_iterator_walks_in_order_and_stops() {
         let user = sid(5, &[1000]);
-        let dacl = acl(&[plain(ACCESS_ALLOWED_ACE_TYPE, 0, 0x1, &user), plain(ACCESS_ALLOWED_ACE_TYPE, 0, 0x2, &user)]);
+        let dacl = acl(&[
+            plain(ACCESS_ALLOWED_ACE_TYPE, 0, 0x1, &user),
+            plain(ACCESS_ALLOWED_ACE_TYPE, 0, 0x2, &user),
+        ]);
         let masks: Vec<Option<u32>> = AceViews::new(&dacl).map(|a| a.mask()).collect();
         assert_eq!(masks, [Some(0x1), Some(0x2)]);
         // A count past the ACEs present: the walk stops at the size.

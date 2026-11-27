@@ -1,4 +1,5 @@
-//! The string security descriptor conversions: ConvertSecurityDescriptorToStringSecurityDescriptorA/W
+//! The string security descriptor conversions:
+//! ConvertSecurityDescriptorToStringSecurityDescriptorA/W
 //! and ConvertStringSecurityDescriptorToSecurityDescriptorA/W, revision 1's format.
 //!
 //! The string is the sections `O:<sid>G:<sid>D:<flags><aces>S:<flags><aces>`, each present when
@@ -11,30 +12,76 @@ use rtl::edge::{InStr, InWStr};
 use rtl::heap::ProcessHeap as _;
 use rtl::winerror::{ERROR_INVALID_PARAMETER, ERROR_NOT_ENOUGH_MEMORY};
 
+use super::{
+    caller_sd,
+    control,
+    long_align,
+    set_control,
+    set_sd_field_value,
+    HeapVec,
+    DACL_SECURITY_INFORMATION,
+    FIELD_DACL,
+    FIELD_GROUP,
+    FIELD_OWNER,
+    FIELD_SACL,
+    GROUP_SECURITY_INFORMATION,
+    OWNER_SECURITY_INFORMATION,
+    SACL_SECURITY_INFORMATION,
+    SD_HEADER,
+    SD_REVISION,
+    SE_DACL_AUTO_INHERITED,
+    SE_DACL_AUTO_INHERIT_REQ,
+    SE_DACL_PRESENT,
+    SE_DACL_PROTECTED,
+    SE_SACL_AUTO_INHERITED,
+    SE_SACL_AUTO_INHERIT_REQ,
+    SE_SACL_PRESENT,
+    SE_SACL_PROTECTED,
+    SE_SELF_RELATIVE,
+};
 use crate::acl::{
-    ace_count, dword, object_ace_sid_offset, sid_at, word, ACE_FLAGS_OFF, ACE_MASK_OFF,
-    ACE_SIZE_OFF, ACE_TYPE_OFF, ACL_COUNT_OFF, ACL_HEADER, ACL_REV_OFF, ACL_REVISION,
-    ACL_REVISION_DS, ACL_SIZE_OFF, KNOWN_ACE_FIXED, OBJECT_ACE_FIXED, SYSTEM_ALARM_ACE_TYPE,
-    SYSTEM_ALARM_OBJECT_ACE_TYPE, SYSTEM_AUDIT_ACE_TYPE, SYSTEM_AUDIT_OBJECT_ACE_TYPE,
-    ACCESS_ALLOWED_ACE_TYPE, ACCESS_ALLOWED_OBJECT_ACE_TYPE, ACCESS_DENIED_ACE_TYPE,
-    ACCESS_DENIED_OBJECT_ACE_TYPE, GUID_SIZE, ACE_OBJECT_TYPE_PRESENT,
-    ACE_INHERITED_OBJECT_TYPE_PRESENT, FAILED_ACCESS_ACE_FLAG, SUCCESSFUL_ACCESS_ACE_FLAG,
+    ace_count,
+    dword,
+    object_ace_sid_offset,
+    sid_at,
+    word,
+    ACCESS_ALLOWED_ACE_TYPE,
+    ACCESS_ALLOWED_OBJECT_ACE_TYPE,
+    ACCESS_DENIED_ACE_TYPE,
+    ACCESS_DENIED_OBJECT_ACE_TYPE,
+    ACE_FLAGS_OFF,
+    ACE_INHERITED_OBJECT_TYPE_PRESENT,
+    ACE_MASK_OFF,
+    ACE_OBJECT_TYPE_PRESENT,
+    ACE_SIZE_OFF,
+    ACE_TYPE_OFF,
+    ACL_COUNT_OFF,
+    ACL_HEADER,
+    ACL_REVISION,
+    ACL_REVISION_DS,
+    ACL_REV_OFF,
+    ACL_SIZE_OFF,
+    FAILED_ACCESS_ACE_FLAG,
+    GUID_SIZE,
+    KNOWN_ACE_FIXED,
+    OBJECT_ACE_FIXED,
+    SUCCESSFUL_ACCESS_ACE_FLAG,
+    SYSTEM_ALARM_ACE_TYPE,
+    SYSTEM_ALARM_OBJECT_ACE_TYPE,
+    SYSTEM_AUDIT_ACE_TYPE,
+    SYSTEM_AUDIT_OBJECT_ACE_TYPE,
 };
 use crate::imports::{self as nt, ProcessHeap};
 use crate::sid::{
-    sid_len, sid_parts_bytes, sid_to_units, well_known_sid, ERROR_UNKNOWN_REVISION,
-    MAX_SUB_AUTHORITIES, SID_HEADER,
+    sid_len,
+    sid_parts_bytes,
+    sid_to_units,
+    well_known_sid,
+    ERROR_UNKNOWN_REVISION,
+    MAX_SUB_AUTHORITIES,
+    SID_HEADER,
 };
 use crate::Out;
-
-use super::{
-    caller_sd, control, long_align, set_control, set_sd_field_value, HeapVec, FIELD_DACL, FIELD_GROUP,
-    FIELD_OWNER, FIELD_SACL, SD_HEADER, SD_REVISION, SE_DACL_AUTO_INHERITED,
-    SE_DACL_AUTO_INHERIT_REQ, SE_DACL_PRESENT, SE_DACL_PROTECTED, SE_SACL_AUTO_INHERITED,
-    SE_SACL_AUTO_INHERIT_REQ, SE_SACL_PRESENT, SE_SACL_PROTECTED, SE_SELF_RELATIVE,
-    DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
-    SACL_SECURITY_INFORMATION,
-};
 
 /// The most bytes a SID takes: its header and the most sub-authorities.
 const SID_BYTES_MAX: usize = SID_HEADER + 4 * MAX_SUB_AUTHORITIES;
@@ -243,7 +290,8 @@ fn push_ace(units: &mut Units, acl: &[u8], at: usize, sacl: bool) -> Option<()> 
     )?;
     push_unit(units, u16::from(b';'))?;
     for (bit, tag) in ACE_FLAG_LETTERS {
-        if flags & bit != 0 && (sacl || *bit & (SUCCESSFUL_ACCESS_ACE_FLAG | FAILED_ACCESS_ACE_FLAG) == 0)
+        if flags & bit != 0
+            && (sacl || *bit & (SUCCESSFUL_ACCESS_ACE_FLAG | FAILED_ACCESS_ACE_FLAG) == 0)
         {
             push_str(units, tag)?;
         }
@@ -403,8 +451,14 @@ fn unit_char(unit: u16) -> char {
 /// The units with the leading and trailing whitespace left out.
 fn trimmed(units: &[u16]) -> &[u16] {
     let space = |unit: &u16| unit_char(*unit).is_whitespace();
-    let start = units.iter().position(|unit| !space(unit)).unwrap_or(units.len());
-    let end = units.iter().rposition(|unit| !space(unit)).map_or(start, |at| at + 1);
+    let start = units
+        .iter()
+        .position(|unit| !space(unit))
+        .unwrap_or(units.len());
+    let end = units
+        .iter()
+        .rposition(|unit| !space(unit))
+        .map_or(start, |at| at + 1);
     &units[start..end]
 }
 
@@ -420,7 +474,9 @@ fn parse_radix(units: &[u16], base: u32) -> Option<u64> {
     let mut value = 0u64;
     for &unit in digits {
         let digit = unit_char(unit).to_digit(base)?;
-        value = value.checked_mul(u64::from(base))?.checked_add(u64::from(digit))?;
+        value = value
+            .checked_mul(u64::from(base))?
+            .checked_add(u64::from(digit))?;
     }
     Some(value)
 }
@@ -554,9 +610,11 @@ fn parse_rights(units: &[u16]) -> Option<u32> {
     }
     // The named tags, two letters at a time.
     let named = text.len().is_multiple_of(2)
-        && (0..text.len())
-            .step_by(2)
-            .all(|at| RIGHTS.iter().any(|(known, _)| upper_eq(&text[at..at + 2], known)));
+        && (0..text.len()).step_by(2).all(|at| {
+            RIGHTS
+                .iter()
+                .any(|(known, _)| upper_eq(&text[at..at + 2], known))
+        });
     if named {
         let mut mask = 0u32;
         for at in (0..text.len()).step_by(2) {
@@ -671,7 +729,11 @@ fn parse_control_letters(cursor: &mut Cursor, sacl: bool) -> u16 {
         match cursor.peek().map(|u| u as u8 as char) {
             Some('P') | Some('p') => {
                 cursor.bump();
-                bits |= if sacl { SE_SACL_PROTECTED } else { SE_DACL_PROTECTED };
+                bits |= if sacl {
+                    SE_SACL_PROTECTED
+                } else {
+                    SE_DACL_PROTECTED
+                };
             }
             Some('A') | Some('a') => {
                 cursor.bump();
@@ -737,7 +799,11 @@ fn parse_sd(units: &[u16]) -> Option<Bytes> {
         if sacl.is_empty() { None } else { Some(sacl) },
         if dacl.is_empty() { None } else { Some(dacl) },
     ];
-    let sum: usize = components.iter().flatten().map(|c| long_align(c.len())).sum();
+    let sum: usize = components
+        .iter()
+        .flatten()
+        .map(|c| long_align(c.len()))
+        .sum();
     let mut image = Bytes::zeroed(SD_HEADER + sum)?;
     image[0] = SD_REVISION;
     set_control(&mut image, control_bits | SE_SELF_RELATIVE);
@@ -786,7 +852,11 @@ fn parse_aces(cursor: &mut Cursor) -> Option<Bytes> {
         return Some(Bytes::new());
     }
     let mut acl = Bytes::zeroed(ACL_HEADER)?;
-    acl[ACL_REV_OFF] = if object { ACL_REVISION_DS as u8 } else { ACL_REVISION as u8 };
+    acl[ACL_REV_OFF] = if object {
+        ACL_REVISION_DS as u8
+    } else {
+        ACL_REVISION as u8
+    };
     acl[ACL_SIZE_OFF..ACL_SIZE_OFF + 2]
         .copy_from_slice(&((ACL_HEADER + body.len()) as u16).to_le_bytes());
     acl[ACL_COUNT_OFF..ACL_COUNT_OFF + 2].copy_from_slice(&count.to_le_bytes());
@@ -812,14 +882,10 @@ pub unsafe extern "system" fn convert_sd_to_string_sd_w(
     length: *mut u32,
 ) -> u32 {
     // SAFETY: the caller's descriptor and places.
-    let (buffer, mut string, mut length) = unsafe {
-        (
-            caller_sd(sd),
-            Out::optional(string),
-            Out::optional(length),
-        )
-    };
-    let (Some(string), Some(length), Some(buffer)) = (string.as_mut(), length.as_mut(), buffer) else {
+    let (buffer, mut string, mut length) =
+        unsafe { (caller_sd(sd), Out::optional(string), Out::optional(length)) };
+    let (Some(string), Some(length), Some(buffer)) = (string.as_mut(), length.as_mut(), buffer)
+    else {
         nt::set_last_error(ERROR_INVALID_PARAMETER);
         return 0;
     };
@@ -866,14 +932,10 @@ pub unsafe extern "system" fn convert_sd_to_string_sd_a(
     length: *mut u32,
 ) -> u32 {
     // SAFETY: the caller's descriptor and places.
-    let (buffer, mut string, mut length) = unsafe {
-        (
-            caller_sd(sd),
-            Out::optional(string),
-            Out::optional(length),
-        )
-    };
-    let (Some(string), Some(length), Some(buffer)) = (string.as_mut(), length.as_mut(), buffer) else {
+    let (buffer, mut string, mut length) =
+        unsafe { (caller_sd(sd), Out::optional(string), Out::optional(length)) };
+    let (Some(string), Some(length), Some(buffer)) = (string.as_mut(), length.as_mut(), buffer)
+    else {
         nt::set_last_error(ERROR_INVALID_PARAMETER);
         return 0;
     };

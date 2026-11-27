@@ -1,4 +1,5 @@
-//! The ACE builders: the known-type ACEs (allowed, denied, audit, their Ex and object forms) and the compound ACE.
+//! The ACE builders: the known-type ACEs (allowed, denied, audit, their Ex and object forms) and
+//! the compound ACE.
 
 use super::*;
 
@@ -578,4 +579,3 @@ mod tests {
         );
     }
 }
-

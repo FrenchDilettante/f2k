@@ -1,4 +1,5 @@
-//! The access-mask comparisons, and the few routines that reach the token services (adjust a privilege, a new security-granted access, the default NP ACL).
+//! The access-mask comparisons, and the few routines that reach the token services (adjust a
+//! privilege, a new security-granted access, the default NP ACL).
 
 use super::*;
 
@@ -18,7 +19,12 @@ pub unsafe extern "system" fn rtl_are_any_accesses_granted(granted: u32, desired
 
 /// The target's RtlAdjustPrivilege, over the token services.
 #[cfg(not(test))]
-pub(crate) fn adjust_privilege(privilege: u32, enable: u32, client: u32, was_enabled: *mut u32) -> u32 {
+pub(crate) fn adjust_privilege(
+    privilege: u32,
+    enable: u32,
+    client: u32,
+    was_enabled: *mut u32,
+) -> u32 {
     use rtl::nt::access::{TOKEN_ADJUST_PRIVILEGES, TOKEN_QUERY};
     use rtl::sys::nr;
     let access = TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY;
@@ -323,4 +329,3 @@ mod tests {
         assert_eq!(unsafe { rtl_are_any_accesses_granted(0xF0, 0x10) }, 1);
     }
 }
-

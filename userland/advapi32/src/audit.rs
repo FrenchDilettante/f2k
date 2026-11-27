@@ -11,9 +11,18 @@
 #[unsafe(export_name = "f2k_export_ObjectOpenAuditAlarmW")]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "system" fn object_open_audit_alarm_w(
-    _subsystem_name: *const u16, _handle_id: *const u8, _object_type_name: *const u16, _object_name: *const u16,
-    _security_descriptor: *const u8, _client_token: u32, _desired_access: u32, _granted_access: u32,
-    _privileges: *const u8, _object_creation: u32, _access_granted: u32, _generate_on_close: *mut u32,
+    _subsystem_name: *const u16,
+    _handle_id: *const u8,
+    _object_type_name: *const u16,
+    _object_name: *const u16,
+    _security_descriptor: *const u8,
+    _client_token: u32,
+    _desired_access: u32,
+    _granted_access: u32,
+    _privileges: *const u8,
+    _object_creation: u32,
+    _access_granted: u32,
+    _generate_on_close: *mut u32,
 ) -> u32 {
     1
 }
@@ -25,9 +34,18 @@ pub unsafe extern "system" fn object_open_audit_alarm_w(
 #[unsafe(export_name = "f2k_export_ObjectOpenAuditAlarmA")]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "system" fn object_open_audit_alarm_a(
-    _subsystem_name: *const u8, _handle_id: *const u8, _object_type_name: *const u8, _object_name: *const u8,
-    _security_descriptor: *const u8, _client_token: u32, _desired_access: u32, _granted_access: u32,
-    _privileges: *const u8, _object_creation: u32, _access_granted: u32, _generate_on_close: *mut u32,
+    _subsystem_name: *const u8,
+    _handle_id: *const u8,
+    _object_type_name: *const u8,
+    _object_name: *const u8,
+    _security_descriptor: *const u8,
+    _client_token: u32,
+    _desired_access: u32,
+    _granted_access: u32,
+    _privileges: *const u8,
+    _object_creation: u32,
+    _access_granted: u32,
+    _generate_on_close: *mut u32,
 ) -> u32 {
     1
 }
@@ -39,9 +57,16 @@ pub unsafe extern "system" fn object_open_audit_alarm_a(
 #[unsafe(export_name = "f2k_export_ObjectCloseAuditAlarmW")]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "system" fn object_close_audit_alarm_w(
-    _subsystem_name: *const u16, _handle_id: *const u8, _object_type_name: *const u16, _object_name: *const u16,
-    _security_descriptor: *const u8, _client_token: u32, _desired_access: u32, _granted_access: u32,
-    _privileges: *const u8, _generate_on_close: *mut u32,
+    _subsystem_name: *const u16,
+    _handle_id: *const u8,
+    _object_type_name: *const u16,
+    _object_name: *const u16,
+    _security_descriptor: *const u8,
+    _client_token: u32,
+    _desired_access: u32,
+    _granted_access: u32,
+    _privileges: *const u8,
+    _generate_on_close: *mut u32,
 ) -> u32 {
     1
 }
@@ -53,9 +78,16 @@ pub unsafe extern "system" fn object_close_audit_alarm_w(
 #[unsafe(export_name = "f2k_export_ObjectCloseAuditAlarmA")]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "system" fn object_close_audit_alarm_a(
-    _subsystem_name: *const u8, _handle_id: *const u8, _object_type_name: *const u8, _object_name: *const u8,
-    _security_descriptor: *const u8, _client_token: u32, _desired_access: u32, _granted_access: u32,
-    _privileges: *const u8, _generate_on_close: *mut u32,
+    _subsystem_name: *const u8,
+    _handle_id: *const u8,
+    _object_type_name: *const u8,
+    _object_name: *const u8,
+    _security_descriptor: *const u8,
+    _client_token: u32,
+    _desired_access: u32,
+    _granted_access: u32,
+    _privileges: *const u8,
+    _generate_on_close: *mut u32,
 ) -> u32 {
     1
 }
@@ -67,9 +99,16 @@ pub unsafe extern "system" fn object_close_audit_alarm_a(
 #[unsafe(export_name = "f2k_export_ObjectDeleteAuditAlarmW")]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "system" fn object_delete_audit_alarm_w(
-    _subsystem_name: *const u16, _handle_id: *const u8, _object_type_name: *const u16, _object_name: *const u16,
-    _security_descriptor: *const u8, _client_token: u32, _desired_access: u32, _granted_access: u32,
-    _privileges: *const u8, _generate_on_close: *mut u32,
+    _subsystem_name: *const u16,
+    _handle_id: *const u8,
+    _object_type_name: *const u16,
+    _object_name: *const u16,
+    _security_descriptor: *const u8,
+    _client_token: u32,
+    _desired_access: u32,
+    _granted_access: u32,
+    _privileges: *const u8,
+    _generate_on_close: *mut u32,
 ) -> u32 {
     1
 }
@@ -81,9 +120,16 @@ pub unsafe extern "system" fn object_delete_audit_alarm_w(
 #[unsafe(export_name = "f2k_export_ObjectDeleteAuditAlarmA")]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "system" fn object_delete_audit_alarm_a(
-    _subsystem_name: *const u8, _handle_id: *const u8, _object_type_name: *const u8, _object_name: *const u8,
-    _security_descriptor: *const u8, _client_token: u32, _desired_access: u32, _granted_access: u32,
-    _privileges: *const u8, _generate_on_close: *mut u32,
+    _subsystem_name: *const u8,
+    _handle_id: *const u8,
+    _object_type_name: *const u8,
+    _object_name: *const u8,
+    _security_descriptor: *const u8,
+    _client_token: u32,
+    _desired_access: u32,
+    _granted_access: u32,
+    _privileges: *const u8,
+    _generate_on_close: *mut u32,
 ) -> u32 {
     1
 }
@@ -94,7 +140,11 @@ pub unsafe extern "system" fn object_delete_audit_alarm_a(
 /// The pointers are the caller's; the form reads none of them.
 #[unsafe(export_name = "f2k_export_ObjectPrivilegeAuditAlarmW")]
 pub unsafe extern "system" fn object_privilege_audit_alarm_w(
-    _subsystem_name: *const u16, _handle_id: *const u8, _client_token: u32, _privileges: *const u8, _access_granted: u32,
+    _subsystem_name: *const u16,
+    _handle_id: *const u8,
+    _client_token: u32,
+    _privileges: *const u8,
+    _access_granted: u32,
 ) -> u32 {
     1
 }
@@ -105,7 +155,11 @@ pub unsafe extern "system" fn object_privilege_audit_alarm_w(
 /// As the W form's.
 #[unsafe(export_name = "f2k_export_ObjectPrivilegeAuditAlarmA")]
 pub unsafe extern "system" fn object_privilege_audit_alarm_a(
-    _subsystem_name: *const u8, _handle_id: *const u8, _client_token: u32, _privileges: *const u8, _access_granted: u32,
+    _subsystem_name: *const u8,
+    _handle_id: *const u8,
+    _client_token: u32,
+    _privileges: *const u8,
+    _access_granted: u32,
 ) -> u32 {
     1
 }
@@ -116,7 +170,11 @@ pub unsafe extern "system" fn object_privilege_audit_alarm_a(
 /// The pointers are the caller's; the form reads none of them.
 #[unsafe(export_name = "f2k_export_PrivilegedServiceAuditAlarmW")]
 pub unsafe extern "system" fn privileged_service_audit_alarm_w(
-    _subsystem_name: *const u16, _service_name: *const u16, _client_token: u32, _privileges: *const u8, _access_granted: u32,
+    _subsystem_name: *const u16,
+    _service_name: *const u16,
+    _client_token: u32,
+    _privileges: *const u8,
+    _access_granted: u32,
 ) -> u32 {
     1
 }
@@ -127,7 +185,11 @@ pub unsafe extern "system" fn privileged_service_audit_alarm_w(
 /// As the W form's.
 #[unsafe(export_name = "f2k_export_PrivilegedServiceAuditAlarmA")]
 pub unsafe extern "system" fn privileged_service_audit_alarm_a(
-    _subsystem_name: *const u8, _service_name: *const u8, _client_token: u32, _privileges: *const u8, _access_granted: u32,
+    _subsystem_name: *const u8,
+    _service_name: *const u8,
+    _client_token: u32,
+    _privileges: *const u8,
+    _access_granted: u32,
 ) -> u32 {
     1
 }
@@ -153,54 +215,156 @@ mod tests {
         arm();
         assert_eq!(
             unsafe {
-                object_open_audit_alarm_w(core::ptr::null(), core::ptr::null(), core::ptr::null(), core::ptr::null(), core::ptr::null(), 0x58, 1, 2, core::ptr::null(), 0, 1, &mut generate_on_close)
+                object_open_audit_alarm_w(
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    0x58,
+                    1,
+                    2,
+                    core::ptr::null(),
+                    0,
+                    1,
+                    &mut generate_on_close,
+                )
             },
             1
         );
         assert_eq!(
             unsafe {
-                object_open_audit_alarm_a(core::ptr::null(), core::ptr::null(), core::ptr::null(), core::ptr::null(), core::ptr::null(), 0x58, 1, 2, core::ptr::null(), 0, 1, &mut generate_on_close)
+                object_open_audit_alarm_a(
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    0x58,
+                    1,
+                    2,
+                    core::ptr::null(),
+                    0,
+                    1,
+                    &mut generate_on_close,
+                )
             },
             1
         );
         assert_eq!(
             unsafe {
-                object_close_audit_alarm_w(core::ptr::null(), core::ptr::null(), core::ptr::null(), core::ptr::null(), core::ptr::null(), 0x58, 1, 2, core::ptr::null(), &mut generate_on_close)
+                object_close_audit_alarm_w(
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    0x58,
+                    1,
+                    2,
+                    core::ptr::null(),
+                    &mut generate_on_close,
+                )
             },
             1
         );
         assert_eq!(
             unsafe {
-                object_close_audit_alarm_a(core::ptr::null(), core::ptr::null(), core::ptr::null(), core::ptr::null(), core::ptr::null(), 0x58, 1, 2, core::ptr::null(), &mut generate_on_close)
+                object_close_audit_alarm_a(
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    0x58,
+                    1,
+                    2,
+                    core::ptr::null(),
+                    &mut generate_on_close,
+                )
             },
             1
         );
         assert_eq!(
             unsafe {
-                object_delete_audit_alarm_w(core::ptr::null(), core::ptr::null(), core::ptr::null(), core::ptr::null(), core::ptr::null(), 0x58, 1, 2, core::ptr::null(), &mut generate_on_close)
+                object_delete_audit_alarm_w(
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    0x58,
+                    1,
+                    2,
+                    core::ptr::null(),
+                    &mut generate_on_close,
+                )
             },
             1
         );
         assert_eq!(
             unsafe {
-                object_delete_audit_alarm_a(core::ptr::null(), core::ptr::null(), core::ptr::null(), core::ptr::null(), core::ptr::null(), 0x58, 1, 2, core::ptr::null(), &mut generate_on_close)
+                object_delete_audit_alarm_a(
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    0x58,
+                    1,
+                    2,
+                    core::ptr::null(),
+                    &mut generate_on_close,
+                )
             },
             1
         );
         assert_eq!(
-            unsafe { object_privilege_audit_alarm_w(core::ptr::null(), core::ptr::null(), 0x58, core::ptr::null(), 1) },
+            unsafe {
+                object_privilege_audit_alarm_w(
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    0x58,
+                    core::ptr::null(),
+                    1,
+                )
+            },
             1
         );
         assert_eq!(
-            unsafe { object_privilege_audit_alarm_a(core::ptr::null(), core::ptr::null(), 0x58, core::ptr::null(), 1) },
+            unsafe {
+                object_privilege_audit_alarm_a(
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    0x58,
+                    core::ptr::null(),
+                    1,
+                )
+            },
             1
         );
         assert_eq!(
-            unsafe { privileged_service_audit_alarm_w(core::ptr::null(), core::ptr::null(), 0x58, core::ptr::null(), 1) },
+            unsafe {
+                privileged_service_audit_alarm_w(
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    0x58,
+                    core::ptr::null(),
+                    1,
+                )
+            },
             1
         );
         assert_eq!(
-            unsafe { privileged_service_audit_alarm_a(core::ptr::null(), core::ptr::null(), 0x58, core::ptr::null(), 1) },
+            unsafe {
+                privileged_service_audit_alarm_a(
+                    core::ptr::null(),
+                    core::ptr::null(),
+                    0x58,
+                    core::ptr::null(),
+                    1,
+                )
+            },
             1
         );
         assert_eq!((last_error(), generate_on_close), (0xF2F2, 0xF2F2));
@@ -216,28 +380,79 @@ mod tests {
         arm();
         assert_eq!(
             unsafe {
-                object_open_audit_alarm_a(subsystem.as_ptr(), core::ptr::null(), object.as_ptr(), object.as_ptr(), core::ptr::null(), 0x58, 1, 2, core::ptr::null(), 0, 1, &mut generate_on_close)
+                object_open_audit_alarm_a(
+                    subsystem.as_ptr(),
+                    core::ptr::null(),
+                    object.as_ptr(),
+                    object.as_ptr(),
+                    core::ptr::null(),
+                    0x58,
+                    1,
+                    2,
+                    core::ptr::null(),
+                    0,
+                    1,
+                    &mut generate_on_close,
+                )
             },
             1
         );
         assert_eq!(
             unsafe {
-                object_close_audit_alarm_a(subsystem.as_ptr(), core::ptr::null(), object.as_ptr(), object.as_ptr(), core::ptr::null(), 0x58, 1, 2, core::ptr::null(), &mut generate_on_close)
+                object_close_audit_alarm_a(
+                    subsystem.as_ptr(),
+                    core::ptr::null(),
+                    object.as_ptr(),
+                    object.as_ptr(),
+                    core::ptr::null(),
+                    0x58,
+                    1,
+                    2,
+                    core::ptr::null(),
+                    &mut generate_on_close,
+                )
             },
             1
         );
         assert_eq!(
             unsafe {
-                object_delete_audit_alarm_a(subsystem.as_ptr(), core::ptr::null(), object.as_ptr(), object.as_ptr(), core::ptr::null(), 0x58, 1, 2, core::ptr::null(), &mut generate_on_close)
+                object_delete_audit_alarm_a(
+                    subsystem.as_ptr(),
+                    core::ptr::null(),
+                    object.as_ptr(),
+                    object.as_ptr(),
+                    core::ptr::null(),
+                    0x58,
+                    1,
+                    2,
+                    core::ptr::null(),
+                    &mut generate_on_close,
+                )
             },
             1
         );
         assert_eq!(
-            unsafe { object_privilege_audit_alarm_a(subsystem.as_ptr(), core::ptr::null(), 0x58, core::ptr::null(), 1) },
+            unsafe {
+                object_privilege_audit_alarm_a(
+                    subsystem.as_ptr(),
+                    core::ptr::null(),
+                    0x58,
+                    core::ptr::null(),
+                    1,
+                )
+            },
             1
         );
         assert_eq!(
-            unsafe { privileged_service_audit_alarm_a(subsystem.as_ptr(), service.as_ptr(), 0x58, core::ptr::null(), 1) },
+            unsafe {
+                privileged_service_audit_alarm_a(
+                    subsystem.as_ptr(),
+                    service.as_ptr(),
+                    0x58,
+                    core::ptr::null(),
+                    1,
+                )
+            },
             1
         );
         assert_eq!((last_error(), generate_on_close), (0xF2F2, 0xF2F2));

@@ -106,16 +106,17 @@ pub use services::*;
 /// ByHandle form's ClientToken handle) and the caller's memory.
 #[cfg(target_arch = "x86")]
 mod services {
+    use rtl::array_vec::ArrayVec;
+    use rtl::nt::access::TOKEN_QUERY;
+
     use super::super::call::{calling_process, Handle, NtCall, NtResult, UserAddr, UserPtr};
     use super::super::object::{is_console_handle, CURRENT_PROCESS, CURRENT_THREAD};
     use super::*;
     use crate::nt::seccheck::{self, Answer, CheckInput};
     use crate::ob::{self, ObRef};
+    use crate::se;
     use crate::sec::sd::{self, Memory};
     use crate::sec::{self, GenericMapping, Guid, Owned};
-    use crate::se;
-    use rtl::array_vec::ArrayVec;
-    use rtl::nt::access::TOKEN_QUERY;
 
     /// The most object types a captured list holds.
     const MAX_TYPE_LIST: usize = 128;
@@ -157,8 +158,14 @@ mod services {
         let len = sd::length(&mem, at.raw()).ok_or(STATUS_ACCESS_VIOLATION)?;
         let mut out = sec::allocate(len as usize).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
         let mut written = 0u32;
-        let status =
-            sd::capture(&mem, at.raw(), true, false, sec::bytes_mut(&mut out), &mut written);
+        let status = sd::capture(
+            &mem,
+            at.raw(),
+            true,
+            false,
+            sec::bytes_mut(&mut out),
+            &mut written,
+        );
         if status != STATUS_SUCCESS {
             return Err(status);
         }
@@ -173,8 +180,7 @@ mod services {
         }
         let mut header = [0u8; 2];
         ptr.read(&mut header)?;
-        if header[0] & 0x0F != sec::REVISION || usize::from(header[1]) > sec::MAX_SUB_AUTHORITIES
-        {
+        if header[0] & 0x0F != sec::REVISION || usize::from(header[1]) > sec::MAX_SUB_AUTHORITIES {
             return Err(sd::STATUS_INVALID_SID);
         }
         let mut sid = se::SidBytes::new();
@@ -215,8 +221,9 @@ mod services {
             if u16::from_le_bytes([entries[at], entries[at + 1]]) > MAX_LEVEL {
                 return Err(STATUS_INVALID_PARAMETER);
             }
-            let guid_at =
-                UserAddr(u32::from_le_bytes(entries[at + 4..at + 8].try_into().unwrap()));
+            let guid_at = UserAddr(u32::from_le_bytes(
+                entries[at + 4..at + 8].try_into().unwrap(),
+            ));
             let mut raw = [0u8; 16];
             guid_at.read(&mut raw)?;
             guids.push(Guid {
@@ -289,8 +296,8 @@ mod services {
             .ok_or(STATUS_INVALID_HANDLE)?;
         let id = seccheck::token_of_entry(Some(entry), needed)?;
         let reference = ob::reference(id).ok_or(STATUS_INVALID_HANDLE)?;
-        let body = ob::locked(|directory| directory.token(id).copied())
-            .ok_or(STATUS_INVALID_HANDLE)?;
+        let body =
+            ob::locked(|directory| directory.token(id).copied()).ok_or(STATUS_INVALID_HANDLE)?;
         Ok((reference, body))
     }
 
@@ -588,11 +595,12 @@ pub use host::*;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::user::TrapFrame;
-    use crate::user::syscall::host::{install, UserMemory};
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    use super::*;
+    use crate::user::syscall::host::{install, UserMemory};
+    use crate::user::TrapFrame;
 
     /// Mapped user memory at [BASE, BASE + len): anything else faults.
     const BASE: u32 = 0x0050_0000;

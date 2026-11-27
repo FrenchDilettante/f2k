@@ -496,4 +496,3 @@ mod tests {
         assert_eq!(unsafe { rtl_delete_ace(acl, 1) }, STATUS_INVALID_PARAMETER);
     }
 }
-
