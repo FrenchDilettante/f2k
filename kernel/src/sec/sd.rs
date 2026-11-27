@@ -192,8 +192,11 @@ impl SecurityDescriptor {
 
     /// The address a part field names in an address space where the descriptor itself sits
     /// at `sd_addr`: the field itself in absolute form, `sd_addr + field` in self-relative
-    /// form.
+    /// form. A zero field names no part (a null ACL or a missing owner/group): zero.
     pub fn addr_of(&self, sd_addr: u32, field: u32) -> u32 {
+        if field == 0 {
+            return 0;
+        }
         if self.is_self_relative() {
             sd_addr + field
         } else {
@@ -1648,5 +1651,49 @@ mod tests {
         assert_eq!(&out[20..48], &img[20..48]);
         assert_eq!(&out[48..64], &img[48..64]);
         assert_eq!(&out[64..76], &img[64..76]);
+    }
+
+    /// A present flag with a zero field is a null ACL, not an ACL at the descriptor's own
+    /// address: the part is absent from the length, the validity check and the capture, and
+    /// the captured header keeps the flag with a zero field.
+    #[test]
+    fn a_zero_field_with_a_present_flag_is_a_null_part() {
+        let owner = sid(1, &[0]); // 12
+        let mut img = vec![0u8; 20];
+        let h = SecurityDescriptor {
+            revision: 1,
+            sbz1: 0,
+            control: SE_SELF_RELATIVE | SE_DACL_PRESENT,
+            owner: 20,
+            group: 0,
+            sacl: 0,
+            dacl: 0,
+        };
+        h.write(&mut img);
+        img.extend_from_slice(&owner);
+        let base = 0x40u32;
+        let mut full = vec![0u8; base as usize];
+        full.extend_from_slice(&img);
+
+        let m = mem(&full);
+        assert_eq!(
+            length(&m, base),
+            Some(32),
+            "the header and the 12-byte owner only"
+        );
+        assert!(is_valid(&m, base), "a null DACL is valid");
+
+        let mut out = vec![0xCCu8; 256];
+        let mut out_len = 0u32;
+        assert_eq!(
+            capture(&m, base, true, false, &mut out, &mut out_len),
+            STATUS_SUCCESS
+        );
+        assert_eq!(out_len, 20 + 12, "the header and the owner only");
+        let cap = SecurityDescriptor::parse(&out).unwrap();
+        assert!(cap.has_control(SE_DACL_PRESENT));
+        assert_eq!(cap.dacl, 0, "the null DACL's zero field");
+        assert_eq!(cap.owner, 20);
+        assert_eq!(&out[20..32], &owner[..]);
     }
 }

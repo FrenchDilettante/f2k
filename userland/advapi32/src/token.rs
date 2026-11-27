@@ -7,7 +7,7 @@
 //! (NtOpenProcessToken, NtOpenThreadToken, NtAdjustPrivilegesToken, NtAdjustGroupsToken,
 //! NtQueryInformationToken, NtSetInformationToken, NtDuplicateToken, NtPrivilegeCheck,
 //! NtFilterToken — the [`crate::accesscheck::services`] seam), as on Windows 2000; the lookups
-//! answer from the privileges' public names and LUIDs (winnt.h's SE_*_NAME and
+//! answer from the privileges' public names, display names and LUIDs (winnt.h's SE_*_NAME and
 //! SE_*_PRIVILEGE), where Windows 2000's asks the local security authority, which F2K does not
 //! have.
 //!
@@ -557,9 +557,48 @@ pub unsafe extern "system" fn open_thread_token(
     }
 }
 
-/// The display language F2K answers (LANG_ENGLISH with SUBLANG_DEFAULT): F2K has no local
-/// security authority's resource strings, so a privilege's display name is its public name.
-const LANG_ENGLISH_US: u32 = 0x0409;
+/// The language id the display-name lookups answer: the display strings' own language
+/// (English, sublanguage 6).
+const DISPLAY_LANGUAGE: u32 = 0x1809;
+
+/// The well-known privileges' display names, one per LUID from 2 to 27, separated by newlines
+/// (the English display strings the lookups answer with).
+const DISPLAY_NAMES: &str = "\
+Create a token object\n\
+Replace a process level token\n\
+Lock pages in memory\n\
+Adjust memory quotas for a process\n\
+Add workstations to domain\n\
+Act as part of the operating system\n\
+Manage auditing and security log\n\
+Take ownership of files or other objects\n\
+Load and unload device drivers\n\
+Profile system performance\n\
+Change the system time\n\
+Profile single process\n\
+Increase scheduling priority\n\
+Create a pagefile\n\
+Create permanent shared objects\n\
+Back up files and directories\n\
+Restore files and directories\n\
+Shut down the system\n\
+Debug programs\n\
+Generate security audits\n\
+Modify firmware environment values\n\
+Bypass traverse checking\n\
+Force shutdown from a remote system\n\
+Remove computer from docking station\n\
+Synchronize agent data\n\
+Enable computer and user accounts to be trusted for delegation";
+
+/// The display name of the well-known privilege whose LUID's low part is `low` — None when no
+/// well-known privilege has it.
+pub fn display_name_of(low: u32) -> Option<&'static str> {
+    if !(2..=27).contains(&low) {
+        return None;
+    }
+    DISPLAY_NAMES.split('\n').nth((low - 2) as usize)
+}
 
 /// The privilege a LUID names: its public name, for a zero high part and a known low one.
 pub fn privilege_name(luid: &Luid) -> Option<&'static str> {
@@ -628,7 +667,7 @@ pub(crate) fn display_name_for(
     language_id: Option<&mut Out<'_, u32>>,
 ) -> Result<&'static str, u32> {
     if let Some(language) = language_id {
-        language.set(LANG_ENGLISH_US);
+        language.set(DISPLAY_LANGUAGE);
     }
     if !system.is_none_or(is_local) {
         return Err(RPC_S_SERVER_UNAVAILABLE);
@@ -636,11 +675,7 @@ pub(crate) fn display_name_for(
     let luid = name
         .and_then(privilege_luid)
         .ok_or(ERROR_NO_SUCH_PRIVILEGE)?;
-    privilege_name(&Luid {
-        low_part: luid,
-        high_part: 0,
-    })
-    .ok_or(ERROR_NO_SUCH_PRIVILEGE)
+    display_name_of(luid).ok_or(ERROR_NO_SUCH_PRIVILEGE)
 }
 
 /// LookupPrivilegeDisplayNameW: the privilege's display name for the name, into the caller's
@@ -1119,11 +1154,19 @@ mod tests {
         );
         clear_services();
     }
-    /// LookupPrivilegeDisplayName answers like the name lookup, with the language id written
-    /// whatever the answer (US English here); an unknown name is ERROR_NO_SUCH_PRIVILEGE.
+    /// LookupPrivilegeDisplayName answers with the privilege's display name ("Shut down the
+    /// system" for SeShutdownPrivilege, 20 chars), the language id written whatever the answer
+    /// (0x1809): the size query fails ERROR_INSUFFICIENT_BUFFER with the count including the
+    /// terminator, a fitting room gets the text, the count without it and ERROR_IO_PENDING; an
+    /// unknown name is ERROR_NO_SUCH_PRIVILEGE.
     #[test]
     fn display_name_lookups_answer() {
         clear_services();
+        assert_eq!(display_name_of(19), Some("Shut down the system"));
+        assert_eq!(display_name_of(2), Some("Create a token object"));
+        assert_eq!(display_name_of(27).map(str::len), Some(62));
+        assert_eq!(display_name_of(1), None);
+        assert_eq!(display_name_of(28), None);
         let name = wide_z("SeShutdownPrivilege");
         let mut buffer = [0xCCu16; 32];
         let disp_w = |name: *const u16, buffer: *mut u16, cch: *mut u32, lang: *mut u32| unsafe {
@@ -1139,10 +1182,10 @@ mod tests {
                 cch,
                 lang
             ),
-            (0, 122, 20, 0x0409),
+            (0, 122, 21, 0x1809),
             "the size query sets the language"
         );
-        let mut cch = 20u32;
+        let mut cch = 21u32;
         let mut lang = 0xF2F2;
         arm();
         assert_eq!(
@@ -1152,7 +1195,11 @@ mod tests {
                 cch,
                 lang
             ),
-            (1, 997, 19, 0x0409)
+            (1, 997, 20, 0x1809)
+        );
+        assert_eq!(
+            &buffer[..20],
+            &wide_z("Shut down the system").as_slice()[..20]
         );
         let unknown = wide_z("SeNoSuchPrivilege");
         let mut cch = 128u32;
@@ -1166,7 +1213,7 @@ mod tests {
             (0, 1313, 128)
         );
         let mut ansi = [0xCCu8; 32];
-        let mut cch = 20u32;
+        let mut cch = 21u32;
         let mut lang = 0xF2F2;
         arm();
         let ok = unsafe {
@@ -1180,9 +1227,9 @@ mod tests {
         };
         assert_eq!(
             (ok, last_error(), cch, lang),
-            (1, 997, 19, 0x0409),
+            (1, 997, 20, 0x1809),
             "the A form"
         );
-        assert_eq!(&ansi[..20], b"SeShutdownPrivilege\0");
+        assert_eq!(&ansi[..21], b"Shut down the system\0");
     }
 }

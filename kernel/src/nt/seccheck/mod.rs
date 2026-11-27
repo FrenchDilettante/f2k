@@ -8,16 +8,20 @@
 //! validated on the way in), and the out-params probed; the token handle is then looked up as
 //! the object manager looks any handle up — a handle naming nothing is STATUS_INVALID_HANDLE,
 //! one naming another kind of object STATUS_OBJECT_TYPE_MISMATCH, one opened without
-//! TOKEN_QUERY STATUS_ACCESS_DENIED — and the walk over the descriptor's DACL decides the
-//! answer. The walk's outcome is an out-parameter, not the call's return: GrantedAccess and
-//! AccessStatus receive the granted mask and the status (STATUS_SUCCESS when everything desired
-//! was granted, STATUS_ACCESS_DENIED or a structural status otherwise) and the service returns
-//! STATUS_SUCCESS. Only parameter-level failures are the return: a faulting caller range
-//! (STATUS_ACCESS_VIOLATION), the handle's, a bad object-type list (STATUS_INVALID_PARAMETER),
-//! a null or ownerless/groupless descriptor (STATUS_INVALID_SECURITY_DESCR), and a
-//! privilege-set buffer too small for the privileges the check used (STATUS_BUFFER_TOO_SMALL,
-//! with the size it takes in PrivilegeSetLength — the size-then-buffer protocol; on success the
-//! buffer gets the set, count and control first, and PrivilegeSetLength is left alone).
+//! TOKEN_QUERY STATUS_ACCESS_DENIED — and the token must be an impersonation token at
+//! identification level or above ([`impersonation_gate`]: a primary token is
+//! STATUS_NO_IMPERSONATION_TOKEN, a lower level STATUS_BAD_IMPERSONATION_LEVEL), which is
+//! checked before anything else is captured from the caller; the walk over the descriptor's
+//! DACL then decides the answer. The walk's outcome is an out-parameter, not the call's return:
+//! GrantedAccess and AccessStatus receive the granted mask and the status (STATUS_SUCCESS when
+//! everything desired was granted, STATUS_ACCESS_DENIED or a structural status otherwise) and the
+//! service returns STATUS_SUCCESS. Only parameter-level failures are the return: a faulting caller
+//! range (STATUS_ACCESS_VIOLATION), the handle's, a bad object-type list
+//! (STATUS_INVALID_PARAMETER), a null or ownerless/groupless descriptor
+//! (STATUS_INVALID_SECURITY_DESCR), and a privilege-set buffer too small for the privileges the
+//! check used (STATUS_BUFFER_TOO_SMALL, with the size it takes in PrivilegeSetLength — the
+//! size-then-buffer protocol; on success the buffer gets the set, count and control first, and
+//! PrivilegeSetLength is left alone).
 //!
 //! The privilege set reports the privileges the check used: ACCESS_SYSTEM_SECURITY asks for the
 //! security privilege enabled (reported through AccessStatus as STATUS_PRIVILEGE_NOT_HELD when
@@ -174,6 +178,20 @@ fn refused(status: NtStatus) -> Answer {
         status,
         privilege_length: None,
     }
+}
+
+/// The access-check services' token gate: the handle must name an impersonation token at
+/// identification level or above. A primary token is STATUS_NO_IMPERSONATION_TOKEN, an
+/// impersonation token below identification STATUS_BAD_IMPERSONATION_LEVEL; the gate runs
+/// once the handle is looked up, before the descriptor and the type list are captured.
+pub fn impersonation_gate(token: &se::TokenBody) -> Result<(), NtStatus> {
+    if token.kind != se::TOKEN_IMPERSONATION {
+        return Err(se::STATUS_NO_IMPERSONATION_TOKEN);
+    }
+    if token.level < se::SECURITY_IDENTIFICATION {
+        return Err(se::STATUS_BAD_IMPERSONATION_LEVEL);
+    }
+    Ok(())
 }
 
 /// Run one access check over the captured inputs: the walk's answer, or the refusal a
@@ -515,6 +533,33 @@ mod tests {
                 TOKEN_QUERY
             ),
             Ok(token_id)
+        );
+    }
+
+    /// The access-check services' token gate: a primary token is refused with
+    /// STATUS_NO_IMPERSONATION_TOKEN, an impersonation token below identification with
+    /// STATUS_BAD_IMPERSONATION_LEVEL, and one at identification or above passes.
+    #[test]
+    fn the_token_gate_wants_an_impersonation_token_at_identification() {
+        let primary = token();
+        assert_eq!(
+            impersonation_gate(&primary),
+            Err(se::STATUS_NO_IMPERSONATION_TOKEN)
+        );
+        for level in [
+            se::SECURITY_IDENTIFICATION,
+            se::SECURITY_IMPERSONATION,
+            se::SECURITY_DELEGATION,
+        ] {
+            let copy = primary.duplicate(se::TOKEN_IMPERSONATION, level).unwrap();
+            assert_eq!(impersonation_gate(&copy), Ok(()), "level {level}");
+        }
+        let anonymous = primary
+            .duplicate(se::TOKEN_IMPERSONATION, se::SECURITY_ANONYMOUS)
+            .unwrap();
+        assert_eq!(
+            impersonation_gate(&anonymous),
+            Err(se::STATUS_BAD_IMPERSONATION_LEVEL)
         );
     }
 

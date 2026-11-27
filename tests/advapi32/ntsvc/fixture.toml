@@ -10,11 +10,6 @@ gate = true
 
 # ntthreadtok awaits the next VM re-capture: its .c changed (an OpenAsSelf=TRUE call now follows the FALSE one).
 [pending]
-ntaccesscheck = "[NtAccessCheck(allow Everyone 0x000F01FF, requested 1): status=0xC0000005 granted=0x00000000 err=-], expected [NtAccessCheck(allow Everyone 0x000F01FF, requested 1): status=0xC000005C granted=0x000000"
-ntbytype = "[NtAccessCheckByType(two types, requested 1): status=0xC0000005 granted=0x00000000 err=-], expected [NtAccessCheckByType(two types, requested 1): status=0xC000005C granted=0x00000000 err=-]"
-ntprivcheck = "[NtQueryInformationToken(TokenPrivileges): status=0x00000000 err=- ReturnLength 208], expected [NtQueryInformationToken(TokenPrivileges): status=0x00000000 err=- ReturnLength 232]"
-ntquerysecobj = "[NtQuerySecurityObject(a byte short): status=0xC0000023 err=-"
-ntsetsecobj = "[the file's SD read back: Control 0x8004, owner present: no, DACL present: no, length 20], expected [the file's SD read back: Control 0x8000, owner present: no, DACL present: no, length 20]"
 ntthreadtok = "F2K has no impersonation tokens: the FALSE form answers the process token where Windows errors NO_TOKEN"
 
 [pins]

@@ -65,6 +65,9 @@ pub const STATUS_INVALID_SID: NtStatus = NtStatus(0xC000_0078);
 pub const STATUS_ALLOTTED_SPACE_EXCEEDED: NtStatus = NtStatus(0xC000_0099);
 /// A duplicate's impersonation level the source token's does not allow.
 pub const STATUS_BAD_IMPERSONATION_LEVEL: NtStatus = NtStatus(0xC000_00A5);
+/// An access check's token that is not an impersonation token (Win32's
+/// ERROR_NO_IMPERSONATION_TOKEN).
+pub const STATUS_NO_IMPERSONATION_TOKEN: NtStatus = NtStatus(0xC000_005C);
 
 /// A token's type (TOKEN_TYPE): a process's primary token, or a copy a thread impersonates with.
 pub const TOKEN_PRIMARY: u32 = 1;
@@ -537,7 +540,7 @@ mod tests {
     /// A new token holds an administrator's privileges: the four the `privs` capture enables
     /// (SeSystemtimePrivilege, SeBackupPrivilege, SeShutdownPrivilege, SeDebugPrivilege) and
     /// SeLoadDriverPrivilege disabled, SeChangeNotifyPrivilege and SeUndockPrivilege enabled by
-    /// default, SeTcbPrivilege not at all; each once. TOKEN_PRIVILEGES for them takes 208 bytes.
+    /// default, SeTcbPrivilege not at all; each once. TOKEN_PRIVILEGES for them takes 232 bytes.
     #[test]
     fn a_new_token_holds_an_administrators_privileges() {
         let token = token();
@@ -552,14 +555,20 @@ mod tests {
         }
         assert_eq!(attributes_of(&token, SE_CHANGE_NOTIFY_PRIVILEGE), Some(3));
         assert_eq!(attributes_of(&token, SE_UNDOCK_PRIVILEGE), Some(3));
-        for luid in [2, 3, 4, 6, TCB, 16, 21, 26, 27] {
+        for luid in [2, 3, 4, 6, TCB, 26, 27] {
             assert_eq!(attributes_of(&token, luid), None, "{luid}");
         }
+        assert_eq!(
+            attributes_of(&token, 16),
+            Some(0),
+            "SeCreatePermanentPrivilege"
+        );
+        assert_eq!(attributes_of(&token, 21), Some(0), "SeAuditPrivilege");
         let mut luids: Vec<u32> = DEFAULT_PRIVILEGES.iter().map(|p| p.luid.low_part).collect();
         luids.sort();
         luids.dedup();
         assert_eq!(luids.len(), HELD);
-        assert_eq!(privileges_size(HELD), 208);
+        assert_eq!(privileges_size(HELD), 232);
     }
 
     /// The `privs` capture's last call: all four enabled at once report each one's old state,

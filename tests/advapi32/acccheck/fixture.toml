@@ -6,15 +6,6 @@ description = "acccheck - the AccessCheck family over the process handle, with a
 kind = "sectioned"
 gate = true
 
-# owner awaits the next VM re-capture: its .c changed (the TokenUser line now prints the SID's shape only, the domain numbers masked).
-[pending]
-allowed = "[AccessCheck(requested 1, allow 0x000F01FF): ret=0 err=998 status=0x00000000 granted=0x00000000], expected [AccessCheck(requested 1, allow 0x000F01FF): ret=0 err=1309 status=0x00000000 granted=0x00000"
-areall = "[AccessCheck(requested 1): ret=0 err=998 granted=0x00000000], expected [AccessCheck(requested 1): ret=0 err=1309 granted=0x00000000]"
-denied = "[deny Everyone 0x000F01FF before allow all, requested 1: ret=0 err=998 status=0x00000000 granted=0x00000000], expected [deny Everyone 0x000F01FF before allow all, requested 1: ret=0 err=1309 status=0x"
-maximum = "[AccessCheck(MAXIMUM_ALLOWED, allow 0x000F01FF): ret=0 err=998 status=0x00000000 granted=0x00000000], expected [AccessCheck(MAXIMUM_ALLOWED, allow 0x000F01FF): ret=0 err=1309 status=0x00000000 granted"
-owner = "[TokenUser: S-1-5-21-999244753-1780587534-777500329-1000], expected [TokenUser: S-1-5-21-602162358-1085031214-839522115-1000]"
-priv = "[ACCESS_SYSTEM_SECURITY, privilege disabled, empty DACL: ret=0 err=998 status=0x00000000 granted=0x00000000], expected [ACCESS_SYSTEM_SECURITY, privilege disabled, empty DACL: ret=0 err=1309 status=0x"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only what a section calls itself, through its own helpers too, never what the C runtime's

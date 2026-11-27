@@ -245,6 +245,7 @@ pub fn access_check(
         probe_privilege_set(privilege_set, privilege_set_length)?;
     let mapping = read_mapping(generic_mapping)?;
     let (_reference, body) = token_of(token.raw(), TOKEN_QUERY)?;
+    impersonation_gate(&body)?;
     let sd = capture_sd(security_descriptor)?;
     let input = CheckInput {
         sd: sd.as_ref().map(|sd| sec::bytes(sd)),
@@ -288,6 +289,7 @@ pub fn access_check_by_type(
         probe_privilege_set(privilege_set, privilege_set_length)?;
     let mapping = read_mapping(generic_mapping)?;
     let (_reference, body) = token_of(token.raw(), TOKEN_QUERY)?;
+    impersonation_gate(&body)?;
     let object_types = capture_type_list(object_type_list, object_type_list_length)?;
     let principal_self = read_sid(principal_self_sid)?;
     let sd = capture_sd(security_descriptor)?;
@@ -339,6 +341,7 @@ pub fn access_check_by_type_result_list(
         probe_privilege_set(privilege_set, privilege_set_length)?;
     let mapping = read_mapping(generic_mapping)?;
     let (_reference, body) = token_of(token.raw(), TOKEN_QUERY)?;
+    impersonation_gate(&body)?;
     let object_types = capture_type_list(object_type_list, object_type_list_length)?;
     let principal_self = read_sid(principal_self_sid)?;
     let sd = capture_sd(security_descriptor)?;

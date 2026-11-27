@@ -7,7 +7,6 @@ kind = "sectioned"
 gate = true
 
 [pending]
-lookupdisp = "[LookupPrivilegeDisplayNameA(room): ret=1 err=997"
 threadtok = "same no-impersonation design: OpenThreadToken succeeds in F2K"
 
 [pins]

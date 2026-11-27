@@ -217,7 +217,7 @@ pub fn held_enabled(set: &[LuidAndAttributes], privilege: Luid) -> bool {
 }
 
 /// How many privileges a token holds.
-pub const HELD: usize = 17;
+pub const HELD: usize = 19;
 
 /// TOKEN_PRIVILEGES' size for `count` entries: the count, then the entries.
 pub const fn privileges_size(count: usize) -> u32 {
@@ -244,8 +244,8 @@ pub const fn privilege(low: u32, attributes: u32) -> LuidAndAttributes {
 /// the system's own). SeUndockPrivilege, which every interactive user holds, is enabled by
 /// default as SeChangeNotifyPrivilege is. The privileges no administrator's token holds
 /// (SeCreateTokenPrivilege, SeAssignPrimaryTokenPrivilege, SeLockMemoryPrivilege,
-/// SeMachineAccountPrivilege, SeTcbPrivilege, SeCreatePermanentPrivilege, SeAuditPrivilege,
-/// SeSyncAgentPrivilege, SeEnableDelegationPrivilege) are refused: not all assigned.
+/// SeMachineAccountPrivilege, SeTcbPrivilege, SeSyncAgentPrivilege, SeEnableDelegationPrivilege)
+/// are refused: not all assigned.
 pub const DEFAULT_PRIVILEGES: [LuidAndAttributes; HELD] = [
     privilege(
         SE_CHANGE_NOTIFY_PRIVILEGE,
@@ -259,12 +259,14 @@ pub const DEFAULT_PRIVILEGES: [LuidAndAttributes; HELD] = [
     privilege(SE_REMOTE_SHUTDOWN_PRIVILEGE, 0),
     privilege(SE_TAKE_OWNERSHIP_PRIVILEGE, 0),
     privilege(SE_DEBUG_PRIVILEGE, 0),
+    privilege(SE_AUDIT_PRIVILEGE, 0),
     privilege(SE_SYSTEM_ENVIRONMENT_PRIVILEGE, 0),
     privilege(SE_SYSTEM_PROFILE_PRIVILEGE, 0),
     privilege(SE_PROF_SINGLE_PROCESS_PRIVILEGE, 0),
     privilege(SE_INC_BASE_PRIORITY_PRIVILEGE, 0),
     privilege(SE_LOAD_DRIVER_PRIVILEGE, 0),
     privilege(SE_CREATE_PAGEFILE_PRIVILEGE, 0),
+    privilege(SE_CREATE_PERMANENT_PRIVILEGE, 0),
     privilege(SE_INCREASE_QUOTA_PRIVILEGE, 0),
     privilege(
         SE_UNDOCK_PRIVILEGE,
@@ -530,10 +532,16 @@ mod tests {
 
     /// Enabling a held privilege reports its old state and sets the enabled bit; enabling again
     /// changes nothing and reports an empty PreviousState; disabling reports the enabled state.
-    /// TOKEN_PRIVILEGES for the default set takes 208 bytes.
+    /// TOKEN_PRIVILEGES for the default set takes 232 bytes, and the two added
+    /// privileges (SeAuditPrivilege, SeCreatePermanentPrivilege) are held disabled like the
+    /// rest of the Administrators' ones, SeTcbPrivilege still not held.
     #[test]
     fn adjust_enables_and_disables_and_reports_the_old_state() {
-        assert_eq!(privileges_size(HELD), 208);
+        assert_eq!(privileges_size(HELD), 232);
+        let privileges = DEFAULT_PRIVILEGES;
+        assert!(held(&privileges, luid(SE_AUDIT_PRIVILEGE)));
+        assert!(held(&privileges, luid(SE_CREATE_PERMANENT_PRIVILEGE)));
+        assert!(!held(&privileges, luid(SE_TCB_PRIVILEGE)));
         let mut set = DEFAULT_PRIVILEGES;
         let enable = change(&[(SE_SHUTDOWN_PRIVILEGE, SE_PRIVILEGE_ENABLED)]);
         let first = adjust(&mut set, &enable, Some(256)).unwrap();

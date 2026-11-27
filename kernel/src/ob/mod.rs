@@ -441,13 +441,13 @@ impl Header {
 /// object. The object starts with one reference (its creator's) and no handle, and carries the
 /// security descriptor the current create captured (the default when it captured none). None when
 /// the range is exhausted. The record itself is the caller's to renew.
-fn allocate(headers: &mut [Header], range: core::ops::Range<usize>) -> Option<u16> {
+fn allocate(headers: &mut [Header], range: core::ops::Range<usize>, fallback: Sd) -> Option<u16> {
     let end = range.end.min(headers.len());
     let index = (range.start..end).find(|&index| !headers[index].live)?;
     let header = &mut headers[index];
     header.live = true;
     header.counts = Counts::created();
-    header.sd = security::take_pending().unwrap_or(Sd::NULL_DACL);
+    header.sd = security::take_pending().unwrap_or(fallback);
     Some(index as u16)
 }
 
@@ -480,8 +480,8 @@ impl<T, const N: usize> Pool<T, N> {
     }
 
     /// Take a free record in `range` for a new object (see [`allocate`]).
-    fn allocate_in(&mut self, range: core::ops::Range<usize>) -> Option<u16> {
-        allocate(&mut self.headers, range)
+    fn allocate_in(&mut self, range: core::ops::Range<usize>, fallback: Sd) -> Option<u16> {
+        allocate(&mut self.headers, range, fallback)
     }
 
     /// Whether the record at `index` holds a live object.
@@ -582,7 +582,7 @@ where
 {
     let (id, record) = pool.allocate_or_grow(0, pages()).ok()?;
     record.counts = Counts::created();
-    record.sd = security::take_pending().unwrap_or(Sd::NULL_DACL);
+    record.sd = security::take_pending().unwrap_or_else(|| security::default_sd(kind));
     Some((object_id(kind, id), record))
 }
 
@@ -1278,7 +1278,7 @@ impl Directory {
     /// A fresh event of `kind` at `signaled`, holding its creator's reference; none when the pool
     /// is exhausted.
     pub fn create_event(&mut self, kind: EventKind, signaled: bool) -> Option<ObjectId> {
-        let index = self.events.allocate_in(0..EVENTS)?;
+        let index = self.events.allocate_in(0..EVENTS, Sd::NULL_DACL)?;
         with_bodies(|bodies| {
             bodies.renew_event(index, kind, signaled);
         });
@@ -1287,7 +1287,7 @@ impl Directory {
 
     /// A fresh semaphore at `initial` with ceiling `limit`.
     pub fn create_semaphore(&mut self, initial: i32, limit: i32) -> Option<ObjectId> {
-        let index = self.semaphores.allocate_in(0..SEMAPHORES)?;
+        let index = self.semaphores.allocate_in(0..SEMAPHORES, Sd::NULL_DACL)?;
         with_bodies(|bodies| {
             bodies.renew_semaphore(index, initial, limit);
         });
@@ -1296,7 +1296,7 @@ impl Directory {
 
     /// A fresh, free mutex.
     pub fn create_mutex(&mut self) -> Option<ObjectId> {
-        let index = self.mutexes.allocate_in(0..MUTEXES)?;
+        let index = self.mutexes.allocate_in(0..MUTEXES, Sd::NULL_DACL)?;
         with_bodies(|bodies| {
             bodies.renew_mutex(index);
         });
@@ -1305,7 +1305,7 @@ impl Directory {
 
     /// A fresh, unarmed, unsignaled waitable timer.
     pub fn create_timer(&mut self, manual_reset: bool) -> Option<ObjectId> {
-        let index = self.timers.allocate_in(0..TIMERS)?;
+        let index = self.timers.allocate_in(0..TIMERS, Sd::NULL_DACL)?;
         with_bodies(|bodies| {
             bodies.renew_waitable_timer(index, manual_reset);
         });
@@ -1316,7 +1316,7 @@ impl Directory {
     /// the caller renews it ([`Directory::renew_thread`]). Holds the thread's own reference,
     /// released when the thread ends.
     pub fn create_thread_in(&mut self, range: core::ops::Range<usize>) -> Option<ObjectId> {
-        let index = self.threads.allocate_in(range)?;
+        let index = self.threads.allocate_in(range, Sd::NULL_DACL)?;
         self.used_threads.insert(index);
         Some(self.id(ObjectType::Thread, index))
     }
@@ -1350,7 +1350,9 @@ impl Directory {
     /// reference, with every thread ordinal free; none when every process record is in use. Its
     /// index is the process record's.
     pub fn create_process(&mut self) -> Option<ObjectId> {
-        let index = self.processes.allocate_in(0..PROCESSES)?;
+        let index = self
+            .processes
+            .allocate_in(0..PROCESSES, security::default_sd(ObjectType::Process))?;
         self.processes.records[index as usize].reset();
         with_bodies(|bodies| {
             bodies.renew_process_object(index);
@@ -4292,7 +4294,7 @@ mod tests {
         assert_eq!(directory.security_descriptor(id), Some(&sd[..]));
         assert_eq!(security::take_pending(), None, "the allocation took it");
 
-        // A slot-pool kind too, and the default when nothing is pending.
+        // A slot-pool kind too, and the kind's default when nothing is pending.
         security::set_pending(security::Sd::from_bytes(&sd));
         let section = directory.create_section(SectionObject::none()).unwrap();
         assert_eq!(directory.security_descriptor(section), Some(&sd[..]));
@@ -4301,7 +4303,20 @@ mod tests {
             .unwrap();
         assert_eq!(
             directory.security_descriptor(file),
-            Some(security::Sd::NULL_DACL.as_slice())
+            Some(security::default_sd(ObjectType::File).as_slice())
+        );
+        let process = directory.create_process().unwrap();
+        assert_eq!(
+            directory.security_descriptor(process),
+            Some(security::default_sd(ObjectType::Process).as_slice())
+        );
+        let event = directory
+            .create_event(EventKind::Notification, false)
+            .unwrap();
+        assert_eq!(
+            directory.security_descriptor(event),
+            Some(security::Sd::NULL_DACL.as_slice()),
+            "the dispatcher kinds keep the NULL DACL"
         );
     }
 

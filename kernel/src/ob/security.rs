@@ -24,9 +24,14 @@ use crate::sec::{
     CallerMode,
     GenericMapping,
     Memory,
+    SecurityDescriptor,
     SidAndAttributes,
     Subject,
     TokenView,
+    SECURITY_DESCRIPTOR_MIN_LENGTH,
+    SECURITY_DESCRIPTOR_REVISION,
+    SE_DACL_PRESENT,
+    SE_SELF_RELATIVE,
 };
 use crate::status::{NtStatus, STATUS_SUCCESS};
 
@@ -80,6 +85,108 @@ impl Sd {
     /// The descriptor's bytes.
     pub fn as_slice(&self) -> &[u8] {
         &self.bytes[..self.len as usize]
+    }
+}
+
+/// Round a length up to a dword boundary.
+const fn align4(len: usize) -> usize {
+    (len + 3) & !3
+}
+
+/// Pack a self-relative descriptor from its parts in the order owner, group, DACL: the header
+/// with their dword-aligned offsets (a part not given keeps a zero field), then the parts.
+fn pack_sd(control: u16, owner: Option<&[u8]>, group: Option<&[u8]>, dacl: Option<&[u8]>) -> Sd {
+    let mut bytes = [0u8; MAX_SD];
+    let mut len = SECURITY_DESCRIPTOR_MIN_LENGTH;
+    let mut header = SecurityDescriptor {
+        revision: SECURITY_DESCRIPTOR_REVISION,
+        sbz1: 0,
+        control: control | SE_SELF_RELATIVE,
+        owner: 0,
+        group: 0,
+        sacl: 0,
+        dacl: 0,
+    };
+    for (field, part) in [
+        (&mut header.owner, owner),
+        (&mut header.group, group),
+        (&mut header.dacl, dacl),
+    ] {
+        if let Some(part) = part {
+            *field = len as u32;
+            bytes[len..len + part.len()].copy_from_slice(part);
+            len += align4(part.len());
+        }
+    }
+    assert!(header.write(&mut bytes[..SECURITY_DESCRIPTOR_MIN_LENGTH]));
+    Sd {
+        len: len as u16,
+        bytes,
+    }
+}
+
+/// The most bytes `allow_all_acl` writes: the header plus two ACEs over the longest SIDs.
+const ACL_CAP: usize = 8 + 2 * (8 + 68);
+
+/// An ACL of revision 2 holding one allow ACE per SID given, each granting every right a
+/// process object can grant (0x1F0FFF): type 0, flags 0, the ACE's dword-padded size, the mask,
+/// the SID. Its bytes and their count.
+fn allow_all_acl(sids: &[&crate::se::Sid]) -> ([u8; ACL_CAP], usize) {
+    let mut v = [0u8; ACL_CAP];
+    let mut len = 0usize;
+    let mut put = |v: &mut [u8; ACL_CAP], len: &mut usize, bytes: &[u8]| {
+        v[*len..*len + bytes.len()].copy_from_slice(bytes);
+        *len += bytes.len();
+    };
+    let mut ace_bytes = |v: &mut [u8; ACL_CAP], len: &mut usize, sid: &crate::se::Sid| {
+        let size = align4(8 + sid.size());
+        put(v, len, &[0, 0]);
+        put(v, len, &(size as u16).to_le_bytes());
+        put(v, len, &0x001F_0FFFu32.to_le_bytes());
+        put(v, len, crate::se::sid_bytes(sid).as_slice());
+        while *len % 4 != 0 {
+            put(v, len, &[0]);
+        }
+    };
+    let mut aces = 0usize;
+    for sid in sids {
+        ace_bytes(&mut v, &mut len, sid);
+        aces += 1;
+    }
+    let size = 8 + align4(len);
+    // The header goes first: shift the ACEs down past it.
+    v.copy_within(..len, 8);
+    v[..8].copy_from_slice(&[2, 0, 0, 0, 0, 0, 0, 0]);
+    v[2..4].copy_from_slice(&(size as u16).to_le_bytes());
+    v[4..6].copy_from_slice(&(aces as u16).to_le_bytes());
+    len = size;
+    (v, len)
+}
+
+/// The default descriptor an object of `kind` carries when its create captured none: a file's
+/// holds the Administrators owner and the Users group with no DACL (a query of the DACL alone
+/// answers the bare 20-byte header); a process's holds the Administrators owner, the logon's
+/// primary group and an Administrators-and-SYSTEM allow-all DACL (116 bytes); every other kind's
+/// is the NULL DACL, which grants every access.
+pub fn default_sd(kind: ObjectType) -> Sd {
+    match kind {
+        ObjectType::File => pack_sd(
+            0,
+            Some(crate::se::sid_bytes(&crate::se::ADMINISTRATORS).as_slice()),
+            Some(crate::se::sid_bytes(&crate::se::USERS).as_slice()),
+            None,
+        ),
+        ObjectType::Process => {
+            let (dacl, dacl_len) =
+                allow_all_acl(&[&crate::se::ADMINISTRATORS, &crate::se::LOCAL_SYSTEM]);
+            pack_sd(
+                SE_DACL_PRESENT,
+                Some(crate::se::sid_bytes(&crate::se::ADMINISTRATORS).as_slice()),
+                Some(crate::se::sid_bytes(&crate::se::PRIMARY_GROUP).as_slice()),
+                Some(&dacl[..dacl_len]),
+            )
+        }
+        _ => Sd::NULL_DACL,
     }
 }
 
@@ -670,6 +777,74 @@ mod tests {
         assert_eq!(Sd::from_bytes(&[0u8; MAX_SD + 1]), None);
         let small = Sd::from_bytes(&[1, 2, 3]).unwrap();
         assert_eq!(small.as_slice(), &[1, 2, 3]);
+    }
+
+    /// The per-kind defaults: a file's is the Administrators owner and the Users group with no
+    /// DACL (52 bytes, control self-relative only, so a DACL query answers the bare header); a
+    /// process's is the Administrators owner, the primary group and the Administrators-and-SYSTEM
+    /// DACL (116 bytes, DACL present); every other kind's is the NULL DACL. All three grant the
+    /// logon's subject everything asked, and all are valid self-relative descriptors.
+    #[test]
+    fn the_per_kind_defaults() {
+        let file = default_sd(ObjectType::File);
+        assert_eq!(file.as_slice().len(), 52);
+        let h = SecurityDescriptor::parse(file.as_slice()).unwrap();
+        assert_eq!(h.control, SE_SELF_RELATIVE, "no DACL present");
+        assert_eq!((h.owner, h.group, h.dacl), (20, 36, 0));
+        assert!(crate::sec::sid::equal(
+            &file.as_slice()[20..36],
+            crate::se::sid_bytes(&crate::se::ADMINISTRATORS).as_slice()
+        ));
+        assert!(crate::sec::sid::equal(
+            &file.as_slice()[36..52],
+            crate::se::sid_bytes(&crate::se::USERS).as_slice()
+        ));
+        assert!(crate::sec::is_valid_relative(file.as_slice(), 0));
+
+        let process = default_sd(ObjectType::Process);
+        assert_eq!(process.as_slice().len(), 116);
+        let h = SecurityDescriptor::parse(process.as_slice()).unwrap();
+        assert_eq!(h.control, SE_SELF_RELATIVE | SE_DACL_PRESENT);
+        assert_eq!((h.owner, h.group, h.dacl), (20, 36, 64));
+        assert!(crate::sec::sid::equal(
+            &process.as_slice()[20..36],
+            crate::se::sid_bytes(&crate::se::ADMINISTRATORS).as_slice()
+        ));
+        assert!(crate::sec::sid::equal(
+            &process.as_slice()[36..64],
+            crate::se::sid_bytes(&crate::se::PRIMARY_GROUP).as_slice()
+        ));
+        assert!(crate::sec::is_valid_relative(process.as_slice(), 0));
+
+        for kind in [
+            ObjectType::Event,
+            ObjectType::Section,
+            ObjectType::Key,
+            ObjectType::Token,
+        ] {
+            assert_eq!(
+                default_sd(kind).as_slice(),
+                Sd::NULL_DACL.as_slice(),
+                "{kind:?}"
+            );
+        }
+
+        // Both new defaults grant the logon's subject every kind everything asked.
+        let user = user_sid();
+        let admins = sid(5, &[32, 544]);
+        let groups = [(admins, 0xF)];
+        for (kind, sd) in [
+            (ObjectType::File, file.as_slice()),
+            (ObjectType::Process, process.as_slice()),
+        ] {
+            for desired in [GENERIC_ALL, MAXIMUM_ALLOWED] {
+                assert_eq!(
+                    run(kind, desired, sd, &user, &groups, CallerMode::User),
+                    Ok(kind.granted(desired)),
+                    "{kind:?} {desired:#x}"
+                );
+            }
+        }
     }
 
     // -- capture -------------------------------------------------------------------
