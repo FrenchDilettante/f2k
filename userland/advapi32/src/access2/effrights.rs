@@ -354,7 +354,7 @@ mod tests {
         assert_eq!(last_error(), 0xF2F2, "no error touched");
         assert!(unsafe { get_multiple_trustee_a(core::ptr::null()) }.is_null());
         assert_eq!(unsafe { get_multiple_trustee_operation_a(core::ptr::null()) }, 0);
-        let plain = vec![0u8; TRUSTEE_SIZE];
+        let plain = [0u8; TRUSTEE_SIZE];
         assert!(unsafe { get_multiple_trustee_a(plain.as_ptr()) }.is_null());
         assert_eq!(unsafe { get_multiple_trustee_operation_w(plain.as_ptr()) }, 0);
     }

@@ -372,7 +372,7 @@ mod tests {
         arm();
         let code = unsafe {
             trustee_access_to_object_a(
-                b"C:\\tmp\\thing.txt\0".as_ptr(),
+                c"C:\\tmp\\thing.txt".as_ptr() as *const u8,
                 SE_FILE_OBJECT,
                 core::ptr::null(),
                 trustee.as_ptr(),

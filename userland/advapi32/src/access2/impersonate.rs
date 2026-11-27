@@ -158,7 +158,7 @@ mod tests {
     /// whatever the thread argument; a token answers FALSE with ERROR_NOT_SUPPORTED.
     #[test]
     fn set_thread_token_answers_per_token() {
-        let mut thread = 0xFFFF_FFFEu32;
+        let thread = 0xFFFF_FFFEu32;
         arm();
         assert_eq!(
             (unsafe { set_thread_token(core::ptr::null(), 0) }, last_error()),
@@ -166,7 +166,7 @@ mod tests {
         );
         arm();
         assert_eq!(
-            (unsafe { set_thread_token(&mut thread, 0) }, last_error()),
+            (unsafe { set_thread_token(&thread, 0) }, last_error()),
             (1, 0xF2F2)
         );
         arm();
