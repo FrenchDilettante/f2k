@@ -18,6 +18,7 @@
 //! that asks an object's provider for its access list; F2K serves no providers, so it fails
 //! ERROR_NOT_SUPPORTED without touching the caller's outs.
 
+pub mod aclinfo;
 pub mod builders;
 pub mod entries;
 
