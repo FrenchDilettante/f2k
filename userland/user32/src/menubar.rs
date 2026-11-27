@@ -173,6 +173,21 @@ static OWNER: AtomicU32 = AtomicU32::new(0);
 static BAR_SELECTED: AtomicU32 = AtomicU32::new(u32::MAX);
 static BAR_OPEN: AtomicU32 = AtomicU32::new(0);
 static END_MENU: AtomicU32 = AtomicU32::new(0);
+/// The thread the menu loop runs on (its id), whose EndMenu alone ends it.
+static LOOP_THREAD: AtomicU32 = AtomicU32::new(0);
+
+/// The menu loop of `owner` begins on the calling thread: false while another loop runs in the
+/// process.
+fn begin_loop(owner: usize) -> bool {
+    if OWNER
+        .compare_exchange(0, owner as u32, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return false;
+    }
+    LOOP_THREAD.store(rtl::sys::current_thread_id(), Ordering::Release);
+    true
+}
 
 /// The window whose bar shows its mnemonics' underlines while Alt is held, 0 for none.
 static ALT_HELD: AtomicU32 = AtomicU32::new(0);
@@ -417,12 +432,13 @@ pub extern "system" fn draw_menu_bar(window: usize) -> u32 {
     1
 }
 
-/// EndMenu: the menu loop running in the process ended (its owner's thread woken by a WM_NULL);
-/// TRUE.
+/// EndMenu: the calling thread's menu loop ended (its owner woken by a WM_NULL); TRUE. Windows
+/// 2000's menu state is the thread's: another thread's EndMenu leaves the loop running, TRUE all
+/// the same (menus `endmenu`: the loop ends at the WM_CANCELMODE sent to its owner after).
 #[unsafe(export_name = "f2k_export_EndMenu")]
 pub extern "system" fn end_menu() -> u32 {
     let owner = loop_owner();
-    if owner != 0 {
+    if owner != 0 && LOOP_THREAD.load(Ordering::Acquire) == rtl::sys::current_thread_id() {
         END_MENU.store(1, Ordering::Release);
         let _ = imports::post_message(owner, WM_NULL, 0, 0);
     }
@@ -1148,10 +1164,7 @@ pub fn track_keyboard(owner: usize, character: u32) {
     if framed.menu == 0 || framed.style & WS_CHILD != 0 || count(framed.menu) == 0 {
         return;
     }
-    if OWNER
-        .compare_exchange(0, owner as u32, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
+    if !begin_loop(owner) {
         return;
     }
     END_MENU.store(0, Ordering::Release);
@@ -1233,10 +1246,7 @@ fn track_popup(menu: usize, flags: u32, x: i32, y: i32, owner: usize) -> i32 {
     if !window::is_window_alive(owner) {
         return crate::failed(crate::ERROR_INVALID_WINDOW_HANDLE).unwrap_or(0);
     }
-    if OWNER
-        .compare_exchange(0, owner as u32, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
+    if !begin_loop(owner) {
         return 0;
     }
     END_MENU.store(0, Ordering::Release);

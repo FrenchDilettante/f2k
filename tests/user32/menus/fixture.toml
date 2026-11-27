@@ -19,7 +19,6 @@ gate = true
 boot_under = "WINNT\\system32\\fish.exe"
 
 [pending]
-endmenu = "EndMenu from a second thread ends the menu loop directly, where Windows 2000's sends the owner WM_CANCELMODE, which ends it"
 lifo = "F2K gives 5,000 menus made at once fresh slots (every one of the last 100 with high word 1), where Windows 2000 hands most of them slots freed before (13 of the last 100 fresh)"
 capicon = "its title line now scans the caption's rows above the bottom separator; F2K's icons hold no image: user32's CreateIconIndirect is a stub and LoadIcon keeps no bits, and the caption draws no icon (neither the class's small icon, nor the big one scaled, nor a default one; no GCL_HICONSM synthesized from hIcon)"
 
