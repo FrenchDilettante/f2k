@@ -14,7 +14,7 @@ gate = true
 # U6 (.scratch/plans/user32-gdi32-completeness.md): msgwait.exe imports GetQueueStatus,
 # GetInputState, ReplyMessage, SendMessageCallbackA/W, GetMessageExtraInfo and WaitForInputIdle,
 # which F2K's user32 has as stubs only; drop each entry once its block passes.
-masks = "MsgWaitForMultipleObjects's QS_ALLPOSTMESSAGE does not wake on a posted message (a window's or the thread's), and a second thread's SendMessage to the window is not seen waiting (GetQueueStatus is a stub)"
+masks = "a second thread's SendMessage to the window is not seen waiting (GetQueueStatus is a stub)"
 status = "GetQueueStatus is a stub"
 input = "GetInputState and GetQueueStatus are stubs: no input or posted-message state is reported"
 insend = "InSendMessageEx not yet implemented (catalogued only); SendMessageCallbackW and ReplyMessage are stubs"

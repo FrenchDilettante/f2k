@@ -8,12 +8,6 @@ description = "timers - SetTimer's answers for window and thread timers (ids 0, 
 kind = "sectioned"
 gate = true
 
-[pending]
-ids = "SetTimer(NULL, 0) answers id 1, the id the window's timer holds, where Windows 2000 answers another"
-order = "due timers are delivered in the order they were set, where Windows 2000 delivers the one set last first"
-proc = "DispatchMessageW of a WM_TIMER posted by hand with a TIMERPROC in its lParam calls the TIMERPROC, where Windows 2000 calls nothing and answers 0 (no such timer); the dispatches' return values, the tick count, are masked"
-elapse = "SetTimer with an elapse of 0x80000000 or 0xFFFFFFFF waits that long, where Windows 2000 takes it as its minimum (a WM_TIMER within 200 ms)"
-
 [masks]
 # DispatchMessageW of a WM_TIMER with a TIMERPROC answers whatever the VOID TIMERPROC left in eax:
 # on the real machine a tick-count-like value, machine-specific.

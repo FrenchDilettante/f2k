@@ -7,10 +7,6 @@ timeout = 40
 # So hung boots on its own, beside the other sections' boot, instead of holding it up.
 separate = ["hung"]
 
-[pending]
-killtimer = "KillTimer of a timer that does not exist (never set, killed already, the other kind's id, NULL 0) sets ERROR_INVALID_PARAMETER where Windows 2000 leaves the last error, and of the desktop window's timer ERROR_ACCESS_DENIED"
-msgwait = "MsgWaitForMultipleObjectsEx: QS_ALLPOSTMESSAGE does not wake on a posted message, MWMO_INPUTAVAILABLE does not count a message already peeked, and MWMO_WAITALL and MWMO_ALERTABLE fail with ERROR_CALL_NOT_IMPLEMENTED (no APC runs)"
-
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
 # calls); scripts/compat.py derives each export's coverage from them.

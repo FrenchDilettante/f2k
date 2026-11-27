@@ -118,6 +118,7 @@ use rtl::user::{
     StyleStruct,
     HWND_BROADCAST,
     QS_ALLINPUT,
+    QS_ALLPOSTMESSAGE,
     QS_HOTKEY,
     QS_INPUT,
     QS_KEY,
@@ -657,7 +658,7 @@ impl Queues {
         list.tail = Some(entry);
         list.count += 1;
         let kind = match lane {
-            Lane::Posted => QS_POSTMESSAGE,
+            Lane::Posted => QS_POSTMESSAGE | QS_ALLPOSTMESSAGE,
             Lane::Input => input_kind(msg.message),
         };
         self.change(id, kind);
@@ -1131,7 +1132,7 @@ pub fn post_quit(windows: &mut Windows, caller: ThreadId, code: u32) {
     let queues = &mut windows.queues;
     if let Some(id) = queues.queue_of(caller) {
         queues.queues[id.index as usize].quit = Some(code);
-        queues.change(id, QS_POSTMESSAGE);
+        queues.change(id, QS_POSTMESSAGE | QS_ALLPOSTMESSAGE);
     }
 }
 
@@ -1210,9 +1211,13 @@ impl Filter {
 
     /// The kinds of message a read with the filter looks for, as Windows 2000's CalcWakeMask
     /// makes its wake mask: the PM_QS_* kinds, and of those, for a range, the sent and posted
-    /// messages and the kinds whose messages the range holds.
+    /// messages and the kinds whose messages the range holds. QS_ALLPOSTMESSAGE only for a read of
+    /// every message that looks at the posted ones: a range leaves it.
     pub fn wake_mask(&self) -> u32 {
         if self.min == 0 && self.max == 0 {
+            if self.kinds & QS_POSTMESSAGE != 0 {
+                return self.kinds | QS_ALLPOSTMESSAGE;
+            }
             return self.kinds;
         }
         let holds = |first: u32, last: u32| self.min <= last && first <= self.max;
@@ -1578,15 +1583,32 @@ pub fn wait_ready(windows: &mut Windows, caller: ThreadId, now: u64) -> Waited {
 /// [`wait_ready`] for the kinds `mask` (queue-status bits) alone: MsgWaitForMultipleObjects' wake
 /// mask.
 pub fn wait_ready_for(windows: &mut Windows, caller: ThreadId, now: u64, mask: u32) -> Waited {
+    wait_ready_with(windows, caller, now, mask, false)
+}
+
+/// [`wait_ready_for`], and with `available` (MWMO_INPUTAVAILABLE) ready too when the queue holds
+/// input of the mask's kinds already ([`holds`]), a read having seen it or not.
+pub fn wait_ready_with(
+    windows: &mut Windows,
+    caller: ThreadId,
+    now: u64,
+    mask: u32,
+    available: bool,
+) -> Waited {
     let Some(id) = windows.queues.queue_of(caller) else {
         return Waited::Ready;
     };
     if windows.queues.timers.expire(caller, now) {
         windows.queues.queues[id.index as usize].changed |= QS_TIMER;
     }
+    let mask = mask & (QS_ALLINPUT | QS_ALLPOSTMESSAGE);
+    if available && holds(windows, caller, id) & mask != 0 {
+        windows.queues.queues[id.index as usize].idle = true;
+        return Waited::Ready;
+    }
     let queue = &mut windows.queues.queues[id.index as usize];
     queue.idle = true;
-    if queue.changed & mask & QS_ALLINPUT != 0 {
+    if queue.changed & mask != 0 {
         return Waited::Ready;
     }
     // The caret blinks while the thread waits, as while it reads.
@@ -1599,6 +1621,32 @@ pub fn wait_ready_for(windows: &mut Windows, caller: ThreadId, now: u64, mask: u
         (timer, caret) => timer.or(caret),
     };
     Waited::Wait { due }
+}
+
+/// The kinds of message (queue-status bits) the caller's queue `id` holds now, seen by a read or
+/// not: Windows 2000's wake bits. Its timers' expirations are the caller's to mark first.
+fn holds(windows: &Windows, caller: ThreadId, id: QueueId) -> u32 {
+    let queue = &windows.queues.queues[id.index as usize];
+    let mut kinds = 0;
+    if queue.posted.head.is_some() || queue.quit.is_some() {
+        kinds |= QS_POSTMESSAGE | QS_ALLPOSTMESSAGE;
+    }
+    if queue.sent.head.is_some() {
+        kinds |= QS_SENDMESSAGE;
+    }
+    let mut at = queue.input.head;
+    while let Some(entry) = at {
+        let posted = windows.queues.posted.get(entry);
+        kinds |= input_kind(posted.msg.message);
+        at = posted.next;
+    }
+    if windows.queues.timers.any_ready(caller) {
+        kinds |= QS_TIMER;
+    }
+    if super::paint::next_paint(windows, caller, &Filter::new(0, 0, 0, 0)).is_some() {
+        kinds |= QS_PAINT;
+    }
+    kinds
 }
 
 /// GetMessageTime: the time of the last message the caller's reads retrieved (PeekMessage's
@@ -2173,12 +2221,19 @@ pub fn server_abandon(windows: &mut Windows, id: SentId) {
     }
 }
 
-/// DispatchMessage's step: the procedure the message goes to — WM_TIMER's TimerProc when its
-/// lParam names one, the window's procedure otherwise; 0 for a thread message or a window whose
-/// procedure is the window manager's. STATUS_INVALID_HANDLE for a handle naming no window.
-pub fn dispatch_target(windows: &Windows, msg: &Msg) -> Result<u32, NtStatus> {
+/// DispatchMessage's step for the caller's message: the procedure it goes to — WM_TIMER's
+/// TimerProc when its lParam names one a live timer of the caller's process has (Windows 2000's
+/// ValidateTimerCallback; a WM_TIMER posted by hand with another lParam goes nowhere, timers
+/// `proc`), the window's procedure otherwise; 0 for a thread message, a window whose procedure
+/// is the window manager's, or a TimerProc no timer has. STATUS_INVALID_HANDLE for a handle
+/// naming no window.
+pub fn dispatch_target(windows: &Windows, caller: ThreadId, msg: &Msg) -> Result<u32, NtStatus> {
     if msg.message == WM_TIMER && msg.lparam != 0 {
-        return Ok(msg.lparam as u32);
+        let process = windows.thread_process(caller);
+        let valid = windows.queues.timers.has_proc(msg.lparam as u32, |thread| {
+            windows.thread_process(thread) == process
+        });
+        return Ok(if valid { msg.lparam as u32 } else { 0 });
     }
     if msg.hwnd == 0 {
         return Ok(0);
@@ -3111,26 +3166,39 @@ mod target {
 
     /// MsgWaitForMultipleObjects' wait: the calling thread (its queue `thread`) waits on
     /// `objects` and on its queue's event at once, a wait-any, until `timeout` (100 ns units,
-    /// relative; none: no end): the wait's status, STATUS_WAIT_0 + the count of `objects` for the
-    /// queue's event (given something: the caller looks again at what).
+    /// relative; none: no end), its user APCs ending it when `alertable` (STATUS_USER_APC): the
+    /// wait's status, STATUS_WAIT_0 + the count of `objects` for the queue's event (given
+    /// something: the caller looks again at what).
     pub fn wait_on_objects_or_queue(
         thread: ThreadId,
         objects: &[WaitableId],
+        alertable: bool,
         timeout: Option<i64>,
     ) -> NtStatus {
         let mut ids = [EVENTS.id(thread.0 as usize); wait::MAXIMUM_WAIT_OBJECTS];
         ids[..objects.len()].copy_from_slice(objects);
-        let ids = &ids[..=objects.len()];
+        wait_on_objects(&ids[..=objects.len()], false, alertable, timeout)
+    }
+
+    /// The calling thread waits on `objects` (one at least), a wait-all when `wait_all`, until
+    /// `timeout` (100 ns units, relative; none: no end), alertably when `alertable`: the wait's
+    /// status, as NtWaitForMultipleObjects'.
+    pub fn wait_on_objects(
+        objects: &[WaitableId],
+        wait_all: bool,
+        alertable: bool,
+        timeout: Option<i64>,
+    ) -> NtStatus {
         wait::wait_current_with(|dispatcher, me, stamp, replay| {
             let timeout =
                 wait::replay_timeout(dispatcher.thread(me), replay, timeout, stamp.interrupt_time);
             dispatcher.wait_for_multiple(
                 me,
-                ids,
-                false,
+                objects,
+                wait_all,
                 WaitReason::UserRequest,
                 WaitMode::User,
-                false,
+                alertable,
                 timeout,
                 stamp,
             )
@@ -3149,6 +3217,7 @@ pub use target::{
     locked,
     now,
     wait_for_server,
+    wait_on_objects,
     wait_on_objects_or_queue,
     wait_on_queue,
     with_manager,
@@ -3163,6 +3232,9 @@ mod services {
         Receipt,
         SendTimeout,
         COPY_DATA_HEAD,
+        MWMO_ALERTABLE,
+        MWMO_INPUTAVAILABLE,
+        MWMO_WAITALL,
         ONE_PARAM_ENUM_CLIPBOARD_FORMATS,
         ONE_PARAM_IN_SEND_MESSAGE,
         ONE_PARAM_IS_HUNG_APP_WINDOW,
@@ -3362,11 +3434,15 @@ mod services {
 
     /// NtUserCallTwoParam's TWO_PARAM_MSG_WAIT: MsgWaitForMultipleObjects' wait ([`MsgWait`] at
     /// `args`), a wait-any on the handles and the caller's queue: the count when input of the
-    /// wake mask's kinds came to the queue since a read last looked for it ([`wait_ready_for`]:
-    /// a timer coming due counts), before the wait or while it lasts; otherwise the objects' wait
-    /// status (WAIT_OBJECT_0 + n,
-    /// WAIT_ABANDONED_0 + n, WAIT_TIMEOUT). STATUS_INVALID_PARAMETER for 64 handles or more;
-    /// a handle's refusal as NtWaitForMultipleObjects' (STATUS_INVALID_HANDLE...).
+    /// wake mask's kinds came to the queue since a read last looked for it ([`wait_ready_with`]:
+    /// a timer coming due counts; with MWMO_INPUTAVAILABLE, input the queue holds counts too),
+    /// before the wait or while it lasts; otherwise the objects' wait status (WAIT_OBJECT_0 + n,
+    /// WAIT_ABANDONED_0 + n, WAIT_TIMEOUT). With MWMO_WAITALL, the input and every object, as one
+    /// wait-all on the objects and the queue's event (guimsg `msgwait`: signaled objects and no
+    /// input time out): the objects are waited for, and taken, once the input is there,
+    /// WAIT_OBJECT_0 when they all are. With MWMO_ALERTABLE, the caller's user APCs end the wait
+    /// (WAIT_IO_COMPLETION, the APCs run on its way out). STATUS_INVALID_PARAMETER for 64 handles
+    /// or more; a handle's refusal as NtWaitForMultipleObjects' (STATUS_INVALID_HANDLE...).
     pub fn msg_wait(call: &mut NtCall, args: UserAddr) -> Result<u32, NtStatus> {
         let caller = gui_thread(call)?.thread;
         let wait = args.cast::<MsgWait>().read()?;
@@ -3385,14 +3461,26 @@ mod services {
         for ((object, id), &handle) in objects.iter_mut().zip(&mut held).zip(&raw[..count]) {
             (*id, *object) = crate::nt::sync::waitable_of(handle)?;
         }
+        let objects = &objects[..count];
+        let wait_all = wait.flags & MWMO_WAITALL != 0;
+        let alertable = wait.flags & MWMO_ALERTABLE != 0;
+        let available = wait.flags & MWMO_INPUTAVAILABLE != 0;
+        crate::nt::wait::check_objects(objects, wait_all)?;
+        // A wait-all waits on the queue alone until the input is there.
+        let with_queue = if wait_all { &objects[..0] } else { objects };
         let deadline = (wait.timeout != u32::MAX).then(|| now() + u64::from(wait.timeout) * 10_000);
         let passive = call.passive();
         crate::ob::waiting(&held[..count], || loop {
             let at = now();
             let due = match with_manager(passive, |m| {
-                wait_ready_for(&mut m.windows, caller, at, wait.wake_mask)
+                wait_ready_with(&mut m.windows, caller, at, wait.wake_mask, available)
             }) {
-                Waited::Ready => return wait.count,
+                Waited::Ready if !wait_all => return wait.count,
+                Waited::Ready if objects.is_empty() => return STATUS_SUCCESS.0,
+                Waited::Ready => {
+                    let timeout = deadline.map(|deadline| deadline.saturating_sub(at) as i64);
+                    return wait_on_objects(objects, true, alertable, timeout).0;
+                }
                 Waited::Wait { due } => due,
             };
             let end = match (deadline, due) {
@@ -3400,12 +3488,12 @@ mod services {
                 (deadline, due) => deadline.or(due),
             };
             let timeout = end.map(|end| end.saturating_sub(at) as i64);
-            let status = wait_on_objects_or_queue(caller, &objects[..count], timeout);
+            let status = wait_on_objects_or_queue(caller, with_queue, alertable, timeout);
             if status == STATUS_TIMEOUT && deadline.is_none_or(|deadline| now() < deadline) {
                 // A timer's due, not the caller's: look again.
                 continue;
             }
-            if status.0 != wait.count {
+            if status.0 != with_queue.len() as u32 {
                 return status.0;
             }
         })
@@ -3661,9 +3749,11 @@ mod services {
     /// NtUserDispatchMessage(Msg, Proc): the procedure DispatchMessage calls with the message
     /// ([`dispatch_target`]) into `proc`.
     pub fn dispatch_message(call: &mut NtCall, msg: UserAddr, proc: UserPtr<u32>) -> NtResult {
-        gui_thread(call)?;
+        let caller = gui_thread(call)?.thread;
         let msg = msg.cast::<Msg>().read()?;
-        let target = with_manager(call.passive(), |m| dispatch_target(&m.windows, &msg))?;
+        let target = with_manager(call.passive(), |m| {
+            dispatch_target(&m.windows, caller, &msg)
+        })?;
         proc.write(target)?;
         Ok(STATUS_SUCCESS)
     }
@@ -5197,8 +5287,9 @@ mod tests {
         assert_eq!(msg_of(read(m, b, &all(), 0)).hwnd, hb);
     }
 
-    /// DispatchMessage's procedure: WM_TIMER's TimerProc when it has one, the window's procedure,
-    /// none for a thread message; a handle naming no window is refused.
+    /// DispatchMessage's procedure: WM_TIMER's TimerProc when a timer has it (none when no timer
+    /// does: a WM_TIMER posted by hand), the window's procedure, none for a thread message; a
+    /// handle naming no window is refused.
     #[test]
     fn dispatch_names_the_procedure() {
         let (m, atom) = manager();
@@ -5210,14 +5301,19 @@ mod tests {
             lparam,
             ..Msg::default()
         };
-        assert_eq!(dispatch_target(&m.windows, &msg(h, WM_USER, 0)), Ok(PROC));
-        assert_eq!(dispatch_target(&m.windows, &msg(0, WM_USER, 0)), Ok(0));
         assert_eq!(
-            dispatch_target(&m.windows, &msg(h, WM_TIMER, 0x0040_2000)),
-            Ok(0x0040_2000)
+            dispatch_target(&m.windows, t, &msg(h, WM_USER, 0)),
+            Ok(PROC)
         );
+        assert_eq!(dispatch_target(&m.windows, t, &msg(0, WM_USER, 0)), Ok(0));
+        let timer = msg(h, WM_TIMER, 0x0040_2000);
+        assert_eq!(dispatch_target(&m.windows, t, &timer), Ok(0));
+        crate::win32k::timer::set(&mut m.windows, t, h, 1, 10, 0x0040_2000, 0).unwrap();
+        assert_eq!(dispatch_target(&m.windows, t, &timer), Ok(0x0040_2000));
+        crate::win32k::timer::kill(&mut m.windows, t, h, 1).unwrap();
+        assert_eq!(dispatch_target(&m.windows, t, &timer), Ok(0));
         assert_eq!(
-            dispatch_target(&m.windows, &msg(0x7FFF_FFFC, WM_USER, 0)),
+            dispatch_target(&m.windows, t, &msg(0x7FFF_FFFC, WM_USER, 0)),
             Err(STATUS_INVALID_HANDLE)
         );
     }
@@ -5321,10 +5417,11 @@ mod tests {
         assert_eq!(wait_ready(&mut m.windows, t, 450 * ms), Waited::Ready);
     }
 
-    /// A range's read looks for the kinds its messages are, and the sent and posted messages.
+    /// A range's read looks for the kinds its messages are, and the sent and posted messages; a
+    /// read of every message for QS_ALLPOSTMESSAGE too.
     #[test]
     fn a_range_looks_for_its_kinds() {
-        assert_eq!(all().wake_mask(), ALL_KINDS);
+        assert_eq!(all().wake_mask(), ALL_KINDS | QS_ALLPOSTMESSAGE);
         let only_sent = Filter::new(0, 0, 0, rtl::user::PM_QS_SENDMESSAGE);
         assert_eq!(only_sent.wake_mask(), QS_SENDMESSAGE);
         let user = Filter::new(0, WM_USER, WM_USER, 0);
@@ -5336,6 +5433,43 @@ mod tests {
         assert_eq!(timer.wake_mask() & (QS_TIMER | QS_KEY), QS_TIMER);
         let keys = Filter::new(0, WM_KEYFIRST, WM_KEYLAST, 0);
         assert_eq!(keys.wake_mask() & (QS_KEY | QS_PAINT), QS_KEY);
+    }
+
+    /// guimsg `msgwait`: a post wakes a wait for QS_ALLPOSTMESSAGE until a read of every message
+    /// looks; a message a peek saw is no longer new, but MWMO_INPUTAVAILABLE finds it, of the
+    /// mask's kinds only.
+    #[test]
+    fn a_wait_finds_what_the_queue_holds_when_asked() {
+        let (m, atom) = manager();
+        let t = thread(m, 1, 0x100);
+        let h = popup(m, atom, t);
+        deliver(m, t);
+        while !matches!(read(m, t, &all(), 0), Taken::Nothing { .. }) {}
+        post(&mut m.windows, t, h, WM_USER, 0, 0, 0).unwrap();
+        assert_eq!(
+            wait_ready_for(&mut m.windows, t, 0, QS_ALLPOSTMESSAGE),
+            Waited::Ready
+        );
+        let user = Filter::new(0, WM_USER + 1, WM_USER + 1, 0);
+        take(&mut m.windows, t, &user, false, 0).unwrap();
+        assert_eq!(
+            wait_ready_for(&mut m.windows, t, 0, QS_ALLPOSTMESSAGE),
+            Waited::Ready,
+            "a range leaves it"
+        );
+        take(&mut m.windows, t, &all(), false, 0).unwrap();
+        assert!(matches!(
+            wait_ready_for(&mut m.windows, t, 0, QS_ALLINPUT),
+            Waited::Wait { .. }
+        ));
+        assert_eq!(
+            wait_ready_with(&mut m.windows, t, 0, QS_ALLINPUT, true),
+            Waited::Ready
+        );
+        assert!(matches!(
+            wait_ready_with(&mut m.windows, t, 0, QS_TIMER | QS_KEY, true),
+            Waited::Wait { .. }
+        ));
     }
 
     /// GetMessageTime and GetMessagePos answer the last message a read retrieved, a peek that

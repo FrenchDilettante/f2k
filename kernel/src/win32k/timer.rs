@@ -6,7 +6,9 @@
 //! time's clock. Nothing runs when a timer comes due: a read of its thread's queue
 //! ([`super::queue::take`]) marks every due timer of the thread's ready and moves its due an
 //! interval on (expirations missed meanwhile coalesce into one, as Windows 2000's do), and makes a
-//! WM_TIMER for a ready one when nothing comes before it (wParam the id, lParam the TimerProc).
+//! WM_TIMER for a ready one when nothing comes before it (wParam the id, lParam the TimerProc):
+//! of several ready, the one set last, as Windows 2000's list of timers, a new one at its head,
+//! hands them out (timers `order`).
 //! A thread waiting on its empty queue waits no longer than its next timer's due — the scheduler's
 //! wait timeouts are the clock that wakes it — and SetTimer sets the queue's event, so a waiting
 //! thread a timer is set for looks again.
@@ -28,8 +30,13 @@ use crate::status::*;
 pub const TIMERS: usize = 64;
 
 /// The longest interval SetTimer takes, in milliseconds (USER_TIMER_MAXIMUM); a longer one is
-/// cut to it.
+/// Windows 2000's shortest, as a negative interval would be (timers `elapse`: 0x80000000 and
+/// 0xFFFFFFFF come due at once).
 pub const USER_TIMER_MAXIMUM: u32 = 0x7FFF_FFFF;
+
+/// The ids SetTimer makes for thread timers: from the highest down, back to the highest past the
+/// lowest, as Windows 2000's (none is 1, the id a window's timer of id 0 answers: timers `ids`).
+const THREAD_IDS: core::ops::RangeInclusive<u32> = 0x100..=0x7FFF;
 
 /// The shortest interval, in milliseconds: a zero interval comes due at every read, and a thread
 /// whose WM_TIMER its filter leaves out would never wait.
@@ -56,6 +63,9 @@ struct Timer {
     func: u32,
     /// It came due, and its WM_TIMER has not been taken yet.
     ready: bool,
+    /// When it was set, as a count of the timers set before it: of the ready ones, the latest set
+    /// goes first.
+    order: u32,
 }
 
 impl Timer {
@@ -69,6 +79,7 @@ impl Timer {
         due: 0,
         func: 0,
         ready: false,
+        order: 0,
     };
 }
 
@@ -77,6 +88,8 @@ pub struct Timers {
     timers: [Timer; TIMERS],
     /// The next id a thread timer may take.
     next_id: u32,
+    /// The next timer's [`Timer::order`].
+    next_order: u32,
 }
 
 impl Timers {
@@ -94,7 +107,8 @@ impl Timers {
             for index in 0..TIMERS {
                 records.add(index).write(Timer::EMPTY);
             }
-            addr_of_mut!((*timers).next_id).write(1);
+            addr_of_mut!((*timers).next_id).write(*THREAD_IDS.end());
+            addr_of_mut!((*timers).next_order).write(0);
         }
     }
 
@@ -106,13 +120,24 @@ impl Timers {
         })
     }
 
-    /// An id for a new thread timer of `thread`: none of its timers' (a counter's next value,
-    /// skipping 0 and the ids in use).
-    fn fresh_id(&mut self, thread: ThreadId) -> u32 {
+    /// The live thread timer with the id `id`, whichever thread's: the ids are the system's.
+    fn find_thread_timer(&self, id: u32) -> Option<usize> {
+        self.timers
+            .iter()
+            .position(|t| t.live && t.window.is_none() && t.id == id)
+    }
+
+    /// An id for a new thread timer: no live thread timer's (a counter's next value, counting
+    /// down through [`THREAD_IDS`] and round again).
+    fn fresh_id(&mut self) -> u32 {
         loop {
             let id = self.next_id;
-            self.next_id = self.next_id.wrapping_add(1).max(1);
-            if self.find(None, thread, id).is_none() {
+            self.next_id = if id <= *THREAD_IDS.start() {
+                *THREAD_IDS.end()
+            } else {
+                id - 1
+            };
+            if self.find_thread_timer(id).is_none() {
                 return id;
             }
         }
@@ -132,8 +157,8 @@ impl Timers {
         came
     }
 
-    /// The first ready timer of `thread` the filter takes a WM_TIMER of: its window, its id and its
-    /// TimerProc; no longer ready when `remove`.
+    /// The ready timer of `thread` the filter takes a WM_TIMER of, the one set last of several:
+    /// its window, its id and its TimerProc; no longer ready when `remove`.
     pub fn next_ready(
         &mut self,
         thread: ThreadId,
@@ -143,11 +168,28 @@ impl Timers {
         let timer = self
             .timers
             .iter_mut()
-            .find(|t| t.live && t.ready && t.thread == thread && filter.takes(t.hwnd, WM_TIMER))?;
+            .filter(|t| t.live && t.ready && t.thread == thread && filter.takes(t.hwnd, WM_TIMER))
+            .max_by_key(|t| t.order)?;
         if remove {
             timer.ready = false;
         }
         Some((timer.hwnd, timer.id, timer.func))
+    }
+
+    /// Whether a timer of `thread`'s came due and its WM_TIMER was not taken yet.
+    pub fn any_ready(&self, thread: ThreadId) -> bool {
+        self.timers
+            .iter()
+            .any(|t| t.live && t.ready && t.thread == thread)
+    }
+
+    /// Whether a live timer of a thread `same_process` takes has the TimerProc `func`: the check
+    /// DispatchMessage makes before it calls a WM_TIMER's lParam (Windows 2000's
+    /// ValidateTimerCallback), so a WM_TIMER posted by hand calls nothing.
+    pub fn has_proc(&self, func: u32, same_process: impl Fn(ThreadId) -> bool) -> bool {
+        self.timers
+            .iter()
+            .any(|t| t.live && t.func == func && same_process(t.thread))
     }
 
     /// When `thread`'s next timer comes due (interrupt time); none when it has no timer.
@@ -181,11 +223,12 @@ impl Timers {
 /// SetTimer at `now`: the window `hwnd`'s timer `id` (a null window: a thread timer of `caller`'s),
 /// due every `elapse` milliseconds, its WM_TIMER's lParam `func`. A timer already set with that
 /// window and id (or that thread and id) is reset: its interval, its TimerProc, its due from now,
-/// and a WM_TIMER not taken yet goes. The answer is the timer's id: the given one for a window's
-/// timer (1 for a zero id, as the answer must not be zero), the given one for a thread timer that
-/// matches one, a fresh one otherwise. STATUS_INVALID_HANDLE for a handle naming no window,
-/// STATUS_ACCESS_DENIED for another process's window, STATUS_INSUFFICIENT_RESOURCES when the table
-/// is full.
+/// and a WM_TIMER not taken yet goes; it keeps its place in the order ready timers go out in. The
+/// answer is the timer's id: the given one for a window's timer (1 for a zero id, as the answer
+/// must not be zero), the given one for a thread timer that matches one, a fresh one otherwise
+/// ([`THREAD_IDS`]). An interval past USER_TIMER_MAXIMUM is the shortest. STATUS_INVALID_HANDLE for
+/// a handle naming no window, STATUS_ACCESS_DENIED for another process's window,
+/// STATUS_INSUFFICIENT_RESOURCES when the table is full.
 #[allow(clippy::too_many_arguments)]
 pub fn set(
     windows: &mut Windows,
@@ -199,8 +242,13 @@ pub fn set(
     let window = owned_window(windows, caller, hwnd)?;
     let thread = window.map_or(caller, |w| windows.window_thread(w));
     let timers = &mut windows.queues.timers;
-    let (slot, id, answer) = match timers.find(window, caller, id) {
-        Some(slot) => (slot, id, if window.is_some() { id.max(1) } else { id }),
+    let (slot, id, answer, order) = match timers.find(window, caller, id) {
+        Some(slot) => (
+            slot,
+            id,
+            if window.is_some() { id.max(1) } else { id },
+            timers.timers[slot].order,
+        ),
         None => {
             let slot = timers
                 .timers
@@ -210,12 +258,24 @@ pub fn set(
             let id = if window.is_some() {
                 id
             } else {
-                timers.fresh_id(caller)
+                timers.fresh_id()
             };
-            (slot, id, if window.is_some() { id.max(1) } else { id })
+            let order = timers.next_order;
+            timers.next_order = order.wrapping_add(1);
+            (
+                slot,
+                id,
+                if window.is_some() { id.max(1) } else { id },
+                order,
+            )
         }
     };
-    let interval = u64::from(elapse.clamp(SHORTEST_INTERVAL, USER_TIMER_MAXIMUM)) * UNITS_PER_MS;
+    let elapse = if elapse > USER_TIMER_MAXIMUM {
+        SHORTEST_INTERVAL
+    } else {
+        elapse.max(SHORTEST_INTERVAL)
+    };
+    let interval = u64::from(elapse) * UNITS_PER_MS;
     timers.timers[slot] = Timer {
         live: true,
         thread,
@@ -226,22 +286,43 @@ pub fn set(
         due: now + interval,
         func,
         ready: false,
+        order,
     };
     windows.queues.wake_thread(thread, 0);
     Ok(answer)
 }
 
-/// KillTimer: the window `hwnd`'s timer `id` (a null window: `caller`'s thread timer) goes, with a
-/// WM_TIMER of it not taken yet. STATUS_INVALID_HANDLE for a handle naming no window,
-/// STATUS_ACCESS_DENIED for another process's window, STATUS_INVALID_PARAMETER for a timer there
-/// is not.
+/// KillTimer: the window `hwnd`'s timer `id` (a null window: the thread timer of that id, any
+/// thread's of the caller's process — guimsg `killtimer`: a second thread kills the main thread's)
+/// goes, with a WM_TIMER of it not taken yet. STATUS_INVALID_HANDLE for a handle naming no window,
+/// STATUS_ACCESS_DENIED for another process's window's timer; STATUS_UNSUCCESSFUL for a timer there
+/// is not (the desktop window's included), which KillTimer answers FALSE without a last error, as
+/// Windows 2000's.
 pub fn kill(windows: &mut Windows, caller: ThreadId, hwnd: Hwnd, id: u32) -> Result<(), NtStatus> {
-    let window = owned_window(windows, caller, hwnd)?;
-    let timers = &mut windows.queues.timers;
-    let slot = timers
-        .find(window, caller, id)
-        .ok_or(STATUS_INVALID_PARAMETER)?;
-    timers.timers[slot] = Timer::EMPTY;
+    let window = if hwnd == 0 {
+        None
+    } else {
+        Some(
+            windows
+                .window_from_handle(hwnd)
+                .ok_or(STATUS_INVALID_HANDLE)?,
+        )
+    };
+    let process = windows.thread_process(caller);
+    let timers = &windows.queues.timers;
+    let slot = match window {
+        Some(_) => timers.find(window, caller, id),
+        None => timers
+            .find_thread_timer(id)
+            .filter(|&slot| windows.thread_process(timers.timers[slot].thread) == process),
+    }
+    .ok_or(STATUS_UNSUCCESSFUL)?;
+    if let Some(window) = window {
+        if windows.window_process(window) != process {
+            return Err(STATUS_ACCESS_DENIED);
+        }
+    }
+    windows.queues.timers.timers[slot] = Timer::EMPTY;
     Ok(())
 }
 
@@ -403,7 +484,7 @@ mod tests {
             read(m, t, &all(), 22 * MS),
             Taken::Nothing { due: Some(25 * MS) }
         );
-        assert_eq!(kill(&mut m.windows, t, h, 7), Err(STATUS_INVALID_PARAMETER));
+        assert_eq!(kill(&mut m.windows, t, h, 7), Err(STATUS_UNSUCCESSFUL));
         assert_eq!(
             set(&mut m.windows, t, 0x7FFF_FFFC, 1, 10, 0, 0),
             Err(STATUS_INVALID_HANDLE)
@@ -461,8 +542,9 @@ mod tests {
         assert_eq!(msg_of(read(m, t, &all(), now)).message, WM_TIMER);
     }
 
-    /// The interval is held between the shortest and USER_TIMER_MAXIMUM; setting a timer wakes
-    /// the thread its WM_TIMER goes to, so a wait looks at the new due.
+    /// The interval is at least the shortest, and one past USER_TIMER_MAXIMUM is the shortest
+    /// (timers `elapse`); setting a timer wakes the thread its WM_TIMER goes to, so a wait looks
+    /// at the new due.
     #[test]
     fn the_interval_is_clamped_and_the_thread_woken() {
         let (m, _) = manager();
@@ -471,12 +553,46 @@ mod tests {
         let id = set(&mut m.windows, t, 0, 0, 0, 0, 0).unwrap();
         assert_eq!(m.windows.queues.take_wakes()[0], 1 << t.0);
         assert_eq!(read(m, t, &all(), 0), Taken::Nothing { due: Some(MS) });
-        set(&mut m.windows, t, 0, id, u32::MAX, 0, 0).unwrap();
+        set(&mut m.windows, t, 0, id, USER_TIMER_MAXIMUM, 0, 0).unwrap();
         assert_eq!(
             read(m, t, &all(), 0),
             Taken::Nothing {
                 due: Some(u64::from(USER_TIMER_MAXIMUM) * MS)
             }
         );
+        for elapse in [0x8000_0000, u32::MAX] {
+            set(&mut m.windows, t, 0, id, elapse, 0, 0).unwrap();
+            assert_eq!(read(m, t, &all(), 0), Taken::Nothing { due: Some(MS) });
+        }
+    }
+
+    /// timers `ids`: thread timers' ids count down from 0x7FFF, never 1; guimsg `killtimer`:
+    /// another thread of the process kills a thread timer by its id.
+    #[test]
+    fn thread_timer_ids_are_the_systems() {
+        let (m, _) = manager();
+        let t = thread(m, 1, 0x100);
+        let other = thread(m, 2, 0x200);
+        assert_eq!(set(&mut m.windows, t, 0, 0, 10, 0, 0), Ok(0x7FFF));
+        assert_eq!(set(&mut m.windows, t, 0, 77, 10, 0, 0), Ok(0x7FFE));
+        assert_eq!(set(&mut m.windows, other, 0, 0, 10, 0, 0), Ok(0x7FFD));
+        assert_eq!(kill(&mut m.windows, other, 0, 0x7FFF), Ok(()));
+        assert_eq!(kill(&mut m.windows, t, 0, 0x7FFF), Err(STATUS_UNSUCCESSFUL));
+    }
+
+    /// timers `order`: of two timers come due, the one set last goes first; one set again keeps
+    /// its place.
+    #[test]
+    fn the_timer_set_last_goes_first() {
+        let (m, atom) = manager();
+        let t = thread(m, 1, 0x100);
+        let h = popup(m, atom, t);
+        deliver(m, t);
+        set(&mut m.windows, t, h, 11, 10, 0, 0).unwrap();
+        set(&mut m.windows, t, h, 12, 10, 0, 0).unwrap();
+        let thread_timer = set(&mut m.windows, t, 0, 0, 10, 0, 0).unwrap();
+        set(&mut m.windows, t, h, 11, 10, 0, 0).unwrap();
+        let ids: [u32; 3] = core::array::from_fn(|_| msg_of(read(m, t, &all(), 20 * MS)).wparam);
+        assert_eq!(ids, [thread_timer, 12, 11]);
     }
 }

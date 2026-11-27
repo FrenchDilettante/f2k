@@ -52,6 +52,7 @@ use crate::procedure::{self, Procedure};
 use crate::records::Table;
 use crate::{
     answered,
+    failed,
     failed_with,
     focus,
     imports,
@@ -552,14 +553,8 @@ fn send_notify(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool
     1
 }
 
-/// MsgWaitForMultipleObjectsEx's flags (winuser.h's MWMO_*): the wait-all, the alertable wait.
-const MWMO_WAITALL: u32 = 0x0001;
-const MWMO_ALERTABLE: u32 = 0x0002;
 /// The wait's failure (winbase.h's WAIT_FAILED).
 const WAIT_FAILED: u32 = 0xFFFF_FFFF;
-
-/// The MsgWaitForMultipleObjects calls' cases logged in this process.
-static MSG_WAIT_LOGGED: rtl::stub::Logged<4> = rtl::stub::Logged::new();
 
 /// MsgWaitForMultipleObjects: [`msg_wait_for_multiple_objects_ex`]'s, `wait_all` its
 /// MWMO_WAITALL.
@@ -576,17 +571,18 @@ pub unsafe extern "system" fn msg_wait_for_multiple_objects(
     wake_mask: u32,
 ) -> u32 {
     let flags = if wait_all != 0 { MWMO_WAITALL } else { 0 };
-    msg_wait(count, handles, milliseconds, wake_mask, flags, true)
+    msg_wait(count, handles, milliseconds, wake_mask, flags)
 }
 
 /// MsgWaitForMultipleObjectsEx: the calling thread waits for one of the objects its handles name
 /// to be signaled (WAIT_OBJECT_0 + its index, WAIT_ABANDONED_0 + it for an abandoned mutex), for
 /// input of the wake mask's kinds to come to its queue since a read last looked for it
-/// (WAIT_OBJECT_0 + `count`: a post, a send, a timer coming due...), or for the timeout
-/// (WAIT_TIMEOUT); WAIT_FAILED with the last error for a handle that names nothing it can wait on,
-/// or for 64 handles or more (ERROR_INVALID_PARAMETER). The messages sent meanwhile are not
-/// delivered: the caller's read does it. The wait for every object and the alertable wait
-/// (MWMO_WAITALL, MWMO_ALERTABLE) are not served yet: logged, WAIT_FAILED.
+/// (WAIT_OBJECT_0 + `count`: a post, a send, a timer coming due...; with MWMO_INPUTAVAILABLE, input
+/// the queue holds already), or for the timeout (WAIT_TIMEOUT). With MWMO_WAITALL, every object
+/// and the input end it (WAIT_OBJECT_0); with MWMO_ALERTABLE, the thread's user APCs run and end
+/// it (WAIT_IO_COMPLETION). WAIT_FAILED with the last error for a handle that names nothing it can
+/// wait on, for 64 handles or more and for a flag it does not know (ERROR_INVALID_PARAMETER). The
+/// messages sent meanwhile are not delivered: the caller's read does it.
 ///
 /// # Safety
 ///
@@ -599,61 +595,20 @@ pub unsafe extern "system" fn msg_wait_for_multiple_objects_ex(
     wake_mask: u32,
     flags: u32,
 ) -> u32 {
-    msg_wait(count, handles, milliseconds, wake_mask, flags, false)
+    if flags & !MWMO_VALID != 0 {
+        return failed(rtl::winerror::ERROR_INVALID_PARAMETER).unwrap_or(WAIT_FAILED);
+    }
+    msg_wait(count, handles, milliseconds, wake_mask, flags)
 }
 
-/// The MsgWaitForMultipleObjects calls' core (`plain`: the call without Ex, as its log line names
-/// it).
-fn msg_wait(
-    count: u32,
-    handles: *const u32,
-    milliseconds: u32,
-    wake_mask: u32,
-    flags: u32,
-    plain: bool,
-) -> u32 {
-    if flags & (MWMO_WAITALL | MWMO_ALERTABLE) != 0 {
-        let (entry, args) = if plain {
-            (
-                &crate::spec::MsgWaitForMultipleObjects,
-                [
-                    u64::from(count),
-                    handles as usize as u64,
-                    u64::from(flags & MWMO_WAITALL),
-                    u64::from(milliseconds),
-                    u64::from(wake_mask),
-                ],
-            )
-        } else {
-            (
-                &crate::spec::MsgWaitForMultipleObjectsEx,
-                [
-                    u64::from(count),
-                    handles as usize as u64,
-                    u64::from(milliseconds),
-                    u64::from(wake_mask),
-                    u64::from(flags),
-                ],
-            )
-        };
-        if MSG_WAIT_LOGGED.first(flags & (MWMO_WAITALL | MWMO_ALERTABLE)) {
-            // SAFETY: the arguments are integers and a pointer the line prints as a number.
-            unsafe {
-                crate::stub::unhandled(
-                    entry,
-                    "the wait for every object, or alertable, is not yet implemented",
-                    &args,
-                )
-            };
-        }
-        imports::set_last_error(rtl::winerror::ERROR_CALL_NOT_IMPLEMENTED);
-        return WAIT_FAILED;
-    }
+/// The MsgWaitForMultipleObjects calls' core: the kernel's wait.
+fn msg_wait(count: u32, handles: *const u32, milliseconds: u32, wake_mask: u32, flags: u32) -> u32 {
     let wait = MsgWait {
         count,
         handles: handles as usize as u32,
         timeout: milliseconds,
         wake_mask,
+        flags,
     };
     let answer = imports::call_two_param(
         &wait as *const MsgWait as usize as u32,
@@ -1342,10 +1297,14 @@ pub extern "system" fn set_timer(window: usize, id: u32, elapse: u32, func: usiz
 }
 
 /// KillTimer: the window's timer `id` (NULL: the thread timer of that id) gone; TRUE, or FALSE
-/// with the last error.
+/// with the last error (1400 for a handle naming no window); FALSE with the last error left as it
+/// was for a timer there is not, as Windows 2000's (guimsg `killtimer`).
 #[unsafe(export_name = "f2k_export_KillTimer")]
 pub extern "system" fn kill_timer(window: usize, id: u32) -> u32 {
-    answered(imports::kill_timer(window, id)).is_some() as u32
+    match imports::kill_timer(window, id) {
+        Err(status) if status.0 == rtl::status::STATUS_UNSUCCESSFUL => 0,
+        answer => answered(answer).is_some() as u32,
+    }
 }
 
 /// DefWindowProc's WM_SETTEXT: the window's text set to the string at `text` (the narrow form's
@@ -1950,27 +1909,19 @@ mod tests {
         assert!(seen().is_empty());
     }
 
-    /// MsgWaitForMultipleObjects' wait for every object, and MsgWaitForMultipleObjectsEx's
-    /// alertable wait, are not served: WAIT_FAILED, ERROR_CALL_NOT_IMPLEMENTED, no service called.
+    /// guimsg `msgwait`: a flag MsgWaitForMultipleObjectsEx does not know fails it with
+    /// ERROR_INVALID_PARAMETER, no service called.
     ///
-    /// Pins: user32.MsgWaitForMultipleObjects, user32.MsgWaitForMultipleObjectsEx
+    /// Pins: user32.MsgWaitForMultipleObjectsEx
     #[test]
-    fn a_message_wait_for_every_object_is_refused() {
+    fn a_message_wait_with_an_unknown_flag_is_refused() {
         let services = crate::imports::host::SERVICES.with(|count| count.get());
+        arm();
         // SAFETY: no handles are read.
-        unsafe {
-            assert_eq!(
-                msg_wait_for_multiple_objects(0, core::ptr::null(), 1, 0, 0xFF),
-                WAIT_FAILED
-            );
-            assert_eq!(last_error(), rtl::winerror::ERROR_CALL_NOT_IMPLEMENTED);
-            arm();
-            assert_eq!(
-                msg_wait_for_multiple_objects_ex(0, core::ptr::null(), 0, 0xFF, MWMO_ALERTABLE),
-                WAIT_FAILED
-            );
-            assert_eq!(last_error(), rtl::winerror::ERROR_CALL_NOT_IMPLEMENTED);
-        }
+        let answer =
+            unsafe { msg_wait_for_multiple_objects_ex(0, core::ptr::null(), 0, 0xFF, 0x10) };
+        assert_eq!(answer, WAIT_FAILED);
+        assert_eq!(last_error(), rtl::winerror::ERROR_INVALID_PARAMETER);
         assert_eq!(
             crate::imports::host::SERVICES.with(|count| count.get()),
             services

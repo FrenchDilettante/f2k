@@ -691,8 +691,9 @@ pub const TWO_PARAM_MSG_WAIT: u32 = 2;
 pub const TWO_PARAM_SET_CURSOR_POS: u32 = 3;
 
 /// MsgWaitForMultipleObjects' arguments, as [`TWO_PARAM_MSG_WAIT`] reads them: the handles (fewer
-/// than 64, at `handles`), the timeout in milliseconds (INFINITE, 0xFFFFFFFF, for none), and the
-/// queue-status bits of the input that ends the wait.
+/// than 64, at `handles`), the timeout in milliseconds (INFINITE, 0xFFFFFFFF, for none), the
+/// queue-status bits of the input that ends the wait, and MsgWaitForMultipleObjectsEx's flags
+/// (the `MWMO_` ones).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MsgWait {
@@ -700,9 +701,19 @@ pub struct MsgWait {
     pub handles: u32,
     pub timeout: u32,
     pub wake_mask: u32,
+    pub flags: u32,
 }
 
-// SAFETY: four integers.
+/// MsgWaitForMultipleObjectsEx's flags (winuser.h's MWMO_*): every object and an input end the
+/// wait, not one of them; user APCs run and end it (WAIT_IO_COMPLETION); input the queue holds
+/// counts, not only input come since a read last looked for it.
+pub const MWMO_WAITALL: u32 = 0x0001;
+pub const MWMO_ALERTABLE: u32 = 0x0002;
+pub const MWMO_INPUTAVAILABLE: u32 = 0x0004;
+/// Every flag MsgWaitForMultipleObjectsEx takes; another fails with ERROR_INVALID_PARAMETER.
+pub const MWMO_VALID: u32 = MWMO_WAITALL | MWMO_ALERTABLE | MWMO_INPUTAVAILABLE;
+
+// SAFETY: five integers.
 unsafe impl Pod for MsgWait {}
 
 /// NtUserCallHwndLock's routines: UpdateWindow (a WM_PAINT sent to the window when its update
