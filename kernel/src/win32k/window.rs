@@ -3978,14 +3978,15 @@ impl Windows {
                 }
             }
             State::Maximized => {
+                let (cx, cy) = windows.max_size_on_maximize(window, mmi.max_size);
                 let w = windows.at_mut(window);
                 w.style = (w.style | WS_MAXIMIZE) & !WS_MINIMIZE;
                 let (x, y) = mmi.max_position;
                 Rect {
                     left: x,
                     top: y,
-                    right: x.saturating_add(mmi.max_size.0.max(0)),
-                    bottom: y.saturating_add(mmi.max_size.1.max(0)),
+                    right: x.saturating_add(cx.max(0)),
+                    bottom: y.saturating_add(cy.max(0)),
                 }
             }
             State::Normal => {
@@ -4023,20 +4024,22 @@ impl Windows {
     /// The MINMAXINFO the window manager fills in for `window` before WM_GETMINMAXINFO goes
     /// (Windows 2000's xxxInitSendValidateMinMaxInfo; the procedure may change any of it):
     ///
-    /// - the maximized size and place: the monitor's work area (a child's parent's client area)
-    ///   with the sizing border outside it, or where SetWindowPlacement put it
+    /// - the maximized size and place: the monitor's size (a child's parent's client area's) with
+    ///   the sizing border on both sides, placed the border's width outside the work area's corner
+    ///   (the guigeo capture's `mmdefault`), or where SetWindowPlacement put it
     ///   ([`Windows::maximized_rect`]);
     /// - the minimum tracking size: SM_CXMINTRACK by SM_CYMINTRACK (the guigeo capture's `defer`
     ///   sizes a window 90 wide to 112);
     /// - the maximum tracking size: SM_CXMAXTRACK by SM_CYMAXTRACK, the screens' extent with a
     ///   sizing border and an edge on each side (an assumption: no capture has it yet);
-    /// - ptReserved: zero.
+    /// - ptReserved: a minimized window's size, SM_CXMINIMIZED by SM_CYMINIMIZED (the guigeo
+    ///   capture's `mmdefault`: 160,24).
     pub fn default_min_max_info(&self, window: WindowId) -> MinMaxInfo {
-        let max = self.maximized_rect(window);
+        let max = self.maximized_rect(window, true);
         let screens = self.screens();
         let slack = 2 * (rtl::nonclient::FRAME + rtl::nonclient::EDGE);
         MinMaxInfo {
-            reserved: (0, 0),
+            reserved: MINIMIZED_SIZE,
             max_size: (
                 max.right.saturating_sub(max.left),
                 max.bottom.saturating_sub(max.top),
@@ -4074,20 +4077,32 @@ impl Windows {
     /// Where `window` goes maximized, in its parent's client coordinates: its maximized position
     /// (SetWindowPlacement's) or, without one, its sizing border's width outside the monitor's
     /// work area (a child's outside its parent's client area); as large as that area and the
-    /// border on both sides, as WM_GETMINMAXINFO's default ptMaxSize and ptMaxPosition give it.
-    fn maximized_rect(&self, window: WindowId) -> Rect {
+    /// border on both sides. With `monitor`, as large as the whole monitor and the border instead
+    /// (a top-level window's): WM_GETMINMAXINFO's default ptMaxSize, which Windows 2000's
+    /// xxxInitSendValidateMinMaxInfo takes from the monitor and its maximize brings back to the
+    /// work area ([`Windows::max_size_on_maximize`]).
+    fn maximized_rect(&self, window: WindowId, monitor: bool) -> Rect {
         let w = self.at(window);
-        let area = match w.parent {
+        let (area, size) = match w.parent {
             Some(p) if w.is_child() && self.pool.is_live(p) => {
                 let client = self.at(p).client_rect;
-                Rect {
+                let area = Rect {
                     left: 0,
                     top: 0,
                     right: client.right - client.left,
                     bottom: client.bottom - client.top,
-                }
+                };
+                (area, area)
             }
-            _ => self.work_area(w.monitor),
+            _ => {
+                let work = self.work_area(w.monitor);
+                let size = if monitor {
+                    self.monitors[w.monitor as usize].rect
+                } else {
+                    work
+                };
+                (work, size)
+            }
         };
         let border = rtl::nonclient::Frame::of_styles(w.style & !WS_MINIMIZE, w.ex_style, false)
             .border_width;
@@ -4097,8 +4112,21 @@ impl Windows {
         Rect {
             left: x,
             top: y,
-            right: x.saturating_add((area.right - area.left).saturating_add(2 * border)),
-            bottom: y.saturating_add((area.bottom - area.top).saturating_add(2 * border)),
+            right: x.saturating_add((size.right - size.left).saturating_add(2 * border)),
+            bottom: y.saturating_add((size.bottom - size.top).saturating_add(2 * border)),
+        }
+    }
+
+    /// The size `window` takes maximized, WM_GETMINMAXINFO having answered `max_size`: the
+    /// default's monitor size (with the border) becomes the work area's, as Windows 2000's
+    /// maximize keeps a window off the taskbar; any other size the procedure chose stands.
+    fn max_size_on_maximize(&self, window: WindowId, max_size: (i32, i32)) -> (i32, i32) {
+        let monitor = self.maximized_rect(window, true);
+        if max_size == (monitor.width(), monitor.height()) {
+            let work = self.maximized_rect(window, false);
+            (work.width(), work.height())
+        } else {
+            max_size
         }
     }
 
@@ -10348,10 +10376,11 @@ mod tests {
         assert!(pump.events.contains(&Ev::Activate(top, Activate::Skip)));
     }
 
-    /// The window manager's MINMAXINFO before WM_GETMINMAXINFO goes: maximized, the work area
-    /// with the sizing border outside it (where SetWindowPlacement's place says, when it has one);
+    /// The window manager's MINMAXINFO before WM_GETMINMAXINFO goes: reserved, the minimized
+    /// size; maximized, the monitor with the sizing border on both sides, placed the border's
+    /// width outside the work area (where SetWindowPlacement's place says, when it has one);
     /// tracking from SM_CXMINTRACK by SM_CYMINTRACK to the screen with a border and an edge each
-    /// side.
+    /// side (guigeo `mmdefault`).
     #[test]
     fn the_min_max_defaults() {
         let (w, _, t, _, _, _) = setup();
@@ -10359,7 +10388,7 @@ mod tests {
         assert_eq!(
             w.default_min_max_info(id),
             MinMaxInfo {
-                reserved: (0, 0),
+                reserved: (160, 24),
                 max_size: (648, 488),
                 max_position: (-4, -4),
                 min_track: (112, 27),
