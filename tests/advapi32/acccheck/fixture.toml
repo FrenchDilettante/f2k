@@ -15,7 +15,6 @@ owner = "the owner's implicit READ_CONTROL/WRITE_DAC in the access check is unim
 maximum = "the MAXIMUM_ALLOWED fast path of the access check is unimplemented: AccessCheck is catalogued only in advapi32"
 areall = "AreAllAccessesGranted and AreAnyAccessesGranted are unimplemented in advapi32 (catalogued only)"
 priv = "the privilege-gated rights of the access check (ACCESS_SYSTEM_SECURITY needs SeSecurityPrivilege, WRITE_OWNER needs the owner or SeTakeOwnershipPrivilege) are unimplemented: AccessCheck is catalogued only in advapi32"
-effrights = "GetEffectiveRightsFromAclA/W are unimplemented in advapi32 (catalogued only), so no effective rights are computed from an ACL"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
