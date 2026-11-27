@@ -6,12 +6,11 @@
 //! caller frees with LocalFree or FreeSid.
 
 use rtl::heap::ProcessHeap as _;
-use rtl::string::UnicodeString;
 // ERROR_INVALID_PARAMETER: a null argument. ERROR_INVALID_SID: a string that is not a SID.
 // ERROR_NOT_ENOUGH_MEMORY: no room for a SID or a string.
 use rtl::winerror::{ERROR_INVALID_PARAMETER, ERROR_INVALID_SID, ERROR_NOT_ENOUGH_MEMORY};
 
-use super::{services, SID_HEADER, SID_MAX_SUB_AUTHORITIES};
+use super::{SID_HEADER, SID_MAX_SUB_AUTHORITIES};
 use crate::imports::{self as nt, ProcessHeap};
 use crate::token::{bool_of, failed, optional_ansi, optional_wide};
 use crate::Out;

@@ -5,12 +5,8 @@
 //! failed copy maps its status to the last error (ERROR_INSUFFICIENT_BUFFER when the buffer is too
 //! small) and answers FALSE.
 
-// ERROR_INVALID_PARAMETER: a null argument to the copy.
-use rtl::winerror::ERROR_INVALID_PARAMETER;
-
 use super::services;
 use crate::imports::{self as nt};
-use crate::token::failed;
 
 /// GetSidIdentifierAuthority: the address of the SID's identifier authority; the last error
 /// ERROR_SUCCESS.

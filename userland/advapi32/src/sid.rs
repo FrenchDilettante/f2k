@@ -15,6 +15,7 @@
 //! level at least; with no token, of the calling process's token (F2K's threads never impersonate,
 //! so the thread has none of its own). IsMember is FALSE before anything is looked at.
 
+use rtl::array_vec::ArrayVec;
 use rtl::heap::ProcessHeap as _;
 use rtl::pod::Pod;
 use rtl::status::{NtStatus, STATUS_BUFFER_TOO_SMALL, STATUS_NO_MEMORY};
@@ -55,6 +56,8 @@ use crate::{caller_bytes, caller_bytes_mut, Out};
 
 /// The most sub-authorities a SID has (SID_MAX_SUB_AUTHORITIES).
 pub(crate) const MAX_SUB_AUTHORITIES: usize = 15;
+/// The most bytes a SID takes: its header and the most sub-authorities.
+const SID_MAX: usize = SID_HEADER + 4 * MAX_SUB_AUTHORITIES;
 /// AllocateAndInitializeSid's most.
 const MAX_ALLOCATED: usize = 8;
 /// A SID's revision (SID_REVISION).
@@ -726,10 +729,11 @@ pub unsafe extern "system" fn equal_domain_sid(
     };
     // One SID is the other's domain when it is the other's bytes but for the last sub-authority.
     // The domain: the SID's bytes but for the last sub-authority, with the count lowered.
-    fn domain_of(sid: &[u8]) -> Option<Vec<u8>> {
+    fn domain_of(sid: &[u8]) -> Option<ArrayVec<u8, SID_MAX>> {
         let count = usize::from(*sid.get(1)?);
         let last = count.checked_sub(1)?;
-        let mut prefix = sid.get(..sid_len(last))?.to_vec();
+        let mut prefix = ArrayVec::new();
+        prefix.try_extend_from_slice(sid.get(..sid_len(last))?).ok()?;
         prefix[1] = last as u8;
         Some(prefix)
     }

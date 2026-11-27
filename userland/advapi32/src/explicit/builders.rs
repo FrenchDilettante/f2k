@@ -4,13 +4,10 @@
 //! trustee's name, and leaves the last error untouched.
 
 use super::{
-    read_trustee,
     ExplicitAccess,
     Trustee,
-    IMPERSONATION,
     NO_MULTIPLE_TRUSTEE,
     TRUSTEE_IS_NAME,
-    TRUSTEE_IS_SID,
     TRUSTEE_IS_UNKNOWN,
 };
 
