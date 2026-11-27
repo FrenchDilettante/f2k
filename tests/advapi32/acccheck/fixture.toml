@@ -13,7 +13,6 @@ allowed = "AccessCheck is unimplemented in advapi32 (catalogued only) and F2K en
 denied = "the deny-first walk order of the access check is unimplemented: AccessCheck is catalogued only in advapi32 and F2K keeps no DACL to walk"
 owner = "the owner's implicit READ_CONTROL/WRITE_DAC in the access check is unimplemented: AccessCheck is catalogued only in advapi32"
 maximum = "the MAXIMUM_ALLOWED fast path of the access check is unimplemented: AccessCheck is catalogued only in advapi32"
-bytype = "AccessCheckByType and AccessCheckByTypeResultList are unimplemented in advapi32 (catalogued only)"
 areall = "AreAllAccessesGranted and AreAnyAccessesGranted are unimplemented in advapi32 (catalogued only)"
 priv = "the privilege-gated rights of the access check (ACCESS_SYSTEM_SECURITY needs SeSecurityPrivilege, WRITE_OWNER needs the owner or SeTakeOwnershipPrivilege) are unimplemented: AccessCheck is catalogued only in advapi32"
 effrights = "GetEffectiveRightsFromAclA/W are unimplemented in advapi32 (catalogued only), so no effective rights are computed from an ACL"

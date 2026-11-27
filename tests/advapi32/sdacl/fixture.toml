@@ -11,13 +11,8 @@ gate = true
 # trip, and each block un-xfails when that behavior lands.
 initsd = "advapi32's security-descriptor entry points carry no impl yet: InitializeSecurityDescriptor, IsValidSecurityDescriptor, GetSecurityDescriptorLength and GetSecurityDescriptorControl are catalogued only"
 acl = "the ACL builders are unimplemented in advapi32: InitializeAcl, IsValidAcl, AddAce, GetAce, FindFirstFreeAce and DeleteAce are catalogued only"
-allowedace = "AddAccessAllowedAce is unimplemented in advapi32 (catalogued only), so no allowed ACE is built or read back"
-deniedace = "AddAccessDeniedAce is unimplemented in advapi32 (catalogued only), so no deny ACE is built and the walk order is unobserved"
-sid = "the SID entry points are unimplemented in advapi32: AllocateAndInitializeSid's siblings InitializeSid, GetLengthSid, IsValidSid, EqualSid, EqualPrefixSid, CopySid, ConvertSidToStringSidA/W, CreateWellKnownSid and FreeSid beyond the implemented AllocateAndInitializeSid/EqualSid/FreeSid are catalogued only"
 selfrel = "MakeSelfRelativeSD and the Get/SetSecurityDescriptorOwner/Group/Dacl/Sacl round trips are unimplemented in advapi32 (catalogued only)"
 trustee = "the trustee builders and queries are unimplemented in advapi32 (catalogued only): BuildTrusteeWith*, BuildImpersonate* and GetTrustee* A/W never fill a trustee"
-objace = "the object and audit ACE builders are unimplemented in advapi32 (catalogued only): AddAccessAllowedObjectAce, AddAccessDeniedObjectAce, AddAuditAccessAce(Ex), AddAuditAccessObjectAce and the AceEx forms never add an ACE"
-strsd = "the string security descriptor conversions are unimplemented in advapi32 (catalogued only): ConvertSecurityDescriptorToStringSecurityDescriptorA/W and ConvertStringSecurityDescriptorToSecurityDescriptorA/W never convert"
 privobj = "the private object security calls are unimplemented in advapi32 (catalogued only): CreatePrivateObjectSecurity(Ex), DestroyPrivateObjectSecurity, Get/SetPrivateObjectSecurity(Ex) and ConvertToAutoInheritPrivateObjectSecurity never run"
 sdcorner = "the SD corner calls are unimplemented in advapi32/ntdll (catalogued only): SetSecurityDescriptorControl, the RM control pair, BuildSecurityDescriptorA/W, the Convert*ToAccess* conversions and ntdll's RtlCopySecurityDescriptor never run"
 saclaudit = "GetAuditedPermissionsFromAclA/W and SetEntriesInAuditListA/W are unimplemented in advapi32 (catalogued only), so no audit list is queried or built"

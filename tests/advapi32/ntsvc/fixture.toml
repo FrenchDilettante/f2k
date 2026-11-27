@@ -17,11 +17,8 @@ ntprivcheck = "NtPrivilegeCheck and NtQueryInformationToken's privilege class ar
 ntquerysecobj = "NtQuerySecurityObject is unimplemented in ntdll: F2K keeps no security descriptor on an object to query"
 ntsetsecobj = "NtSetSecurityObject is unimplemented in ntdll: F2K keeps no security descriptor to set on an object"
 ntbytype = "NtAccessCheckByType and NtAccessCheckByTypeResultList are unimplemented in ntdll (catalogued only): no by-type access check runs"
-ntgroups = "NtAdjustGroupsToken is unimplemented in ntdll (catalogued only): no group list is adjusted"
-ntsetinfo = "NtSetInformationToken is unimplemented in ntdll (catalogued only): no token information class is set"
 ntcreatefilter = "NtCreateToken and NtFilterToken are unimplemented in ntdll (catalogued only): no token is created or filtered"
 ntthreadtok = "NtOpenThreadToken is unimplemented in ntdll (catalogued only): the thread's token is never opened"
-ntrtlpriv = "RtlAdjustPrivilege is unimplemented in ntdll (catalogued only): no privilege is enabled or disabled through it"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
