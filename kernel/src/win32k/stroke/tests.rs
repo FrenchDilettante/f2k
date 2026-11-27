@@ -96,9 +96,8 @@ impl Board {
 
     /// A line along `points` with `pen`.
     fn polyline(&mut self, pen: &Pen, points: &[(i32, i32)]) {
-        let path: Vec<Fx> = points.iter().map(|&(x, y)| Fx::pixel(x, y)).collect();
-        let mut kept = std::vec![Fx::default(); path.len()];
-        let count = dedup(&path, false, &mut kept);
+        let mut kept: Vec<Fx> = points.iter().map(|&(x, y)| Fx::pixel(x, y)).collect();
+        let count = dedup(&mut kept, false);
         let stroke = pen.stroke();
         let ink = screen_rgb(pen.color);
         self.paint(|painter| {
@@ -128,9 +127,8 @@ impl Board {
             &mut rects,
             &mut crossings
         ));
-        let path: Vec<Fx> = points.iter().map(|&(x, y)| Fx::pixel(x, y)).collect();
-        let mut kept = std::vec![Fx::default(); path.len()];
-        let count = dedup(&path, true, &mut kept);
+        let mut kept: Vec<Fx> = points.iter().map(|&(x, y)| Fx::pixel(x, y)).collect();
+        let count = dedup(&mut kept, true);
         let stroke = pen.stroke();
         let ink = screen_rgb(pen.color);
         let red = Ink::Pixel(screen_rgb(RED_BRUSH));
@@ -601,4 +599,60 @@ fn drawing_is_clipped() {
         None,
     );
     assert_eq!(board.rows()[1], "###...####");
+}
+
+/// The capture's curves are cut into two chords a quadrant; a large ellipse into more, its points
+/// on the curve and its chords within half a pixel of it.
+#[test]
+fn large_ellipses_are_cut_finer() {
+    let points = |l: i32, t: i32, r: i32, b: i32| {
+        let mut path: SmallBuf<Fx, 32> = SmallBuf::new(Fx::default(), 4096);
+        assert!(ellipse_path(
+            i64::from(l) * ONE,
+            i64::from(t) * ONE,
+            i64::from(r) * ONE,
+            i64::from(b) * ONE,
+            &mut path
+        ));
+        path.as_slice().to_vec()
+    };
+    assert_eq!(points(1, 1, 12, 8).len(), 8);
+    assert_eq!(points(1, 1, 4, 4).len(), 8);
+    let large = points(0, 0, 400, 200);
+    assert!(large.len() >= 32, "{} points", large.len());
+    for pair in large.windows(2) {
+        // Each chord's midpoint is within half a pixel of the ellipse (radii 200 and 100).
+        let mid_x = (pair[0].x + pair[1].x) as f64 / 32.0 - 200.0;
+        let mid_y = (pair[0].y + pair[1].y) as f64 / 32.0 - 100.0;
+        let radius = ((mid_x / 200.0).powi(2) + (mid_y / 100.0).powi(2)).sqrt();
+        assert!(
+            (1.0 - radius) * 100.0 < 0.75,
+            "a chord strays at {mid_x}, {mid_y}"
+        );
+    }
+}
+
+/// A wide pen's round join is an arc finer than every 45 degrees: a width-31 corner's join holds
+/// pixels a 45-degree polygon would cut off.
+#[test]
+fn wide_round_joins_follow_the_arc() {
+    let pen = Pen::extended(
+        PS_GEOMETRIC | PS_SOLID | PS_ENDCAP_FLAT | PS_JOIN_ROUND,
+        31,
+        BS_SOLID,
+        BLACK,
+        0,
+        &[],
+    )
+    .unwrap();
+    let mut board = Board::new(80, 80);
+    board.polyline(&pen, &[(10, 70), (40, 40), (70, 70)]);
+    // The join's top is the arc's, 15.5 above the corner: row 25 inked at the corner's column,
+    // row 24 not.
+    let rows = board.rows();
+    assert_eq!(rows[25].as_bytes()[40], b'#');
+    assert_eq!(rows[23].as_bytes()[40], b'.');
+    // Where a 45-degree octagon's edge would cut: 22.5 degrees off the top, the arc's pixel.
+    let (x, y) = (40 + 5, 40 - 14);
+    assert_eq!(rows[y].as_bytes()[x], b'#', "({x}, {y})");
 }

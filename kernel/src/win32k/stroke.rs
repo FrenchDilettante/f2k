@@ -21,8 +21,10 @@
 //!   rounded up on both sides (a figure's left and top edges in, its right and bottom ones out), an
 //!   edge holding the rows from its upper end to before its lower one.
 //! - **Curves** ([`ellipse_path`], [`round_rect_path`]): an ellipse is four Bezier quadrants (the
-//!   control points 0.5523 of the radius along the tangents, in 28.4), each flattened to two chords
-//!   through its midpoint. A cosmetic pen draws the chords as lines; their fill is the polygon's.
+//!   control points 0.5523 of the radius along the tangents, in 28.4), each flattened into chords
+//!   until its control points are within half a pixel of them ([`chords`]: two chords, through its
+//!   midpoint, for every curve the capture draws). A cosmetic pen draws the chords as lines; their
+//!   fill is the polygon's.
 //! - **Wide lines** ([`wide_row`]): each segment a band `width` wide, its half-width offset rounded
 //!   to the half pixel (the capture's width-5 corners need exactly that); a join between segments
 //!   the round pen's wedge (the arc's points at multiples of 45 degrees), the miter's point, or the
@@ -426,24 +428,64 @@ fn kappa(radius: i64) -> i64 {
     ((i128::from(radius) * KAPPA + (1 << 31)) >> 32) as i64
 }
 
-/// The midpoint of the Bezier quadrant from `p0` to `p3` through the controls `p1` and `p2`,
-/// rounded to the sixteenth.
-fn bezier_mid(p0: Fx, p1: Fx, p2: Fx, p3: Fx) -> Fx {
-    let mid = |a: i64, b: i64, c: i64, d: i64| {
-        round_div(
-            i128::from(a) + 3 * i128::from(b) + 3 * i128::from(c) + i128::from(d),
-            8,
-        ) as i64
+/// The point at `t = k / n` of the Bezier from `p0` to `p3` through the controls `p1` and `p2`,
+/// rounded to the sixteenth (at a half: `(p0 + 3 p1 + 3 p2 + p3) / 8`).
+fn bezier_at(p0: Fx, p1: Fx, p2: Fx, p3: Fx, k: i64, n: i64) -> Fx {
+    let (k, m) = (i128::from(k), i128::from(n - k));
+    let n3 = i128::from(n).pow(3);
+    let at = |a: i64, b: i64, c: i64, d: i64| {
+        let sum = m * m * m * i128::from(a)
+            + 3 * m * m * k * i128::from(b)
+            + 3 * m * k * k * i128::from(c)
+            + k * k * k * i128::from(d);
+        round_div(sum, n3) as i64
     };
     Fx {
-        x: mid(p0.x, p1.x, p2.x, p3.x),
-        y: mid(p0.y, p1.y, p2.y, p3.y),
+        x: at(p0.x, p1.x, p2.x, p3.x),
+        y: at(p0.y, p1.y, p2.y, p3.y),
     }
 }
 
-/// The ellipse inscribed in the box from (`left`, `top`) to (`right`, `bottom`) (28.4), flattened:
-/// eight points, counter-clockwise from the right end (see the module notes).
-pub fn ellipse_path(left: i64, top: i64, right: i64, bottom: i64) -> [Fx; 8] {
+/// The flatness a Bezier is cut to: its control points within half a pixel of its chords.
+const FLATNESS: i128 = ONE as i128 / 2;
+
+/// The most chords a quadrant is cut into.
+const MOST_CHORDS: i64 = 64;
+
+/// How many chords the Bezier `p0`-`p3` is cut into: halved until its control points are within
+/// [`FLATNESS`] of its chords (each halving bringing them about four times nearer) — two for every
+/// curve of the shapes capture (radii from 1.5 to 5.5 pixels), more for larger ones.
+fn chords(p0: Fx, p1: Fx, p2: Fx, p3: Fx) -> i64 {
+    let chord = p3.sub(p0);
+    let length_sq = i128::from(chord.x).pow(2) + i128::from(chord.y).pow(2);
+    let far = cross(chord, p1.sub(p0))
+        .abs()
+        .max(cross(chord, p2.sub(p0)).abs());
+    let mut n = 1i64;
+    let mut tolerance = FLATNESS;
+    while n < MOST_CHORDS && far * far > tolerance * tolerance * length_sq.max(1) {
+        n *= 2;
+        tolerance *= 4;
+    }
+    n
+}
+
+/// The Bezier `p0`-`p3` flattened into `out`: its start and its chords' inner ends (not its end).
+fn flatten<B: Buf<Fx>>(p0: Fx, p1: Fx, p2: Fx, p3: Fx, out: &mut B) -> bool {
+    let n = chords(p0, p1, p2, p3);
+    (0..n).all(|k| {
+        out.push(if k == 0 {
+            p0
+        } else {
+            bezier_at(p0, p1, p2, p3, k, n)
+        })
+    })
+}
+
+/// The ellipse inscribed in the box from (`left`, `top`) to (`right`, `bottom`) (28.4), flattened
+/// into `out`, counter-clockwise from its right end (see the module notes); false when the list
+/// ran out of room.
+pub fn ellipse_path<B: Buf<Fx>>(left: i64, top: i64, right: i64, bottom: i64, out: &mut B) -> bool {
     let half = |a: i64, b: i64| (a + b + 1).div_euclid(2);
     let (cx, cy) = (half(left, right), half(top, bottom));
     let (rx, ry) = (
@@ -478,18 +520,25 @@ pub fn ellipse_path(left: i64, top: i64, right: i64, bottom: i64) -> [Fx; 8] {
             at(right, cy),
         ],
     ];
-    let mut path = [Fx::default(); 8];
-    for (index, [p0, p1, p2, p3]) in quadrants.into_iter().enumerate() {
-        path[2 * index] = p0;
-        path[2 * index + 1] = bezier_mid(p0, p1, p2, p3);
-    }
-    path
+    quadrants
+        .into_iter()
+        .all(|[p0, p1, p2, p3]| flatten(p0, p1, p2, p3, out))
 }
 
 /// The rounded rectangle of the box from (`left`, `top`) to (`right`, `bottom`), its corners
-/// quarters of an ellipse of radii `rx` and `ry` (28.4), flattened: each corner's start, midpoint
-/// and end, counter-clockwise from the top right corner (the straight sides between them).
-pub fn round_rect_path(left: i64, top: i64, right: i64, bottom: i64, rx: i64, ry: i64) -> [Fx; 12] {
+/// quarters of an ellipse of radii `rx` and `ry` (28.4), flattened into `out`: each corner from its
+/// start to its end, counter-clockwise from the top right corner (the straight sides between
+/// them); false when the list ran out of room.
+#[allow(clippy::too_many_arguments)]
+pub fn round_rect_path<B: Buf<Fx>>(
+    left: i64,
+    top: i64,
+    right: i64,
+    bottom: i64,
+    rx: i64,
+    ry: i64,
+    out: &mut B,
+) -> bool {
     let (kx, ky) = (kappa(rx), kappa(ry));
     let at = |x, y| Fx { x, y };
     let corners = [
@@ -518,13 +567,9 @@ pub fn round_rect_path(left: i64, top: i64, right: i64, bottom: i64, rx: i64, ry
             at(right, bottom - ry),
         ],
     ];
-    let mut path = [Fx::default(); 12];
-    for (index, [p0, p1, p2, p3]) in corners.into_iter().enumerate() {
-        path[3 * index] = p0;
-        path[3 * index + 1] = bezier_mid(p0, p1, p2, p3);
-        path[3 * index + 2] = p3;
-    }
-    path
+    corners
+        .into_iter()
+        .all(|[p0, p1, p2, p3]| flatten(p0, p1, p2, p3, out) && out.push(p3))
 }
 
 // --- Wide lines ----------------------------------------------------------------------------------
@@ -564,16 +609,62 @@ fn along(d: Fx, width: u32) -> Fx {
     }
 }
 
-/// One piece of a wide line: a convex polygon (at most eight points) or a round cap's disk.
+/// The most points a piece's polygon has: a round join's wedge, its two ends, its corner and the
+/// arc's points between (at most 32, at the finest step, over half a turn).
+const PIECE_POINTS: usize = 40;
+
+/// cos(k * 5.625 degrees) for k from 0 to 16, in billionths: the round join's arc's directions.
+const COSINES: [i128; 17] = [
+    1_000_000_000,
+    995_184_727,
+    980_785_280,
+    956_940_336,
+    923_879_533,
+    881_921_264,
+    831_469_612,
+    773_010_453,
+    707_106_781,
+    634_393_284,
+    555_570_233,
+    471_396_737,
+    382_683_432,
+    290_284_677,
+    195_090_322,
+    98_017_140,
+    0,
+];
+
+/// Direction `index` of 64 (5.625 degrees apart, from the right, turning down the screen), `r`
+/// long.
+fn direction(index: usize, r: i64) -> Fx {
+    let (k, quarter) = (index % 16, index / 16 % 4);
+    let (c, s) = (COSINES[k], COSINES[16 - k]);
+    let (x, y) = match quarter {
+        0 => (c, s),
+        1 => (-s, c),
+        2 => (-c, -s),
+        _ => (s, -c),
+    };
+    let scale = |v: i128| round_div(i128::from(r) * v, 1_000_000_000) as i64;
+    Fx {
+        x: scale(x),
+        y: scale(y),
+    }
+}
+
+/// One piece of a wide line: a convex polygon or a round cap's disk.
+// The polygon's points are held by value (the kernel has no heap), so the enum is as large as
+// they are.
 #[derive(Clone, Copy, Debug)]
+#[allow(clippy::large_enum_variant)]
 enum Piece {
-    Polygon { points: [Fx; 8], len: u8 },
+    Polygon { points: [Fx; PIECE_POINTS], len: u8 },
     Disk { center: Fx, width: u32 },
 }
 
 impl Piece {
     fn polygon(points: &[Fx]) -> Piece {
-        let mut all = [Fx::default(); 8];
+        let mut all = [Fx::default(); PIECE_POINTS];
         all[..points.len()].copy_from_slice(points);
         Piece::Polygon {
             points: all,
@@ -707,63 +798,56 @@ fn join_piece(a: Fx, v: Fx, b: Fx, width: u32, join: Join, f: &mut impl FnMut(Pi
             }
         }
         Join::Round => {
-            // The wedge from p1 to p2 round the outside, through the arc's points at multiples of
-            // 45 degrees strictly between them.
+            // The wedge from p1 to p2 round the outside, through the arc's points strictly between
+            // them: every 45 degrees, finer for a pen whose arc would stray more than half a pixel.
             let r = i64::from(width) * (ONE / 2);
-            let diagonal = round_div(i128::from(r) * 7_071_067_812, 10_000_000_000) as i64;
-            let directions = [
-                Fx { x: r, y: 0 },
-                Fx {
-                    x: diagonal,
-                    y: diagonal,
-                },
-                Fx { x: 0, y: r },
-                Fx {
-                    x: -diagonal,
-                    y: diagonal,
-                },
-                Fx { x: -r, y: 0 },
-                Fx {
-                    x: -diagonal,
-                    y: -diagonal,
-                },
-                Fx { x: 0, y: -r },
-                Fx {
-                    x: diagonal,
-                    y: -diagonal,
-                },
-            ];
+            let mut step = 8usize;
+            while step > 1
+                && i128::from(r) * (1_000_000_000 - COSINES[step / 2]) > FLATNESS * 1_000_000_000
+            {
+                step /= 2;
+            }
             let way = cross(o1, o2).signum();
             if way == 0 {
                 return;
             }
-            let mut inside = [Fx::default(); 4];
-            let mut found = 0;
-            for direction in directions {
-                if cross(o1, direction).signum() == way
-                    && cross(direction, o2).signum() == way
-                    && found < inside.len()
-                {
-                    inside[found] = direction;
-                    found += 1;
-                }
-            }
-            let arc = &mut inside[..found];
-            arc.sort_unstable_by(|p, q| {
-                if cross(*p, *q).signum() == way {
-                    core::cmp::Ordering::Less
-                } else {
-                    core::cmp::Ordering::Greater
-                }
-            });
-            let mut points = [Fx::default(); 8];
+            let mut points = [Fx::default(); PIECE_POINTS];
             points[0] = v;
             points[1] = p1;
-            for (slot, direction) in points[2..].iter_mut().zip(arc.iter()) {
-                *slot = v.add(*direction);
+            let mut found = 2usize;
+            // The directions inside the wedge, in the order the arc meets them.
+            let first = (0..64)
+                .step_by(step)
+                .filter(|&index| {
+                    let d = direction(index, r);
+                    cross(o1, d).signum() == way && cross(d, o2).signum() == way
+                })
+                .min_by(|&p, &q| {
+                    if cross(direction(p, r), direction(q, r)).signum() == way {
+                        core::cmp::Ordering::Less
+                    } else {
+                        core::cmp::Ordering::Greater
+                    }
+                });
+            if let Some(mut index) = first {
+                loop {
+                    let d = direction(index, r);
+                    if !(cross(o1, d).signum() == way && cross(d, o2).signum() == way)
+                        || found >= PIECE_POINTS - 1
+                    {
+                        break;
+                    }
+                    points[found] = v.add(d);
+                    found += 1;
+                    index = if way > 0 {
+                        (index + step) % 64
+                    } else {
+                        (index + 64 - step) % 64
+                    };
+                }
             }
-            points[2 + found] = p2;
-            f(Piece::polygon(&points[..3 + found]));
+            points[found] = p2;
+            f(Piece::polygon(&points[..found + 1]));
         }
     }
 }
@@ -1020,17 +1104,18 @@ pub enum Shape {
     RoundRect(i32, i32),
 }
 
-/// The points of `path` with the repeats in a row left out (and, for a closed path, a last point
-/// that is its first), into `out`: how many.
-pub fn dedup(path: &[Fx], closed: bool, out: &mut [Fx]) -> usize {
+/// `path` with its repeats in a row left out (and, for a closed path, a last point that is its
+/// first), in place: how many points are left at its start.
+pub fn dedup(path: &mut [Fx], closed: bool) -> usize {
     let mut count = 0usize;
-    for &point in path {
-        if count == 0 || out[count - 1] != point {
-            out[count] = point;
+    for index in 0..path.len() {
+        let point = path[index];
+        if count == 0 || path[count - 1] != point {
+            path[count] = point;
             count += 1;
         }
     }
-    while closed && count > 1 && out[count - 1] == out[0] {
+    while closed && count > 1 && path[count - 1] == path[0] {
         count -= 1;
     }
     count
@@ -1100,8 +1185,8 @@ pub fn draw_shape<S: Surface + ?Sized>(
             sixteenths(bottom - 1),
         ),
     };
-    let mut path = [Fx::default(); 12];
-    let count = match shape {
+    let mut path: SmallBuf<Fx, 32> = SmallBuf::new(Fx::default(), 1 << 12);
+    let made = match shape {
         Shape::Rectangle => {
             if *stroke == Stroke::Null {
                 let fill = Rect::new(left, top, right - 1, bottom - 1);
@@ -1116,22 +1201,27 @@ pub fn draw_shape<S: Surface + ?Sized>(
                     brush,
                 );
             }
-            let corners = [
+            [
                 Fx { x: r, y: t },
                 Fx { x: l, y: t },
                 Fx { x: l, y: b },
                 Fx { x: r, y: b },
-            ];
-            dedup(&corners, true, &mut path)
+            ]
+            .into_iter()
+            .all(|corner| path.push(corner))
         }
-        Shape::Ellipse => dedup(&ellipse_path(l, t, r, b), true, &mut path),
+        Shape::Ellipse => ellipse_path(l, t, r, b, &mut path),
         Shape::RoundRect(width, height) => {
             let rx = (i64::from(width.unsigned_abs()) * ONE).min(r - l) / 2;
             let ry = (i64::from(height.unsigned_abs()) * ONE).min(b - t) / 2;
-            dedup(&round_rect_path(l, t, r, b, rx, ry), true, &mut path)
+            round_rect_path(l, t, r, b, rx, ry, &mut path)
         }
     };
-    let path = &path[..count];
+    if !made {
+        return false;
+    }
+    let count = dedup(path.as_mut_slice(), true);
+    let path = &path.as_slice()[..count];
     let interior = match (shape, stroke) {
         (Shape::Rectangle, Stroke::Cosmetic { .. }) => {
             Interior::Rect(Rect::new(left + 1, top + 1, right - 1, bottom - 1))
