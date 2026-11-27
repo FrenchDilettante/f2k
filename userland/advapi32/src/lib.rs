@@ -15,6 +15,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod access2;
 pub mod accesscheck;
 pub mod acl;
 pub mod audit;
