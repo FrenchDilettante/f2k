@@ -176,13 +176,13 @@ all: disk
 # (userland/<dll>/exports.toml, through tools/exportgen), the source the kernel's NT service table
 # is generated from too.
 .PHONY: userland
+# Each .exe is replaced whole, by a rename, and only when its .dll changed: a test copying one onto
+# its disk while another worker's build runs this (tests/f2kboot.py's disk_with_programs holds no
+# build lock) reads the old file or the new one, never one cp has just truncated.
 userland:
 	@echo "Building the system DLLs and programs..."
-	cd $(USERLAND_DIR) && cargo build --release
-	# Each .exe is replaced whole, by a rename, and only when its .dll changed: a test copying one
-	# onto its disk while another worker's build runs this (tests/f2kboot.py's disk_with_programs
-	# holds no build lock) reads the old file or the new one, never one cp has just truncated.
-	for exe in $(SYSTEM_EXES) $(CMD_EXE) $(TEST_EXES); do \
+	@cd $(USERLAND_DIR) && cargo build --release
+	@for exe in $(SYSTEM_EXES) $(CMD_EXE) $(TEST_EXES); do \
 		cmp -s $${exe%.exe}.dll $$exe && continue; \
 		cp $${exe%.exe}.dll $$exe.tmp && mv -f $$exe.tmp $$exe || exit 1; \
 	done
@@ -389,7 +389,7 @@ check-all:
 # is a compatibility target (F2K runs the real one): a section, not part of the treemap.
 .PHONY: compat
 compat: userland
-	$(UV) run scripts/compat.py --check --run --report
+	@$(UV) run scripts/compat.py --check --run --report
 
 .PHONY: run-tests
 run-tests: userland
