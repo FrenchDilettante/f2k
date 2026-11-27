@@ -25,6 +25,7 @@ pub mod regenum;
 pub mod registry;
 pub mod sd;
 pub mod sid;
+pub mod sidstr;
 pub mod stub;
 pub mod token;
 pub mod trustee;
