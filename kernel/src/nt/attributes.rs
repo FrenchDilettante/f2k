@@ -31,12 +31,17 @@ pub const MAX_NAME: usize = 1024;
 /// of its own (returned by value, a name overflowed NtOpenFile's gate stack).
 pub type Name = ArrayVec<u16, MAX_NAME>;
 
-/// An OBJECT_ATTRIBUTES, read: the root directory handle, the name (none for a null ObjectName)
-/// and the attributes.
+/// An OBJECT_ATTRIBUTES, read: the root directory handle, the name (none for a null ObjectName),
+/// the attributes, and the SecurityDescriptor pointer as the caller gave it.
 pub struct Attributes<'n> {
     pub root: u32,
     pub name: Option<&'n [u16]>,
     pub attributes: u32,
+    /// OBJECT_ATTRIBUTES' SecurityDescriptor: a pointer into the caller's memory, zero when none.
+    /// A user-mode caller's is captured at once (see [`read`]). Read by the tests; the create and
+    /// open services take the captured descriptor through [`crate::ob::security`] instead.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub security_descriptor: u32,
 }
 
 impl<'n> Attributes<'n> {
@@ -59,6 +64,11 @@ impl<'n> Attributes<'n> {
 /// Read the OBJECT_ATTRIBUTES at `at`, its name into `name` (whatever it held before dropped).
 /// STATUS_INVALID_PARAMETER for a structure of another size, STATUS_NAME_TOO_LONG past
 /// [`MAX_NAME`] units.
+///
+/// A user-mode caller's SecurityDescriptor (when the structure names one) is captured now —
+/// probed and copied out of its memory, self-relative, into the pending descriptor the create
+/// or open this read is part of stores on the object it makes (see [`crate::ob::security`]); a
+/// capture failure fails the read with its status. A kernel-mode caller's is left as it is.
 pub fn read(at: UserAddr, name: &mut Name) -> Result<Attributes<'_>, NtStatus> {
     let header = at.cast::<ObjectAttributes<u32>>().read()?;
     if header.length != OBJECT_ATTRIBUTES_SIZE {
@@ -74,10 +84,22 @@ pub fn read(at: UserAddr, name: &mut Name) -> Result<Attributes<'_>, NtStatus> {
             .map_err(|_| STATUS_NAME_TOO_LONG)?;
         UserAddr(string.buffer).read_units(units)?;
     }
+    // The security descriptor the caller passed, captured for the create or open to come: the
+    // pending slot is cleared first, so a read that captures nothing leaves none behind.
+    let security_descriptor = header.security_descriptor;
+    crate::ob::security::set_pending(None);
+    if security_descriptor != 0
+        && crate::ob::security::caller_mode() == crate::sec::CallerMode::User
+    {
+        if let Some(captured) = crate::ob::security::capture_sd(security_descriptor, true)? {
+            crate::ob::security::set_pending(Some(captured));
+        }
+    }
     Ok(Attributes {
         root: header.root_directory,
         name: named.then_some(name.as_slice()),
         attributes: header.attributes,
+        security_descriptor,
     })
 }
 
@@ -372,5 +394,64 @@ mod tests {
             read(UserAddr(BASE + 0xFF8), &mut name).map(|got| got.name),
             Err(STATUS_ACCESS_VIOLATION)
         );
+    }
+
+    /// The SecurityDescriptor pointer reads as the caller gave it: zero when none, the pointer
+    /// when given (a host build serves no user caller, so nothing is captured from it).
+    #[test]
+    fn attributes_read_their_security_descriptor_pointer() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        use rtl::pod::Pod;
+
+        use crate::user::syscall::host::{install, UserMemory};
+        const BASE: u32 = 0x20000;
+        struct Page(std::vec::Vec<u8>);
+        impl UserMemory for Page {
+            fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
+                let at = pointer.checked_sub(BASE).ok_or(STATUS_ACCESS_VIOLATION)? as usize;
+                bytes.copy_from_slice(
+                    self.0.get(at..at + bytes.len()).ok_or(STATUS_ACCESS_VIOLATION)?,
+                );
+                Ok(())
+            }
+
+            fn write(&mut self, _: u32, _: &[u8]) -> Result<(), NtStatus> {
+                Err(STATUS_ACCESS_VIOLATION)
+            }
+        }
+        let mut page = std::vec![0u8; 0x100];
+        let attributes = ObjectAttributes::<u32> {
+            length: 24,
+            root_directory: 0,
+            object_name: 0,
+            attributes: 0,
+            security_descriptor: 0x5000,
+            security_quality_of_service: 0,
+        };
+        page[..24].copy_from_slice(attributes.as_bytes());
+        let memory = Rc::new(RefCell::new(Page(page)));
+        let _installed = install(memory);
+        let mut name = Name::new();
+        let got = read(UserAddr(BASE), &mut name).unwrap();
+        assert_eq!(got.security_descriptor, 0x5000);
+        assert_eq!(got.name, None);
+        // None given: zero.
+        let page = std::vec![0u8; 0x100];
+        let attributes = ObjectAttributes::<u32> {
+            length: 24,
+            root_directory: 0,
+            object_name: 0,
+            attributes: 0,
+            security_descriptor: 0,
+            security_quality_of_service: 0,
+        };
+        let mut page = page;
+        page[..24].copy_from_slice(attributes.as_bytes());
+        let memory = Rc::new(RefCell::new(Page(page)));
+        let _installed = install(memory);
+        let got = read(UserAddr(BASE), &mut name).unwrap();
+        assert_eq!(got.security_descriptor, 0);
     }
 }
