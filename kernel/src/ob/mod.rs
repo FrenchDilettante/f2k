@@ -1632,10 +1632,12 @@ impl Directory {
         self.insert(body)
     }
 
-    /// Whether a live DC other than `except` holds the bitmap `bitmap` selected.
+    /// Whether a live DC other than `except` holds the bitmap `bitmap` selected (a state SaveDC
+    /// saved counting as its DC's selection).
     pub fn bitmap_selected(&mut self, bitmap: ObjectId, except: Option<ObjectId>) -> bool {
         self.dcs.iter().any(|(dc, record)| {
-            except.is_none_or(|except| except.index != dc.index)
+            let owner = record.body.saved_by.map_or(dc.index, |owner| owner.index);
+            except.is_none_or(|except| except.index != owner)
                 && record.body.bitmap_object == Some(bitmap)
         })
     }
@@ -1950,8 +1952,19 @@ impl Directory {
                 None
             }
             ObjectType::Dc => {
-                // A DC's clipping regions' blocks go with it.
-                self.dc(id).expect("deleting a live DC").release_regions();
+                // A DC's clipping regions' blocks go with it, and the states SaveDC saved, one
+                // after another (each one's chain taken first, so none deletes the next itself).
+                let dc = self.dc(id).expect("deleting a live DC");
+                dc.release_regions();
+                let mut saved = dc.saved.take();
+                while let Some(state) = saved {
+                    saved = self.dc(state).and_then(|state| state.saved.take());
+                    let followup = self.dereference(state);
+                    debug_assert!(
+                        followup.is_none(),
+                        "a DC's deletion leaves nothing to finish"
+                    );
+                }
                 None
             }
             ObjectType::Event

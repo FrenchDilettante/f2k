@@ -368,8 +368,13 @@ pub fn stretch_blt(
     if pattern.is_none() && rop_uses_pattern(rop) {
         return Ok(STATUS_SUCCESS);
     }
-    let (x, y) = destination.screen_point(x, y);
-    let (source_x, source_y) = source.map_or((0, 0), |dc| dc.screen_point(source_x, source_y));
+    // Each rectangle through its DC's mapping: a scaling mapping makes a BitBlt a stretch, a
+    // flipping one a mirror.
+    let (x, y, width, height) = destination.screen_span(x, y, width, height);
+    let (source_x, source_y, source_width, source_height) = source
+        .map_or((0, 0, source_width, source_height), |dc| {
+            dc.screen_span(source_x, source_y, source_width, source_height)
+        });
     let job = Blit {
         x,
         y,

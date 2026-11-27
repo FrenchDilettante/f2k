@@ -264,7 +264,8 @@ pub const fn apply_rop(rop: u32, pattern: u32, destination: u32) -> u32 {
 
 /// The DC attributes win32k's NtGdiGetDCDword reads and NtGdiGetAndSetDCDword sets (F2K's own
 /// indexes): the text color, the background color, the background mode, the stretch mode, the
-/// brush origin's two coordinates, the window origin's two (SetWindowOrgEx's); and one
+/// brush origin's two coordinates, the window origin's two (SetWindowOrgEx's), the mapping's
+/// (below); and one
 /// NtGdiGetDCDword alone reads, the DC's kind (GetObjectType's OBJ_DC or OBJ_MEMDC).
 pub const DC_TEXT_COLOR: u32 = 0;
 pub const DC_BK_COLOR: u32 = 1;
@@ -280,9 +281,48 @@ pub const DC_WINDOW_ORG_Y: u32 = 8;
 pub const DC_ROP2: u32 = 9;
 pub const DC_POLY_FILL_MODE: u32 = 10;
 
-/// NtGdiGetDCPoint's points (F2K's own indexes): the current position (MoveToEx's, LineTo's), in
-/// logical coordinates.
+/// The mapping mode (SetMapMode's, one of the MM_ modes; win32k applies the mode's extents), the
+/// viewport origin's two coordinates (SetViewportOrgEx's), and the window's and the viewport's
+/// extents, each coordinate on its own (SetWindowExtEx's and SetViewportExtEx's, which win32k
+/// takes only in MM_ISOTROPIC and MM_ANISOTROPIC, and never 0): the fields of the DC attributes
+/// Windows 2000's gdi32 writes in user mode, here win32k's.
+pub const DC_MAP_MODE: u32 = 11;
+pub const DC_VIEWPORT_ORG_X: u32 = 12;
+pub const DC_VIEWPORT_ORG_Y: u32 = 13;
+pub const DC_WINDOW_EXT_X: u32 = 14;
+pub const DC_WINDOW_EXT_Y: u32 = 15;
+pub const DC_VIEWPORT_EXT_X: u32 = 16;
+pub const DC_VIEWPORT_EXT_Y: u32 = 17;
+
+/// NtGdiGetDCPoint's points: the current position (MoveToEx's, LineTo's, in logical coordinates;
+/// F2K's own index), and Windows 2000's GdiGetViewPortExt, GdiGetWindowExt, GdiGetViewPortOrg and
+/// GdiGetWindowOrg (a SIZE's extents in a POINT's room).
 pub const DCPT_CURRENT_POSITION: u32 = 0;
+pub const DCPT_VIEWPORT_EXT: u32 = 1;
+pub const DCPT_WINDOW_EXT: u32 = 2;
+pub const DCPT_VIEWPORT_ORG: u32 = 3;
+pub const DCPT_WINDOW_ORG: u32 = 4;
+
+/// The mapping modes (wingdi.h's): MM_TEXT, the metric and English modes, MM_TWIPS, and the two a
+/// program scales itself.
+pub const MM_TEXT: u32 = 1;
+pub const MM_LOMETRIC: u32 = 2;
+pub const MM_HIMETRIC: u32 = 3;
+pub const MM_LOENGLISH: u32 = 4;
+pub const MM_HIENGLISH: u32 = 5;
+pub const MM_TWIPS: u32 = 6;
+pub const MM_ISOTROPIC: u32 = 7;
+pub const MM_ANISOTROPIC: u32 = 8;
+
+/// NtGdiTransformPoints' directions (Windows 2000's XFP_ values): logical to device (LPtoDP),
+/// device to logical (DPtoLP).
+pub const XFP_LPTODP: u32 = 0;
+pub const XFP_DPTOLP: u32 = 1;
+
+/// The display's size in millimeters, GetDeviceCaps' HORZSIZE and VERTSIZE: Windows 2000's display
+/// drivers' 320 by 240 (the mapmode capture's MM_LOMETRIC window extents, 3200 by 2400), whatever
+/// the resolution. The metric and English mapping modes scale by it.
+pub const DISPLAY_SIZE_MM: (i32, i32) = (320, 240);
 
 /// A DC's stretch mode as it starts: BLACKONWHITE.
 pub const DEFAULT_STRETCH_MODE: u32 = crate::dib::BLACKONWHITE;

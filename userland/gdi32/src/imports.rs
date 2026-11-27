@@ -258,6 +258,40 @@ mod raw {
         pub fn NtGdiGetDCPoint(dc: usize, which: u32, point: *mut Point) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtGdiLineTo"]
         pub fn NtGdiLineTo(dc: usize, x: i32, y: i32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiSaveDC"]
+        pub fn NtGdiSaveDC(dc: usize, level: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiRestoreDC"]
+        pub fn NtGdiRestoreDC(dc: usize, level: i32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiComputeXformCoefficients"]
+        pub fn NtGdiComputeXformCoefficients(dc: usize) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiScaleViewportExtEx"]
+        pub fn NtGdiScaleViewportExtEx(
+            dc: usize,
+            x_num: i32,
+            x_den: i32,
+            y_num: i32,
+            y_den: i32,
+            previous: *mut Size,
+            result: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiScaleWindowExtEx"]
+        pub fn NtGdiScaleWindowExtEx(
+            dc: usize,
+            x_num: i32,
+            x_den: i32,
+            y_num: i32,
+            y_den: i32,
+            previous: *mut Size,
+            result: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiTransformPoints"]
+        pub fn NtGdiTransformPoints(
+            dc: usize,
+            points_in: *const Point,
+            points_out: *mut Point,
+            count: u32,
+            mode: u32,
+        ) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtGdiRectangle"]
         pub fn NtGdiRectangle(dc: usize, left: i32, top: i32, right: i32, bottom: i32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtGdiEllipse"]
@@ -675,6 +709,65 @@ pub fn move_to(dc: usize, x: i32, y: i32, previous: Caller) -> Result<(), NtStat
 pub fn dc_point(dc: usize, which: u32, point: Caller) -> Result<(), NtStatus> {
     // SAFETY: the kernel writes the POINT through its fault-tolerant copies.
     checked(unsafe { raw::NtGdiGetDCPoint(dc, which, point.0 as *mut Point) })
+}
+
+/// NtGdiSaveDC: `dc`'s state saved, its level answered.
+pub fn save_dc(dc: usize) -> Result<u32, NtStatus> {
+    let mut level = 0u32;
+    // SAFETY: the service writes the level into the local.
+    checked(unsafe { raw::NtGdiSaveDC(dc, &mut level) })?;
+    Ok(level)
+}
+
+/// NtGdiRestoreDC: `dc`'s saved state `level` (negative: from the last) restored.
+pub fn restore_dc(dc: usize, level: i32) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtGdiRestoreDC(dc, level) })
+}
+
+/// NtGdiComputeXformCoefficients: `dc`'s page transform made whole (MM_ISOTROPIC's adjustment)
+/// after its extents were set.
+pub fn compute_xform(dc: usize) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtGdiComputeXformCoefficients(dc) })
+}
+
+/// NtGdiScaleWindowExtEx (`window`) or NtGdiScaleViewportExtEx: the extents scaled, the previous
+/// ones into the SIZE at `previous` (none: a null address); whether they were.
+pub fn scale_ext(
+    window: bool,
+    dc: usize,
+    x: (i32, i32),
+    y: (i32, i32),
+    previous: Caller,
+) -> Result<bool, NtStatus> {
+    let mut result = 0u32;
+    let previous = previous.0 as *mut Size;
+    // SAFETY: the kernel writes the SIZE through its fault-tolerant copies, the result into the
+    // local.
+    checked(unsafe {
+        if window {
+            raw::NtGdiScaleWindowExtEx(dc, x.0, x.1, y.0, y.1, previous, &mut result)
+        } else {
+            raw::NtGdiScaleViewportExtEx(dc, x.0, x.1, y.0, y.1, previous, &mut result)
+        }
+    })?;
+    Ok(result != 0)
+}
+
+/// NtGdiTransformPoints: the `count` POINTs at `points` taken through `dc`'s mapping in place, in
+/// the direction `mode` (rtl::gdi's XFP_ values).
+pub fn transform_points(dc: usize, points: Caller, count: u32, mode: u32) -> Result<(), NtStatus> {
+    // SAFETY: the kernel reads and writes the POINTs through its fault-tolerant copies.
+    checked(unsafe {
+        raw::NtGdiTransformPoints(
+            dc,
+            points.0 as *const Point,
+            points.0 as *mut Point,
+            count,
+            mode,
+        )
+    })
 }
 
 /// NtGdiLineTo: a line from `dc`'s current position to (`x`, `y`), its new current position.
@@ -1367,6 +1460,15 @@ pub mod host {
         /// The pixel at (100, 100), the one the stand-in's screen has.
         pub pixel: u32,
         pub open: bool,
+        /// The mapping, its attributes taken as set (the kernel's rules are its own tests').
+        pub map_mode: u32,
+        pub window_org: (i32, i32),
+        pub window_ext: (i32, i32),
+        pub viewport_org: (i32, i32),
+        pub viewport_ext: (i32, i32),
+        /// How many states are saved, and how many isotropic adjustments were asked for.
+        pub saves: u32,
+        pub fixes: u32,
     }
 
     impl HostDc {
@@ -1380,6 +1482,13 @@ pub mod host {
                 font: stock_handle(SYSTEM_FONT).unwrap(),
                 pixel: 0x00A5_6E3A,
                 open: true,
+                map_mode: MM_TEXT,
+                window_org: (0, 0),
+                window_ext: (1, 1),
+                viewport_org: (0, 0),
+                viewport_ext: (1, 1),
+                saves: 0,
+                fixes: 0,
             }
         }
     }
@@ -1652,9 +1761,103 @@ pub mod host {
         STATUS_NOT_IMPLEMENTED
     }
 
-    pub unsafe extern "system" fn NtGdiGetDCPoint(_: usize, _: u32, _: *mut Point) -> u32 {
+    /// The mapping's extents and origins, as the kernel keeps them; another point is not served.
+    pub unsafe extern "system" fn NtGdiGetDCPoint(dc: usize, which: u32, point: *mut Point) -> u32 {
+        with_dc(dc, |state| {
+            let (x, y) = match which {
+                DCPT_VIEWPORT_EXT => state.viewport_ext,
+                DCPT_WINDOW_EXT => state.window_ext,
+                DCPT_VIEWPORT_ORG => state.viewport_org,
+                DCPT_WINDOW_ORG => state.window_org,
+                _ => return STATUS_NOT_IMPLEMENTED,
+            };
+            // SAFETY: the tests' own POINT.
+            unsafe { point.write(Point { x, y }) };
+            0
+        })
+    }
+
+    /// The saved states, by their levels: the DC's level counted alone.
+    pub unsafe extern "system" fn NtGdiSaveDC(dc: usize, level: *mut u32) -> u32 {
+        with_dc(dc, |state| {
+            state.saves += 1;
+            answer(level, state.saves)
+        })
+    }
+
+    pub unsafe extern "system" fn NtGdiRestoreDC(dc: usize, level: i32) -> u32 {
+        with_dc(dc, |state| {
+            let target = if level < 0 {
+                state.saves as i32 + level + 1
+            } else {
+                level
+            };
+            if level == 0 || target < 1 || target > state.saves as i32 {
+                return STATUS_INVALID_PARAMETER;
+            }
+            state.saves = target as u32 - 1;
+            0
+        })
+    }
+
+    /// The isotropic adjustment asked for: counted.
+    pub unsafe extern "system" fn NtGdiComputeXformCoefficients(dc: usize) -> u32 {
+        with_dc(dc, |state| {
+            state.fixes += 1;
+            0
+        })
+    }
+
+    pub unsafe extern "system" fn NtGdiScaleViewportExtEx(
+        _: usize,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: *mut Size,
+        _: *mut u32,
+    ) -> u32 {
         served();
         STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiScaleWindowExtEx(
+        _: usize,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: *mut Size,
+        _: *mut u32,
+    ) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    /// The mapping as MM_TEXT's: the origins alone move a point.
+    pub unsafe extern "system" fn NtGdiTransformPoints(
+        dc: usize,
+        points_in: *const Point,
+        points_out: *mut Point,
+        count: u32,
+        mode: u32,
+    ) -> u32 {
+        with_dc(dc, |state| {
+            let sign = if mode == XFP_LPTODP { 1 } else { -1 };
+            for index in 0..count as usize {
+                // SAFETY: the tests' own POINTs.
+                unsafe {
+                    let point = points_in.add(index).read();
+                    let offset =
+                        |at: i32, window: i32, viewport: i32| at + sign * (viewport - window);
+                    points_out.add(index).write(Point {
+                        x: offset(point.x, state.window_org.0, state.viewport_org.0),
+                        y: offset(point.y, state.window_org.1, state.viewport_org.1),
+                    });
+                }
+            }
+            0
+        })
     }
 
     pub unsafe extern "system" fn NtGdiLineTo(_: usize, _: i32, _: i32) -> u32 {
@@ -1856,6 +2059,7 @@ pub mod host {
             DC_TEXT_COLOR => answer(value, state.text_color),
             DC_BK_COLOR => answer(value, state.bk_color),
             DC_BK_MODE => answer(value, state.bk_mode),
+            DC_MAP_MODE => answer(value, state.map_mode),
             _ => STATUS_INVALID_PARAMETER,
         })
     }
@@ -1867,10 +2071,29 @@ pub mod host {
         previous: *mut u32,
     ) -> u32 {
         with_dc(dc, |state| {
+            let scalable = matches!(state.map_mode, MM_ISOTROPIC | MM_ANISOTROPIC);
+            let coordinate = match index {
+                DC_WINDOW_ORG_X => Some(&mut state.window_org.0),
+                DC_WINDOW_ORG_Y => Some(&mut state.window_org.1),
+                DC_VIEWPORT_ORG_X => Some(&mut state.viewport_org.0),
+                DC_VIEWPORT_ORG_Y => Some(&mut state.viewport_org.1),
+                DC_WINDOW_EXT_X if scalable && value != 0 => Some(&mut state.window_ext.0),
+                DC_WINDOW_EXT_Y if scalable && value != 0 => Some(&mut state.window_ext.1),
+                DC_VIEWPORT_EXT_X if scalable && value != 0 => Some(&mut state.viewport_ext.0),
+                DC_VIEWPORT_EXT_Y if scalable && value != 0 => Some(&mut state.viewport_ext.1),
+                _ => None,
+            };
+            if let Some(coordinate) = coordinate {
+                return answer(
+                    previous,
+                    core::mem::replace(coordinate, value as i32) as u32,
+                );
+            }
             let field = match index {
                 DC_TEXT_COLOR => &mut state.text_color,
                 DC_BK_COLOR => &mut state.bk_color,
                 DC_BK_MODE if matches!(value, TRANSPARENT | OPAQUE) => &mut state.bk_mode,
+                DC_MAP_MODE if (MM_TEXT..=MM_ANISOTROPIC).contains(&value) => &mut state.map_mode,
                 _ => return STATUS_INVALID_PARAMETER,
             };
             answer(previous, core::mem::replace(field, value))

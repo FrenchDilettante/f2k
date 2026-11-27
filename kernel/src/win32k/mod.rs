@@ -50,6 +50,7 @@ pub mod gdi;
 pub mod handle;
 pub mod icon;
 pub mod input;
+pub mod mapping;
 pub mod menu;
 pub mod mouse;
 pub mod paint;

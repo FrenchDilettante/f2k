@@ -6,8 +6,8 @@
 # and background colors and the background mode, text drawn with the built-in font or a TrueType
 # font and its metrics, the TrueType fonts themselves (loading, font objects, their metrics, data,
 # glyphs and enumeration), single pixels, memory DCs, bitmaps and DIB sections, the blits and
-# pattern brushes, region objects and FillRgn, clipping, pens, lines and shapes and the mix modes;
-# and stubs for what the corpus fixtures import beyond it (mapping modes). Its own code runs over ntdll, kernel32 and user32 as Windows
+# pattern brushes, region objects and FillRgn, clipping, pens, lines and shapes and the mix modes,
+# the mapping modes and SaveDC/RestoreDC. Its own code runs over ntdll, kernel32 and user32 as Windows
 # 2000's gdi32 imports them, and enters the kernel itself, as Windows 2000's does: through win32k's
 # services (`impl = { syscall = "<the kernel's typed handler>" }`, `internal = true`: its own calls,
 # never exported; see userland/user32/exports.toml for the stubs' shape). Their argument lists are
@@ -133,7 +133,7 @@ fails = "FALSE"
 name = "SaveDC"
 group = "dc"
 args = ["handle hdc"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SaveDC" }
 ordinal = 456
 fails = "0"
 
@@ -141,9 +141,23 @@ fails = "0"
 name = "RestoreDC"
 group = "dc"
 args = ["handle hdc", "i32 nSavedDC"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RestoreDC" }
 ordinal = 449
 fails = "FALSE"
+
+[[export]]
+name = "NtGdiSaveDC"
+group = "dc"
+args = ["handle Dc", "ptr<u32> Level"]
+impl = { syscall = "crate::win32k::dc::save_dc" }
+internal = true
+
+[[export]]
+name = "NtGdiRestoreDC"
+group = "dc"
+args = ["handle Dc", "i32 Level"]
+impl = { syscall = "crate::win32k::dc::restore_dc" }
+internal = true
 
 # --- stock objects --------------------------------------------------------------------------------
 
@@ -1506,7 +1520,7 @@ internal = true
 name = "DPtoLP"
 group = "coordinates"
 args = ["handle hdc", "ptr lpPoints", "i32 nCount"]
-impl = { stub = "not yet implemented" }
+impl = { native = "DPtoLP" }
 ordinal = 80
 fails = "FALSE"
 
@@ -1514,7 +1528,7 @@ fails = "FALSE"
 name = "LPtoDP"
 group = "coordinates"
 args = ["handle hdc", "ptr lpPoints", "i32 nCount"]
-impl = { stub = "not yet implemented" }
+impl = { native = "LPtoDP" }
 ordinal = 396
 fails = "FALSE"
 
@@ -1522,7 +1536,7 @@ fails = "FALSE"
 name = "GetMapMode"
 group = "coordinates"
 args = ["handle hdc"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetMapMode" }
 ordinal = 336
 fails = "0"
 
@@ -1530,7 +1544,7 @@ fails = "0"
 name = "SetMapMode"
 group = "coordinates"
 args = ["handle hdc", "i32 fnMapMode"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetMapMode" }
 ordinal = 490
 fails = "0"
 
@@ -1538,7 +1552,7 @@ fails = "0"
 name = "GetViewportExtEx"
 group = "coordinates"
 args = ["handle hdc", "ptr lpSize"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetViewportExtEx" }
 ordinal = 386
 fails = "FALSE"
 
@@ -1546,7 +1560,7 @@ fails = "FALSE"
 name = "GetViewportOrgEx"
 group = "coordinates"
 args = ["handle hdc", "ptr lpPoint"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetViewportOrgEx" }
 ordinal = 387
 fails = "FALSE"
 
@@ -1554,7 +1568,7 @@ fails = "FALSE"
 name = "SetViewportExtEx"
 group = "coordinates"
 args = ["handle hdc", "i32 nXExtent", "i32 nYExtent", "ptr lpSize"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetViewportExtEx" }
 ordinal = 509
 fails = "FALSE"
 
@@ -1562,7 +1576,7 @@ fails = "FALSE"
 name = "SetViewportOrgEx"
 group = "coordinates"
 args = ["handle hdc", "i32 X", "i32 Y", "ptr lpPoint"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetViewportOrgEx" }
 ordinal = 510
 fails = "FALSE"
 
@@ -1570,7 +1584,7 @@ fails = "FALSE"
 name = "OffsetViewportOrgEx"
 group = "coordinates"
 args = ["handle hdc", "i32 nXOffset", "i32 nYOffset", "ptr lpPoint"]
-impl = { stub = "not yet implemented" }
+impl = { native = "OffsetViewportOrgEx" }
 ordinal = 406
 fails = "FALSE"
 
@@ -1578,7 +1592,7 @@ fails = "FALSE"
 name = "ScaleViewportExtEx"
 group = "coordinates"
 args = ["handle hdc", "i32 Xnum", "i32 Xdenom", "i32 Ynum", "i32 Ydenom", "ptr lpSize"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ScaleViewportExtEx" }
 ordinal = 457
 fails = "FALSE"
 
@@ -1586,7 +1600,7 @@ fails = "FALSE"
 name = "GetWindowExtEx"
 group = "coordinates"
 args = ["handle hdc", "ptr lpSize"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetWindowExtEx" }
 ordinal = 389
 fails = "FALSE"
 
@@ -1602,7 +1616,7 @@ fails = "FALSE"
 name = "SetWindowExtEx"
 group = "coordinates"
 args = ["handle hdc", "i32 nXExtent", "i32 nYExtent", "ptr lpSize"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetWindowExtEx" }
 ordinal = 513
 fails = "FALSE"
 
@@ -1618,7 +1632,7 @@ fails = "FALSE"
 name = "OffsetWindowOrgEx"
 group = "coordinates"
 args = ["handle hdc", "i32 nXOffset", "i32 nYOffset", "ptr lpPoint"]
-impl = { stub = "not yet implemented" }
+impl = { native = "OffsetWindowOrgEx" }
 ordinal = 407
 fails = "FALSE"
 
@@ -1626,9 +1640,41 @@ fails = "FALSE"
 name = "ScaleWindowExtEx"
 group = "coordinates"
 args = ["handle hdc", "i32 Xnum", "i32 Xdenom", "i32 Ynum", "i32 Ydenom", "ptr lpSize"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ScaleWindowExtEx" }
 ordinal = 458
 fails = "FALSE"
+
+[[export]]
+name = "NtGdiComputeXformCoefficients"
+group = "coordinates"
+args = ["handle Dc"]
+impl = { syscall = "crate::win32k::dc::compute_xform_coefficients" }
+internal = true
+
+[[export]]
+name = "NtGdiScaleViewportExtEx"
+group = "coordinates"
+args = [
+    "handle Dc", "i32 XNum", "i32 XDenom", "i32 YNum", "i32 YDenom", "ptr Previous", "ptr<u32> Result",
+]
+impl = { syscall = "crate::win32k::dc::scale_viewport_ext_ex" }
+internal = true
+
+[[export]]
+name = "NtGdiScaleWindowExtEx"
+group = "coordinates"
+args = [
+    "handle Dc", "i32 XNum", "i32 XDenom", "i32 YNum", "i32 YDenom", "ptr Previous", "ptr<u32> Result",
+]
+impl = { syscall = "crate::win32k::dc::scale_window_ext_ex" }
+internal = true
+
+[[export]]
+name = "NtGdiTransformPoints"
+group = "coordinates"
+args = ["handle Dc", "ptr In", "ptr Out", "u32 Count", "u32 Mode"]
+impl = { syscall = "crate::win32k::dc::transform_points" }
+internal = true
 
 # --- not implemented yet: the rest of GDI32.dll 5.0.2195.6660's export table, by ordinal ---------
 

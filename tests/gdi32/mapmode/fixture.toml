@@ -3,6 +3,7 @@
 # size in millimeters and pixels, so they print only as relations. No handle or address prints.
 description = "mapmode - SetMapMode/GetMapMode across every mode (the metric modes' extents as relations), Set/Get Window/Viewport Ext/Org in MM_TEXT and MM_ANISOTROPIC, LPtoDP and DPtoLP and their rounding, OffsetViewportOrgEx, OffsetWindowOrgEx, ScaleViewportExtEx and ScaleWindowExtEx, MM_ISOTROPIC's adjustment, PatBlt and Rectangle through a mapping into a DIB section, and SaveDC/RestoreDC relative and absolute."
 kind = "sectioned"
+gate = true
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

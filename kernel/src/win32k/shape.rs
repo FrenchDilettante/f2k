@@ -3,10 +3,11 @@
 //! ([`super::stroke`]), with the DC's pen ([`super::pen`]), brush, mix mode (SetROP2's) and polygon
 //! fill mode, through its final region ([`super::dc`]'s clipping).
 //!
-//! The coordinates are logical (MM_TEXT: the window origin taken off, the DC's origin added); the
-//! current position is kept in them, as Windows 2000's DC keeps it. A cosmetic pen's dashes leave
-//! their gaps in the background color when the background mode is OPAQUE, as Windows draws styled
-//! lines; Polyline and Polygon leave the current position alone.
+//! The coordinates are logical, taken through the DC's mapping ([`super::mapping`]) and its origin;
+//! the current position is kept in them, as Windows 2000's DC keeps it. A pen's width is the pen's
+//! own, in pixels: F2K does not scale a geometric pen's width by the mapping. A cosmetic pen's
+//! dashes leave their gaps in the background color when the background mode is OPAQUE, as Windows
+//! draws styled lines; Polyline and Polygon leave the current position alone.
 //!
 //! The services (F2K's argument lists, see [`crate::win32k`]; a DC handle that names no DC is
 //! STATUS_INVALID_HANDLE):
@@ -14,7 +15,8 @@
 //! - NtGdiMoveTo(handle Dc, i32 X, i32 Y, ptr Previous): the current position moved, the one it had
 //!   into the POINT at `Previous` (unless null);
 //! - NtGdiGetDCPoint(handle Dc, u32 Which, ptr Point): with DCPT_CURRENT_POSITION, the current
-//!   position; STATUS_INVALID_PARAMETER for another point;
+//!   position; with DCPT_VIEWPORT_EXT, DCPT_WINDOW_EXT, DCPT_VIEWPORT_ORG or DCPT_WINDOW_ORG, the
+//!   mapping's extents or origins ([`super::mapping`]); STATUS_INVALID_PARAMETER for another point;
 //! - NtGdiLineTo(handle Dc, i32 X, i32 Y): a line from the current position to the point, which
 //!   becomes the current position;
 //! - NtGdiPolyPolyDraw(u32 Dc, ptr Points, ptr Counts, u32 Count, u32 Function, ptr<u32> Result)
@@ -105,11 +107,16 @@ pub fn move_to(call: &mut NtCall, dc: Handle, x: i32, y: i32, previous: UserAddr
 
 /// NtGdiGetDCPoint(Dc, Which, Point): see the module notes.
 pub fn get_dc_point(call: &mut NtCall, dc: Handle, which: u32, point: UserAddr) -> NtResult {
-    if which != DCPT_CURRENT_POSITION {
-        return Err(STATUS_INVALID_PARAMETER);
-    }
     let (_reference, state) = dc_of(call, dc)?;
-    let (x, y) = state.current;
+    let mapping = &state.mapping;
+    let (x, y) = match which {
+        DCPT_CURRENT_POSITION => state.current,
+        DCPT_VIEWPORT_EXT => mapping.viewport_ext,
+        DCPT_WINDOW_EXT => mapping.window_ext,
+        DCPT_VIEWPORT_ORG => mapping.viewport_org,
+        DCPT_WINDOW_ORG => mapping.window_org,
+        _ => return Err(STATUS_INVALID_PARAMETER),
+    };
     point.cast::<Point>().write(Point { x, y })?;
     Ok(STATUS_SUCCESS)
 }
@@ -188,6 +195,17 @@ fn shape(
     let (_reference, state) = dc_of(call, dc)?;
     let (left, top) = state.screen_point(left, top);
     let (right, bottom) = state.screen_point(right, bottom);
+    // A round rectangle's corner is a size: scaled by the mapping, not moved, nor flipped.
+    let shape = match shape {
+        Shape::RoundRect(width, height) => {
+            let (scaled_width, scaled_height) = state.device_distance(width, height);
+            Shape::RoundRect(
+                scaled_width.saturating_abs() * width.signum(),
+                scaled_height.saturating_abs() * height.signum(),
+            )
+        }
+        other => other,
+    };
     drawn(paint(&state, |painter, stroke, pen, gap, brush| {
         draw_shape(
             painter,

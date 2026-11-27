@@ -22,9 +22,15 @@
 //!   area's top left, its visible region the area on the screen (cut to the update region for
 //!   BeginPaint's). A window's visible region is not cut by the windows above it or by its
 //!   children, whatever WS_CLIPCHILDREN says: F2K does not yet work out windows' visible regions;
-//! - the coordinates a drawing service takes are logical, the window origin taken off and the DC's
-//!   origin added (the mapping mode is MM_TEXT, its viewport origin zero; the window origin is
-//!   SetWindowOrgEx's, an attribute);
+//! - the coordinates a drawing service takes are logical: the DC's page transform takes them to
+//!   device coordinates ([`super::mapping`]: the mapping mode, the window's and viewport's origins
+//!   and extents, attributes), and the DC's origin onto the surface ([`Dc::screen_point`], the one
+//!   way every service's coordinates go). Sizes the drawing keeps in pixels (a pen's width, a
+//!   font's height, ExtTextOut's advances) are not scaled;
+//! - SaveDC's states ([`save_dc`], [`restore_dc`]): a copy of the whole DC (its objects,
+//!   attributes, mapping, regions, current position, modes) saved as a DC object of its own,
+//!   chained from the DC, restored relative (-1 the last) or absolute (its level), the states above
+//!   it dropped;
 //! - the stock objects as constant handles ([`rtl::gdi::stock_handle`]), which a DC selects by
 //!   kind; brushes as objects and global brushes ([`super::brush`]), the DC keeping the selected
 //!   brush's fill beside its handle; font objects ([`super::fonts`]), the DC keeping the selected
@@ -65,8 +71,9 @@
 //! The clipping calls work on the clipping region, a call that finds none starting from the DC's
 //! extent (a mode over no clipping region is the mode over the whole DC: RGN_OR makes it the
 //! extent, RGN_DIFF the extent less the region); their logical rectangles go to device
-//! coordinates through the window origin (MM_TEXT). Each answers the final region's complexity, as
-//! the regions capture shows, but IntersectClipRect, which answers COMPLEXREGION whatever is left.
+//! coordinates through the mapping, while SelectClipRgn's region is in device coordinates already.
+//! Each answers the final region's complexity, as the regions capture shows, but IntersectClipRect,
+//! which answers COMPLEXREGION whatever is left.
 //!
 //! The services (F2K's argument lists, see [`crate::win32k`]; a DC handle that names no DC is
 //! STATUS_INVALID_HANDLE):
@@ -108,7 +115,18 @@
 //!   CLIPRGN, the region made a copy of the clipping region (1), or 0 without one;
 //! - NtGdiPtVisible(handle Dc, i32 X, i32 Y, ptr<u32> Visible) and NtGdiRectVisible(handle Dc, ptr
 //!   Rect, ptr<u32> Visible): whether the logical point, or any of the rectangle, is inside the
-//!   final region.
+//!   final region;
+//! - NtGdiSaveDC(handle Dc, ptr<u32> Level) and NtGdiRestoreDC(handle Dc, i32 Level): the DC's
+//!   state saved, its level answered; a saved state restored ([`restore_level`]: -1 the last),
+//!   STATUS_INVALID_PARAMETER for a level that names none;
+//! - NtGdiComputeXformCoefficients(handle Dc): MM_ISOTROPIC's adjustment, after gdi32 set an extent
+//!   a coordinate at a time (the mapping's attributes are NtGdiGetAndSetDCDword's DC_ indexes, its
+//!   points NtGdiGetDCPoint's, [`super::shape`]);
+//! - NtGdiScaleViewportExtEx and NtGdiScaleWindowExtEx(handle Dc, i32 XNum, i32 XDenom, i32 YNum,
+//!   i32 YDenom, ptr Previous, ptr<u32> Result): the extents scaled, 1 or 0 answered
+//!   ([`scale_ext`]);
+//! - NtGdiTransformPoints(handle Dc, ptr In, ptr Out, u32 Count, u32 Mode): LPtoDP's and DPtoLP's
+//!   points, through the mapping.
 
 use rtl::gdi::*;
 use rtl::pod::Pod;
@@ -118,6 +136,7 @@ use super::bitmap::with_surface;
 use super::brush::Fill;
 use super::font;
 use super::fonts::table::Realization;
+use super::mapping::{Device, Mapping};
 use super::raster::{advanced, get_pixel_on, set_pixel_on, Clip, Surface, TextOut};
 use super::region::{ordered, OwnedRegion, Region};
 use crate::hw::vbe::Framebuffer;
@@ -181,9 +200,17 @@ pub struct Dc {
     /// The brush origin, from the DC's origin (SetBrushOrgEx's, in device units: the window
     /// origin does not move it).
     pub brush_org: (i32, i32),
-    /// The window origin (SetWindowOrgEx's): the logical point that lands on the DC's origin, in
-    /// MM_TEXT, the one mapping mode F2K has.
-    pub window_org: (i32, i32),
+    /// The page transform: the mapping mode, the window's and the viewport's origins and extents
+    /// ([`super::mapping`]), from the logical coordinates to the device's (from the DC's origin).
+    pub mapping: Mapping,
+    /// SaveDC's states: how many are saved, and the last one saved, a DC object of its own (the
+    /// DC's reference on it; each saved state holds the one saved before it), as Windows 2000's
+    /// SaveDC keeps a copy of the DC; none saved, none.
+    pub saves: u32,
+    pub saved: Option<crate::ob::ObjectId>,
+    /// A saved state's: the DC it was saved from (none for a live DC). Its bitmap counts as that
+    /// DC's selection, no other DC's.
+    pub saved_by: Option<crate::ob::ObjectId>,
 }
 
 impl Dc {
@@ -213,7 +240,10 @@ impl Dc {
             bitmap_object: None,
             stretch_mode: 0,
             brush_org: (0, 0),
-            window_org: (0, 0),
+            mapping: Mapping::TEXT,
+            saves: 0,
+            saved: None,
+            saved_by: None,
         }
     }
 
@@ -246,7 +276,10 @@ impl Dc {
             bitmap_object: None,
             stretch_mode: DEFAULT_STRETCH_MODE,
             brush_org: (0, 0),
-            window_org: (0, 0),
+            mapping: Mapping::TEXT,
+            saves: 0,
+            saved: None,
+            saved_by: None,
         }
     }
 
@@ -283,14 +316,6 @@ impl Dc {
         )
     }
 
-    /// Where the logical (0, 0) lands on the surface: the DC's origin, less the window origin.
-    pub fn logical_origin(&self) -> (i32, i32) {
-        (
-            self.origin.0.saturating_sub(self.window_org.0),
-            self.origin.1.saturating_sub(self.window_org.1),
-        )
-    }
-
     /// A DC of the area `area` (screen coordinates: a window's client area or rectangle) of a
     /// `width` by `height` screen, as a screen DC starts but for its origin, the area's top left,
     /// and its clipping region, the area on the screen.
@@ -303,16 +328,60 @@ impl Dc {
         dc
     }
 
-    /// The screen's point for the logical point (`x`, `y`).
-    pub fn screen_point(&self, x: i32, y: i32) -> (i32, i32) {
-        let (left, top) = self.logical_origin();
-        (x.saturating_add(left), y.saturating_add(top))
+    /// The device point of the logical point (`x`, `y`), from the DC's origin: the page
+    /// transform's ([`Mapping::to_device`]), the one every coordinate a service takes goes through.
+    pub fn device_point(&self, x: i32, y: i32) -> (i32, i32) {
+        self.mapping.to_device(x, y)
     }
 
-    /// The screen's rectangle for the logical rectangle `rect`.
+    /// The surface's point (the screen's, or the bitmap's) for the logical point (`x`, `y`): its
+    /// device point, from the DC's origin.
+    pub fn screen_point(&self, x: i32, y: i32) -> (i32, i32) {
+        let (x, y) = self.device_point(x, y);
+        (
+            x.saturating_add(self.origin.0),
+            y.saturating_add(self.origin.1),
+        )
+    }
+
+    /// The surface's rectangle for the logical rectangle `rect`: its corners' points, swapped in
+    /// a direction the mapping flips (so an ordered rectangle stays one; MM_TEXT's is the
+    /// rectangle moved).
     pub fn screen_rect(&self, rect: Rect) -> Rect {
-        let (left, top) = self.logical_origin();
-        rect.saturating_offset(left, top)
+        let (mut left, mut top) = self.screen_point(rect.left, rect.top);
+        let (mut right, mut bottom) = self.screen_point(rect.right, rect.bottom);
+        let (flip_x, flip_y) = self.mapping.flips();
+        if flip_x {
+            core::mem::swap(&mut left, &mut right);
+        }
+        if flip_y {
+            core::mem::swap(&mut top, &mut bottom);
+        }
+        Rect {
+            left,
+            top,
+            right,
+            bottom,
+        }
+    }
+
+    /// The surface's point and extent for a logical point and extent (a blit's): the point's, and
+    /// the far corner's less it, its sign as the mapping makes it (a flipping mapping negates it).
+    pub fn screen_span(&self, x: i32, y: i32, width: i32, height: i32) -> (i32, i32, i32, i32) {
+        let (left, top) = self.screen_point(x, y);
+        let (right, bottom) = self.screen_point(x.saturating_add(width), y.saturating_add(height));
+        (
+            left,
+            top,
+            right.saturating_sub(left),
+            bottom.saturating_sub(top),
+        )
+    }
+
+    /// A logical distance in device units (no origin): a round rectangle's corner, OffsetClipRgn's
+    /// offset.
+    pub fn device_distance(&self, dx: i32, dy: i32) -> (i32, i32) {
+        self.mapping.distance_to_device(dx, dy)
     }
 
     /// The attribute at `index` (the DC_ indexes); none for another index.
@@ -324,8 +393,15 @@ impl Dc {
             DC_STRETCH_MODE => Some(self.stretch_mode),
             DC_BRUSH_ORG_X => Some(self.brush_org.0 as u32),
             DC_BRUSH_ORG_Y => Some(self.brush_org.1 as u32),
-            DC_WINDOW_ORG_X => Some(self.window_org.0 as u32),
-            DC_WINDOW_ORG_Y => Some(self.window_org.1 as u32),
+            DC_WINDOW_ORG_X => Some(self.mapping.window_org.0 as u32),
+            DC_WINDOW_ORG_Y => Some(self.mapping.window_org.1 as u32),
+            DC_VIEWPORT_ORG_X => Some(self.mapping.viewport_org.0 as u32),
+            DC_VIEWPORT_ORG_Y => Some(self.mapping.viewport_org.1 as u32),
+            DC_WINDOW_EXT_X => Some(self.mapping.window_ext.0 as u32),
+            DC_WINDOW_EXT_Y => Some(self.mapping.window_ext.1 as u32),
+            DC_VIEWPORT_EXT_X => Some(self.mapping.viewport_ext.0 as u32),
+            DC_VIEWPORT_EXT_Y => Some(self.mapping.viewport_ext.1 as u32),
+            DC_MAP_MODE => Some(self.mapping.mode),
             DC_ROP2 => Some(self.rop2),
             DC_POLY_FILL_MODE => Some(self.fill_mode),
             DC_OBJECT_TYPE => Some(if self.memory {
@@ -365,11 +441,34 @@ impl Dc {
                 return Some(core::mem::replace(&mut self.brush_org.1, value as i32) as u32)
             }
             DC_WINDOW_ORG_X => {
-                return Some(core::mem::replace(&mut self.window_org.0, value as i32) as u32)
+                return Some(
+                    core::mem::replace(&mut self.mapping.window_org.0, value as i32) as u32,
+                )
             }
             DC_WINDOW_ORG_Y => {
-                return Some(core::mem::replace(&mut self.window_org.1, value as i32) as u32)
+                return Some(
+                    core::mem::replace(&mut self.mapping.window_org.1, value as i32) as u32,
+                )
             }
+            DC_VIEWPORT_ORG_X => {
+                return Some(
+                    core::mem::replace(&mut self.mapping.viewport_org.0, value as i32) as u32,
+                )
+            }
+            DC_VIEWPORT_ORG_Y => {
+                return Some(
+                    core::mem::replace(&mut self.mapping.viewport_org.1, value as i32) as u32,
+                )
+            }
+            DC_WINDOW_EXT_X | DC_WINDOW_EXT_Y | DC_VIEWPORT_EXT_X | DC_VIEWPORT_EXT_Y => {
+                let window = matches!(index, DC_WINDOW_EXT_X | DC_WINDOW_EXT_Y);
+                let y = matches!(index, DC_WINDOW_EXT_Y | DC_VIEWPORT_EXT_Y);
+                return self
+                    .mapping
+                    .set_ext_coordinate(window, y, value as i32)
+                    .map(|previous| previous as u32);
+            }
+            DC_MAP_MODE => return self.mapping.set_mode(value, Device::display()),
             _ => return None,
         };
         Some(core::mem::replace(field, value))
@@ -536,14 +635,6 @@ impl Dc {
         true
     }
 
-    /// The device point of the logical point (`x`, `y`) (MM_TEXT: the window origin taken off).
-    fn device_point(&self, x: i32, y: i32) -> (i32, i32) {
-        (
-            x.saturating_sub(self.window_org.0),
-            y.saturating_sub(self.window_org.1),
-        )
-    }
-
     /// The device rectangle of the logical rectangle `rect`, its edges put in order.
     fn device_rect(&self, rect: Rect) -> Rect {
         let (left, top) = self.device_point(rect.left, rect.top);
@@ -619,27 +710,37 @@ impl Dc {
         self.set_clip(Some(new))
     }
 
-    /// OffsetClipRgn: the clipping region moved by (`dx`, `dy`) (logical units, MM_TEXT's
-    /// device ones); without one, nothing moves. The final region's complexity.
+    /// OffsetClipRgn: the clipping region moved by (`dx`, `dy`) (logical units, scaled to device
+    /// ones by the mapping); without one, nothing moves. The final region's complexity.
     pub fn offset_clip(&mut self, dx: i32, dy: i32) -> Result<i32, NtStatus> {
         let Some(clip) = &self.clip_rgn else {
             return Ok(self.final_body().complexity());
         };
+        let (dx, dy) = self.device_distance(dx, dy);
         let moved = OwnedRegion::moved(Dc::rects_of(clip), dx, dy).ok_or(NO_ROOM)?;
         self.set_clip(Some(moved))
     }
 
-    /// GetClipBox: the final region's complexity and box, in logical coordinates (the empty
-    /// rectangle for an empty region).
+    /// GetClipBox: the final region's complexity and box, in logical coordinates (its corners taken
+    /// back through the mapping, put in order; the empty rectangle for an empty region).
     pub fn clip_box(&self) -> (i32, Rect) {
         let body = self.final_body();
         if body.count() == 0 {
             return (NULLREGION, Rect::EMPTY);
         }
-        let (left, top) = self.logical_origin();
+        let device = body
+            .bounds
+            .saturating_offset_back(self.origin.0, self.origin.1);
+        let (left, top) = self.mapping.to_logical(device.left, device.top);
+        let (right, bottom) = self.mapping.to_logical(device.right, device.bottom);
         (
             body.complexity(),
-            body.bounds.saturating_offset_back(left, top),
+            Rect::new(
+                left.min(right),
+                top.min(bottom),
+                left.max(right),
+                top.max(bottom),
+            ),
         )
     }
 
@@ -652,11 +753,67 @@ impl Dc {
     /// RectVisible: whether any pixel of the logical rectangle (its edges put in order) is inside
     /// the final region.
     pub fn rect_visible(&self, rect: Rect) -> bool {
-        let rect = self
-            .device_rect(rect)
-            .saturating_offset(self.origin.0, self.origin.1);
-        self.final_region().touches(rect)
+        self.final_region().touches(self.screen_rect(rect))
     }
+}
+
+// --- SaveDC and RestoreDC -----------------------------------------------------------------------
+
+impl Dc {
+    /// SaveDC's copy of the DC: every attribute and object as it is, its regions copied into
+    /// blocks of its own (the final region composed again); none when the pool has no room.
+    pub fn saved_copy(&self) -> Option<Dc> {
+        fn copied(region: Option<&Region>) -> Option<Option<OwnedRegion>> {
+            match region {
+                None => Some(None),
+                Some(region) => OwnedRegion::of_rects(Dc::rects_of(region)).map(Some),
+            }
+        }
+        let vis = copied(Some(&self.vis))??;
+        let meta = copied(self.meta.as_ref())?;
+        let clip = copied(self.clip_rgn.as_ref())?;
+        let mut saved = Dc {
+            vis: vis.into_inner(),
+            meta: meta.map(OwnedRegion::into_inner),
+            clip_rgn: clip.map(OwnedRegion::into_inner),
+            rao: None,
+            ..*self
+        };
+        if !saved.compose() {
+            saved.release_regions();
+            return None;
+        }
+        Some(saved)
+    }
+
+    /// RestoreDC's step: the DC made the saved state `saved` (whose regions it takes over), but for
+    /// a screen's or a window's DC its visible region, origin and extent, which are the window's
+    /// now (a memory DC's are its bitmap's, restored with it); its own regions given back. The
+    /// saved states' chain is the caller's to set.
+    pub fn restore_from(&mut self, saved: Dc) {
+        let mut old = core::mem::replace(self, saved);
+        if !self.memory {
+            core::mem::swap(&mut self.vis, &mut old.vis);
+            self.origin = old.origin;
+            self.extent = old.extent;
+        }
+        self.saved_by = old.saved_by;
+        old.release_regions();
+        self.compose();
+    }
+}
+
+/// The saved state RestoreDC(`level`) restores with `saves` states saved: its level (1 the first
+/// saved), a negative `level` counting back from the last (-1); none for 0 or a level past either
+/// end (ERROR_INVALID_PARAMETER, as the mapmode capture's RestoreDC(5), (0) and (-2) with one
+/// saved, and RestoreDC(-1) with none).
+pub fn restore_level(saves: u32, level: i32) -> Option<u32> {
+    let target = if level < 0 {
+        i64::from(saves) + i64::from(level) + 1
+    } else {
+        i64::from(level)
+    };
+    (level != 0 && (1..=i64::from(saves)).contains(&target)).then_some(target as u32)
 }
 
 /// A DC's state as a service draws with it, out of the directory: the DC's attributes, and a copy
@@ -1153,6 +1310,141 @@ pub fn rect_visible(call: &mut NtCall, dc: Handle, rect: UserAddr, out: UserPtr<
     Ok(STATUS_SUCCESS)
 }
 
+/// NtGdiSaveDC(Dc, Level): the DC's state saved (see the module notes), its level (how many are
+/// saved now) into `out`; STATUS_NO_MEMORY when the pool has no room for its regions,
+/// STATUS_INSUFFICIENT_RESOURCES when the DCs' pool is full.
+pub fn save_dc(call: &mut NtCall, dc: Handle, out: UserPtr<u32>) -> NtResult {
+    let level = save_state(call, dc)?;
+    out.write(level)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtGdiRestoreDC(Dc, Level): the saved state `level` names ([`restore_level`]) restored, the ones
+/// saved after it dropped; STATUS_INVALID_PARAMETER for a level that names none.
+pub fn restore_dc(call: &mut NtCall, dc: Handle, level: i32) -> NtResult {
+    restore_state(call, dc, level)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtGdiComputeXformCoefficients(Dc): the page transform made whole after gdi32 set an extent's
+/// two coordinates one at a time: MM_ISOTROPIC's adjustment ([`Mapping::fix_isotropic`]).
+pub fn compute_xform_coefficients(call: &mut NtCall, dc: Handle) -> NtResult {
+    update_dc(call, dc, |dc| dc.mapping.fix_isotropic(Device::display()))?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtGdiScaleViewportExtEx and NtGdiScaleWindowExtEx's work: the extents scaled
+/// ([`Mapping::scale_viewport_ext`], [`Mapping::scale_window_ext`]), 1 or 0 into `out` (a failure
+/// sets no error, as the mapmode capture's). The previous extents go into the SIZE at `previous`
+/// (unless null): the viewport's always, the window's unless the scale fails in a mode that takes
+/// it, as the capture's ScaleWindowExtEx(0/1) leaves its SIZE unwritten.
+#[allow(clippy::too_many_arguments)]
+fn scale_ext(
+    call: &mut NtCall,
+    dc: Handle,
+    window: bool,
+    x_num: i32,
+    x_den: i32,
+    y_num: i32,
+    y_den: i32,
+    previous: UserAddr,
+    out: UserPtr<u32>,
+) -> NtResult {
+    let (old, scalable, scaled) = update_dc(call, dc, |dc| {
+        let mapping = &mut dc.mapping;
+        let old = if window {
+            mapping.window_ext
+        } else {
+            mapping.viewport_ext
+        };
+        let scalable = mapping.scalable();
+        let scaled = if window {
+            mapping.scale_window_ext(x_num, x_den, y_num, y_den, Device::display())
+        } else {
+            mapping.scale_viewport_ext(x_num, x_den, y_num, y_den, Device::display())
+        };
+        (old, scalable, scaled)
+    })?;
+    if !previous.is_null() && (scaled || !window || !scalable) {
+        previous.cast::<Size>().write(Size {
+            cx: old.0,
+            cy: old.1,
+        })?;
+    }
+    out.write(scaled as u32)?;
+    Ok(STATUS_SUCCESS)
+}
+
+/// NtGdiScaleViewportExtEx(Dc, XNum, XDenom, YNum, YDenom, Previous, Result): see [`scale_ext`].
+#[allow(clippy::too_many_arguments)]
+pub fn scale_viewport_ext_ex(
+    call: &mut NtCall,
+    dc: Handle,
+    x_num: i32,
+    x_den: i32,
+    y_num: i32,
+    y_den: i32,
+    previous: UserAddr,
+    out: UserPtr<u32>,
+) -> NtResult {
+    scale_ext(call, dc, false, x_num, x_den, y_num, y_den, previous, out)
+}
+
+/// NtGdiScaleWindowExtEx(Dc, XNum, XDenom, YNum, YDenom, Previous, Result): see [`scale_ext`].
+#[allow(clippy::too_many_arguments)]
+pub fn scale_window_ext_ex(
+    call: &mut NtCall,
+    dc: Handle,
+    x_num: i32,
+    x_den: i32,
+    y_num: i32,
+    y_den: i32,
+    previous: UserAddr,
+    out: UserPtr<u32>,
+) -> NtResult {
+    scale_ext(call, dc, true, x_num, x_den, y_num, y_den, previous, out)
+}
+
+/// NtGdiTransformPoints(Dc, In, Out, Count, Mode): the `count` POINTs at `points_in` taken through
+/// the DC's mapping, logical to device (XFP_LPTODP, LPtoDP's) or back (XFP_DPTOLP, DPtoLP's), into
+/// the POINTs at `points_out` (the same memory, for gdi32's calls); STATUS_INVALID_PARAMETER for
+/// another mode.
+pub fn transform_points(
+    call: &mut NtCall,
+    dc: Handle,
+    points_in: UserAddr,
+    points_out: UserAddr,
+    count: u32,
+    mode: u32,
+) -> NtResult {
+    if !matches!(mode, XFP_LPTODP | XFP_DPTOLP) {
+        return Err(STATUS_INVALID_PARAMETER);
+    }
+    let (_reference, state) = dc_of(call, dc)?;
+    let mapping = state.mapping;
+    let mut chunk = [Point::default(); CHUNK];
+    let mut done = 0u32;
+    while done < count {
+        let length = (count - done).min(CHUNK as u32) as usize;
+        points_in
+            .offset(8 * done)
+            .read(&mut chunk.as_bytes_mut()[..8 * length])?;
+        for point in &mut chunk[..length] {
+            let (x, y) = if mode == XFP_LPTODP {
+                mapping.to_device(point.x, point.y)
+            } else {
+                mapping.to_logical(point.x, point.y)
+            };
+            *point = Point { x, y };
+        }
+        points_out
+            .offset(8 * done)
+            .write(&chunk.as_bytes()[..8 * length])?;
+        done += length as u32;
+    }
+    Ok(STATUS_SUCCESS)
+}
+
 /// Whether the NUL-terminated name at `at` is the primary display's (without regard to case).
 fn names_primary_display(at: UserAddr) -> Result<bool, NtStatus> {
     let mut units = [0u16; rtl::display::CCHDEVICENAME];
@@ -1347,6 +1639,65 @@ pub(super) fn dc_of(
     Ok((reference, dc))
 }
 
+/// SaveDC's work on the DC `handle` names: a copy of it made a DC object of its own, chained from
+/// the DC (the DC's reference on it); the DC's level answered.
+#[cfg(target_arch = "x86")]
+fn save_state(call: &mut NtCall, handle: Handle) -> Result<u32, NtStatus> {
+    let (reference, _) = dc_of(call, handle)?;
+    let id = reference.id();
+    crate::ob::locked(|directory| {
+        let live = *directory.dc(id).ok_or(STATUS_INVALID_HANDLE)?;
+        let mut copy = live.saved_copy().ok_or(STATUS_NO_MEMORY)?;
+        copy.saved_by = Some(id);
+        let Some(saved) = directory.create_dc(copy) else {
+            copy.release_regions();
+            return Err(STATUS_INSUFFICIENT_RESOURCES);
+        };
+        let live = directory.dc(id).expect("a referenced DC lives");
+        live.saved = Some(saved);
+        live.saves += 1;
+        Ok(live.saves)
+    })
+}
+
+/// RestoreDC's work on the DC `handle` names: the states above the one `level` names dropped
+/// (their objects released), that one's taken back into the DC and dropped too.
+#[cfg(target_arch = "x86")]
+fn restore_state(call: &mut NtCall, handle: Handle, level: i32) -> Result<(), NtStatus> {
+    let (reference, _) = dc_of(call, handle)?;
+    let id = reference.id();
+    crate::ob::locked(|directory| {
+        let live = *directory.dc(id).ok_or(STATUS_INVALID_HANDLE)?;
+        let target = restore_level(live.saves, level).ok_or(STATUS_INVALID_PARAMETER)?;
+        let mut top = live.saved;
+        for _ in target..live.saves {
+            let state = top.expect("a saved state per level");
+            top = directory.dc(state).and_then(|state| state.saved.take());
+            let followup = directory.dereference(state);
+            debug_assert!(
+                followup.is_none(),
+                "a DC's deletion leaves nothing to finish"
+            );
+        }
+        let state = top.expect("a saved state per level");
+        let mut saved = core::mem::replace(
+            directory.dc(state).expect("a saved state lives"),
+            Dc::none(),
+        );
+        let followup = directory.dereference(state);
+        debug_assert!(
+            followup.is_none(),
+            "a DC's deletion leaves nothing to finish"
+        );
+        let chain = saved.saved.take();
+        let live = directory.dc(id).expect("a referenced DC lives");
+        live.restore_from(saved);
+        live.saved = chain;
+        live.saves = target - 1;
+        Ok(())
+    })
+}
+
 /// Run `f` on the state of the DC `handle` names, in one hold of the directory.
 #[cfg(target_arch = "x86")]
 pub(super) fn update_dc<R>(
@@ -1413,6 +1764,16 @@ fn close_object(_: &mut NtCall, _: Handle) -> Result<(), NtStatus> {
 #[cfg(not(target_arch = "x86"))]
 fn names_object(_: &mut NtCall, handle: Handle) -> bool {
     global_object_kind(handle.raw()).is_some()
+}
+
+#[cfg(not(target_arch = "x86"))]
+fn save_state(_: &mut NtCall, _: Handle) -> Result<u32, NtStatus> {
+    Err(STATUS_INVALID_HANDLE)
+}
+
+#[cfg(not(target_arch = "x86"))]
+fn restore_state(_: &mut NtCall, _: Handle, _: i32) -> Result<(), NtStatus> {
+    Err(STATUS_INVALID_HANDLE)
 }
 
 #[cfg(not(target_arch = "x86"))]
@@ -1533,7 +1894,6 @@ mod tests {
             dc.screen_rect(Rect::new(0, 0, 6, 3)),
             Rect::new(101, 51, 107, 54)
         );
-        assert_eq!(dc.logical_origin(), (101, 51));
         assert_eq!(dc.pattern_origin(), (100, 50));
     }
 
@@ -1802,6 +2162,125 @@ mod tests {
         assert!(dc.point_visible(35, 15));
         assert!(!dc.point_visible(45, 15), "off the screen");
         dc.release_regions();
+    }
+
+    /// The mapmode capture's `drawing`: a doubling mapping scales a blit's rectangle, a flipped
+    /// one negates its height from the far corner; the clipping calls' logical rectangles go
+    /// through it, GetClipBox's box comes back through it, and OffsetClipRgn's offset scales.
+    #[test]
+    fn the_mapping_moves_every_coordinate() {
+        let mut dc = canvas();
+        dc.set_attribute(DC_MAP_MODE, rtl::gdi::MM_ANISOTROPIC);
+        assert!(dc.mapping.set_window_ext(8, 6, Device::display()));
+        assert!(dc.mapping.set_viewport_ext(16, 12, Device::display()));
+        assert_eq!(dc.screen_span(1, 1, 3, 2), (2, 2, 6, 4));
+        assert_eq!(
+            dc.screen_rect(Rect::new(1, 1, 6, 5)),
+            Rect::new(2, 2, 12, 10)
+        );
+        assert_eq!(dc.intersect_clip(Rect::new(1, 1, 4, 3)), Ok(COMPLEXREGION));
+        assert_eq!(clip_rects(&dc), Some(std::vec![Rect::new(2, 2, 8, 6)]));
+        assert_eq!(dc.clip_box(), (SIMPLEREGION, Rect::new(1, 1, 4, 3)));
+        assert!(dc.point_visible(1, 1));
+        assert!(!dc.point_visible(4, 1));
+        assert_eq!(dc.offset_clip(1, 0), Ok(SIMPLEREGION));
+        assert_eq!(clip_rects(&dc), Some(std::vec![Rect::new(4, 2, 10, 6)]));
+
+        assert!(dc.mapping.set_viewport_ext(16, -12, Device::display()));
+        dc.set_attribute(DC_VIEWPORT_ORG_Y, 12);
+        assert_eq!(dc.screen_span(1, 1, 3, 2), (2, 10, 6, -4));
+        assert_eq!(
+            dc.screen_rect(Rect::new(1, 1, 4, 3)),
+            Rect::new(2, 6, 8, 10),
+            "an ordered rectangle stays one"
+        );
+        assert_eq!(dc.clip_box(), (SIMPLEREGION, Rect::new(2, 3, 5, 5)));
+        dc.release_regions();
+    }
+
+    /// The mapping's attributes: the mode sets its extents; an extent's coordinate is taken only
+    /// in a mode that takes extents, never 0.
+    #[test]
+    fn the_mapping_attributes() {
+        let mut dc = Dc::memory();
+        assert_eq!(dc.attribute(DC_MAP_MODE), Some(rtl::gdi::MM_TEXT));
+        assert_eq!(
+            dc.set_attribute(DC_WINDOW_EXT_X, 5),
+            None,
+            "MM_TEXT's are fixed"
+        );
+        assert_eq!(dc.set_attribute(DC_MAP_MODE, 9), None);
+        assert_eq!(
+            dc.set_attribute(DC_MAP_MODE, rtl::gdi::MM_ANISOTROPIC),
+            Some(rtl::gdi::MM_TEXT)
+        );
+        assert_eq!(dc.set_attribute(DC_WINDOW_EXT_X, 5), Some(1));
+        assert_eq!(dc.set_attribute(DC_VIEWPORT_EXT_Y, 0), None);
+        assert_eq!(dc.set_attribute(DC_VIEWPORT_EXT_Y, -7i32 as u32), Some(1));
+        assert_eq!(dc.attribute(DC_VIEWPORT_EXT_Y), Some(-7i32 as u32));
+        assert_eq!(dc.set_attribute(DC_VIEWPORT_ORG_X, 3), Some(0));
+        assert_eq!(dc.mapping.viewport_org, (3, 0));
+        assert_eq!(dc.mapping.window_ext, (5, 1));
+        dc.release_regions();
+    }
+
+    /// RestoreDC's levels, as the mapmode capture's `savedc` asks them: -1 the last, a positive
+    /// level absolute; 0, and a level past either end, none.
+    #[test]
+    fn restore_levels() {
+        assert_eq!(restore_level(3, -1), Some(3));
+        assert_eq!(restore_level(2, -1), Some(2));
+        assert_eq!(restore_level(3, 1), Some(1));
+        assert_eq!(restore_level(0, -1), None);
+        assert_eq!(restore_level(1, 5), None);
+        assert_eq!(restore_level(1, 0), None);
+        assert_eq!(restore_level(1, -2), None);
+        assert_eq!(restore_level(1, 1), Some(1));
+        assert_eq!(
+            restore_level(u32::MAX, i32::MIN),
+            Some(u32::MAX - 0x8000_0000 + 1)
+        );
+    }
+
+    /// SaveDC's copy carries every attribute and a copy of the clipping region of its own; a
+    /// restore takes them all back (a memory DC its visible region too, its bitmap's).
+    #[test]
+    fn a_saved_state_restores_the_whole_dc() {
+        let mut dc = canvas();
+        dc.select_clip(Some(&[Rect::new(2, 2, 10, 8)]), RGN_COPY)
+            .unwrap();
+        dc.set_attribute(DC_MAP_MODE, rtl::gdi::MM_ANISOTROPIC);
+        dc.set_attribute(DC_WINDOW_ORG_X, 5);
+        dc.set_attribute(DC_TEXT_COLOR, 0xFF);
+        dc.set_attribute(DC_ROP2, 7);
+        dc.current = (3, 4);
+        let saved = dc.saved_copy().unwrap();
+        assert_eq!(clip_rects(&saved), clip_rects(&dc));
+
+        dc.select_clip(None, RGN_COPY).unwrap();
+        dc.set_attribute(DC_MAP_MODE, rtl::gdi::MM_LOMETRIC);
+        dc.set_attribute(DC_TEXT_COLOR, 0xFF00);
+        dc.select_bitmap(0x7_0020, None, 2, 2);
+        dc.current = (0, 0);
+        assert_eq!(dc.final_region().bounds(), Rect::new(0, 0, 2, 2));
+
+        dc.restore_from(saved);
+        assert_eq!(dc.mapping.mode, rtl::gdi::MM_ANISOTROPIC);
+        assert_eq!(dc.mapping.window_org, (5, 0));
+        assert_eq!((dc.text_color, dc.rop2, dc.current), (0xFF, 7, (3, 4)));
+        assert_eq!(dc.bitmap, 0x7_0010);
+        assert_eq!(clip_rects(&dc), Some(std::vec![Rect::new(2, 2, 10, 8)]));
+        assert_eq!(final_rects(&dc), [Rect::new(2, 2, 10, 8)]);
+        dc.release_regions();
+
+        // A window's DC keeps its visible region, which is the window's now.
+        let mut window = Dc::window(640, 480, Rect::new(10, 20, 110, 70));
+        let saved = window.saved_copy().unwrap();
+        let painted = OwnedRegion::of_rects(&[Rect::new(10, 20, 20, 30)]).unwrap();
+        assert!(window.set_vis(painted));
+        window.restore_from(saved);
+        assert_eq!(final_rects(&window), [Rect::new(10, 20, 20, 30)]);
+        window.release_regions();
     }
 
     /// BeginPaint's visible region: the window's area cut to the update region (client

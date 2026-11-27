@@ -272,6 +272,8 @@ pub extern "system" fn get_pixel(dc: usize, x: i32, y: i32) -> u32 {
 
 /// GetDeviceCaps' indexes (wingdi.h) the screen DC answers.
 const TECHNOLOGY: i32 = 2;
+const HORZSIZE: i32 = 4;
+const VERTSIZE: i32 = 6;
 const HORZRES: i32 = 8;
 const VERTRES: i32 = 10;
 const BITSPIXEL: i32 = 12;
@@ -289,6 +291,8 @@ const DT_RASDISPLAY: i32 = 1;
 
 /// GetDeviceCaps: a capability of the screen DC — its size (the screen's, user32's
 /// GetSystemMetrics as Windows 2000's gdi32 imports it: no DC service answers a capability), its
+/// size in millimeters (Windows 2000's display drivers' 320 by 240, which the mapping modes scale
+/// by), its
 /// 32 bits per pixel in one plane (the framebuffer's), 96 logical pixels per inch, more colors
 /// than a palette holds (NUMCOLORS -1, no palette); 0 with the last error for a DC that is none.
 /// Another index goes to the stub routine.
@@ -299,6 +303,8 @@ pub extern "system" fn get_device_caps(dc: usize, index: i32) -> i32 {
     }
     match index {
         TECHNOLOGY => DT_RASDISPLAY,
+        HORZSIZE => DISPLAY_SIZE_MM.0,
+        VERTSIZE => DISPLAY_SIZE_MM.1,
         HORZRES | DESKTOPHORZRES => imports::system_metric(SM_CXSCREEN),
         VERTRES | DESKTOPVERTRES => imports::system_metric(SM_CYSCREEN),
         BITSPIXEL => 32,
@@ -319,63 +325,6 @@ pub extern "system" fn get_device_caps(dc: usize, index: i32) -> i32 {
             answer as i32
         }
     }
-}
-
-// --- The window origin
-// ----------------------------------------------------------------------------
-
-/// SetWindowOrgEx: the DC's window origin set (the logical point that lands on the DC's origin,
-/// in MM_TEXT, the one mapping mode F2K has), the one it had into `previous` (when given); FALSE
-/// with the last error for a DC that is none.
-///
-/// # Safety
-///
-/// `previous`, when not null, a POINT's room.
-#[unsafe(export_name = "f2k_export_SetWindowOrgEx")]
-pub unsafe extern "system" fn set_window_org_ex(
-    dc: usize,
-    x: i32,
-    y: i32,
-    previous: *mut Point,
-) -> u32 {
-    let Some(old_x) = answered(imports::set_dc_dword(dc, DC_WINDOW_ORG_X, x as u32)) else {
-        return 0;
-    };
-    let Some(old_y) = answered(imports::set_dc_dword(dc, DC_WINDOW_ORG_Y, y as u32)) else {
-        return 0;
-    };
-    // SAFETY: the caller's POINT.
-    if let Some(mut out) = unsafe { crate::Out::optional(previous) } {
-        out.set(Point {
-            x: old_x as i32,
-            y: old_y as i32,
-        });
-    }
-    1
-}
-
-/// GetWindowOrgEx: the DC's window origin into `point`; FALSE with the last error for a DC that
-/// is none.
-///
-/// # Safety
-///
-/// `point`, when not null, a POINT's room.
-#[unsafe(export_name = "f2k_export_GetWindowOrgEx")]
-pub unsafe extern "system" fn get_window_org_ex(dc: usize, point: *mut Point) -> u32 {
-    let Some(x) = answered(imports::dc_dword(dc, DC_WINDOW_ORG_X)) else {
-        return 0;
-    };
-    let Some(y) = answered(imports::dc_dword(dc, DC_WINDOW_ORG_Y)) else {
-        return 0;
-    };
-    // SAFETY: the caller's POINT.
-    if let Some(mut out) = unsafe { crate::Out::optional(point) } {
-        out.set(Point {
-            x: x as i32,
-            y: y as i32,
-        });
-    }
-    1
 }
 
 #[cfg(test)]
@@ -625,6 +574,10 @@ mod tests {
             .collect();
         assert_eq!(answers, [32, 1, 96, -1]);
         assert_eq!(get_device_caps(DC, TECHNOLOGY), DT_RASDISPLAY);
+        assert_eq!(
+            (get_device_caps(DC, HORZSIZE), get_device_caps(DC, VERTSIZE)),
+            (320, 240)
+        );
         assert_eq!(last_error(), 0xF2F2);
         assert_eq!(get_device_caps(BAD, HORZRES), 0);
         assert_eq!(last_error(), ERROR_INVALID_HANDLE);
