@@ -9,7 +9,8 @@ description = "toolhelp - the ToolHelp snapshot (toolhelp.c, with its companion 
 kind = "sectioned"
 gate = true
 # The System process's threads (the system section's "more than one"): F2K's second is win32k's raw
-# input thread, which starts with the window station.
+# input thread, which the boot starts when it selects the window station (the window station itself
+# waits for a first win32k service, which this console program never makes).
 needs = ["winsta"]
 
 [masks]

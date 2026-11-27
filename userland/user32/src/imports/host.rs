@@ -2047,6 +2047,34 @@ pub unsafe extern "system" fn NtUserValidateRect(window: usize, _rect: usize) ->
     wm(|wm| status(wm.window(window).map(|w| w.update = None)))
 }
 
+/// InvalidateRgn: the host's regions are none, so the whole client area.
+pub unsafe extern "system" fn NtUserInvalidateRgn(
+    window: usize,
+    _region: usize,
+    erase: u32,
+) -> u32 {
+    // SAFETY: no rectangle is read.
+    unsafe { NtUserInvalidateRect(window, 0, erase) }
+}
+
+/// GetUpdateRgn: the host's regions are none; the complexity is the update rectangle's.
+pub unsafe extern "system" fn NtUserGetUpdateRgn(
+    window: usize,
+    _region: usize,
+    _erase: u32,
+    result: *mut u32,
+) -> u32 {
+    let answer = wm(|wm| wm.window(window).map(|w| w.update.is_some()));
+    match answer {
+        Ok(some) => {
+            // SAFETY: the caller's out-pointer.
+            unsafe { result.write(if some { 2 } else { 1 }) };
+            0
+        }
+        Err(status) => status,
+    }
+}
+
 pub unsafe extern "system" fn NtUserGetUpdateRect(
     window: usize,
     rect: usize,

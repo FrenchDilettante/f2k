@@ -1494,15 +1494,18 @@ static BASELINE_FRAMES: crate::sync::InitOnce<u32> = crate::sync::InitOnce::new(
 /// slot pools' chunks and directory pages hold — permanent allocations made as the pools grow,
 /// kept at their peak, which no process's end gives back: the process records among them (see
 /// [`pool`] and [`crate::slots::chunk_frames`]) — the registry's storage's, which outlive the
-/// process that made them (see [`crate::cm`]), and the image cache's frame tables, which outlive
+/// process that made them (see [`crate::cm`]), the image cache's frame tables, which outlive
 /// quiescence (the pages they name wait on Standby, counted available: see
-/// [`crate::ob::Directory::cached_frames`]).
+/// [`crate::ob::Directory::cached_frames`]), and the boot's fonts', loaded for the system's life
+/// at the first win32k service (a start on demand, which may come after the baseline, inside a
+/// process: see [`crate::win32k::fonts::boot_frames`]).
 #[cfg(target_arch = "x86")]
 fn audited_frames() -> u32 {
     crate::mem::bootmem::with_frame_db(|db| db.available())
         + crate::slots::chunk_frames()
         + crate::cm::held_frames()
         + crate::ob::locked(|directory| directory.cached_frames())
+        + crate::win32k::fonts::boot_frames()
 }
 
 /// Record the allocator baseline (`available()` at the call site).

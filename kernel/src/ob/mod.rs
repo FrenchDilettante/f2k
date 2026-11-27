@@ -59,6 +59,8 @@
 pub mod access;
 pub mod security;
 
+use core::sync::atomic::{fence, AtomicU32, Ordering};
+
 use rtl::array_vec::ArrayVec;
 use security::Sd;
 
@@ -252,27 +254,165 @@ pub const PROCESSES: usize = crate::process::MAX_PROCESSES;
 pub const MAX_NAME: usize = 260;
 
 /// An object's counts: every reference (the pointer count), and the handles among them.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// Both are atomic, as Windows 2000's PointerCount is changed with interlocked operations
+/// (ObReferenceObject, ObDereferenceObject; from memory). The protocol, which every change goes
+/// through one method of this type for:
+///
+/// - **A holder's reference** ([`Counts::add_held`]): whoever holds a reference may take another
+///   without the directory's lock. The count is at least the holder's, so it cannot reach zero
+///   meanwhile.
+/// - **A look-up's reference** ([`Counts::try_add`]): a reference found by id, handle or name is
+///   taken under the directory's lock, which keeps the record the object's (its generation), and
+///   refuses a zero count. An object whose last reference went is *dying*: its deleter is on its
+///   way to the lock, and to every look-up it is gone already (Windows XP's ObReferenceObjectSafe's
+///   rule). Nothing brings a dying object back, so exactly one thread sees the count reach zero.
+/// - **A release** ([`Counts::release`]): a decrement, with Release ordering, that needs no lock
+///   unless it is the last. The last one is the deletion's first phase; its second runs under the
+///   directory's lock ([`Directory::delete_unreferenced`]), which re-checks before deleting: the id
+///   still names the record's object (no one deleted it first) and its count is still zero (an
+///   image segment's, which a look-up may take back from its cache, [`Counts::revive`], may not
+///   be).
+/// - **An image segment's** count changes only under the directory's lock: a cached segment is live
+///   at zero, and a look-up takes it back ([`Counts::revive`]), so its zero is seen more than once
+///   and only the lock orders those sightings with its caching.
+/// - **Handles** change only under the directory's lock, with the handle table's insert or close
+///   (Windows 2000 changes HandleCount under its object-type mutex; from memory): a handle's
+///   reference is a look-up's, and the last close decides the name's and a file object's cleanup in
+///   the same hold. They are atomic so a reader outside the lock sees a whole value.
+///
+/// Today every caller is inside the directory's lock, so the two phases of a deletion run in one
+/// hold. Taking a holder's reference, or dropping a reference that is not the last, outside it
+/// needs the counts reachable without the directory's `&mut` (multicore phase 1); the protocol is
+/// already the one that allows it.
+#[derive(Debug)]
 struct Counts {
-    pointers: u32,
-    handles: u32,
+    pointers: AtomicU32,
+    handles: AtomicU32,
 }
 
 impl Counts {
+    const fn new(pointers: u32, handles: u32) -> Counts {
+        Counts {
+            pointers: AtomicU32::new(pointers),
+            handles: AtomicU32::new(handles),
+        }
+    }
+
     /// A new object's: its creator's reference, no handle.
-    const CREATED: Counts = Counts {
-        pointers: 1,
-        handles: 0,
-    };
-    const NONE: Counts = Counts {
-        pointers: 0,
-        handles: 0,
-    };
+    const fn created() -> Counts {
+        Counts::new(1, 0)
+    }
+
+    /// A free record's.
+    const fn none() -> Counts {
+        Counts::new(0, 0)
+    }
+
+    /// A deleted object's record counts nothing, whatever held it (the sweep deletes leaks).
+    fn clear(&self) {
+        self.pointers.store(0, Ordering::Relaxed);
+        self.handles.store(0, Ordering::Relaxed);
+    }
+
+    /// The (pointer, handle) counts as they stand.
+    fn snapshot(&self) -> (u32, u32) {
+        (
+            self.pointers.load(Ordering::Acquire),
+            self.handles.load(Ordering::Acquire),
+        )
+    }
+
+    /// Whether the last reference went: the object is dying (or, for an image segment, cached).
+    fn unreferenced(&self) -> bool {
+        self.pointers.load(Ordering::Acquire) == 0
+    }
+
+    /// Take another reference for a holder of one: no lock needed.
+    fn add_held(&self) {
+        let before = self.pointers.fetch_add(1, Ordering::Relaxed);
+        debug_assert!(
+            before != 0,
+            "only a holder adds a reference without a look-up"
+        );
+        debug_assert!(before != u32::MAX, "the pointer count overflows");
+    }
+
+    /// Take a reference for a look-up, under the directory's lock: none for a dying object.
+    fn try_add(&self) -> bool {
+        let mut count = self.pointers.load(Ordering::Relaxed);
+        loop {
+            if count == 0 {
+                return false;
+            }
+            debug_assert!(count != u32::MAX, "the pointer count overflows");
+            match self.pointers.compare_exchange_weak(
+                count,
+                count + 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return true,
+                Err(now) => count = now,
+            }
+        }
+    }
+
+    /// Take a reference on an image segment, cached (no reference) or not, under the directory's
+    /// lock: a cached segment is live, its record kept for its file's next image section.
+    fn revive(&self) {
+        let before = self.pointers.fetch_add(1, Ordering::Relaxed);
+        debug_assert!(before != u32::MAX, "the pointer count overflows");
+    }
+
+    /// Take the deletion of a process object whose own reference alone holds it (no handle, no
+    /// other reference): its count goes from one to two, the claim's reference. Under the
+    /// directory's lock (the handles are stable there); false when anything else holds it.
+    fn claim_sole(&self) -> bool {
+        self.handles.load(Ordering::Relaxed) == 0
+            && self
+                .pointers
+                .compare_exchange(1, 2, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+    }
+
+    /// Drop a reference: whether it was the last. The decrement orders the holder's writes before
+    /// it (Release), and the last one sees every other holder's (Acquire), as the deletion that
+    /// follows must.
+    #[must_use = "the last reference's release deletes the object"]
+    fn release(&self) -> bool {
+        let before = self.pointers.fetch_sub(1, Ordering::Release);
+        debug_assert!(before != 0, "a reference is released once");
+        if before != 1 {
+            return false;
+        }
+        fence(Ordering::Acquire);
+        true
+    }
+
+    /// A handle was opened on the object, under the directory's lock: one handle more, and its
+    /// reference (a look-up's: none for a dying object).
+    fn open_handle(&self) -> bool {
+        if !self.try_add() {
+            return false;
+        }
+        self.handles.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// A handle was closed, under the directory's lock: whether it was the last. Its reference is
+    /// the caller's to release next.
+    #[must_use = "the last handle's close drops the name"]
+    fn close_handle(&self) -> bool {
+        let before = self.handles.fetch_sub(1, Ordering::Relaxed);
+        debug_assert!(before != 0, "a handle closes once");
+        before == 1
+    }
 }
 
 /// One record's header in a fixed pool (the dispatcher objects' and the processes'): whether it
 /// holds a live object, its generation, the object's counts, and its security descriptor.
-#[derive(Clone, Copy, Debug)]
+#[derive(Debug)]
 pub struct Header {
     live: bool,
     generation: u16,
@@ -286,7 +426,7 @@ impl Header {
         Header {
             live: false,
             generation: 0,
-            counts: Counts::NONE,
+            counts: Counts::none(),
             sd: Sd::NULL_DACL,
         }
     }
@@ -306,7 +446,7 @@ fn allocate(headers: &mut [Header], range: core::ops::Range<usize>) -> Option<u1
     let index = (range.start..end).find(|&index| !headers[index].live)?;
     let header = &mut headers[index];
     header.live = true;
-    header.counts = Counts::CREATED;
+    header.counts = Counts::created();
     header.sd = security::take_pending().unwrap_or(Sd::NULL_DACL);
     Some(index as u16)
 }
@@ -352,9 +492,9 @@ impl<T, const N: usize> Pool<T, N> {
     // The untyped paths' view of the pool: the counts of the live object `index` and
     // `generation` name, the lowest live record, a record's generation, and a record's death.
 
-    fn counts(&mut self, index: u16, generation: u16) -> Option<&mut Counts> {
-        let header = self.headers.get_mut(index as usize)?;
-        header.names(generation).then_some(&mut header.counts)
+    fn counts(&self, index: u16, generation: u16) -> Option<&Counts> {
+        let header = self.headers.get(index as usize)?;
+        header.names(generation).then_some(&header.counts)
     }
 
     fn lowest_live(&self) -> Option<u16> {
@@ -369,7 +509,7 @@ impl<T, const N: usize> Pool<T, N> {
     fn kill(&mut self, index: u16) {
         let header = &mut self.headers[index as usize];
         header.live = false;
-        header.counts = Counts::NONE;
+        header.counts = Counts::none();
         header.generation = header.generation.wrapping_add(1);
         header.sd = Sd::NULL_DACL;
     }
@@ -441,7 +581,7 @@ where
     ObRecord<B>: Record,
 {
     let (id, record) = pool.allocate_or_grow(0, pages()).ok()?;
-    record.counts = Counts::CREATED;
+    record.counts = Counts::created();
     record.sd = security::take_pending().unwrap_or(Sd::NULL_DACL);
     Some((object_id(kind, id), record))
 }
@@ -802,7 +942,7 @@ macro_rules! pools {
                     // SAFETY: the caller's contract.
                     unsafe {
                         at.write(ObRecord {
-                            counts: Counts::NONE,
+                            counts: Counts::none(),
                             sd: Sd::NULL_DACL,
                             body: $sfresh,
                         })
@@ -848,14 +988,15 @@ macro_rules! pools {
                 }
             }
 
-            /// The counts of the live object `id` names; none for an id that names nothing.
-            fn header(&mut self, id: ObjectId) -> Option<&mut Counts> {
+            /// The counts of the object `id` names, live or dying (see [`Counts`]); none for an
+            /// id that names nothing.
+            fn header(&self, id: ObjectId) -> Option<&Counts> {
                 match id.kind {
                     $(ObjectType::$kind => self.$pool.counts(id.index, id.generation),)*
                     $(ObjectType::$skind => self
                         .$spool
-                        .get_mut(slot_id(id))
-                        .map(|record| &mut record.counts),)*
+                        .get(slot_id(id))
+                        .map(|record| &record.counts),)*
                 }
             }
 
@@ -961,7 +1102,7 @@ unsafe impl Record for ObRecord<ImageSegment> {
         // SAFETY: the caller's contract.
         unsafe {
             at.write(ObRecord {
-                counts: Counts::NONE,
+                counts: Counts::none(),
                 sd: Sd::NULL_DACL,
                 body: ImageSegment::none(),
             })
@@ -1032,9 +1173,10 @@ bodies! {
 }
 
 impl Directory {
-    /// Whether `id` names a live object.
-    pub fn is_live(&mut self, id: ObjectId) -> bool {
-        self.header(id).is_some()
+    /// Whether `id` names a live object: not a dying one, whose last reference went (see
+    /// [`Counts`]).
+    pub fn is_live(&self, id: ObjectId) -> bool {
+        self.header(id).is_some_and(|counts| !counts.unreferenced())
     }
 
     /// Claim the deletion of the live process object `id` names when its process's own reference
@@ -1046,13 +1188,7 @@ impl Directory {
         if id.kind != ObjectType::Process {
             return false;
         }
-        match self.header(id) {
-            Some(counts) if counts.pointers == 1 && counts.handles == 0 => {
-                counts.pointers += 1;
-                true
-            }
-            _ => false,
-        }
+        self.header(id).is_some_and(Counts::claim_sole)
     }
 
     /// A deletion claimed by [`Directory::claim_deletion`] is done: the process's own reference and
@@ -1069,9 +1205,8 @@ impl Directory {
     }
 
     /// An object's (pointer, handle) counts; none for an id that names nothing.
-    pub fn counts(&mut self, id: ObjectId) -> Option<(u32, u32)> {
-        self.header(id)
-            .map(|counts| (counts.pointers, counts.handles))
+    pub fn counts(&self, id: ObjectId) -> Option<(u32, u32)> {
+        self.header(id).map(Counts::snapshot)
     }
 
     /// The security descriptor of the live object `id` names, as stored (see [`security`]); none
@@ -1232,7 +1367,7 @@ impl Directory {
     /// made with it). None when no page is left for the pool to grow.
     pub fn create_segment(&mut self, segment: ImageSegment) -> Option<SegmentId> {
         let (id, record) = self.segments.allocate_or_grow(0, pages()).ok()?;
-        record.counts = Counts::CREATED;
+        record.counts = Counts::created();
         // A segment is no object a handle names: no captured descriptor, the default.
         record.sd = Sd::NULL_DACL;
         record.body = segment;
@@ -1249,24 +1384,30 @@ impl Directory {
             .map(|record| &mut record.body)
     }
 
-    /// Take a reference on the image segment `id`; false when it names nothing.
+    /// Take a reference on the image segment `id`, cached or not; false when it names nothing.
     pub fn reference_segment(&mut self, id: SegmentId) -> bool {
-        match self.segment_header(id) {
-            Some(counts) => {
-                counts.pointers += 1;
-                true
-            }
-            None => false,
-        }
+        self.segment_header(id).map(Counts::revive).is_some()
     }
 
     /// Drop a reference on the image segment `id`. The last one leaves it cached, its frames for
     /// the caller to park ([`Followup::Park`]); a detached segment's deletes it, its frames and the
     /// file object it held left to the caller.
+    ///
+    /// The last reference's release is the first phase; the second re-checks, as an object's
+    /// deletion does ([`Directory::delete_unreferenced`]): an active segment (one a look-up took
+    /// back, [`Directory::reference_segment`]) is neither cached nor deleted. A segment's count
+    /// changes only under the lock (see [`Counts`]), so both phases share this hold.
     pub fn dereference_segment(&mut self, id: SegmentId) -> Option<Followup> {
-        let counts = self.segment_header(id)?;
-        counts.pointers -= 1;
-        if counts.pointers != 0 {
+        if !self.segment_header(id)?.release() {
+            return None;
+        }
+        self.segment_unreferenced(id)
+    }
+
+    /// The second phase of an image segment's last release, under the directory's lock: unless
+    /// it was taken back meanwhile (or deleted: a purge), it is cached or, detached, deleted.
+    fn segment_unreferenced(&mut self, id: SegmentId) -> Option<Followup> {
+        if !self.segment_header(id)?.unreferenced() {
             return None;
         }
         if self.segment(id)?.detached {
@@ -1281,7 +1422,7 @@ impl Directory {
     fn cached_segments(&self) -> impl Iterator<Item = (SegmentId, u32)> + '_ {
         self.segments
             .iter()
-            .filter(|(_, record)| record.counts.pointers == 0)
+            .filter(|(_, record)| record.counts.unreferenced())
             .map(|(id, record)| {
                 let id = SegmentId {
                     index: id.index,
@@ -1293,8 +1434,7 @@ impl Directory {
 
     /// Whether `id` names a cached segment: its file's still, no reference holding it.
     pub fn segment_cached(&mut self, id: SegmentId) -> bool {
-        self.segment_header(id)
-            .is_some_and(|counts| counts.pointers == 0)
+        self.segment_header(id).is_some_and(Counts::unreferenced)
     }
 
     /// Purge the image segment `id` because its file changes (Windows 2000's
@@ -1302,8 +1442,7 @@ impl Directory {
     /// active one is detached from its file, deleted with its last reference (see
     /// [`ImageSegment`]).
     pub fn purge_segment(&mut self, id: SegmentId) -> Option<Followup> {
-        let counts = self.segment_header(id)?;
-        if counts.pointers == 0 {
+        if self.segment_header(id)?.unreferenced() {
             return Some(self.delete_segment(id));
         }
         self.segment(id)?.detached = true;
@@ -1320,7 +1459,7 @@ impl Directory {
     ) -> bool {
         self.cached_files().all(|file| {
             self.files.get(slot_id(file)).is_some_and(|record| {
-                record.counts == Counts::CREATED && record_settled(&record.body)
+                record.counts.snapshot() == (1, 0) && record_settled(&record.body)
             })
         })
     }
@@ -1329,7 +1468,7 @@ impl Directory {
     fn cached_files(&self) -> impl Iterator<Item = ObjectId> + '_ {
         self.segments
             .iter()
-            .filter(|(_, record)| record.counts.pointers == 0)
+            .filter(|(_, record)| record.counts.unreferenced())
             .map(|(_, record)| record.body.file_object)
     }
 
@@ -1349,7 +1488,7 @@ impl Directory {
     pub fn cached_frames(&self) -> u32 {
         self.segments
             .iter()
-            .filter(|(_, record)| record.counts.pointers == 0)
+            .filter(|(_, record)| record.counts.unreferenced())
             .map(|(_, record)| record.body.frames.tables_held())
             .sum()
     }
@@ -1379,7 +1518,7 @@ impl Directory {
             .get_mut(segment_slot(id))
             .expect("deleting a live segment");
         let segment = core::mem::replace(&mut record.body, ImageSegment::none());
-        record.counts = Counts::NONE;
+        record.counts = Counts::none();
         self.segments.free(segment_slot(id));
         Followup::Section {
             frames: segment.frames,
@@ -1388,10 +1527,10 @@ impl Directory {
         }
     }
 
-    fn segment_header(&mut self, id: SegmentId) -> Option<&mut Counts> {
+    fn segment_header(&self, id: SegmentId) -> Option<&Counts> {
         self.segments
-            .get_mut(segment_slot(id))
-            .map(|record| &mut record.counts)
+            .get(segment_slot(id))
+            .map(|record| &record.counts)
     }
 
     /// A view went: drop its reference on what it mapped (the last one deletes it).
@@ -1644,42 +1783,57 @@ impl Directory {
 
     // --- Counts --------------------------------------------------------------------------------
 
-    /// Take a reference on `id`; false when it names nothing.
+    /// Take a reference on `id`, a look-up's (see [`Counts`]); false when it names nothing, or an
+    /// object whose last reference went.
     pub fn reference(&mut self, id: ObjectId) -> bool {
-        match self.header(id) {
-            Some(counts) => {
-                counts.pointers += 1;
-                true
-            }
-            None => false,
-        }
+        self.header(id).is_some_and(Counts::try_add)
+    }
+
+    /// Take another reference on `id` for a holder of one (see [`Counts`]): no look-up, and no
+    /// `&mut`, since the holder's reference keeps the object.
+    ///
+    /// # Panics
+    ///
+    /// `id` names nothing: the caller holds no reference.
+    pub fn reference_held(&self, id: ObjectId) {
+        self.header(id).expect("a held object lives").add_held();
     }
 
     /// Drop a reference on `id`; the last one deletes the object. Returns what the caller must
     /// finish for a deleted object.
+    ///
+    /// The release is the deletion's first phase, which needs no lock; the deletion itself is the
+    /// second, [`Directory::delete_unreferenced`], under the lock. Both run in this one hold.
     pub fn dereference(&mut self, id: ObjectId) -> Option<Followup> {
         let counts = self.header(id)?;
         debug_assert!(
-            counts.pointers > counts.handles,
+            {
+                let (pointers, handles) = counts.snapshot();
+                pointers > handles
+            },
             "a reference beyond the handles' is held"
         );
-        counts.pointers -= 1;
-        if counts.pointers == 0 {
-            return self.delete(id);
+        if !counts.release() {
+            return None;
         }
-        None
+        self.delete_unreferenced(id)
     }
 
-    /// A handle to `id` was inserted: one handle more, and its reference.
-    pub fn handle_opened(&mut self, id: ObjectId) -> bool {
-        match self.header(id) {
-            Some(counts) => {
-                counts.handles += 1;
-                counts.pointers += 1;
-                true
-            }
-            None => false,
+    /// The second phase of an object's last release (see [`Counts`]), under the directory's lock:
+    /// re-check, then delete. Nothing when `id` names nothing any more (its deletion ran already)
+    /// or the object holds a reference again (none of a look-up's can: it refuses a dying object;
+    /// the check is the rule's guard).
+    fn delete_unreferenced(&mut self, id: ObjectId) -> Option<Followup> {
+        if !self.header(id)?.unreferenced() {
+            return None;
         }
+        self.delete(id)
+    }
+
+    /// A handle to `id` was inserted: one handle more, and its reference (a look-up's: false,
+    /// nothing counted, for a dying object or a stale id).
+    pub fn handle_opened(&mut self, id: ObjectId) -> bool {
+        self.header(id).is_some_and(Counts::open_handle)
     }
 
     /// A handle to `id` was closed: the last handle drops the object's name and cleans up a file
@@ -1690,9 +1844,7 @@ impl Directory {
         let Some(counts) = self.header(id) else {
             return followups;
         };
-        debug_assert!(counts.handles > 0, "a handle closes once");
-        counts.handles -= 1;
-        if counts.handles == 0 {
+        if counts.close_handle() {
             self.forget_name(id);
             if let Some(file) = self.file(id) {
                 followups.push(Some(Followup::FileCleanup {
@@ -1754,6 +1906,11 @@ impl Directory {
                 crate::win32k::region::release_storage(&region);
                 None
             }
+            ObjectType::Dc => {
+                // A DC's clipping regions' blocks go with it.
+                self.dc(id).expect("deleting a live DC").release_regions();
+                None
+            }
             ObjectType::Event
             | ObjectType::Semaphore
             | ObjectType::Thread
@@ -1762,15 +1919,14 @@ impl Directory {
             | ObjectType::WindowStation
             | ObjectType::Desktop
             | ObjectType::Key
-            | ObjectType::Dc
             | ObjectType::Brush
             | ObjectType::Bitmap
             | ObjectType::Font
             | ObjectType::Token => None,
         };
         self.forget_name(id);
-        let counts = self.header(id).expect("deleting a live object");
-        *counts = Counts::NONE;
+        // The sweep deletes a leak whatever holds it.
+        self.header(id).expect("deleting a live object").clear();
         self.kill(id);
         followup
     }
@@ -1778,13 +1934,14 @@ impl Directory {
     // --- Names -------------------------------------------------------------------------------
 
     /// The live object `name` binds (its session prefix aside, see [`namespace_name`]), compared
-    /// exactly or, `case_insensitive` (OBJ_CASE_INSENSITIVE), folded (see [`same_name`]).
+    /// exactly or, `case_insensitive` (OBJ_CASE_INSENSITIVE), folded (see [`same_name`]). A dying
+    /// object's name, which its deletion is on its way to drop, binds nothing (see [`Counts`]).
     pub fn lookup_name(&self, name: &[u16], case_insensitive: bool) -> Option<ObjectId> {
         let name = namespace_name(name);
         self.names.iter().find_map(|(_, entry)| {
             entry
                 .object
-                .filter(|_| same_name(entry.name(), name, case_insensitive))
+                .filter(|&id| same_name(entry.name(), name, case_insensitive) && self.is_live(id))
         })
     }
 
@@ -1971,7 +2128,7 @@ impl Directory {
         let (segment, _) = self
             .segments
             .iter()
-            .find(|(_, record)| record.counts.pointers != 0)?;
+            .find(|(_, record)| !record.counts.unreferenced())?;
         let segment = SegmentId {
             index: segment.index,
             generation: segment.uniq,
@@ -2373,8 +2530,9 @@ mod target {
             if !directory.hold_wait(index, objects) {
                 return false;
             }
+            // The wait's reference is held: the call's is a holder's.
             for &id in files() {
-                directory.reference(id);
+                directory.reference_held(id);
             }
             true
         });
@@ -4218,5 +4376,138 @@ mod tests {
             ),
             Ok(event.granted(GENERIC_ALL))
         );
+    // --- The counts' protocol (see `Counts`) --------------------------------------------------
+
+    /// Holders on several processors take and drop references while look-ups try to take theirs:
+    /// exactly one release is the last, and once it is, no look-up takes the object back.
+    #[test]
+    fn the_last_release_is_seen_once_across_processors() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize};
+        let rounds = if cfg!(miri) { 2 } else { 200 };
+        let turns = if cfg!(miri) { 4 } else { 50 };
+        const HOLDERS: u32 = 4;
+        for _ in 0..rounds {
+            let counts = Counts::new(HOLDERS, 0);
+            let lasts = AtomicUsize::new(0);
+            let dead = AtomicBool::new(false);
+            let (counts, lasts, dead) = (&counts, &lasts, &dead);
+            let release = move || {
+                if counts.release() {
+                    assert!(!dead.swap(true, Ordering::Relaxed), "one last release");
+                    lasts.fetch_add(1, Ordering::Relaxed);
+                }
+            };
+            std::thread::scope(|scope| {
+                for _ in 0..HOLDERS {
+                    scope.spawn(move || {
+                        for _ in 0..turns {
+                            counts.add_held();
+                            release();
+                        }
+                        release();
+                    });
+                }
+                for _ in 0..2 {
+                    scope.spawn(move || {
+                        for _ in 0..turns {
+                            if counts.try_add() {
+                                assert!(!dead.load(Ordering::Relaxed), "a dying object revived");
+                                release();
+                            } else {
+                                assert!(counts.unreferenced(), "refused only once dying");
+                            }
+                        }
+                    });
+                }
+            });
+            assert_eq!(lasts.load(Ordering::Relaxed), 1);
+            assert!(dead.load(Ordering::Relaxed));
+            assert!(!counts.try_add(), "a dying object stays dying");
+            assert_eq!(counts.snapshot(), (0, 0));
+        }
+    }
+
+    /// Between an object's last release and its deletion under the lock, the object is dying: no
+    /// look-up finds it, by id, by name or for a handle, and its deletion then runs as it would
+    /// have in one hold, its name going with it.
+    #[test]
+    fn a_dying_object_is_gone_to_every_look_up() {
+        let directory = directory();
+        let id = directory.create_semaphore(0, 1).unwrap();
+        directory.bind_name(&w("F2K.dying"), id).unwrap();
+        assert!(directory.reference(id));
+        assert_eq!(directory.dereference(id), None, "not the last");
+
+        // The first phase, as a release outside the lock would run it.
+        assert!(directory.header(id).unwrap().release(), "the last");
+        assert!(!directory.is_live(id));
+        assert!(!directory.reference(id), "no look-up by id");
+        assert!(!directory.handle_opened(id), "no handle");
+        assert_eq!(
+            directory.lookup_name(&w("F2K.dying"), false),
+            None,
+            "no name"
+        );
+        assert_eq!(directory.counts(id), Some((0, 0)), "nothing counted");
+
+        // The second phase, under the lock: the re-check holds, the object goes.
+        assert_eq!(directory.delete_unreferenced(id), None, "nothing to finish");
+        assert_eq!(directory.counts(id), None);
+        assert_eq!(directory.name_of(id), None, "its name went with it");
+        let next = directory.create_semaphore(0, 1).unwrap();
+        directory.bind_name(&w("F2K.dying"), next).unwrap();
+        assert_eq!(directory.lookup_name(&w("F2K.dying"), false), Some(next));
+    }
+
+    /// A second phase that comes after the object's deletion (or after its record went to a new
+    /// object) finds its id stale and leaves the record's new object alone.
+    #[test]
+    fn a_late_second_phase_finds_the_object_gone() {
+        let directory = directory();
+        let id = directory.create_section(SectionObject::none()).unwrap();
+        assert!(directory.header(id).unwrap().release());
+        assert!(
+            directory.delete_unreferenced(id).is_some(),
+            "the section's frames"
+        );
+        let reused = directory.create_section(SectionObject::none()).unwrap();
+        assert_eq!(reused.index, id.index, "the record went to a new object");
+        assert_eq!(directory.delete_unreferenced(id), None, "a stale id");
+        assert_eq!(directory.counts(reused), Some((1, 0)), "untouched");
+    }
+
+    /// An image segment's last reference caches it; a look-up may take it back from the cache
+    /// between the release and the second phase, which then leaves it active: neither cached nor
+    /// deleted. Its next last release caches it.
+    #[test]
+    fn a_segment_taken_back_before_the_second_phase_stays_active() {
+        let directory = directory();
+        let file = ObjectId {
+            kind: ObjectType::File,
+            index: 0,
+            generation: 1,
+        };
+        let id = directory
+            .create_segment(ImageSegment::new(file, 0x1000_0000, 0x1000))
+            .unwrap();
+        assert!(directory.segment_header(id).unwrap().release());
+        assert!(directory.reference_segment(id), "taken back");
+        assert_eq!(directory.segment_unreferenced(id), None);
+        assert!(!directory.segment_cached(id), "active");
+        assert_eq!(directory.dereference_segment(id), Some(Followup::Park(id)));
+        assert!(directory.segment_cached(id));
+    }
+
+    /// A holder's reference needs no look-up: it counts like any other, and the holder's release
+    /// is not the last.
+    #[test]
+    fn a_holder_adds_a_reference_without_a_look_up() {
+        let directory = directory();
+        let id = directory.create_mutex().unwrap();
+        directory.reference_held(id);
+        assert_eq!(directory.counts(id), Some((2, 0)));
+        assert_eq!(directory.dereference(id), None);
+        assert_eq!(directory.dereference(id), None);
+        assert_eq!(directory.counts(id), None, "the last one deleted it");
     }
 }

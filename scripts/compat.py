@@ -55,9 +55,11 @@ Options:
             enabled one fails or an ignored one passes (its gap is fixed: remove the marker)
   --report  write the HTML report (target/compat/report.html): the DLL treemap, then one
             section per tests/compat/*.toml with the executable's imports as squares
-  --depth   list, per DLL and API group, the natives with no live test and those with one
+  --depth   print the per-DLL, per-API-group table and list the natives with no live test and
+            those with one
 
-The summary (per DLL and API group) prints in every case. TOML is read with the standard library
+Otherwise each step prints one line, plus one per DLL with failing exports and one per missing or
+partial run; the HTML report holds the breakdown. TOML is read with the standard library
 (tomllib).
 
 Usage:
@@ -531,6 +533,28 @@ def pack(items, first, rest, width=100):
         line += ("" if empty else " ") + text
         empty = False
     return lines + [line]
+
+
+def overview(specs, missing, pytest_run, scenario_run):
+    """One line over every spec's exports by status, one per failing export's DLL, and one per run
+    whose results are missing or partial."""
+    totals = {status: 0 for status in STATUSES}
+    count, failing = 0, {}
+    for dll, (groups, exports) in specs.items():
+        count += len(exports)
+        for export in exports.values():
+            totals[export.status] += 1
+            if export.status == "failing":
+                failing.setdefault(dll, []).append(export.name)
+    print(f"compat: {count} exports: " + ", ".join(f"{n} {status}" for status, n in totals.items()))
+    for dll, names in failing.items():
+        print(f"compat: {dll} failing: {', '.join(names)}")
+    for what, run, gaps in (("on-target suite", pytest_run, missing["blocks"]),
+                            ("host scenarios", scenario_run, missing["scenarios"])):
+        if run is None:
+            print(f"compat: no {what} results yet: their pins count as not run")
+        elif gaps:
+            print(f"compat: the {what}'s last run ({run['finished']}) left {len(gaps)} out")
 
 
 def summary(specs, missing, pytest_run, scenario_run, depth=False):
@@ -1190,7 +1214,7 @@ def main():
     parser.add_argument("--run", action="store_true", help="run the host scenarios, ignored ones included")
     parser.add_argument("--report", action="store_true", help=f"write the HTML report ({REPORT.relative_to(REPO_ROOT)})")
     parser.add_argument("--depth", action="store_true",
-                        help="list the natives with no live test and those with one, per DLL and group")
+                        help="print the per-DLL table and list the natives with no live test and those with one")
     args = parser.parse_args()
 
     specs = load_specs()
@@ -1201,15 +1225,19 @@ def main():
         if problems:
             print("Compatibility check failed:", *problems, sep="\n  ", file=sys.stderr)
             sys.exit(1)
-        print("Compatibility check: ok (every pin names an export, every pinned block is captured,"
-              " every built DLL imports only what Windows 2000's does)\n")
+        print("compat: pins and layering checked")
     failures = run_scenarios(scenarios) if args.run else []
+    if args.run:
+        print(f"compat: host scenarios run, {len(failures)} problem(s)")
     pytest_run, scenario_run = read_results(PYTEST_RESULTS), read_results(SCENARIO_RESULTS)
     missing = gather(specs, fixtures, scenarios, pytest_run, scenario_run)
-    summary(specs, missing, pytest_run, scenario_run, depth=args.depth)
+    if args.depth:
+        summary(specs, missing, pytest_run, scenario_run, depth=True)
+    else:
+        overview(specs, missing, pytest_run, scenario_run)
     if args.report:
         render(specs, missing, pytest_run, scenario_run)
-        print(f"Report: {REPORT}")
+        print(f"compat: report written to {REPORT.relative_to(REPO_ROOT)}")
     for problem in failures:
         print(problem, file=sys.stderr)
     if failures:

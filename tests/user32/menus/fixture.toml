@@ -30,6 +30,11 @@ info = ["  fType=0x0 fState=0x0 wID=* hSubMenu=menu B hbmpChecked=untouched hbmp
 # (13304327 on the real machine). The mask takes a value of four characters or more alone, a
 # handle: the -1 and the three-digit ids the same calls answer elsewhere stay compared.
 default = ["GetMenuDefaultItem(A, by command, **): ret=******* err=-"]
+# The machine's state, not a rule: W1 and W2 take back the slots of the first two of the 32
+# objects' windows, which came off the window slots (the even low words) freed last before the
+# section: on a running desktop, whatever other programs' windows left there. F2K's boot hands out
+# two neighbouring even slots, 2 apart; the capture's were not.
+slots = ["low(W2) - low(W1) is 2: * of 5"]
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

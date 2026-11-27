@@ -113,24 +113,30 @@ pub fn find_service(number: u32) -> Result<(u32, ServiceFn), NtStatus> {
 pub const WIN32K_NEEDS: u32 =
     crate::boot::subsys::Subsystem::WinSta.bit() | crate::boot::subsys::Subsystem::Fonts.bit();
 
-/// Which of win32k's needs a boot that started `started` lacks: none, or the service is refused.
-pub fn win32k_missing(started: u32) -> u32 {
-    WIN32K_NEEDS & !started
+/// Which of win32k's needs a boot that selected `selected` left out: none, or the service is
+/// refused.
+pub fn win32k_missing(selected: u32) -> u32 {
+    WIN32K_NEEDS & !selected
 }
 
-/// Whether win32k is there for service `number`: a boot whose `subsys=` left its window station or
-/// its fonts out refuses every win32k service with STATUS_INVALID_SYSTEM_SERVICE, as Windows 2000
-/// answers a win32k service when win32k is not loaded (the shadow table's entry is empty, so the
-/// index lies past its limit), rather than serve it against state it never made. The first
-/// refusal of the boot is reported on COM1, so a test that used an undeclared subsystem says so.
+/// Whether win32k is there for service `number`, started now if this is the first win32k service
+/// (its window station and fonts are Demand rows: `boot::start_on_demand`). A boot whose
+/// `subsys=` left its window station or its fonts out refuses every win32k service with
+/// STATUS_INVALID_SYSTEM_SERVICE, as Windows 2000 answers a win32k service when win32k is not
+/// loaded (the shadow table's entry is empty, so the index lies past its limit), rather than serve
+/// it against state it never made. The first refusal of the boot is reported on COM1, so a test
+/// that used an undeclared subsystem says so.
 #[cfg(target_arch = "x86")]
 fn win32k_started(number: u32) -> Result<(), NtStatus> {
     use core::sync::atomic::{AtomicBool, Ordering};
     static REPORTED: AtomicBool = AtomicBool::new(false);
-    let missing = win32k_missing(crate::boot::subsys::STATE.started_set());
-    if missing == 0 {
+    let Err(missing) = crate::boot::start_on_demand(WIN32K_NEEDS) else {
         return Ok(());
-    }
+    };
+    debug_assert_eq!(
+        missing,
+        win32k_missing(crate::boot::subsys::STATE.selected_set())
+    );
     if !REPORTED.swap(true, Ordering::Relaxed) {
         crate::serial_println!(
             "F2K: win32k service {:#06x} refused: subsystem {} not started (subsys=), STATUS_INVALID_SYSTEM_SERVICE",
@@ -474,7 +480,8 @@ fn serve(frame: &mut TrapFrame, passive: &mut At<Passive>) -> Result<(), NtStatu
     let (arg_bytes, service) = find_service(frame.eax)?;
     let table = service_table(frame.eax);
 
-    // A win32k service first connects the calling process to its window station and desktop, as
+    // A win32k service first has win32k's window station and fonts started (at the boot's first
+    // win32k service), then connects the calling process to its window station and desktop, as
     // Windows 2000's first win32k call makes a thread a GUI thread (the internal numbers' table
     // bits are 0).
     if table == WIN32K_TABLE {
@@ -685,8 +692,8 @@ mod tests {
         assert!(SYSCALL_VECTOR > 31);
     }
 
-    /// win32k's services need its window station and its fonts, both: a boot without either
-    /// refuses them.
+    /// win32k's services need its window station and its fonts, both: a boot whose selection left
+    /// either out refuses them.
     #[test]
     fn win32k_needs_its_window_station_and_its_fonts() {
         use crate::boot::subsys::{selection, Subsystem as S, SUBSYSTEMS};

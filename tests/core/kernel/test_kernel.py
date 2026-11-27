@@ -39,10 +39,12 @@ BASE_PROFILE = (
     "com1", "cpu", "memory", "console", "registry", "quantum", "io", "interrupts", "scheduler",
     "ramdisk", "block", "bootvol", "pagingfile", "ntdll",
 )
-# Every subsystem, as a boot without `subsys=` starts them, and reports them.
+# Every subsystem, as a boot without `subsys=` selects them, and reports them: all but win32k's
+# window station and fonts started by the boot, those two left for the first win32k service (the
+# Demand rows).
 ALL_SUBSYSTEMS = (
-    "F2K: subsystems: com1,cpu,memory,console,registry,quantum,io,interrupts,scheduler,winsta,pci,"
-    "devtree,ramdisk,ide,keyboard,block,bootvol,pagingfile,fonts,ntdll (20 of 20)"
+    "F2K: subsystems: com1,cpu,memory,console,registry,quantum,io,interrupts,scheduler,pci,"
+    "devtree,ramdisk,ide,keyboard,block,bootvol,pagingfile,ntdll (18 of 20), on demand: winsta,fonts"
 )
 
 # Every full boot's own checks, before any program runs.
@@ -521,7 +523,8 @@ CASES = (
         ordered=True,
         expects=(*BOOTED, ALL_SUBSYSTEMS, "F2K: image loaded", "F2K: entering ring 3", *EXITED_CLEAN),
         forbids=("F2K: command line:",),
-        # The line naming every subsystem: all of them started.
+        # The line naming every subsystem: all of them started but the Demand rows, which a
+        # console program never asks for.
         needs=f2kboot.OPTIONAL_SUBSYSTEMS,
     ),
     *program_smoke(
@@ -865,6 +868,26 @@ CASES = (
             *EXITED_CLEAN,
         ),
         forbids=("F2K: dev:",),
+    ),
+    # Win32k's window station and fonts are Demand rows: a boot that selects them (here
+    # subsys=gui) starts them at the first win32k service, inside the program, and says so;
+    # the teardown audit counts the fonts' frames, taken after its baseline, as the boot's.
+    Case(
+        name="subsys-demand",
+        description="subsys=gui leaves win32k's window station and fonts for the first win32k service, which starts them (a COM1 line) inside the GUI program, which then runs clean",
+        image="kernel",
+        storage="ram",
+        cmdline="CORPUS\\hellogui.exe",
+        kernel_options="subsys=gui",
+        ordered=True,
+        expects=(
+            *BOOTED,
+            f"F2K: subsystems: {','.join(BASE_PROFILE)} ({len(BASE_PROFILE)} of 20), on demand: winsta,fonts",
+            "F2K: entering ring 3",
+            f"F2K: subsystems started on demand: winsta,fonts ({len(BASE_PROFILE) + 2} of 20)",
+            *EXITED_CLEAN,
+        ),
+        forbids=("refused",),
     ),
     # A program's win32k service on a boot without win32k: refused with
     # STATUS_INVALID_SYSTEM_SERVICE (Windows 2000's answer when win32k is not loaded), the first

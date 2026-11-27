@@ -107,7 +107,15 @@ fn drawn_rows(table: &mut Table, height: i32, width: usize, rows: usize) -> Vec<
         right: width as i32,
         bottom: rows as i32,
     };
-    let text = TextOut::new(clip, 0, WHITE, false, 2, 0, None);
+    let text = TextOut::new(
+        crate::win32k::raster::Clip::rect(&clip),
+        0,
+        WHITE,
+        false,
+        2,
+        0,
+        None,
+    );
     let end = draw_run(
         table,
         Some(&mut screen),
@@ -176,7 +184,15 @@ fn an_opaque_run_fills_its_cells() {
         right: 40,
         bottom: 20,
     };
-    let text = TextOut::new(clip, 0, WHITE, true, 1, 0, None);
+    let text = TextOut::new(
+        crate::win32k::raster::Clip::rect(&clip),
+        0,
+        WHITE,
+        true,
+        1,
+        0,
+        None,
+    );
     let end = draw_run(
         &mut table,
         Some(&mut screen),
@@ -594,7 +610,15 @@ fn a_run_at_i32s_end_saturates() {
         right: 40,
         bottom: 20,
     };
-    let text = TextOut::new(clip, 0, WHITE, false, i32::MAX - 1, 0, None);
+    let text = TextOut::new(
+        crate::win32k::raster::Clip::rect(&clip),
+        0,
+        WHITE,
+        false,
+        i32::MAX - 1,
+        0,
+        None,
+    );
     let end = draw_run(
         &mut table,
         Some(&mut screen),

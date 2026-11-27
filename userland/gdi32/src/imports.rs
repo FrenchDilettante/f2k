@@ -202,6 +202,41 @@ mod raw {
         pub fn NtGdiFillRgn(dc: usize, region: usize, brush: usize, result: *mut u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtGdiFlush"]
         pub fn NtGdiFlush() -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiExtSelectClipRgn"]
+        pub fn NtGdiExtSelectClipRgn(
+            dc: usize,
+            region: usize,
+            mode: u32,
+            complexity: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiIntersectClipRect"]
+        pub fn NtGdiIntersectClipRect(
+            dc: usize,
+            left: i32,
+            top: i32,
+            right: i32,
+            bottom: i32,
+            complexity: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiExcludeClipRect"]
+        pub fn NtGdiExcludeClipRect(
+            dc: usize,
+            left: i32,
+            top: i32,
+            right: i32,
+            bottom: i32,
+            complexity: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiOffsetClipRgn"]
+        pub fn NtGdiOffsetClipRgn(dc: usize, x: i32, y: i32, complexity: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiGetAppClipBox"]
+        pub fn NtGdiGetAppClipBox(dc: usize, rect: *mut Rect, complexity: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiGetRandomRgn"]
+        pub fn NtGdiGetRandomRgn(dc: usize, region: usize, which: u32, result: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiPtVisible"]
+        pub fn NtGdiPtVisible(dc: usize, x: i32, y: i32, visible: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiRectVisible"]
+        pub fn NtGdiRectVisible(dc: usize, rect: *const Rect, visible: *mut u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtGdiPatBlt"]
         pub fn NtGdiPatBlt(dc: usize, x: i32, y: i32, width: i32, height: i32, rop: u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtGdiCreateCompatibleDC"]
@@ -665,6 +700,91 @@ pub fn fill_rgn(dc: usize, region: usize, brush: usize) -> Result<bool, NtStatus
 pub fn flush() {
     // SAFETY: no memory changes hands.
     unsafe { raw::NtGdiFlush() };
+}
+
+/// NtGdiExtSelectClipRgn: `dc`'s clipping region made `mode`'s combination of it and `region`
+/// (zero: none); the final region's complexity.
+pub fn ext_select_clip_rgn(dc: usize, region: usize, mode: u32) -> Result<i32, NtStatus> {
+    let mut complexity = 0u32;
+    // SAFETY: the service writes the local.
+    checked(unsafe { raw::NtGdiExtSelectClipRgn(dc, region, mode, &mut complexity) })?;
+    Ok(complexity as i32)
+}
+
+/// NtGdiIntersectClipRect: `dc`'s clipping region cut to the logical rectangle; its complexity.
+pub fn intersect_clip_rect(dc: usize, rect: rtl::gdi::Rect) -> Result<i32, NtStatus> {
+    let mut complexity = 0u32;
+    // SAFETY: the service writes the local.
+    checked(unsafe {
+        raw::NtGdiIntersectClipRect(
+            dc,
+            rect.left,
+            rect.top,
+            rect.right,
+            rect.bottom,
+            &mut complexity,
+        )
+    })?;
+    Ok(complexity as i32)
+}
+
+/// NtGdiExcludeClipRect: the logical rectangle taken out of `dc`'s clipping region; the final
+/// region's complexity.
+pub fn exclude_clip_rect(dc: usize, rect: rtl::gdi::Rect) -> Result<i32, NtStatus> {
+    let mut complexity = 0u32;
+    // SAFETY: the service writes the local.
+    checked(unsafe {
+        raw::NtGdiExcludeClipRect(
+            dc,
+            rect.left,
+            rect.top,
+            rect.right,
+            rect.bottom,
+            &mut complexity,
+        )
+    })?;
+    Ok(complexity as i32)
+}
+
+/// NtGdiOffsetClipRgn: `dc`'s clipping region moved; the final region's complexity.
+pub fn offset_clip_rgn(dc: usize, x: i32, y: i32) -> Result<i32, NtStatus> {
+    let mut complexity = 0u32;
+    // SAFETY: the service writes the local.
+    checked(unsafe { raw::NtGdiOffsetClipRgn(dc, x, y, &mut complexity) })?;
+    Ok(complexity as i32)
+}
+
+/// NtGdiGetAppClipBox: `dc`'s final region's complexity and box (logical coordinates).
+pub fn clip_box(dc: usize) -> Result<(i32, rtl::gdi::Rect), NtStatus> {
+    let (mut complexity, mut rect) = (0u32, rtl::gdi::Rect::EMPTY);
+    // SAFETY: the service writes the locals.
+    checked(unsafe { raw::NtGdiGetAppClipBox(dc, &mut rect, &mut complexity) })?;
+    Ok((complexity as i32, rect))
+}
+
+/// NtGdiGetRandomRgn: `region` made a copy of `dc`'s region of kind `which`; 1, or 0 when the DC
+/// has none.
+pub fn random_rgn(dc: usize, region: usize, which: u32) -> Result<i32, NtStatus> {
+    let mut result = 0u32;
+    // SAFETY: the service writes the local.
+    checked(unsafe { raw::NtGdiGetRandomRgn(dc, region, which, &mut result) })?;
+    Ok(result as i32)
+}
+
+/// NtGdiPtVisible: whether the logical point is inside `dc`'s final region.
+pub fn pt_visible(dc: usize, x: i32, y: i32) -> Result<bool, NtStatus> {
+    let mut visible = 0u32;
+    // SAFETY: the service writes the local.
+    checked(unsafe { raw::NtGdiPtVisible(dc, x, y, &mut visible) })?;
+    Ok(visible != 0)
+}
+
+/// NtGdiRectVisible: whether any of the logical rectangle is inside `dc`'s final region.
+pub fn rect_visible(dc: usize, rect: &rtl::gdi::Rect) -> Result<bool, NtStatus> {
+    let mut visible = 0u32;
+    // SAFETY: the service reads the caller's rectangle and writes the local.
+    checked(unsafe { raw::NtGdiRectVisible(dc, rect, &mut visible) })?;
+    Ok(visible != 0)
 }
 
 // --- win32k's bitmaps ----------------------------------------------------------------------------
@@ -1418,6 +1538,70 @@ pub mod host {
     pub unsafe extern "system" fn NtGdiFlush() -> u32 {
         served();
         0
+    }
+
+    pub unsafe extern "system" fn NtGdiExtSelectClipRgn(
+        _: usize,
+        _: usize,
+        _: u32,
+        _: *mut u32,
+    ) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiIntersectClipRect(
+        _: usize,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: *mut u32,
+    ) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiExcludeClipRect(
+        _: usize,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: *mut u32,
+    ) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiOffsetClipRgn(_: usize, _: i32, _: i32, _: *mut u32) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiGetAppClipBox(_: usize, _: *mut Rect, _: *mut u32) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiGetRandomRgn(
+        _: usize,
+        _: usize,
+        _: u32,
+        _: *mut u32,
+    ) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiPtVisible(_: usize, _: i32, _: i32, _: *mut u32) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiRectVisible(_: usize, _: *const Rect, _: *mut u32) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
     }
 
     pub unsafe extern "system" fn NtGdiPatBlt(

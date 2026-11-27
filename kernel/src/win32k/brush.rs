@@ -204,7 +204,7 @@ pub fn pat_blt(
         return Ok(STATUS_SUCCESS);
     }
     super::bitmap::with_surface(&dc, |surface| {
-        super::raster::pat_blt(surface, dc.clip, rect, rop, pattern.as_ref())
+        super::raster::pat_blt(surface, dc.clip(), rect, rop, pattern.as_ref())
     });
     Ok(STATUS_SUCCESS)
 }

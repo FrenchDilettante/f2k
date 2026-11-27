@@ -59,20 +59,15 @@ const TEB_SLOTS: u32 = 64;
 // THREAD_ALL_ACCESS: what CreateThread's handle grants.
 use rtl::nt::access::THREAD_ALL_ACCESS;
 
-/// CreateThread's flags: CREATE_SUSPENDED, and STACK_SIZE_PARAM_IS_A_RESERVATION (the stack size is
-/// the reservation, not the commit).
+/// CreateThread's flags: CREATE_SUSPENDED alone. Windows XP's STACK_SIZE_PARAM_IS_A_RESERVATION
+/// (0x10000) is not Windows 2000's: it is ignored like any other flag, the stack size read as the
+/// commit (the threads fixture's stacksize block).
 const CREATE_SUSPENDED: u32 = 0x0000_0004;
-const STACK_SIZE_PARAM_IS_A_RESERVATION: u32 = 0x0001_0000;
 
 /// The page, the allocation granularity, and a MiB.
 const PAGE: u32 = 0x1000;
 const GRANULARITY: u32 = 0x1_0000;
 const MIB: u32 = 0x10_0000;
-
-/// A thread's stack reservation when the image's own is taken (the MSVC linker's 1 MiB default),
-/// and the pages committed at its top (F2K's two, the main thread's).
-pub const DEFAULT_STACK_RESERVE: u32 = MIB;
-pub const STACK_COMMIT: u32 = 2 * PAGE;
 
 /// The memory services' allocation types and protections.
 const MEM_COMMIT: u32 = 0x1000;
@@ -82,18 +77,45 @@ const PAGE_GUARD: u32 = 0x100;
 
 use rtl::winerror::ERROR_INVALID_HANDLE;
 
-/// A child thread's stack reservation for CreateThread's `size` and `flags`, as Windows 2000 sizes
-/// it: a reservation rounds up to the allocation granularity (three pages at least); a commit size
-/// (the default reading) keeps the image's reservation — taken as the linker's default 1 MiB —
-/// unless it reaches it, when the reservation is the commit rounded up to a whole MiB.
-pub fn stack_reservation(size: u32, flags: u32) -> u32 {
-    if flags & STACK_SIZE_PARAM_IS_A_RESERVATION != 0 && size != 0 {
-        size.max(3 * PAGE).next_multiple_of(GRANULARITY)
-    } else if size >= DEFAULT_STACK_RESERVE {
-        size.next_multiple_of(MIB)
+/// `size` rounded up to a multiple of `unit` (a power of two), the highest multiple when that
+/// overflows (a reservation no address space holds: the allocation refuses it).
+fn round_up(size: u32, unit: u32) -> u32 {
+    size.checked_next_multiple_of(unit)
+        .unwrap_or(u32::MAX & !(unit - 1))
+}
+
+/// BaseCreateStack's sizes, (reservation, commit), for a stack of `reserve` bytes reserved and
+/// `commit` committed (an image's SizeOfStackReserve and SizeOfStackCommit, or CreateThread's
+/// stack size as the commit), as Windows 2000 rounds them: a commit that reaches the reservation
+/// takes a reservation of whole MiBs; the commit rounds up to pages (one at least), the
+/// reservation to the allocation granularity.
+pub fn stack_sizes(reserve: u32, commit: u32) -> (u32, u32) {
+    let commit = round_up(commit.max(PAGE), PAGE);
+    let reserve = if commit >= reserve {
+        round_up(commit, MIB)
     } else {
-        DEFAULT_STACK_RESERVE
-    }
+        reserve
+    };
+    (round_up(reserve, GRANULARITY), commit)
+}
+
+/// A created thread's stack sizes, (reservation, commit), for CreateThread's `size`, as Windows
+/// 2000's BaseCreateStack sizes them from the calling process's image (the PEB's
+/// ImageBaseAddress, RtlImageNtHeader — the caller's image even for a thread made in another
+/// process): its SizeOfStackReserve reserved, `size` committed, or its SizeOfStackCommit when
+/// `size` is 0 ([`stack_sizes`]'s rounding). An image without headers counts as asking nothing (a
+/// MiB reserved, a page committed).
+fn thread_stack_sizes(size: u32) -> (u32, u32) {
+    let (reserve, image_commit) = ntcall::image_nt_header(crate::base::image_base())
+        .map(|headers| {
+            let optional = &headers.optional_header;
+            (
+                optional.size_of_stack_reserve,
+                optional.size_of_stack_commit,
+            )
+        })
+        .unwrap_or_default();
+    stack_sizes(reserve, if size == 0 { image_commit } else { size })
 }
 
 /// INITIAL_TEB: the stack NtCreateThread gives the thread — no old (fiber) stack; its base (one
@@ -254,7 +276,7 @@ pub unsafe extern "system" fn create_thread(
 
 /// CreateRemoteThread: a thread of the process the handle names (the caller's own through its
 /// pseudo-handle), as Windows 2000 makes one — its stack in that process (BaseCreateStack, sized
-/// by [`stack_reservation`]), its context (BaseInitializeContext at BaseThreadStartThunk, which
+/// by [`thread_stack_sizes`]), its context (BaseInitializeContext at BaseThreadStartThunk, which
 /// sits at the same address in every process), then NtCreateThread with the attributes'
 /// inheritance, suspended; the identifier written where asked (a bad pointer faults the caller,
 /// the thread already made, as on Windows 2000), and the thread resumed unless CREATE_SUSPENDED.
@@ -308,7 +330,8 @@ fn create(
         parameter,
         flags,
     } = start;
-    let stack = match create_stack(process, stack_reservation(stack_size, flags), STACK_COMMIT) {
+    let (reserve, commit) = thread_stack_sizes(stack_size);
+    let stack = match create_stack(process, reserve, commit) {
         Ok(stack) => stack,
         Err(status) => {
             set_last_nt_error(status);
@@ -652,31 +675,37 @@ mod tests {
         assert_eq!(base_priority(-15), -16);
     }
 
-    /// The stack sizes, as Windows 2000 reads CreateThread's: a reservation rounds up to 64 KiB
-    /// (three pages at least); a commit keeps the 1 MiB default until it reaches it, then rounds up
-    /// to whole MiB (the memory fixture's stack block: 256 KiB and 4 MiB requests, the default).
+    /// BaseCreateStack's sizes, as Windows 2000 reads them: the image's reservation kept while the
+    /// commit stays below it (the threads fixture's stacksize block: 64 KiB committed under the
+    /// 1 MiB default, and stackkid.exe's /STACK:0x400000 reservation for its threads of stack size
+    /// 0 and 0x10000; the memory fixture's stack block: a 256 KiB commit under 1 MiB, a 4 MiB one
+    /// reserving 4 MiB); a commit reaching it reserves whole MiBs; the commit rounds to pages.
     #[test]
     fn stack_sizes_follow_windows_2000s_rule() {
-        assert_eq!(stack_reservation(0, 0), 0x10_0000);
-        assert_eq!(stack_reservation(256 * 1024, 0), 0x10_0000);
-        assert_eq!(stack_reservation(4 << 20, 0), 4 << 20);
-        assert_eq!(stack_reservation(0x10_0001, 0), 0x20_0000);
-        assert_eq!(
-            stack_reservation(256 * 1024, STACK_SIZE_PARAM_IS_A_RESERVATION),
-            256 * 1024
-        );
-        assert_eq!(
-            stack_reservation(0x1000, STACK_SIZE_PARAM_IS_A_RESERVATION),
-            0x1_0000
-        );
-        assert_eq!(
-            stack_reservation(0x1_0001, STACK_SIZE_PARAM_IS_A_RESERVATION),
-            0x2_0000
-        );
-        assert_eq!(
-            stack_reservation(0, STACK_SIZE_PARAM_IS_A_RESERVATION),
-            0x10_0000
-        );
+        assert_eq!(stack_sizes(0x10_0000, 0x1000), (0x10_0000, 0x1000));
+        assert_eq!(stack_sizes(0x10_0000, 0x1_0000), (0x10_0000, 0x1_0000));
+        assert_eq!(stack_sizes(0x40_0000, 0x1000), (0x40_0000, 0x1000));
+        assert_eq!(stack_sizes(0x40_0000, 0x1_0000), (0x40_0000, 0x1_0000));
+        assert_eq!(stack_sizes(0x10_0000, 256 * 1024), (0x10_0000, 256 * 1024));
+        assert_eq!(stack_sizes(0x10_0000, 4 << 20), (4 << 20, 4 << 20));
+        assert_eq!(stack_sizes(0x10_0000, 0x10_0001), (0x20_0000, 0x10_1000));
+        assert_eq!(stack_sizes(0x10_0000, 0x10_0000), (0x10_0000, 0x10_0000));
+        assert_eq!(stack_sizes(0x10_0000, 0x123), (0x10_0000, 0x1000));
+        assert_eq!(stack_sizes(0x12_3456, 0x1000), (0x13_0000, 0x1000));
+        // An image asking nothing: a MiB reserved, a page committed.
+        assert_eq!(stack_sizes(0, 0), (0x10_0000, 0x1000));
+        // A commit no address space holds keeps a reservation the allocation refuses.
+        assert_eq!(stack_sizes(0x10_0000, u32::MAX), (0xFFF0_0000, 0xFFFF_F000));
+    }
+
+    /// CreateThread's stack size is the commit under the calling image's reservation, 0 taking the
+    /// image's commit (the host's stand-in image asks the linker's MiB and page); Windows XP's
+    /// STACK_SIZE_PARAM_IS_A_RESERVATION is no flag here.
+    #[test]
+    fn a_thread_takes_the_images_stack() {
+        assert_eq!(thread_stack_sizes(0), (0x10_0000, 0x1000));
+        assert_eq!(thread_stack_sizes(0x1_0000), (0x10_0000, 0x1_0000));
+        assert_eq!(thread_stack_sizes(4 << 20), (4 << 20, 4 << 20));
     }
 
     /// GetThreadPriority names a pinned thread by the specials, a free one by its increment.

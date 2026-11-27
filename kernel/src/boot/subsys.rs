@@ -12,12 +12,15 @@
 //!
 //! The start types mirror Windows 2000's driver and service start types (the registry's `Start`
 //! value: SERVICE_BOOT_START 0, SERVICE_SYSTEM_START 1, SERVICE_AUTO_START 2, SERVICE_DEMAND_START
-//! 3). Every Boot row starts at every boot (the base profile); the others start when the kernel
-//! command line's `subsys=` names them or a row that depends on them ([`parse`], [`selection`]),
-//! and all of them without a `subsys=`. A call into a subsystem the boot did not start fails
-//! loudly, never quietly differently: a kernel-internal reach panics ([`require`]); a program's
-//! win32k service is refused with STATUS_INVALID_SYSTEM_SERVICE and a COM1 line
-//! (`user::syscall`).
+//! 3). Every Boot row starts at every boot (the base profile). The others are the boot's selection
+//! when the kernel command line's `subsys=` names them or a row that depends on them ([`parse`],
+//! [`selection`]), and all of them without a `subsys=`; a row the selection leaves out stands as
+//! a SERVICE_DISABLED service does, never started. A selected System or Auto row starts at the
+//! boot; a selected Demand row at its first use ([`State::start_on_demand`]: win32k's window
+//! station and fonts at the first win32k service, `user::syscall`), or never. A call into a
+//! subsystem the boot left out fails loudly, never quietly differently: a kernel-internal reach
+//! panics ([`require`]); a program's win32k service is refused with STATUS_INVALID_SYSTEM_SERVICE
+//! and a COM1 line (`user::syscall`).
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -82,8 +85,8 @@ impl Subsystem {
 const _: () = assert!(Subsystem::COUNT <= 32);
 
 /// When a subsystem starts, after Windows 2000's driver and service start types: a Boot row at
-/// every boot, the others when the boot-time selection (`subsys=`) asks for them, or all of them
-/// without one.
+/// every boot; a System or Auto row at the boot when the boot-time selection (`subsys=`, or none:
+/// every row) holds it; a Demand row at its first use when the selection holds it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StartType {
     /// SERVICE_BOOT_START (0): the kernel's core, in every boot (the base profile).
@@ -91,11 +94,17 @@ pub enum StartType {
     /// SERVICE_SYSTEM_START (1): a hardware driver the kernel starts at its Phase 1
     /// (IoInitSystem's drivers): the buses and devices a boot can do without.
     System,
-    /// SERVICE_AUTO_START (2): the session's pieces Windows 2000's session manager starts (win32k
-    /// and its window station, the fonts).
+    /// SERVICE_AUTO_START (2): started at the boot when selected, though the boot's own work does
+    /// not need it. None now: the session's pieces (win32k's window station, the fonts) were
+    /// these until they became Demand rows.
+    #[allow(dead_code)] // A row's start type, should one be Auto again.
     Auto,
-    /// SERVICE_DEMAND_START (3): started at its first use. None yet.
-    #[cfg_attr(not(test), allow(dead_code))] // The lazy start's.
+    /// SERVICE_DEMAND_START (3): started at its first use, when the selection holds it
+    /// ([`State::start_on_demand`]): win32k's window station and fonts, at the first win32k
+    /// service (Windows 2000's session manager loads win32k and its window station at the
+    /// session's start, and the fonts come at logon: F2K, with no session manager, makes them when
+    /// a program first needs them). Nothing a Boot, System or Auto row needs is a Demand row
+    /// ([`demand_rows_stand_alone`]).
     Demand,
 }
 
@@ -132,7 +141,10 @@ impl Phase {
 
 /// A teardown hook a subsystem owns: a step a process's, a thread's or the system's end takes on
 /// the subsystem's state, which a boot that never started the subsystem has no state for. The hooks
-/// are called from where they are today; the descriptors only name their owners.
+/// are called from where they are today; the descriptors only name their owners. Each runs only
+/// over what started: the shutdown's are Boot rows'; the process's and the thread's are the Demand
+/// rows' (win32k's), run only for a process connected to win32k, and a connection comes after the
+/// win32k start on demand (`user::syscall`), so it implies the start (the hooks assert it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Teardown {
     /// A process's end (`process::release_process`'s win32k steps: GDI objects, windows and
@@ -174,7 +186,7 @@ pub struct Descriptor {
     /// The subsystems it needs started before its own start, and while it runs.
     pub depends: &'static [Subsystem],
     /// The teardown hooks it owns.
-    #[cfg_attr(not(test), allow(dead_code))] // The lazy start's.
+    #[cfg_attr(not(test), allow(dead_code))] // The host tests'.
     pub teardown: &'static [Teardown],
 }
 
@@ -262,7 +274,7 @@ const TABLE: [Descriptor; Subsystem::COUNT] = [
     subsystem(
         S::WinSta,
         "winsta",
-        T::Auto,
+        T::Demand,
         P::Interrupts,
         &[S::Interrupts],
         &[Teardown::ProcessEnd, Teardown::ThreadEnd],
@@ -328,7 +340,7 @@ const TABLE: [Descriptor; Subsystem::COUNT] = [
     subsystem(
         S::Fonts,
         "fonts",
-        T::Auto,
+        T::Demand,
         P::Late,
         &[S::BootVolume],
         &[Teardown::ProcessEnd],
@@ -508,8 +520,11 @@ pub fn start_order(table: &[Descriptor], set: u32) -> impl Iterator<Item = Subsy
         .filter(move |id| set & id.bit() != 0)
 }
 
-/// The started flags: which subsystems have started, and which are starting.
+/// The started flags: which subsystems the boot selected, which have started, and which are
+/// starting.
 pub struct State {
+    /// The selected subsystems' bits: those the boot may start, at the boot or on demand.
+    selected: AtomicU32,
     /// The started subsystems' bits.
     started: AtomicU32,
     /// The bits of the subsystems whose start is under way (their dependencies' or their own).
@@ -517,12 +532,23 @@ pub struct State {
 }
 
 impl State {
-    /// No subsystem started.
+    /// No subsystem selected or started.
     pub const fn new() -> Self {
         Self {
+            selected: AtomicU32::new(0),
             started: AtomicU32::new(0),
             starting: AtomicU32::new(0),
         }
+    }
+
+    /// Record the boot's selection: the subsystems it may start ([`selection`], or every row).
+    pub fn select(&self, set: u32) {
+        self.selected.store(set, Ordering::Release);
+    }
+
+    /// The selected subsystems' set.
+    pub fn selected_set(&self) -> u32 {
+        self.selected.load(Ordering::Acquire)
     }
 
     /// Whether `id` has started.
@@ -561,6 +587,32 @@ impl State {
         self.started.fetch_or(id.bit(), Ordering::AcqRel);
         self.starting.fetch_and(!id.bit(), Ordering::AcqRel);
     }
+
+    /// Start the subsystems of `needs` that have not started, at their first use: each, and what
+    /// it depends on, once ([`State::start`]), in the table's order. Returns the set this call
+    /// started (none when `needs` had all started); or, starting nothing, `needs`' subsystems the
+    /// boot did not select, which never start.
+    ///
+    /// Not safe against a concurrent caller on its own: two threads making their first use at
+    /// once would both run a start (or the second would find it under way and panic). The
+    /// kernel's callers hold one lock across it (`boot::start_on_demand`); the check of the
+    /// started flags before the lock is the fast path, and is repeated here, under it.
+    pub fn start_on_demand(
+        &self,
+        table: &[Descriptor],
+        needs: u32,
+        init: &mut dyn FnMut(Subsystem),
+    ) -> Result<u32, u32> {
+        let left_out = needs & !self.selected_set();
+        if left_out != 0 {
+            return Err(left_out);
+        }
+        let before = self.started_set();
+        for id in start_order(table, needs & !before) {
+            self.start(table, id, init);
+        }
+        Ok(self.started_set() & !before)
+    }
 }
 
 /// The kernel's started flags.
@@ -571,12 +623,40 @@ pub fn started(id: Subsystem) -> bool {
     STATE.started(id)
 }
 
-/// The base profile: the Boot rows of `table`, which every boot starts.
-pub fn boot_rows(table: &[Descriptor]) -> u32 {
+/// The rows of `table` whose start type is `start`.
+fn rows_of(table: &[Descriptor], start: StartType) -> u32 {
     table
         .iter()
-        .filter(|descriptor| descriptor.start == StartType::Boot)
+        .filter(|descriptor| descriptor.start == start)
         .fold(0, |set, descriptor| set | descriptor.id.bit())
+}
+
+/// The base profile: the Boot rows of `table`, which every boot starts.
+pub fn boot_rows(table: &[Descriptor]) -> u32 {
+    rows_of(table, StartType::Boot)
+}
+
+/// The Demand rows of `table`: started at their first use, never by the boot itself.
+pub fn demand_rows(table: &[Descriptor]) -> u32 {
+    rows_of(table, StartType::Demand)
+}
+
+/// The subsystems the boot itself starts of its `selected` ones: all but the Demand rows, which
+/// wait for their first use.
+pub fn boot_starts(table: &[Descriptor], selected: u32) -> u32 {
+    selected & !demand_rows(table)
+}
+
+/// Whether no row the boot starts depends on a Demand row (a Demand row some other row needs would
+/// start with it, at the boot, and its first use would come too late to matter). Over a checked
+/// table.
+#[cfg_attr(not(test), allow(dead_code))] // The host tests'.
+pub fn demand_rows_stand_alone(table: &[Descriptor]) -> bool {
+    let demand = demand_rows(table);
+    table
+        .iter()
+        .filter(|descriptor| descriptor.start != StartType::Demand)
+        .all(|descriptor| dependencies(descriptor) & demand == 0)
 }
 
 /// The names `subsys=` takes beside the rows' own: `gui`, win32k's whole (its window station and
@@ -927,6 +1007,156 @@ mod tests {
         let set = S::Com1.bit() | S::Ide.bit() | S::Cpu.bit();
         assert_eq!(Names(&SUBSYSTEMS, set).to_string(), "com1,cpu,ide");
         assert_eq!(Names(&SUBSYSTEMS, 0).to_string(), "");
+    }
+
+    #[test]
+    fn the_session_pieces_start_on_demand_and_nothing_at_boot_needs_them() {
+        assert_eq!(demand_rows(&SUBSYSTEMS), S::WinSta.bit() | S::Fonts.bit());
+        assert!(demand_rows_stand_alone(&SUBSYSTEMS));
+        // win32k's alias names exactly the Demand rows.
+        assert_eq!(parse(&SUBSYSTEMS, b"gui"), Ok(demand_rows(&SUBSYSTEMS)));
+        // A Boot row needing a Demand row would start it at the boot.
+        let table = [
+            subsystem(S::Com1, "a", StartType::Demand, P::Processor, &[], &[]),
+            d(S::Cpu, P::Processor, &[S::Com1]),
+        ];
+        assert_eq!(check(&table), Ok(()));
+        assert!(!demand_rows_stand_alone(&table));
+        // The hooks a boot may reach before the Demand rows start are none of theirs: theirs are
+        // the win32k connection's, which comes after the start.
+        for descriptor in &SUBSYSTEMS {
+            let win32k_hooks = descriptor
+                .teardown
+                .iter()
+                .any(|hook| matches!(hook, Teardown::ProcessEnd | Teardown::ThreadEnd));
+            assert_eq!(
+                win32k_hooks,
+                descriptor.start == StartType::Demand,
+                "{}",
+                descriptor.name
+            );
+        }
+    }
+
+    #[test]
+    fn the_boot_starts_its_selection_but_the_demand_rows() {
+        let all = listed(&SUBSYSTEMS);
+        let demand = S::WinSta.bit() | S::Fonts.bit();
+        // No subsys=: every row selected, all but win32k's started by the boot.
+        assert_eq!(boot_starts(&SUBSYSTEMS, all), all & !demand);
+        // subsys=gui: the base profile at the boot, win32k's two selected for later.
+        let gui = selection(&SUBSYSTEMS, parse(&SUBSYSTEMS, b"gui").unwrap());
+        assert_eq!(gui, boot_rows(&SUBSYSTEMS) | demand);
+        assert_eq!(boot_starts(&SUBSYSTEMS, gui), boot_rows(&SUBSYSTEMS));
+        // subsys= and subsys=ide: as before, nothing on demand.
+        let base = selection(&SUBSYSTEMS, 0);
+        assert_eq!(boot_starts(&SUBSYSTEMS, base), base);
+        let ide = selection(&SUBSYSTEMS, S::Ide.bit());
+        assert_eq!(boot_starts(&SUBSYSTEMS, ide), ide);
+    }
+
+    /// The boot's half and the first use's, as the kernel runs them: the boot's rows started in
+    /// the table's order, then the Demand rows when asked.
+    fn boot(state: &State, selected: u32) {
+        state.select(selected);
+        for id in start_order(&SUBSYSTEMS, boot_starts(&SUBSYSTEMS, selected)) {
+            state.start(&SUBSYSTEMS, id, &mut |_| {});
+        }
+    }
+
+    #[test]
+    fn a_demand_start_runs_once_at_the_first_use() {
+        let state = State::new();
+        boot(&state, listed(&SUBSYSTEMS));
+        let win32k = S::WinSta.bit() | S::Fonts.bit();
+        assert_eq!(state.started_set(), listed(&SUBSYSTEMS) & !win32k);
+        let mut started = Vec::new();
+        assert_eq!(
+            state.start_on_demand(&SUBSYSTEMS, win32k, &mut |id| started.push(id)),
+            Ok(win32k)
+        );
+        // In the table's order, their dependencies (the boot's) not again.
+        assert_eq!(started, [S::WinSta, S::Fonts]);
+        assert_eq!(state.started_set(), listed(&SUBSYSTEMS));
+        // The second use finds them started.
+        started.clear();
+        assert_eq!(
+            state.start_on_demand(&SUBSYSTEMS, win32k, &mut |id| started.push(id)),
+            Ok(0)
+        );
+        assert!(started.is_empty());
+    }
+
+    #[test]
+    fn a_demand_start_the_selection_left_out_is_refused_whole() {
+        // subsys=winsta (the toolhelp fixture's): the fonts were left out, so win32k's services
+        // start nothing, the window station neither.
+        let state = State::new();
+        let selected = selection(&SUBSYSTEMS, S::WinSta.bit());
+        boot(&state, selected);
+        let win32k = S::WinSta.bit() | S::Fonts.bit();
+        let mut started = Vec::new();
+        assert_eq!(
+            state.start_on_demand(&SUBSYSTEMS, win32k, &mut |id| started.push(id)),
+            Err(S::Fonts.bit())
+        );
+        assert!(started.is_empty());
+        assert!(!state.started(S::WinSta));
+        // The base profile: both left out.
+        let state = State::new();
+        boot(&state, selection(&SUBSYSTEMS, 0));
+        assert_eq!(
+            state.start_on_demand(&SUBSYSTEMS, win32k, &mut |_| {}),
+            Err(win32k)
+        );
+        // Nothing selected for it to need: a use of the boot's own rows starts nothing.
+        assert_eq!(
+            state.start_on_demand(&SUBSYSTEMS, S::Memory.bit(), &mut |_| panic!()),
+            Ok(0)
+        );
+    }
+
+    #[test]
+    fn concurrent_first_uses_under_one_lock_start_each_row_once() {
+        // The kernel's rule: the started flags checked first, without the lock (the fast path),
+        // then the start under one lock, which re-checks them. Threads racing to their first use
+        // start each row once, and every one of them returns only once the rows have started.
+        use std::sync::atomic::AtomicUsize;
+        use std::sync::{Arc, Barrier, Mutex};
+        let state = Arc::new(State::new());
+        boot(&state, listed(&SUBSYSTEMS));
+        let lock = Arc::new(Mutex::new(()));
+        let runs: Arc<[AtomicUsize; Subsystem::COUNT]> =
+            Arc::new(core::array::from_fn(|_| AtomicUsize::new(0)));
+        let threads = 8;
+        let barrier = Arc::new(Barrier::new(threads));
+        let win32k = S::WinSta.bit() | S::Fonts.bit();
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                let (state, lock, runs, barrier) =
+                    (state.clone(), lock.clone(), runs.clone(), barrier.clone());
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    if state.started_set() & win32k != win32k {
+                        let _held = lock.lock().unwrap();
+                        state
+                            .start_on_demand(&SUBSYSTEMS, win32k, &mut |id| {
+                                runs[id as usize].fetch_add(1, Ordering::SeqCst);
+                                // A start that takes a while, as the fonts' disk reads do.
+                                std::thread::sleep(std::time::Duration::from_millis(2));
+                            })
+                            .unwrap();
+                    }
+                    assert_eq!(state.started_set() & win32k, win32k);
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        assert_eq!(runs[S::WinSta as usize].load(Ordering::SeqCst), 1);
+        assert_eq!(runs[S::Fonts as usize].load(Ordering::SeqCst), 1);
+        assert_eq!(state.started_set(), listed(&SUBSYSTEMS));
     }
 
     #[test]

@@ -552,17 +552,18 @@ def storage_args(disk: Path, storage: str, memory: str, *, kept: bool = False) -
 #
 # The kernel starts its subsystem table's Boot rows at every boot (the base profile) and the others
 # only as the kernel command line's `subsys=` names them (kernel/src/boot/subsys.rs); without a
-# `subsys=` it starts them all. Every boot here names the subsystems it needs: a fixture's
-# declaration (`needs` in fixture.toml), else what its programs import (`program_needs`: user32 or
-# gdi32 → `gui`), plus what the boot itself is (an IDE-disk boot needs `ide`, a boot whose keys are
-# pressed `keyboard`). A program that reaches a subsystem its boot left out fails loudly on COM1 (a
+# `subsys=` it starts them all (win32k's window station and fonts, the Demand rows, at the first
+# win32k service rather than at the boot, either way). Every boot here names the subsystems it
+# needs: a fixture's declaration (`needs` in fixture.toml), else what its programs import
+# (`program_needs`: user32 or gdi32 → `gui`), plus what the boot itself is (an IDE-disk boot needs
+# `ide`, a boot whose keys are pressed `keyboard`). A program that reaches a subsystem its boot left out fails loudly on COM1 (a
 # refused win32k service, or a SUBSYSTEM_NOT_STARTED panic), and the harness fails its test naming
 # the row (`undeclared_subsystem`). `--full-system` (FULL_SYSTEM) boots everything with every
 # subsystem instead: the drift guard, whose results must equal the narrowed run's.
 
-# The rows a boot can leave out (the table's System and Auto rows), by their `name`s, and the
-# kernel's alias for win32k's two (`subsys::ALIASES`). harness/test_harness.py holds them to the
-# kernel's table.
+# The rows a boot can leave out (the table's System, Auto and Demand rows), by their `name`s, and
+# the kernel's alias for win32k's two (`subsys::ALIASES`). harness/test_harness.py holds them to
+# the kernel's table.
 OPTIONAL_SUBSYSTEMS = ("winsta", "pci", "devtree", "ide", "keyboard", "fonts")
 SUBSYSTEM_ALIASES = {"gui": ("winsta", "fonts")}
 # What a boot needs that nothing narrows: every optional row.

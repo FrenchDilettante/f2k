@@ -137,7 +137,13 @@ fn invert(rect: Rect, gray: bool) {
             right: screen.geometry.width as i32,
             bottom: screen.geometry.height as i32,
         };
-        super::raster::pat_blt(screen, extent, rect, rop, pattern.as_ref());
+        super::raster::pat_blt(
+            screen,
+            super::raster::Clip::rect(&extent),
+            rect,
+            rop,
+            pattern.as_ref(),
+        );
     });
 }
 

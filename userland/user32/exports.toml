@@ -1786,6 +1786,20 @@ impl = { syscall = "crate::win32k::paint::get_update_rect" }
 internal = true
 
 [[export]]
+name = "NtUserInvalidateRgn"
+group = "message"
+args = ["handle Window", "handle Region", "bool Erase"]
+impl = { syscall = "crate::win32k::paint::invalidate_rgn" }
+internal = true
+
+[[export]]
+name = "NtUserGetUpdateRgn"
+group = "message"
+args = ["handle Window", "handle Region", "bool Erase", "ptr<u32> Result"]
+impl = { syscall = "crate::win32k::paint::get_update_rgn" }
+internal = true
+
+[[export]]
 name = "NtUserBeginPaint"
 group = "message"
 args = ["handle Window", "ptr Paint"]
@@ -1906,7 +1920,7 @@ note = "the window's thread has not read its queue for 5 s and its last read fou
 name = "GetUpdateRgn"
 group = "message"
 args = ["handle hWnd", "handle hRgn", "bool bErase"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetUpdateRgn" }
 ordinal = 338
 fails = "0"
 note = "the region's complexity, 0 (ERROR) failing"
@@ -1915,8 +1929,16 @@ note = "the region's complexity, 0 (ERROR) failing"
 name = "InvalidateRgn"
 group = "message"
 args = ["handle hWnd", "handle hRgn", "bool bErase"]
-impl = { stub = "not yet implemented" }
+impl = { native = "InvalidateRgn" }
 ordinal = 384
+fails = "FALSE"
+
+[[export]]
+name = "ValidateRgn"
+group = "message"
+args = ["handle hWnd", "handle hRgn"]
+impl = { native = "ValidateRgn" }
+ordinal = 674
 fails = "FALSE"
 
 # --- ending the session ---------------------------------------------------------------------------
@@ -5159,10 +5181,6 @@ ordinal = 671
 [[export]]
 name = "VTagOutput"
 ordinal = 672
-
-[[export]]
-name = "ValidateRgn"
-ordinal = 674
 
 [[export]]
 name = "VkKeyScanA"

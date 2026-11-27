@@ -726,6 +726,11 @@ mod services {
             result.write(0)?;
             return Ok(STATUS_SUCCESS);
         }
+        if routine == rtl::user::HWND_PARAM_LOCK_VALIDATE_RGN {
+            crate::win32k::paint::validate_rgn(call, window, Handle(param))?;
+            result.write(0)?;
+            return Ok(STATUS_SUCCESS);
+        }
         let answer = with_session(call.passive(), |s| {
             let id = s
                 .windows()

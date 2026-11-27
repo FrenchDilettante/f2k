@@ -105,7 +105,7 @@ The fixtures:
   `handles` covers a freed moveable handle given to the Global and Local calls, `GMEM_MODIFY`, a locked block grown with and without `GMEM_MOVEABLE`, and invalid flags; `heapcap` covers a heap with a maximum size around its largest block (Windows 2000 refuses 0x7F000 bytes, below MSDN's 0x7FFF8), a full capped heap's error, `HEAP_GENERATE_EXCEPTIONS` and `HeapReAlloc` of NULL.
 - `threads` - creation, exit codes, `ExitThread`/`TerminateThread`, suspend counts and suspension during waits, priorities and classes, scale (32 sequential, 20 concurrent, 100 fire-and-forget threads, hundreds of handles), TLS slots and `__declspec(thread)`, per-thread last error/errno/FPU/SEH, `_beginthreadex`, a thread terminated in a wait (its exit code at once and once it has ended), a suspended thread terminated, `OpenThread` with each access right alone and on an ended thread's id (`open`), `GetThreadTimes` as relations to `GetSystemTimeAsFileTime` and the time a busy loop took (`times`), and named-only `mainexit`/`procexit`.
   Built with `/MT`, with its companion program `stackkid.exe` (built beside it from `stackkid.c`, linked with `/STACK:0x400000`), which reports in its exit code whether 3 MiB of recursion ran on its main thread and on threads created with stack sizes 0 and 0x10000.
-  `stacksize` (that child, and `CreateThread` with stack size 0x10000, with and without Windows XP's `STACK_SIZE_PARAM_IS_A_RESERVATION`) stays pending until the real machine builds and captures it.
+  `stacksize` runs that child, and `CreateThread` with stack size 0x10000 with and without Windows XP's `STACK_SIZE_PARAM_IS_A_RESERVATION` (which Windows 2000 ignores: the size is the commit, the image's `SizeOfStackReserve` the reservation).
   Replaced the `thread`, `respawn` and `suspend` smokes.
 - `sync` - events (`PulseEvent`, named objects), semaphores, mutexes and abandonment, `WaitForMultipleObjects`, user APCs, critical sections, interlocked operations, handle duplication and closing, `pingpong` kept as a section (plus a `SignalObjectAndWait` variant), and threads terminated inside waits on named events (whether the names outlive them).
   Built with `/MT`.
@@ -357,7 +357,7 @@ The fixtures:
   A region prints as its type, its box, its rectangles or a grid of `PtInRegion` answers.
   The `update` window is a topmost 64x48 popup at the screen's corner, shown, since a hidden window keeps no update region; its update region prints as its type and as the same as a region the program built or not.
   Built with `/MD`.
-  Gated; `clip` and `extclip` stay pending while a DC's clipping is one rectangle and F2K's gdi32 has no clipping calls (`SelectClipRgn`, `ExtSelectClipRgn`, `GetClipRgn` and the rest are stubs), and `update` while the update region is a bounding rectangle and `InvalidateRgn` and `GetUpdateRgn` are stubs.
+  Gated.
 
 The `crt` fixtures (msvcrt.dll's) are built with `/MD`: their C runtime is msvcrt.dll's rather than a static copy linked into the program.
 
