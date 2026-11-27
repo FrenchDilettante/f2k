@@ -345,6 +345,7 @@ pub(crate) mod access;
 pub(crate) mod aces;
 pub(crate) mod acl;
 pub(crate) mod convert;
+pub(crate) mod object;
 pub(crate) mod sd;
 pub(crate) mod sid;
 
