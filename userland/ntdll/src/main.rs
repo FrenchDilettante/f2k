@@ -302,7 +302,10 @@ extern "C" fn f2k_rtl_free_heap(handle: usize, flags: u32, pointer: usize) -> u3
 
 /// RtlReAllocateHeap: the block, or the refusal ([`refused`]). A null pointer is refused with
 /// STATUS_SUCCESS, never raised (the memory capture's heapcap section: err=0 on an exceptions heap
-/// too); what is no block of the heap with STATUS_INVALID_PARAMETER, never raised; an in-place
+/// too). What is no busy block of the heap (a freed one) sets STATUS_INVALID_PARAMETER, never
+/// raised, and answers the pointer itself, the block left as it was: Windows 2000's routine leaves
+/// its work at the entry's flags and returns the address it was handed (the memory capture's
+/// heaperr section: "a block" with error 87, where a refusal would be NULL). An in-place
 /// resize that does not fit is a plain refusal, the last error untouched (the memory capture's
 /// heap section).
 #[unsafe(no_mangle)]
@@ -321,7 +324,7 @@ extern "C" fn f2k_rtl_reallocate_heap(
     }
     if heap.size(&Native, flags, pointer).is_none() {
         set_heap_status(STATUS_INVALID_PARAMETER);
-        return 0;
+        return pointer as u64;
     }
     match heap.realloc(&Native, flags, pointer, size) {
         Some(block) => block as u64,

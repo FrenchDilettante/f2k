@@ -12,9 +12,6 @@ image = ["past the image end: state 0x10000 protect 0x1 type 0x0 region * allocp
 # 256 MiB (the RAM disk keeps RAM_MEMORY, and a fixture's `memory` would boot every block at it).
 largemem = "its block is a 3 GiB machine's, captured by hand; F2K's corpus boots have 256 MiB, so every 2 GiB relation would differ"
 
-[pending]
-heaperr = "HeapReAlloc of a freed block in a capped heap (HeapCreate's maximum 16 MiB) answers NULL with ERROR_INVALID_PARAMETER, where Windows 2000 answers a block and sets the same error"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only what a section calls itself, through its own helpers too, never what the C runtime's
