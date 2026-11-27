@@ -2307,7 +2307,11 @@ ordinal = 261
 
 [[export]]
 name = "NtSetInformationToken"
+group = "nt"
+args = ["handle TokenHandle", "u32 TokenInformationClass", "ptr TokenInformation", "u32 TokenInformationLength"]
+impl = { syscall = "crate::nt::token::set_information_token" }
 ordinal = 265
+zw_ordinal = 910
 
 [[export]]
 name = "NtSetIntervalProfile"
@@ -4244,10 +4248,6 @@ ordinal = 905
 [[export]]
 name = "ZwSetInformationKey"
 ordinal = 906
-
-[[export]]
-name = "ZwSetInformationToken"
-ordinal = 910
 
 [[export]]
 name = "ZwSetIntervalProfile"
