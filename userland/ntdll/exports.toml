@@ -1819,7 +1819,11 @@ zw_ordinal = 706
 
 [[export]]
 name = "NtAccessCheckAndAuditAlarm"
+group = "nt"
+args = ["ptr SubsystemName", "ptr HandleId", "ptr ObjectTypeName", "ptr ObjectName", "ptr SecurityDescriptor", "u32 DesiredAccess", "ptr GenericMapping", "boolean ObjectCreation", "ptr<u32> GrantedAccess", "ptr<u32> AccessStatus", "ptr<u8> GenerateOnClose"]
+impl = { syscall = "crate::nt::audit::access_check_and_audit_alarm" }
 ordinal = 61
+zw_ordinal = 707
 
 [[export]]
 name = "NtAccessCheckByType"
@@ -1831,7 +1835,11 @@ zw_ordinal = 708
 
 [[export]]
 name = "NtAccessCheckByTypeAndAuditAlarm"
+group = "nt"
+args = ["ptr SubsystemName", "ptr HandleId", "ptr ObjectTypeName", "ptr ObjectName", "ptr SecurityDescriptor", "ptr PrincipalSelfSid", "u32 DesiredAccess", "u32 AuditType", "u32 Flags", "ptr ObjectTypeList", "u32 ObjectTypeListLength", "ptr GenericMapping", "boolean ObjectCreation", "ptr<u32> GrantedAccess", "ptr<u32> AccessStatus", "ptr<u8> GenerateOnClose"]
+impl = { syscall = "crate::nt::audit::access_check_by_type_and_audit_alarm" }
 ordinal = 63
+zw_ordinal = 709
 
 [[export]]
 name = "NtAccessCheckByTypeResultList"
@@ -1843,11 +1851,19 @@ zw_ordinal = 710
 
 [[export]]
 name = "NtAccessCheckByTypeResultListAndAuditAlarm"
+group = "nt"
+args = ["ptr SubsystemName", "ptr HandleId", "ptr ObjectTypeName", "ptr ObjectName", "ptr SecurityDescriptor", "ptr PrincipalSelfSid", "u32 DesiredAccess", "u32 AuditType", "u32 Flags", "ptr ObjectTypeList", "u32 ObjectTypeListLength", "ptr GenericMapping", "boolean ObjectCreation", "ptr<u32> GrantedAccessList", "ptr<u32> AccessStatusList", "ptr<u8> GenerateOnClose"]
+impl = { syscall = "crate::nt::audit::access_check_by_type_result_list_and_audit_alarm" }
 ordinal = 65
+zw_ordinal = 711
 
 [[export]]
 name = "NtAccessCheckByTypeResultListAndAuditAlarmByHandle"
+group = "nt"
+args = ["ptr SubsystemName", "ptr HandleId", "handle ClientToken", "ptr ObjectTypeName", "ptr ObjectName", "ptr SecurityDescriptor", "ptr PrincipalSelfSid", "u32 DesiredAccess", "u32 AuditType", "u32 Flags", "ptr ObjectTypeList", "u32 ObjectTypeListLength", "ptr GenericMapping", "boolean ObjectCreation", "ptr<u32> GrantedAccessList", "ptr<u32> AccessStatusList", "ptr<u8> GenerateOnClose"]
+impl = { syscall = "crate::nt::audit::access_check_by_type_result_list_and_audit_alarm_by_handle" }
 ordinal = 66
+zw_ordinal = 712
 
 [[export]]
 name = "NtAdjustGroupsToken"
@@ -1867,7 +1883,11 @@ ordinal = 71
 
 [[export]]
 name = "NtAllocateLocallyUniqueId"
+group = "nt"
+args = ["ptr Luid"]
+impl = { syscall = "crate::nt::luid::allocate_locally_unique_id" }
 ordinal = 72
+zw_ordinal = 718
 
 [[export]]
 name = "NtAllocateUserPhysicalPages"
@@ -1895,7 +1915,11 @@ ordinal = 80
 
 [[export]]
 name = "NtCloseObjectAuditAlarm"
+group = "nt"
+args = ["ptr SubsystemName", "ptr HandleId", "boolean GenerateOnClose"]
+impl = { syscall = "crate::nt::audit::close_object_audit_alarm" }
 ordinal = 84
+zw_ordinal = 730
 
 [[export]]
 name = "NtCompleteConnectPort"
@@ -1967,7 +1991,11 @@ ordinal = 113
 
 [[export]]
 name = "NtDeleteObjectAuditAlarm"
+group = "nt"
+args = ["ptr SubsystemName", "ptr HandleId", "boolean GenerateOnClose"]
+impl = { syscall = "crate::nt::audit::delete_object_audit_alarm" }
 ordinal = 115
+zw_ordinal = 760
 
 [[export]]
 name = "NtDisplayString"
@@ -2099,7 +2127,11 @@ ordinal = 165
 
 [[export]]
 name = "NtOpenObjectAuditAlarm"
+group = "nt"
+args = ["ptr SubsystemName", "ptr HandleId", "ptr ObjectTypeName", "ptr ObjectName", "ptr SecurityDescriptor", "handle ClientToken", "u32 DesiredAccess", "u32 GrantedAccess", "ptr Privileges", "boolean ObjectCreation", "boolean AccessGranted", "ptr<u8> GenerateOnClose"]
+impl = { syscall = "crate::nt::audit::open_object_audit_alarm" }
 ordinal = 168
+zw_ordinal = 813
 
 [[export]]
 name = "NtOpenSymbolicLinkObject"
@@ -2131,11 +2163,19 @@ zw_ordinal = 824
 
 [[export]]
 name = "NtPrivilegeObjectAuditAlarm"
+group = "nt"
+args = ["ptr SubsystemName", "ptr HandleId", "handle ClientToken", "u32 DesiredAccess", "ptr Privileges", "boolean AccessGranted"]
+impl = { syscall = "crate::nt::audit::privilege_object_audit_alarm" }
 ordinal = 180
+zw_ordinal = 825
 
 [[export]]
 name = "NtPrivilegedServiceAuditAlarm"
+group = "nt"
+args = ["ptr SubsystemName", "ptr ServiceName", "handle ClientToken", "ptr Privileges", "boolean AccessGranted"]
+impl = { syscall = "crate::nt::audit::privileged_service_audit_alarm" }
 ordinal = 181
+zw_ordinal = 826
 
 [[export]]
 name = "NtQueryDefaultLocale"
@@ -2734,6 +2774,9 @@ ordinal = 369
 
 [[export]]
 name = "RtlConvertToAutoInheritSecurityObject"
+group = "security"
+args = ["ptr ParentDescriptor", "ptr CurrentSecurityDescriptor", "ptr NewSecurityDescriptor", "ptr ObjectType", "boolean IsDirectoryObject", "ptr GenericMapping"]
+impl = { native = "RtlConvertToAutoInheritSecurityObject" }
 ordinal = 370
 
 [[export]]
@@ -2746,10 +2789,16 @@ ordinal = 372
 
 [[export]]
 name = "RtlCopyLuid"
+group = "security"
+args = ["ptr DestinationLuid", "ptr SourceLuid"]
+impl = { native = "RtlCopyLuid" }
 ordinal = 373
 
 [[export]]
 name = "RtlCopyLuidAndAttributesArray"
+group = "security"
+args = ["u32 Count", "ptr Source", "ptr Destination"]
+impl = { native = "RtlCopyLuidAndAttributesArray" }
 ordinal = 374
 
 [[export]]
@@ -2848,6 +2897,9 @@ ordinal = 396
 
 [[export]]
 name = "RtlCreateUserSecurityObject"
+group = "security"
+args = ["ptr AceData", "u32 AceCount", "ptr OwnerSid", "ptr GroupSid", "boolean IsDirectoryObject", "ptr GenericMapping", "ptr NewDescriptor"]
+impl = { native = "RtlCreateUserSecurityObject" }
 ordinal = 397
 
 [[export]]
@@ -2922,6 +2974,9 @@ ordinal = 415
 
 [[export]]
 name = "RtlDeleteSecurityObject"
+group = "security"
+args = ["ptr ObjectDescriptor"]
+impl = { native = "RtlDeleteSecurityObject" }
 ordinal = 416
 
 [[export]]
@@ -3014,6 +3069,9 @@ ordinal = 445
 
 [[export]]
 name = "RtlEqualLuid"
+group = "security"
+args = ["ptr Luid1", "ptr Luid2"]
+impl = { native = "RtlEqualLuid" }
 ordinal = 446
 
 [[export]]
@@ -3262,6 +3320,9 @@ ordinal = 508
 
 [[export]]
 name = "RtlImpersonateSelf"
+group = "security"
+args = ["u32 ImpersonationLevel"]
+impl = { native = "RtlImpersonateSelf" }
 ordinal = 509
 
 [[export]]
@@ -3441,6 +3502,9 @@ ordinal = 559
 
 [[export]]
 name = "RtlNewInstanceSecurityObject"
+group = "security"
+args = ["boolean ParentDescriptorChanged", "boolean CreatorDescriptorChanged", "ptr OldClientTokenModifiedId", "ptr NewClientTokenModifiedId", "ptr ParentDescriptor", "ptr CreatorDescriptor", "ptr NewDescriptor", "boolean IsDirectoryObject", "handle Token", "ptr GenericMapping"]
+impl = { native = "RtlNewInstanceSecurityObject" }
 ordinal = 560
 
 [[export]]
@@ -3452,10 +3516,16 @@ ordinal = 561
 
 [[export]]
 name = "RtlNewSecurityObject"
+group = "security"
+args = ["ptr ParentDescriptor", "ptr CreatorDescriptor", "ptr NewDescriptor", "boolean IsDirectoryObject", "handle Token", "ptr GenericMapping"]
+impl = { native = "RtlNewSecurityObject" }
 ordinal = 562
 
 [[export]]
 name = "RtlNewSecurityObjectEx"
+group = "security"
+args = ["ptr ParentDescriptor", "ptr CreatorDescriptor", "ptr NewDescriptor", "ptr ObjectType", "boolean IsDirectoryObject", "u32 AutoInheritFlags", "handle Token", "ptr GenericMapping"]
+impl = { native = "RtlNewSecurityObjectEx" }
 ordinal = 563
 
 [[export]]
@@ -3535,6 +3605,9 @@ ordinal = 585
 
 [[export]]
 name = "RtlQuerySecurityObject"
+group = "security"
+args = ["handle ObjectHandle", "u32 SecurityInformation", "ptr ResultantDescriptor", "u32 DescriptorLength", "ptr<u32> ReturnLength"]
+impl = { native = "RtlQuerySecurityObject" }
 ordinal = 586
 
 [[export]]
@@ -3681,10 +3754,16 @@ ordinal = 621
 
 [[export]]
 name = "RtlSetSecurityObject"
+group = "security"
+args = ["u32 SecurityInformation", "ptr ModificationDescriptor", "handle ObjectHandle", "ptr GenericMapping", "handle Token"]
+impl = { native = "RtlSetSecurityObject" }
 ordinal = 622
 
 [[export]]
 name = "RtlSetSecurityObjectEx"
+group = "security"
+args = ["u32 SecurityInformation", "ptr ModificationDescriptor", "handle ObjectHandle", "u32 AutoInheritFlags", "ptr GenericMapping", "handle Token"]
+impl = { native = "RtlSetSecurityObjectEx" }
 ordinal = 623
 
 [[export]]
@@ -3978,32 +4057,12 @@ name = "ZwAcceptConnectPort"
 ordinal = 705
 
 [[export]]
-name = "ZwAccessCheckAndAuditAlarm"
-ordinal = 707
-
-[[export]]
-name = "ZwAccessCheckByTypeAndAuditAlarm"
-ordinal = 709
-
-[[export]]
-name = "ZwAccessCheckByTypeResultListAndAuditAlarm"
-ordinal = 711
-
-[[export]]
-name = "ZwAccessCheckByTypeResultListAndAuditAlarmByHandle"
-ordinal = 712
-
-[[export]]
 name = "ZwAlertResumeThread"
 ordinal = 716
 
 [[export]]
 name = "ZwAlertThread"
 ordinal = 717
-
-[[export]]
-name = "ZwAllocateLocallyUniqueId"
-ordinal = 718
 
 [[export]]
 name = "ZwAllocateUserPhysicalPages"
@@ -4028,10 +4087,6 @@ ordinal = 725
 [[export]]
 name = "ZwCancelIoFile"
 ordinal = 726
-
-[[export]]
-name = "ZwCloseObjectAuditAlarm"
-ordinal = 730
 
 [[export]]
 name = "ZwCompleteConnectPort"
@@ -4088,10 +4143,6 @@ ordinal = 755
 [[export]]
 name = "ZwDeleteFile"
 ordinal = 758
-
-[[export]]
-name = "ZwDeleteObjectAuditAlarm"
-ordinal = 760
 
 [[export]]
 name = "ZwDisplayString"
@@ -4214,10 +4265,6 @@ name = "ZwOpenJobObject"
 ordinal = 810
 
 [[export]]
-name = "ZwOpenObjectAuditAlarm"
-ordinal = 813
-
-[[export]]
 name = "ZwOpenSymbolicLinkObject"
 ordinal = 818
 
@@ -4228,14 +4275,6 @@ ordinal = 822
 [[export]]
 name = "ZwPowerInformation"
 ordinal = 823
-
-[[export]]
-name = "ZwPrivilegeObjectAuditAlarm"
-ordinal = 825
-
-[[export]]
-name = "ZwPrivilegedServiceAuditAlarm"
-ordinal = 826
 
 [[export]]
 name = "ZwQueryDefaultLocale"

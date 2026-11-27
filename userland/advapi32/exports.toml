@@ -223,7 +223,7 @@ fails = "FALSE"
 name = "GetSecurityInfoExW"
 group = "security"
 args = ["handle hObject", "u32 ObjectType", "u32 SecurityInfo", "strW? lpProvider", "strW? lpProperty", "ptr ppAccessList", "ptr ppAuditList", "ptr lppOwner", "ptr lppGroup"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetSecurityInfoExW" }
 ordinal = 227
 fails = "1204"
 note = "the error it returns is ERROR_BAD_PROVIDER, which is what cmd.exe needs from it"
@@ -815,6 +815,9 @@ ordinal = 85
 
 [[export]]
 name = "ConvertToAutoInheritPrivateObjectSecurity"
+group = "security"
+args = ["ptr ParentDescriptor", "ptr CurrentSecurityDescriptor", "ptr NewSecurityDescriptor", "ptr ObjectType", "u32 IsDirectoryObject", "ptr GenericMapping"]
+impl = { native = "ConvertToAutoInheritPrivateObjectSecurity" }
 ordinal = 86
 
 [[export]]
@@ -826,10 +829,16 @@ ordinal = 87
 
 [[export]]
 name = "CreatePrivateObjectSecurity"
+group = "security"
+args = ["ptr ParentDescriptor", "ptr CreatorDescriptor", "ptr NewDescriptor", "u32 IsDirectoryObject", "handle Token", "ptr GenericMapping"]
+impl = { native = "CreatePrivateObjectSecurity" }
 ordinal = 88
 
 [[export]]
 name = "CreatePrivateObjectSecurityEx"
+group = "security"
+args = ["ptr ParentDescriptor", "ptr CreatorDescriptor", "ptr NewDescriptor", "ptr ObjectType", "u32 IsContainerObject", "u32 AutoInheritFlags", "handle Token", "ptr GenericMapping"]
+impl = { native = "CreatePrivateObjectSecurityEx" }
 ordinal = 89
 
 [[export]]
@@ -1055,6 +1064,9 @@ ordinal = 142
 
 [[export]]
 name = "DestroyPrivateObjectSecurity"
+group = "security"
+args = ["ptr ObjectDescriptor"]
+impl = { native = "DestroyPrivateObjectSecurity" }
 ordinal = 143
 
 [[export]]
@@ -1399,6 +1411,9 @@ ordinal = 216
 
 [[export]]
 name = "GetPrivateObjectSecurity"
+group = "security"
+args = ["ptr ObjectDescriptor", "u32 SecurityInformation", "ptr ResultantDescriptor", "u32 DescriptorLength", "ptr<u32> ReturnLength"]
+impl = { native = "GetPrivateObjectSecurity" }
 ordinal = 217
 
 [[export]]
@@ -1459,6 +1474,9 @@ ordinal = 225
 
 [[export]]
 name = "GetSecurityInfoExA"
+group = "security"
+args = ["handle hObject", "u32 ObjectType", "u32 SecurityInfo", "strA? lpProvider", "strA? lpProperty", "ptr ppAccessList", "ptr ppAuditList", "ptr lppOwner", "ptr lppGroup"]
+impl = { native = "GetSecurityInfoExA" }
 ordinal = 226
 
 [[export]]
@@ -2468,10 +2486,16 @@ ordinal = 473
 
 [[export]]
 name = "SetPrivateObjectSecurity"
+group = "security"
+args = ["u32 SecurityInformation", "ptr ModificationDescriptor", "ptr ObjectsSecurityDescriptor", "ptr GenericMapping", "handle Token"]
+impl = { native = "SetPrivateObjectSecurity" }
 ordinal = 474
 
 [[export]]
 name = "SetPrivateObjectSecurityEx"
+group = "security"
+args = ["u32 SecurityInformation", "ptr ModificationDescriptor", "ptr ObjectsSecurityDescriptor", "u32 AutoInheritFlags", "ptr GenericMapping", "handle Token"]
+impl = { native = "SetPrivateObjectSecurityEx" }
 ordinal = 475
 
 [[export]]
@@ -2525,10 +2549,16 @@ ordinal = 482
 
 [[export]]
 name = "SetSecurityInfoExA"
+group = "security"
+args = ["handle hObject", "u32 ObjectType", "u32 SecurityInfo", "strA? lpProvider", "strA? lpProperty", "ptr pAccessList", "ptr pAuditList", "ptr pOwner", "ptr pGroup"]
+impl = { native = "SetSecurityInfoExA" }
 ordinal = 483
 
 [[export]]
 name = "SetSecurityInfoExW"
+group = "security"
+args = ["handle hObject", "u32 ObjectType", "u32 SecurityInfo", "strW? lpProvider", "strW? lpProperty", "ptr pAccessList", "ptr pAuditList", "ptr pOwner", "ptr pGroup"]
+impl = { native = "SetSecurityInfoExW" }
 ordinal = 484
 
 [[export]]
