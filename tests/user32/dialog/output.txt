@@ -1,9 +1,9 @@
 # F2K capture of dialog (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
-# date: Sat 21/11/2026  7:37:33.37
-dialog F2KT-SOURCE-CRC=0x1758936F
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:39.28
+dialog F2KT-SOURCE-CRC=0xD144B499
 >>> dialog.exe create
 == create
 CreateDialogParamW(100, NULL, proc, 0x1234): non-NULL yes err=-

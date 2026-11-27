@@ -3,9 +3,12 @@
 # nothing printed depends on a glyph's width: no positions (the caret's moves print as relations),
 # short texts in ES_AUTOHSCROLL edits that never wrap or refuse text, and EN_HSCROLL and EN_VSCROLL
 # not recorded. Typing is WM_CHAR posted to the focused edit: no key is pressed.
-description = "editctl - the built-in Edit control, single-line and ES_MULTILINE, driven by messages: WM_SETTEXT, WM_GETTEXT and WM_GETTEXTLENGTH (SendMessageW and SendMessageA, short buffers); EM_SETSEL, EM_GETSEL and EM_REPLACESEL; EM_LIMITTEXT and EM_GETLIMITTEXT; EM_GETLINECOUNT, EM_LINEINDEX, EM_LINELENGTH, EM_LINEFROMCHAR and EM_GETLINE; EM_SETREADONLY; EM_CANUNDO, EM_UNDO, WM_UNDO and EM_EMPTYUNDOBUFFER; EM_GETMODIFY and EM_SETMODIFY; ES_UPPERCASE, ES_LOWERCASE and ES_NUMBER fed WM_CHAR posted to the control; and the EN_SETFOCUS, EN_KILLFOCUS, EN_UPDATE, EN_CHANGE and EN_MAXTEXT notifications its parent receives, in order. Then ES_WANTRETURN in a dialog (Enter pumped through IsDialogMessageW: a line or the default button), ES_AUTOVSCROLL (lines past the visible ones refused or taken), EM_SETMARGINS and EM_GETMARGINS, EM_LINESCROLL's and EM_SCROLL's answers with EM_GETFIRSTVISIBLELINE, EM_SETPASSWORDCHAR and EM_GETPASSWORDCHAR through the A and W forms, and EM_GETHANDLE's block for a W and an A edit."
+description = "editctl - the built-in Edit control, single-line and ES_MULTILINE, driven by messages: WM_SETTEXT, WM_GETTEXT and WM_GETTEXTLENGTH (SendMessageW and SendMessageA, short buffers); EM_SETSEL, EM_GETSEL and EM_REPLACESEL; EM_LIMITTEXT and EM_GETLIMITTEXT; EM_GETLINECOUNT, EM_LINEINDEX, EM_LINELENGTH, EM_LINEFROMCHAR and EM_GETLINE; EM_SETREADONLY; EM_CANUNDO, EM_UNDO, WM_UNDO and EM_EMPTYUNDOBUFFER; EM_GETMODIFY and EM_SETMODIFY; ES_UPPERCASE, ES_LOWERCASE and ES_NUMBER fed WM_CHAR posted to the control; and the EN_SETFOCUS, EN_KILLFOCUS, EN_UPDATE, EN_CHANGE and EN_MAXTEXT notifications its parent receives, in order. Then ES_WANTRETURN in a dialog (Enter pumped through IsDialogMessageW: a line or the default button), ES_AUTOVSCROLL (lines past the visible ones refused or taken), EM_SETMARGINS and EM_GETMARGINS, EM_LINESCROLL's and EM_SCROLL's answers with EM_GETFIRSTVISIBLELINE, EM_SETPASSWORDCHAR and EM_GETPASSWORDCHAR through the A and W forms, and EM_GETHANDLE's block for a W and an A edit; and EC_USEFONTINFO's margins against the system font, DEFAULT_GUI_FONT, Tahoma and an italic Times New Roman, set by WM_SETFONT and EM_SETMARGINS, as relations to the font's metrics (fontmargins)."
 kind = "sectioned"
 gate = true
+
+[pending]
+fontmargins = "F2K's boot has no TrueType DEFAULT_GUI_FONT or Tahoma (both are the System font: no TrueType, no negative A or C widths, avg/2 the same as letters/2), so EC_USEFONTINFO's margins differ; and WM_SETFONT keeps the margins set before, where Windows 2000 resets them to 0"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
@@ -78,3 +81,4 @@ gethandle = [
     "user32.SendMessageA",
     "kernel32.LocalLock",
 ]
+fontmargins = ["user32.SendMessageW"]

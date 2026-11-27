@@ -1,9 +1,9 @@
 # F2K capture of focus (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/09/2026 14:06:20.37
-focus F2KT-SOURCE-CRC=0x226CE577
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:41.63
+focus F2KT-SOURCE-CRC=0xC1322001
 >>> focus.exe focus
 == focus
 setup: the class and the windows created: yes
@@ -209,5 +209,113 @@ DestroyWindow(top1): ret=1 err=-
   GetFocus: NULL err=-
   GetActiveWindow: NULL err=-
   GetForegroundWindow: other err=-
+focus: done
+<<< exit code=0
+>>> focus.exe ncactivate
+== ncactivate
+setup: the class and the windows created: yes
+SetForegroundWindow(top1): top1 is the foreground: yes
+  GetFocus: top1 err=-
+  GetActiveWindow: top1 err=-
+top1 answers FALSE to WM_NCACTIVATE(FALSE)
+SetActiveWindow(top2): ret=top1 err=-
+  top1 WM_NCACTIVATE wParam=0 (answered FALSE)
+  GetFocus: top1 err=-
+  GetActiveWindow: top1 err=-
+  GetForegroundWindow: top1 err=-
+SetForegroundWindow(top2): ret=0 err=-
+  top1 WM_NCACTIVATE wParam=0 (answered FALSE)
+  GetFocus: top1 err=-
+  GetActiveWindow: top1 err=-
+  GetForegroundWindow: top1 err=-
+no window answers FALSE to WM_NCACTIVATE
+SetActiveWindow(top2): ret=top1 err=-
+  top1 WM_NCACTIVATE wParam=0
+  top1 WM_ACTIVATE state=0 minimized=0 other=top2
+  top2 WM_NCACTIVATE wParam=1
+  top2 WM_ACTIVATE state=1 minimized=0 other=top1
+  top1 WM_KILLFOCUS to top2
+  top2 WM_SETFOCUS from top1
+  GetFocus: top2 err=-
+  GetActiveWindow: top2 err=-
+  GetForegroundWindow: top2 err=-
+top2 answers FALSE to WM_NCACTIVATE(FALSE)
+SetActiveWindow(top1): ret=top2 err=-
+  top2 WM_NCACTIVATE wParam=0 (answered FALSE)
+  GetFocus: top2 err=-
+  GetActiveWindow: top2 err=-
+  GetForegroundWindow: top2 err=-
+no window answers FALSE to WM_NCACTIVATE
+SetActiveWindow(top1): ret=top2 err=-
+  top2 WM_NCACTIVATE wParam=0
+  top2 WM_ACTIVATE state=0 minimized=0 other=top1
+  top1 WM_NCACTIVATE wParam=1
+  top1 WM_ACTIVATE state=1 minimized=0 other=top2
+  top2 WM_KILLFOCUS to top1
+  top1 WM_SETFOCUS from top2
+  GetFocus: top1 err=-
+  GetActiveWindow: top1 err=-
+  GetForegroundWindow: top1 err=-
+remote, a window of a second thread: made yes
+SetForegroundWindow(remote): ret=1 err=-
+  this thread:
+    top1 WM_NCACTIVATE wParam=0
+    top1 WM_ACTIVATE state=0 minimized=0 other=NULL
+    top1 WM_ACTIVATEAPP wParam=0
+    top2 WM_ACTIVATEAPP wParam=0
+    top1 WM_KILLFOCUS to NULL
+  remote's thread:
+    remote WM_ACTIVATEAPP wParam=1
+    remote WM_NCACTIVATE wParam=1
+    remote WM_ACTIVATE state=1 minimized=0 other=NULL
+    remote WM_SETFOCUS from NULL
+  GetFocus: NULL err=-
+  GetActiveWindow: NULL err=-
+  GetForegroundWindow: remote err=-
+  remote's thread: GetActiveWindow remote, GetFocus remote
+remote answers FALSE to WM_NCACTIVATE(FALSE)
+SetForegroundWindow(top1): ret=1 err=-
+  this thread:
+    top1 WM_ACTIVATEAPP wParam=1
+    top2 WM_ACTIVATEAPP wParam=1
+    top1 WM_NCACTIVATE wParam=1
+    top1 WM_ACTIVATE state=1 minimized=0 other=NULL
+    top1 WM_SETFOCUS from NULL
+  remote's thread:
+    remote WM_NCACTIVATE wParam=0 (answered FALSE)
+  GetFocus: top1 err=-
+  GetActiveWindow: top1 err=-
+  GetForegroundWindow: top1 err=-
+  remote's thread: GetActiveWindow remote, GetFocus remote
+no window answers FALSE to WM_NCACTIVATE
+SetForegroundWindow(remote): ret=1 err=-
+  this thread:
+    top1 WM_NCACTIVATE wParam=0
+    top1 WM_ACTIVATE state=0 minimized=0 other=NULL
+    top1 WM_ACTIVATEAPP wParam=0
+    top2 WM_ACTIVATEAPP wParam=0
+    top1 WM_KILLFOCUS to NULL
+  remote's thread:
+    remote WM_NCACTIVATE wParam=1
+  GetFocus: NULL err=-
+  GetActiveWindow: NULL err=-
+  GetForegroundWindow: remote err=-
+  remote's thread: GetActiveWindow remote, GetFocus remote
+SetForegroundWindow(top1): ret=1 err=-
+  this thread:
+    top1 WM_ACTIVATEAPP wParam=1
+    top2 WM_ACTIVATEAPP wParam=1
+    top1 WM_NCACTIVATE wParam=1
+    top1 WM_ACTIVATE state=1 minimized=0 other=NULL
+    top1 WM_SETFOCUS from NULL
+  remote's thread:
+    remote WM_NCACTIVATE wParam=0
+    remote WM_ACTIVATE state=0 minimized=0 other=NULL
+    remote WM_ACTIVATEAPP wParam=0
+    remote WM_KILLFOCUS to NULL
+  GetFocus: top1 err=-
+  GetActiveWindow: top1 err=-
+  GetForegroundWindow: top1 err=-
+  remote's thread: GetActiveWindow NULL, GetFocus NULL
 focus: done
 <<< exit code=0

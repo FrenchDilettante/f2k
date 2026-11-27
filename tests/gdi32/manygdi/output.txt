@@ -1,0 +1,55 @@
+# F2K capture of manygdi (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:58.08
+manygdi F2KT-SOURCE-CRC=0xEFBE68AC
+>>> manygdi.exe quota
+== quota
+GDI objects owned before: 4
+CreateSolidBrush: 9996 made, then NULL err=-
+  within [9900, 10000]: yes
+  made plus owned before: 10000; GDI objects owned at the refusal: 10000
+DeleteObject(the last): ret=1 err=-
+CreateSolidBrush after it: non-NULL no err=-, the freed one's low word no
+every brush deleted: yes
+GDI objects owned after: as before no
+manygdi: done
+<<< exit code=0
+>>> manygdi.exe reuse
+== reuse
+a brush made and deleted: made yes, DeleteObject ret=1 err=-
+another made at once: non-NULL yes
+  the same handle no, the same low word no, the same bits 16-23 yes, a different high byte yes
+manygdi: done
+<<< exit code=0
+>>> manygdi.exe foreign
+== foreign
+a brush: non-NULL yes
+CreateProcessA(manygdi.exe --child): ret=1 err=-
+the child ended: WAIT_OBJECT_0
+  there, GetObjectA(the brush, LOGBRUSH): ret=0 err=87
+  there, GetObjectType(the brush): 0 err=-
+  there, DeleteObject(the brush): ret=0 err=-
+here after, GetObjectA(the brush, LOGBRUSH): ret=12 err=- color 0x563412
+here, DeleteObject(the brush): ret=1 err=-
+manygdi: done
+<<< exit code=0
+>>> manygdi.exe raw
+== raw
+CreateCompatibleDC(NULL): bits 16-23 0x01, GetObjectType 10
+GetDC(NULL): bits 16-23 0x01, GetObjectType 3
+CreateSolidBrush: bits 16-23 0x10, GetObjectType 2
+CreatePen(PS_SOLID): bits 16-23 0x30, GetObjectType 1
+CreateBitmap(8x8, 1 bpp): bits 16-23 0x05, GetObjectType 7
+CreateFontA: bits 16-23 0x0A, GetObjectType 6
+CreateRectRgn: bits 16-23 0x04, GetObjectType 8
+GetStockObject(WHITE_BRUSH): bits 16-23 0x90, GetObjectType 2
+GetStockObject(BLACK_PEN): bits 16-23 0xB0, GetObjectType 1
+GetStockObject(SYSTEM_FONT): bits 16-23 0x8A, GetObjectType 6
+GetStockObject(DEFAULT_PALETTE): bits 16-23 0x88, GetObjectType 5
+a memory DC's first bitmap: bits 16-23 0x85, GetObjectType 7
+a brush's handle, raw: 0xA3100221
+WHITE_BRUSH's handle, raw: 0x01900010
+manygdi: done
+<<< exit code=0

@@ -1,8 +1,8 @@
 # F2K capture of toolhelp (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/04/2026 10:26:50.70
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:39:09.83
 toolhelp F2KT-SOURCE-CRC=0xEEF0E2F2
 >>> toolhelp.exe layout
 == layout

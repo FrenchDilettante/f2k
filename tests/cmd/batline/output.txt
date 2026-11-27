@@ -1,8 +1,8 @@
 # F2K capture of batline (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/04/2026 12:36:29.54
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:41:01.33
 >>> cmd /c batline.cmd
 cd.. from the subdirectory:
 kid: image SPAWNKID.EXE
@@ -76,7 +76,7 @@ after the line, ERRORLEVEL 7
 2047 characters in a batch file: exit code 0
 2047 characters as a cmd /c string: exit code 7
 The input line is too long.
-Z:\cmd\batline\spawnkid.exe was unexpected at this time.
+D:\cmd\batline\spawnkid.exe was unexpected at this time.
 2048 characters in a batch file: exit code 255
 2048 characters as a cmd /c string: exit code 7
 <<< exit code=0

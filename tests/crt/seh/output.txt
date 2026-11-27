@@ -1,8 +1,8 @@
 # F2K capture of seh (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Thu 10/29/2026 14:05:05.87
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:59.08
 seh F2KT-SOURCE-CRC=0x10D7B86E
 >>> seh.exe faults
 == faults

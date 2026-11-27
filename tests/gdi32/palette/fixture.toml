@@ -1,0 +1,74 @@
+# palette: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat palette, tests\capture.bat palette).
+# Captured on a true-colour display (RASTERCAPS without RC_PALETTE), as F2K's is: the palette calls
+# are then mostly bookkeeping, and RealizePalette, UpdateColors, the system palette and the gamma
+# ramp print what Windows 2000 answers for a device with no palette. The system block prints the
+# screen's palette capabilities first, so a capture taken in a palette mode shows itself (retake
+# it at 32 bits per pixel). SetSystemPaletteUse is put back at once and SetDeviceGammaRamp given
+# only the ramp just read. A palette entry prints as RRGGBB/flags; no handle or address prints.
+description = "palette - CreatePalette, Get/SetPaletteEntries, ResizePalette, AnimatePalette, GetNearestPaletteIndex, GetNearestColor, CreateHalftonePalette, SelectPalette, RealizePalette and UpdateColors, GetSystemPaletteEntries and Get/SetSystemPaletteUse, a DIB_PAL_COLORS DIB section with Get/SetDIBColorTable, Get/SetColorAdjustment and Get/SetDeviceGammaRamp, as a true-colour display serves them."
+kind = "sectioned"
+gate = true
+
+[pending]
+# G11 of .scratch/plans/user32-gdi32-completeness.md: drop each entry once its block passes.
+create = "F2K's gdi32 has no palette objects: CreatePalette and GetPaletteEntries are stubs (plan G11)"
+entries = "F2K's gdi32 has no SetPaletteEntries (plan G11)"
+resize = "F2K's gdi32 has no ResizePalette (plan G11)"
+nearest = "F2K's gdi32 has no GetNearestPaletteIndex or GetNearestColor, and PALETTEINDEX colours do not resolve through a DC's palette (plan G11)"
+halftone = "F2K's gdi32 has no CreateHalftonePalette (plan G11)"
+select = "F2K's gdi32 has no SelectPalette, RealizePalette or UpdateColors (plan G11)"
+system = "F2K's gdi32 has no GetSystemPaletteEntries or Get/SetSystemPaletteUse (stubs), and the screen DC's NUMRESERVED is 0 where Windows 2000 answers 20 (plan G11)"
+animate = "F2K's gdi32 has no AnimatePalette (plan G11)"
+dibpal = "F2K's gdi32 has no DIB_PAL_COLORS DIB sections through a palette, nor Get/SetDIBColorTable (plan G11, G2)"
+adjust = "F2K's gdi32 has no Get/SetColorAdjustment (plan G11)"
+gamma = "F2K's gdi32 has no Get/SetDeviceGammaRamp (plan G11)"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. The canvas's helpers (CreateCompatibleDC, CreateDIBSection of 32 bits, SelectObject,
+# DeleteObject, DeleteDC, GdiFlush) are left out.
+create = [
+    "gdi32.CreatePalette",
+    "gdi32.GetPaletteEntries",
+    "gdi32.GetObjectW",
+    "gdi32.GetObjectType",
+    "gdi32.GetStockObject",
+]
+entries = ["gdi32.SetPaletteEntries", "gdi32.GetPaletteEntries", "gdi32.CreatePalette"]
+resize = ["gdi32.ResizePalette", "gdi32.GetPaletteEntries", "gdi32.CreatePalette"]
+nearest = [
+    "gdi32.GetNearestPaletteIndex",
+    "gdi32.GetNearestColor",
+    "gdi32.SelectPalette",
+    "gdi32.SetPixel",
+    "user32.GetDC",
+    "user32.ReleaseDC",
+]
+halftone = ["gdi32.CreateHalftonePalette", "gdi32.GetPaletteEntries", "user32.GetDC", "user32.ReleaseDC"]
+select = [
+    "gdi32.SelectPalette",
+    "gdi32.RealizePalette",
+    "gdi32.UpdateColors",
+    "gdi32.GetCurrentObject",
+    "user32.GetDC",
+    "user32.ReleaseDC",
+]
+system = [
+    "gdi32.GetSystemPaletteEntries",
+    "gdi32.GetSystemPaletteUse",
+    "gdi32.SetSystemPaletteUse",
+    "gdi32.GetDeviceCaps",
+    "user32.GetDC",
+    "user32.ReleaseDC",
+]
+animate = ["gdi32.AnimatePalette", "gdi32.SetPaletteEntries", "gdi32.GetPaletteEntries"]
+dibpal = [
+    "gdi32.CreateDIBSection",
+    "gdi32.SelectPalette",
+    "gdi32.GetDIBColorTable",
+    "gdi32.SetDIBColorTable",
+    "gdi32.GetPixel",
+]
+adjust = ["gdi32.GetColorAdjustment", "gdi32.SetColorAdjustment"]
+gamma = ["gdi32.GetDeviceGammaRamp", "gdi32.SetDeviceGammaRamp", "user32.GetDC", "user32.ReleaseDC"]

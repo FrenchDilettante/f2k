@@ -1,8 +1,8 @@
 # F2K capture of msvcrt (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
-# date: Sat 21/11/2026  7:37:52.60
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:59.71
 msvcrt F2KT-SOURCE-CRC=0xF3461E76
 >>> msvcrt.exe math
 == math

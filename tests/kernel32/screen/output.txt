@@ -1,8 +1,8 @@
 # F2K capture of screen (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/31/2026  8:31:55.48
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:39:03.61
 screen F2KT-SOURCE-CRC=0x61C78A7F
 >>> screen.exe cursor
 == cursor

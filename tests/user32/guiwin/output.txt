@@ -1,9 +1,9 @@
 # F2K capture of guiwin (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
-# date: Sat 21/11/2026  7:37:10.99
-guiwin F2KT-SOURCE-CRC=0xD3F8E7DC
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:39:15.61
+guiwin F2KT-SOURCE-CRC=0xE6CBE4C3
 >>> guiwin.exe create
 == create
 GetModuleHandleA(NULL): non-NULL yes err=-
@@ -70,5 +70,79 @@ a second window made at once: non-NULL yes, its high word nonzero yes
 IsWindow(the first, destroyed): no err=-
 DestroyWindow(the first, destroyed): ret=0 err=1400
 IsWindow(the second) after: yes err=-
+guiwin: done
+<<< exit code=0
+>>> guiwin.exe nest
+== nest
+CreateWindowExA, nesting: non-NULL yes
+  levels reached 20, every child made yes
+another thread's send inside GetMessage: InSendMessage 1, wParam 7, answered 42
+WaitMessage with a send alone: the send received yes, returned only once the post came no
+  the thread's send answered 42
+DestroyWindow: IsWindow after no
+guiwin: done
+<<< exit code=0
+>>> guiwin.exe diecreate
+== diecreate
+a first window made and destroyed: yes
+CreateWindowExA, DestroyWindow inside WM_NCCREATE: NULL no err=87
+  the procedure received: WM_NCCREATE [ WM_DESTROY WM_NCDESTROY ]
+  its DestroyWindow: ret=1 err=-
+  IsWindow of the window it destroyed: no
+  the handle returned is the procedure's: yes
+CreateWindowExW, DestroyWindow inside WM_NCCREATE: NULL no err=87
+  the procedure received: WM_NCCREATE [ WM_DESTROY WM_NCDESTROY ]
+  its DestroyWindow: ret=1 err=-
+  IsWindow of the window it destroyed: no
+  the handle returned is the procedure's: yes
+CreateWindowExA, DestroyWindow inside WM_CREATE: NULL yes err=87
+  the procedure received: WM_NCCREATE WM_NCCALCSIZE WM_CREATE [ WM_DESTROY WM_NCDESTROY ]
+  its DestroyWindow: ret=1 err=-
+  IsWindow of the window it destroyed: no
+CreateWindowExW, DestroyWindow inside WM_CREATE: NULL yes err=87
+  the procedure received: WM_NCCREATE WM_NCCALCSIZE WM_CREATE [ WM_DESTROY WM_NCDESTROY ]
+  its DestroyWindow: ret=1 err=-
+  IsWindow of the window it destroyed: no
+guiwin: done
+<<< exit code=0
+>>> guiwin.exe dienest
+== dienest
+a first window made and destroyed: yes
+CreateWindowExA: non-NULL yes
+DestroyWindow, its WM_DESTROY destroying it again: ret=1 err=-
+  the procedure received: WM_DESTROY [ WM_DESTROY WM_NCDESTROY ]
+  WM_DESTROY 2 time(s), WM_NCDESTROY 1 time(s)
+  the nested DestroyWindow: ret=1 err=-, of the same window yes
+IsWindow after: no err=-
+guiwin: done
+<<< exit code=0
+>>> guiwin.exe err183pop
+== err183pop
+GetDesktopWindow: yes err=-, modules loaded: none
+RegisterClassA: yes err=2, modules loaded: none
+CreateWindowExA, the first window (a popup): yes err=-, modules loaded: indicdll.dll imm32.dll advapi32.dll rpcrt4.dll
+  the messages, each with the error found on entry: WM_NCCREATE:183 WM_NCCALCSIZE:87 WM_CREATE:- WM_SIZE:- WM_MOVE:-
+CreateWindowExA, a second one (a popup): yes err=-, modules loaded: none
+  the messages, each with the error found on entry: WM_NCCREATE:- WM_NCCALCSIZE:- WM_CREATE:- WM_SIZE:- WM_MOVE:-
+CreateWindowExA, then an overlapped window: yes err=-, modules loaded: none
+  the messages, each with the error found on entry: WM_GETMINMAXINFO:- WM_NCCREATE:- WM_NCCALCSIZE:- WM_CREATE:-
+DestroyWindow of each: ret=1 1 1 err=87 87 87, modules loaded: none
+another thread's first window (a popup): yes err=-, modules loaded: none
+  the messages, each with the error found on entry: WM_NCCREATE:- WM_NCCALCSIZE:87 WM_CREATE:- WM_SIZE:- WM_MOVE:-
+guiwin: done
+<<< exit code=0
+>>> guiwin.exe err183ovl
+== err183ovl
+GetDesktopWindow: yes err=-, modules loaded: none
+RegisterClassA: yes err=2, modules loaded: none
+CreateWindowExA, the first window (an overlapped window): yes err=-, modules loaded: indicdll.dll imm32.dll advapi32.dll rpcrt4.dll
+  the messages, each with the error found on entry: WM_GETMINMAXINFO:183 WM_NCCREATE:- WM_NCCALCSIZE:87 WM_CREATE:-
+CreateWindowExA, a second one (an overlapped window): yes err=-, modules loaded: none
+  the messages, each with the error found on entry: WM_GETMINMAXINFO:- WM_NCCREATE:- WM_NCCALCSIZE:- WM_CREATE:-
+CreateWindowExA, then a popup: yes err=-, modules loaded: none
+  the messages, each with the error found on entry: WM_NCCREATE:- WM_NCCALCSIZE:- WM_CREATE:- WM_SIZE:- WM_MOVE:-
+DestroyWindow of each: ret=1 1 1 err=87 87 87, modules loaded: none
+another thread's first window (an overlapped window): yes err=-, modules loaded: none
+  the messages, each with the error found on entry: WM_GETMINMAXINFO:- WM_NCCREATE:- WM_NCCALCSIZE:87 WM_CREATE:-
 guiwin: done
 <<< exit code=0

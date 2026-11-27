@@ -1696,11 +1696,19 @@ ordinal = 7
 
 [[export]]
 name = "AngleArc"
+group = "drawing"
+args = ["handle hdc", "i32 X", "i32 Y", "u32 dwRadius", "u32 eStartAngle", "u32 eSweepAngle"]
+impl = { stub = "not yet implemented" }
 ordinal = 9
+fails = "FALSE"
 
 [[export]]
 name = "AnimatePalette"
+group = "attributes"
+args = ["handle hpal", "u32 iStartIndex", "u32 cEntries", "ptr ppe"]
+impl = { stub = "not yet implemented" }
 ordinal = 10
+fails = "FALSE"
 
 [[export]]
 name = "AnyLinkedFonts"
@@ -1708,11 +1716,25 @@ ordinal = 11
 
 [[export]]
 name = "Arc"
+group = "drawing"
+args = [
+    "handle hdc", "i32 nLeftRect", "i32 nTopRect", "i32 nRightRect", "i32 nBottomRect",
+    "i32 nXRadial1", "i32 nYRadial1", "i32 nXRadial2", "i32 nYRadial2",
+]
+impl = { stub = "not yet implemented" }
 ordinal = 12
+fails = "FALSE"
 
 [[export]]
 name = "ArcTo"
+group = "drawing"
+args = [
+    "handle hdc", "i32 nLeftRect", "i32 nTopRect", "i32 nRightRect", "i32 nBottomRect",
+    "i32 nXRadial1", "i32 nYRadial1", "i32 nXRadial2", "i32 nYRadial2",
+]
+impl = { stub = "not yet implemented" }
 ordinal = 13
+fails = "FALSE"
 
 [[export]]
 name = "BRUSHOBJ_hGetColorTransform"
@@ -1748,7 +1770,11 @@ ordinal = 22
 
 [[export]]
 name = "CancelDC"
+group = "dc"
+args = ["handle hdc"]
+impl = { stub = "not yet implemented" }
 ordinal = 23
+fails = "FALSE"
 
 [[export]]
 name = "CheckColorsInGamut"
@@ -1760,7 +1786,14 @@ ordinal = 25
 
 [[export]]
 name = "Chord"
+group = "drawing"
+args = [
+    "handle hdc", "i32 nLeftRect", "i32 nTopRect", "i32 nRightRect", "i32 nBottomRect",
+    "i32 nXRadial1", "i32 nYRadial1", "i32 nXRadial2", "i32 nYRadial2",
+]
+impl = { stub = "not yet implemented" }
 ordinal = 26
+fails = "FALSE"
 
 [[export]]
 name = "CloseEnhMetaFile"
@@ -1804,11 +1837,19 @@ ordinal = 37
 
 [[export]]
 name = "CreateBitmapIndirect"
+group = "bitmaps"
+args = ["ptr lpbm"]
+impl = { stub = "not yet implemented" }
 ordinal = 39
+fails = "NULL"
 
 [[export]]
 name = "CreateBrushIndirect"
+group = "brushes"
+args = ["ptr lplb"]
+impl = { stub = "not yet implemented" }
 ordinal = 40
+fails = "NULL"
 
 [[export]]
 name = "CreateColorSpaceA"
@@ -1820,19 +1861,35 @@ ordinal = 42
 
 [[export]]
 name = "CreateDIBPatternBrush"
+group = "brushes"
+args = ["handle hglbDIBPacked", "u32 fuColorSpec"]
+impl = { stub = "not yet implemented" }
 ordinal = 47
+fails = "NULL"
 
 [[export]]
 name = "CreateDIBPatternBrushPt"
+group = "brushes"
+args = ["ptr lpPackedDIB", "u32 iUsage"]
+impl = { stub = "not yet implemented" }
 ordinal = 48
+fails = "NULL"
 
 [[export]]
 name = "CreateDiscardableBitmap"
+group = "bitmaps"
+args = ["handle hdc", "i32 nWidth", "i32 nHeight"]
+impl = { stub = "not yet implemented" }
 ordinal = 51
+fails = "NULL"
 
 [[export]]
 name = "CreateEllipticRgn"
+group = "regions"
+args = ["i32 nLeftRect", "i32 nTopRect", "i32 nRightRect", "i32 nBottomRect"]
+impl = { stub = "not yet implemented" }
 ordinal = 52
+fails = "NULL"
 
 [[export]]
 name = "CreateEllipticRgnIndirect"
@@ -1856,15 +1913,27 @@ ordinal = 59
 
 [[export]]
 name = "CreateHalftonePalette"
+group = "attributes"
+args = ["handle hdc"]
+impl = { stub = "not yet implemented" }
 ordinal = 62
+fails = "NULL"
 
 [[export]]
 name = "CreateICA"
+group = "dc"
+args = ["ptr lpszDriver", "ptr lpszDevice", "ptr lpszOutput", "ptr lpdvmInit"]
+impl = { stub = "not yet implemented" }
 ordinal = 64
+fails = "NULL"
 
 [[export]]
 name = "CreateICW"
+group = "dc"
+args = ["ptr lpszDriver", "ptr lpszDevice", "ptr lpszOutput", "ptr lpdvmInit"]
+impl = { stub = "not yet implemented" }
 ordinal = 65
+fails = "NULL"
 
 [[export]]
 name = "CreateMetaFileA"
@@ -1876,11 +1945,19 @@ ordinal = 67
 
 [[export]]
 name = "CreatePalette"
+group = "attributes"
+args = ["ptr lplgpl"]
+impl = { stub = "not yet implemented" }
 ordinal = 68
+fails = "NULL"
 
 [[export]]
 name = "CreatePenIndirect"
+group = "drawing"
+args = ["ptr lplgpn"]
+impl = { stub = "not yet implemented" }
 ordinal = 71
+fails = "NULL"
 
 [[export]]
 name = "CreatePolyPolygonRgn"
@@ -2156,7 +2233,11 @@ ordinal = 151
 
 [[export]]
 name = "EnumObjects"
+group = "objects"
+args = ["handle hdc", "i32 nObjectType", "u32 lpObjectFunc", "u32 lParam"]
+impl = { stub = "not yet implemented" }
 ordinal = 152
+fails = "0"
 
 [[export]]
 name = "Escape"
@@ -2180,7 +2261,11 @@ ordinal = 160
 
 [[export]]
 name = "ExtFloodFill"
+group = "drawing"
+args = ["handle hdc", "i32 nXStart", "i32 nYStart", "u32 crColor", "u32 fuFillType"]
+impl = { stub = "not yet implemented" }
 ordinal = 161
+fails = "FALSE"
 
 [[export]]
 name = "FONTOBJ_cGetAllGlyphHandles"
@@ -2220,7 +2305,11 @@ ordinal = 173
 
 [[export]]
 name = "FixBrushOrgEx"
+group = "brushes"
+args = ["handle hdc", "i32 nXOrg", "i32 nYOrg", "ptr lppt"]
+impl = { stub = "not yet implemented" }
 ordinal = 175
+fails = "FALSE"
 
 [[export]]
 name = "FlattenPath"
@@ -2228,7 +2317,11 @@ ordinal = 176
 
 [[export]]
 name = "FloodFill"
+group = "drawing"
+args = ["handle hdc", "i32 nXStart", "i32 nYStart", "u32 crFill"]
+impl = { stub = "not yet implemented" }
 ordinal = 177
+fails = "FALSE"
 
 [[export]]
 name = "FontIsLinked"
@@ -2420,7 +2513,11 @@ ordinal = 225
 
 [[export]]
 name = "GdiGetBatchLimit"
+group = "dc"
+args = []
+impl = { stub = "not yet implemented" }
 ordinal = 226
+fails = "0"
 
 [[export]]
 name = "GdiGetCharDimensions"
@@ -2552,7 +2649,11 @@ ordinal = 258
 
 [[export]]
 name = "GdiSetBatchLimit"
+group = "dc"
+args = ["u32 dwLimit"]
+impl = { stub = "not yet implemented" }
 ordinal = 259
+fails = "0"
 
 [[export]]
 name = "GdiSetLastError"
@@ -2588,23 +2689,43 @@ ordinal = 267
 
 [[export]]
 name = "GetArcDirection"
+group = "drawing"
+args = ["handle hdc"]
+impl = { stub = "not yet implemented" }
 ordinal = 268
+fails = "0"
 
 [[export]]
 name = "GetAspectRatioFilterEx"
+group = "fonts"
+args = ["handle hdc", "ptr lpAspectRatio"]
+impl = { stub = "not yet implemented" }
 ordinal = 269
+fails = "FALSE"
 
 [[export]]
 name = "GetBitmapBits"
+group = "bitmaps"
+args = ["handle hbmp", "i32 cbBuffer", "ptr lpvBits"]
+impl = { stub = "not yet implemented" }
 ordinal = 270
+fails = "0"
 
 [[export]]
 name = "GetBitmapDimensionEx"
+group = "bitmaps"
+args = ["handle hBitmap", "ptr lpDimension"]
+impl = { stub = "not yet implemented" }
 ordinal = 271
+fails = "FALSE"
 
 [[export]]
 name = "GetBoundsRect"
+group = "dc"
+args = ["handle hdc", "ptr lprcBounds", "u32 flags"]
+impl = { stub = "not yet implemented" }
 ordinal = 274
+fails = "0"
 
 [[export]]
 name = "GetCharABCWidthsFloatA"
@@ -2644,15 +2765,31 @@ ordinal = 288
 
 [[export]]
 name = "GetCharacterPlacementA"
+group = "text"
+args = [
+    "handle hdc", "ptr lpString", "i32 nCount", "i32 nMaxExtent", "ptr lpResults", "u32 dwFlags",
+]
+impl = { stub = "not yet implemented" }
 ordinal = 289
+fails = "0"
 
 [[export]]
 name = "GetCharacterPlacementW"
+group = "text"
+args = [
+    "handle hdc", "ptr lpString", "i32 nCount", "i32 nMaxExtent", "ptr lpResults", "u32 dwFlags",
+]
+impl = { stub = "not yet implemented" }
 ordinal = 290
+fails = "0"
 
 [[export]]
 name = "GetColorAdjustment"
+group = "attributes"
+args = ["handle hdc", "ptr lpca"]
+impl = { stub = "not yet implemented" }
 ordinal = 293
+fails = "FALSE"
 
 [[export]]
 name = "GetColorSpace"
@@ -2664,7 +2801,11 @@ ordinal = 297
 
 [[export]]
 name = "GetDCOrgEx"
+group = "dc"
+args = ["handle hdc", "ptr lpPoint"]
+impl = { stub = "not yet implemented" }
 ordinal = 298
+fails = "FALSE"
 
 [[export]]
 name = "GetDCPenColor"
@@ -2672,11 +2813,19 @@ ordinal = 299
 
 [[export]]
 name = "GetDIBColorTable"
+group = "bitmaps"
+args = ["handle hdc", "u32 uStartIndex", "u32 cEntries", "ptr pColors"]
+impl = { stub = "not yet implemented" }
 ordinal = 300
+fails = "0"
 
 [[export]]
 name = "GetDeviceGammaRamp"
+group = "attributes"
+args = ["handle hDC", "ptr lpRamp"]
+impl = { stub = "not yet implemented" }
 ordinal = 303
+fails = "FALSE"
 
 [[export]]
 name = "GetETM"
@@ -2728,7 +2877,11 @@ ordinal = 315
 
 [[export]]
 name = "GetFontLanguageInfo"
+group = "fonts"
+args = ["handle hdc"]
+impl = { stub = "not yet implemented" }
 ordinal = 317
+fails = "0x80000000"
 
 [[export]]
 name = "GetFontResourceInfoW"
@@ -2812,19 +2965,35 @@ ordinal = 340
 
 [[export]]
 name = "GetMiterLimit"
+group = "drawing"
+args = ["handle hdc", "ptr peLimit"]
+impl = { stub = "not yet implemented" }
 ordinal = 341
+fails = "FALSE"
 
 [[export]]
 name = "GetNearestColor"
+group = "attributes"
+args = ["handle hdc", "u32 crColor"]
+impl = { stub = "not yet implemented" }
 ordinal = 342
+fails = "0xFFFFFFFF"
 
 [[export]]
 name = "GetNearestPaletteIndex"
+group = "attributes"
+args = ["handle hpal", "u32 crColor"]
+impl = { stub = "not yet implemented" }
 ordinal = 343
+fails = "0xFFFFFFFF"
 
 [[export]]
 name = "GetPaletteEntries"
+group = "attributes"
+args = ["handle hpal", "u32 iStartIndex", "u32 nEntries", "ptr lppe"]
+impl = { stub = "not yet implemented" }
 ordinal = 349
+fails = "0"
 
 [[export]]
 name = "GetPath"
@@ -2856,31 +3025,62 @@ ordinal = 363
 
 [[export]]
 name = "GetSystemPaletteEntries"
+group = "attributes"
+args = ["handle hdc", "u32 iStartIndex", "u32 nEntries", "ptr lppe"]
+impl = { stub = "not yet implemented" }
 ordinal = 364
+fails = "0"
 
 [[export]]
 name = "GetSystemPaletteUse"
+group = "attributes"
+args = ["handle hdc"]
+impl = { stub = "not yet implemented" }
 ordinal = 365
+fails = "0"
 
 [[export]]
 name = "GetTextAlign"
+group = "text"
+args = ["handle hdc"]
+impl = { stub = "not yet implemented" }
 ordinal = 366
+fails = "0xFFFFFFFF"
 
 [[export]]
 name = "GetTextCharacterExtra"
+group = "text"
+args = ["handle hdc"]
+impl = { stub = "not yet implemented" }
 ordinal = 367
+fails = "0x80000000"
 
 [[export]]
 name = "GetTextCharset"
+group = "fonts"
+args = ["handle hdc"]
+impl = { stub = "not yet implemented" }
 ordinal = 368
+fails = "1"
 
 [[export]]
 name = "GetTextCharsetInfo"
+group = "fonts"
+args = ["handle hdc", "ptr lpSig", "u32 dwFlags"]
+impl = { stub = "not yet implemented" }
 ordinal = 369
+fails = "1"
 
 [[export]]
 name = "GetTextExtentExPointA"
+group = "text"
+args = [
+    "handle hdc", "ptr lpszStr", "i32 cchString", "i32 nMaxExtent", "ptr lpnFit", "ptr alpDx",
+    "ptr lpSize",
+]
+impl = { stub = "not yet implemented" }
 ordinal = 371
+fails = "FALSE"
 
 [[export]]
 name = "GetTextExtentExPointI"
@@ -2888,7 +3088,14 @@ ordinal = 372
 
 [[export]]
 name = "GetTextExtentExPointW"
+group = "text"
+args = [
+    "handle hdc", "ptr lpszStr", "i32 cchString", "i32 nMaxExtent", "ptr lpnFit", "ptr alpDx",
+    "ptr lpSize",
+]
+impl = { stub = "not yet implemented" }
 ordinal = 373
+fails = "FALSE"
 
 [[export]]
 name = "GetTextExtentExPointWPri"
@@ -2896,7 +3103,11 @@ ordinal = 374
 
 [[export]]
 name = "GetTextExtentPointA"
+group = "text"
+args = ["handle hdc", "ptr lpString", "i32 cbString", "ptr lpSize"]
+impl = { stub = "not yet implemented" }
 ordinal = 377
+fails = "FALSE"
 
 [[export]]
 name = "GetTextExtentPointI"
@@ -2932,11 +3143,22 @@ ordinal = 395
 
 [[export]]
 name = "LineDDA"
+group = "drawing"
+args = ["i32 nXStart", "i32 nYStart", "i32 nXEnd", "i32 nYEnd", "u32 lpLineFunc", "u32 lpData"]
+impl = { stub = "not yet implemented" }
 ordinal = 397
+fails = "FALSE"
 
 [[export]]
 name = "MaskBlt"
+group = "bitmaps"
+args = [
+    "handle hdcDest", "i32 nXDest", "i32 nYDest", "i32 nWidth", "i32 nHeight", "handle hdcSrc",
+    "i32 nXSrc", "i32 nYSrc", "handle hbmMask", "i32 xMask", "i32 yMask", "u32 dwRop",
+]
+impl = { stub = "not yet implemented" }
 ordinal = 399
+fails = "FALSE"
 
 [[export]]
 name = "MirrorRgn"
@@ -2980,7 +3202,14 @@ ordinal = 415
 
 [[export]]
 name = "Pie"
+group = "drawing"
+args = [
+    "handle hdc", "i32 nLeftRect", "i32 nTopRect", "i32 nRightRect", "i32 nBottomRect",
+    "i32 nXRadial1", "i32 nYRadial1", "i32 nXRadial2", "i32 nYRadial2",
+]
+impl = { stub = "not yet implemented" }
 ordinal = 416
+fails = "FALSE"
 
 [[export]]
 name = "PlayEnhMetaFile"
@@ -3000,19 +3229,38 @@ ordinal = 420
 
 [[export]]
 name = "PlgBlt"
+group = "bitmaps"
+args = [
+    "handle hdcDest", "ptr lpPoint", "handle hdcSrc", "i32 nXSrc", "i32 nYSrc", "i32 nWidth",
+    "i32 nHeight", "handle hbmMask", "i32 xMask", "i32 yMask",
+]
+impl = { stub = "not yet implemented" }
 ordinal = 421
+fails = "FALSE"
 
 [[export]]
 name = "PolyBezier"
+group = "drawing"
+args = ["handle hdc", "ptr lppt", "u32 cPoints"]
+impl = { stub = "not yet implemented" }
 ordinal = 422
+fails = "FALSE"
 
 [[export]]
 name = "PolyBezierTo"
+group = "drawing"
+args = ["handle hdc", "ptr lppt", "u32 cCount"]
+impl = { stub = "not yet implemented" }
 ordinal = 423
+fails = "FALSE"
 
 [[export]]
 name = "PolyDraw"
+group = "drawing"
+args = ["handle hdc", "ptr lppt", "ptr lpbTypes", "i32 cCount"]
+impl = { stub = "not yet implemented" }
 ordinal = 424
+fails = "FALSE"
 
 [[export]]
 name = "PolyPatBlt"
@@ -3020,23 +3268,43 @@ ordinal = 425
 
 [[export]]
 name = "PolyPolygon"
+group = "drawing"
+args = ["handle hdc", "ptr lpPoints", "ptr lpPolyCounts", "i32 nCount"]
+impl = { stub = "not yet implemented" }
 ordinal = 426
+fails = "FALSE"
 
 [[export]]
 name = "PolyPolyline"
+group = "drawing"
+args = ["handle hdc", "ptr lppt", "ptr lpdwPolyPoints", "u32 cCount"]
+impl = { stub = "not yet implemented" }
 ordinal = 427
+fails = "FALSE"
 
 [[export]]
 name = "PolyTextOutA"
+group = "text"
+args = ["handle hdc", "ptr pptxt", "i32 cStrings"]
+impl = { stub = "not yet implemented" }
 ordinal = 428
+fails = "FALSE"
 
 [[export]]
 name = "PolyTextOutW"
+group = "text"
+args = ["handle hdc", "ptr pptxt", "i32 cStrings"]
+impl = { stub = "not yet implemented" }
 ordinal = 429
+fails = "FALSE"
 
 [[export]]
 name = "PolylineTo"
+group = "drawing"
+args = ["handle hdc", "ptr lppt", "u32 cCount"]
+impl = { stub = "not yet implemented" }
 ordinal = 432
+fails = "FALSE"
 
 [[export]]
 name = "QueryFontAssocStatus"
@@ -3044,7 +3312,11 @@ ordinal = 435
 
 [[export]]
 name = "RealizePalette"
+group = "attributes"
+args = ["handle hdc"]
+impl = { stub = "not yet implemented" }
 ordinal = 436
+fails = "0xFFFFFFFF"
 
 [[export]]
 name = "RectInRegion"
@@ -3060,15 +3332,27 @@ ordinal = 444
 
 [[export]]
 name = "ResetDCA"
+group = "dc"
+args = ["handle hdc", "ptr lpInitData"]
+impl = { stub = "not yet implemented" }
 ordinal = 446
+fails = "NULL"
 
 [[export]]
 name = "ResetDCW"
+group = "dc"
+args = ["handle hdc", "ptr lpInitData"]
+impl = { stub = "not yet implemented" }
 ordinal = 447
+fails = "NULL"
 
 [[export]]
 name = "ResizePalette"
+group = "attributes"
+args = ["handle hpal", "u32 nEntries"]
+impl = { stub = "not yet implemented" }
 ordinal = 448
+fails = "FALSE"
 
 [[export]]
 name = "STROBJ_bEnum"
@@ -3104,7 +3388,11 @@ ordinal = 462
 
 [[export]]
 name = "SelectPalette"
+group = "attributes"
+args = ["handle hdc", "handle hpal", "bool bForceBackground"]
+impl = { stub = "not yet implemented" }
 ordinal = 464
+fails = "NULL"
 
 [[export]]
 name = "SetAbortProc"
@@ -3112,23 +3400,43 @@ ordinal = 465
 
 [[export]]
 name = "SetArcDirection"
+group = "drawing"
+args = ["handle hdc", "i32 ArcDirection"]
+impl = { stub = "not yet implemented" }
 ordinal = 466
+fails = "0"
 
 [[export]]
 name = "SetBitmapBits"
+group = "bitmaps"
+args = ["handle hbmp", "u32 cBytes", "ptr lpBits"]
+impl = { stub = "not yet implemented" }
 ordinal = 467
+fails = "0"
 
 [[export]]
 name = "SetBitmapDimensionEx"
+group = "bitmaps"
+args = ["handle hBitmap", "i32 nWidth", "i32 nHeight", "ptr lpSize"]
+impl = { stub = "not yet implemented" }
 ordinal = 468
+fails = "FALSE"
 
 [[export]]
 name = "SetBoundsRect"
+group = "dc"
+args = ["handle hdc", "ptr lprcBounds", "u32 flags"]
+impl = { stub = "not yet implemented" }
 ordinal = 471
+fails = "0"
 
 [[export]]
 name = "SetColorAdjustment"
+group = "attributes"
+args = ["handle hdc", "ptr lpca"]
+impl = { stub = "not yet implemented" }
 ordinal = 473
+fails = "FALSE"
 
 [[export]]
 name = "SetColorSpace"
@@ -3144,11 +3452,19 @@ ordinal = 476
 
 [[export]]
 name = "SetDIBColorTable"
+group = "bitmaps"
+args = ["handle hdc", "u32 uStartIndex", "u32 cEntries", "ptr pColors"]
+impl = { stub = "not yet implemented" }
 ordinal = 477
+fails = "0"
 
 [[export]]
 name = "SetDeviceGammaRamp"
+group = "attributes"
+args = ["handle hDC", "ptr lpRamp"]
+impl = { stub = "not yet implemented" }
 ordinal = 480
+fails = "FALSE"
 
 [[export]]
 name = "SetEnhMetaFileBits"
@@ -3188,7 +3504,11 @@ ordinal = 489
 
 [[export]]
 name = "SetMapperFlags"
+group = "fonts"
+args = ["handle hdc", "u32 dwFlag"]
+impl = { stub = "not yet implemented" }
 ordinal = 491
+fails = "0xFFFFFFFF"
 
 [[export]]
 name = "SetMetaFileBitsEx"
@@ -3200,11 +3520,19 @@ ordinal = 493
 
 [[export]]
 name = "SetMiterLimit"
+group = "drawing"
+args = ["handle hdc", "u32 eNewLimit", "ptr peOldLimit"]
+impl = { stub = "not yet implemented" }
 ordinal = 494
+fails = "FALSE"
 
 [[export]]
 name = "SetPaletteEntries"
+group = "attributes"
+args = ["handle hpal", "u32 iStart", "u32 cEntries", "ptr lppe"]
+impl = { stub = "not yet implemented" }
 ordinal = 495
+fails = "0"
 
 [[export]]
 name = "SetPixelFormat"
@@ -3212,7 +3540,11 @@ ordinal = 497
 
 [[export]]
 name = "SetPixelV"
+group = "pixels"
+args = ["handle hdc", "i32 X", "i32 Y", "u32 crColor"]
+impl = { stub = "not yet implemented" }
 ordinal = 498
+fails = "FALSE"
 
 [[export]]
 name = "SetRelAbs"
@@ -3220,19 +3552,35 @@ ordinal = 502
 
 [[export]]
 name = "SetSystemPaletteUse"
+group = "attributes"
+args = ["handle hdc", "u32 uUsage"]
+impl = { stub = "not yet implemented" }
 ordinal = 504
+fails = "0"
 
 [[export]]
 name = "SetTextAlign"
+group = "text"
+args = ["handle hdc", "u32 fMode"]
+impl = { stub = "not yet implemented" }
 ordinal = 505
+fails = "0xFFFFFFFF"
 
 [[export]]
 name = "SetTextCharacterExtra"
+group = "text"
+args = ["handle hdc", "i32 nCharExtra"]
+impl = { stub = "not yet implemented" }
 ordinal = 506
+fails = "0x80000000"
 
 [[export]]
 name = "SetTextJustification"
+group = "text"
+args = ["handle hdc", "i32 nBreakExtra", "i32 nBreakCount"]
+impl = { stub = "not yet implemented" }
 ordinal = 508
+fails = "FALSE"
 
 [[export]]
 name = "SetVirtualResolution"
@@ -3276,7 +3624,11 @@ ordinal = 524
 
 [[export]]
 name = "TranslateCharsetInfo"
+group = "fonts"
+args = ["ptr lpSrc", "ptr lpCs", "u32 dwFlags"]
+impl = { stub = "not yet implemented" }
 ordinal = 527
+fails = "FALSE"
 
 [[export]]
 name = "UnloadNetworkFonts"
@@ -3284,11 +3636,19 @@ ordinal = 528
 
 [[export]]
 name = "UnrealizeObject"
+group = "objects"
+args = ["handle hgdiobj"]
+impl = { stub = "not yet implemented" }
 ordinal = 529
+fails = "FALSE"
 
 [[export]]
 name = "UpdateColors"
+group = "attributes"
+args = ["handle hdc"]
+impl = { stub = "not yet implemented" }
 ordinal = 530
+fails = "FALSE"
 
 [[export]]
 name = "UpdateICMRegKeyA"

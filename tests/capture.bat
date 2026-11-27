@@ -55,13 +55,13 @@ for %%F in (memory threads sync sched files fswrite dll dllmain msgtable console
 call :cap_spawn
 call :listed kernel32 pipe
 call :listed kernel32 newcon
-for %%F in (screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge vmdemand startup lcid ntquery locale atom) do call :listed kernel32 %%F
+for %%F in (screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge vmdemand startup lcid ntquery manyproc manythrd manyhndl locale atom) do call :listed kernel32 %%F
 call :listed user32 winsta
 for %%F in (guiclass guiwin guigeo guimsg guipaint guidisp) do call :listed user32 %%F
 call :listed user32 exitwin
 call :listed user32 endsess
-for %%F in (dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl) do call :listed user32 %%F
-for %%F in (guidc gditext ttfont bitmaps mapmode shapes regions) do call :listed gdi32 %%F
+for %%F in (dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl manywin desktops keymap shell dialog2 winmisc icons listbox combobox cursor msgwait timers hooks drawhelp redraw focus2) do call :listed user32 %%F
+for %%F in (guidc gditext ttfont bitmaps mapmode shapes regions manygdi txlayout curves fills dcstate palette bitmaps2) do call :listed gdi32 %%F
 for %%F in (registry token sdacl acccheck filesec keysec privchk ntsvc rtlsec) do call :listed advapi32 %%F
 call :cap_hellomd
 call :cap_crt
@@ -89,9 +89,9 @@ rem saying so.
 :group
 set F2KT_DLL=
 for %%F in (bare) do if /I "%%F"=="%~1" set F2KT_DLL=core
-for %%F in (runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe newcon screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge vmdemand startup lcid ntquery locale atom) do if /I "%%F"=="%~1" set F2KT_DLL=kernel32
-for %%F in (winsta guiclass guiwin guigeo guimsg guipaint guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl) do if /I "%%F"=="%~1" set F2KT_DLL=user32
-for %%F in (guidc gditext ttfont bitmaps mapmode shapes regions) do if /I "%%F"=="%~1" set F2KT_DLL=gdi32
+for %%F in (runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe newcon screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge vmdemand startup lcid ntquery manyproc manythrd manyhndl locale atom) do if /I "%%F"=="%~1" set F2KT_DLL=kernel32
+for %%F in (winsta guiclass guiwin guigeo guimsg guipaint guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl manywin desktops keymap shell dialog2 winmisc icons listbox combobox cursor msgwait timers hooks drawhelp redraw focus2) do if /I "%%F"=="%~1" set F2KT_DLL=user32
+for %%F in (guidc gditext ttfont bitmaps mapmode shapes regions manygdi txlayout curves fills dcstate palette bitmaps2) do if /I "%%F"=="%~1" set F2KT_DLL=gdi32
 for %%F in (registry token sdacl acccheck filesec keysec privchk ntsvc rtlsec) do if /I "%%F"=="%~1" set F2KT_DLL=advapi32
 for %%F in (hellomd crt seh fd wide process strings msvcrt cxxeh wmain) do if /I "%%F"=="%~1" set F2KT_DLL=crt
 for %%F in (batecho batset batlevel batexit batcd batver battype batredir batcall batcode batclr batpext batdyn batquot batstd batops batline bathelp batdir batpipe batforq batlong batedge batflow batlabel batlocal batdelay) do if /I "%%F"=="%~1" set F2KT_DLL=cmd

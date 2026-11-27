@@ -1,0 +1,15 @@
+# F2K capture of manythrd (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:39:12.97
+manythrd F2KT-SOURCE-CRC=0xA8F9C44E
+>>> manythrd.exe alive
+== alive
+threads made: 2000 of 2000
+running together, each waiting on the event: 2000
+their ids: multiples of 4 yes, distinct and none this thread's yes
+the event set: ended 2000, with their own exit code 2000
+OpenThread by the first one's id, ended and its handle closed: a handle no err=87
+manythrd: done
+<<< exit code=0

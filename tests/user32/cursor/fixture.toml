@@ -1,0 +1,72 @@
+# cursor: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat cursor, tests\capture.bat cursor).
+# Its sections move the cursor (SetCursorPos, mouse_event) over a top-most popup of its own and put
+# it back; mouseev, points and drag press the left button on that window only, after checking it is
+# the foreground window and the window under the cursor. Nobody touches the machine's mouse while
+# the capture runs. dblclk and swap change system-wide settings and put them back. Points print only
+# as differences from points computed from the window or the screen.
+description = "cursor - ShowCursor's counter (and a second thread's), SetCursor and GetCursor (stock, NULL, a destroyed cursor, a second thread), ClipCursor and GetClipCursor with SetCursorPos clamped to the rectangle, GetCursorInfo, Get/SetDoubleClickTime, SwapMouseButton, TrackMouseEvent's WM_MOUSELEAVE and WM_MOUSEHOVER (TME_QUERY, TME_CANCEL, the errors), mouse_event's moves and clicks, GetMouseMovePointsEx after mouse_event moves, and DragDetect with a move, a release and no button."
+kind = "sectioned"
+gate = true
+# show never ends on F2K (its pending entry says why): a boot of its own, so the other blocks run.
+separate = ["show"]
+
+[pending]
+# U3 (.scratch/plans/user32-gdi32-completeness.md): cursor.exe imports ShowCursor, ClipCursor,
+# GetClipCursor, Get/SetDoubleClickTime, SwapMouseButton, mouse_event, CreateCursor and
+# DestroyCursor, which F2K's user32 has as stubs only; GetCursorInfo, TrackMouseEvent,
+# GetMouseMovePointsEx and DragDetect are catalogued only. Drop each entry once its block passes.
+show = "ShowCursor is a stub (no display counter: it answers 0 every time) and GetCursorInfo is absent; the section's loop putting the counter back then never ends, and the block runs out its timeout (a boot of its own: separate)"
+setget = "SetCursor answers NULL where Windows 2000 answers the cursor it replaces (the hourglass at the start), the cursor is not kept per thread (a second thread's SetCursor changes what the first's GetCursor answers), and CreateCursor is a stub"
+clip = "ClipCursor and GetClipCursor are stubs; SetCursorPos not clamped to a clipping rectangle"
+info = "GetCursorInfo not yet implemented (catalogued only)"
+dblclk = "GetDoubleClickTime and SetDoubleClickTime are stubs"
+swap = "SwapMouseButton is a stub; SM_SWAPBUTTON fixed"
+track = "TrackMouseEvent not yet implemented (catalogued only): no WM_MOUSELEAVE or WM_MOUSEHOVER"
+mouseev = "mouse_event is a stub"
+points = "GetMouseMovePointsEx not yet implemented (catalogued only): no history of mouse moves"
+drag = "DragDetect not yet implemented (catalogued only)"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers around them (the class and window,
+# GetWindowRect, the metrics, SetForegroundWindow, WindowFromPoint, LoadCursorW, the message pump).
+# GetCursorInfo, TrackMouseEvent, GetMouseMovePointsEx and DragDetect are found with
+# GetProcAddress (MSVC 6's headers lack the first three; the program says so when one is missing).
+show = ["user32.ShowCursor", "user32.GetCursorInfo"]
+setget = [
+    "user32.SetCursor",
+    "user32.GetCursor",
+    "user32.CreateCursor",
+    "user32.DestroyCursor",
+]
+clip = [
+    "user32.ClipCursor",
+    "user32.GetClipCursor",
+    "user32.SetCursorPos",
+    "user32.GetCursorPos",
+]
+info = [
+    "user32.GetCursorInfo",
+    "user32.SetCursor",
+    "user32.SetCursorPos",
+    "user32.GetCursorPos",
+]
+dblclk = ["user32.GetDoubleClickTime", "user32.SetDoubleClickTime"]
+swap = ["user32.SwapMouseButton", "user32.GetSystemMetrics"]
+track = [
+    "user32.TrackMouseEvent",
+    "user32.SetCursorPos",
+    "user32.SystemParametersInfoW",
+]
+mouseev = [
+    "user32.mouse_event",
+    "user32.GetCursorPos",
+    "user32.GetAsyncKeyState",
+]
+points = ["user32.GetMouseMovePointsEx", "user32.mouse_event"]
+drag = [
+    "user32.DragDetect",
+    "user32.mouse_event",
+    "user32.GetCapture",
+]

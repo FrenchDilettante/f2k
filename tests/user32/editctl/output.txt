@@ -1,9 +1,9 @@
 # F2K capture of editctl (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
-# date: Sat 21/11/2026  7:37:50.76
-editctl F2KT-SOURCE-CRC=0xE8AE9656
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:56.57
+editctl F2KT-SOURCE-CRC=0x44342C2A
 >>> editctl.exe create
 == create
 RegisterClassW(F2KEditParent): atom nonzero yes err=2
@@ -1129,5 +1129,72 @@ EM_GETHANDLE(the A edit) through SendMessageA: non-NULL yes err=0, the same agai
   the block holds the text as UTF-16 no, as bytes yes
 EM_GETHANDLE(the A edit) through SendMessageW: non-NULL yes err=0, the same again yes
   the block holds the text as UTF-16 no, as bytes yes
+editctl: done
+<<< exit code=0
+>>> editctl.exe fontmargins
+== fontmargins
+RegisterClassW(F2KEditParent): atom nonzero yes err=2
+CreateWindowExW(F2KEditParent, visible): non-NULL yes err=-
+SetForegroundWindow(the parent): the foreground yes
+CreateWindowExW("Edit", single, id 101): non-NULL yes err=0
+  notifications: 101 EN_UPDATE, 101 EN_CHANGE
+CreateWindowExW("Edit", multi, id 102): non-NULL yes err=0
+  notifications: none
+-- the system font (no WM_SETFONT)
+  the font: TrueType no, a negative A or C width no, avg/2 the same as letters/2 no
+single as created
+  EM_GETMARGINS: err=- left=0 right=0
+EM_SETMARGINS(single, both, EC_USEFONTINFO): ret=0 err=-
+  EM_GETMARGINS: err=- left=0 right=0
+EM_SETMARGINS(single, EC_LEFTMARGIN, EC_USEFONTINFO) over 21,23: ret=0 err=-
+  EM_GETMARGINS: err=- left=0 right=kept
+multi as created
+  EM_GETMARGINS: err=- left=0 right=0
+EM_SETMARGINS(multi, both, EC_USEFONTINFO): ret=0 err=-
+  EM_GETMARGINS: err=- left=0 right=0
+EM_SETMARGINS(multi, EC_LEFTMARGIN, EC_USEFONTINFO) over 21,23: ret=0 err=-
+  EM_GETMARGINS: err=- left=0 right=kept
+-- DEFAULT_GUI_FONT
+  the font: TrueType yes, a negative A or C width no, avg/2 the same as letters/2 no
+WM_SETFONT(single, FALSE) over 21,23
+  EM_GETMARGINS: err=- left=0 right=0
+EM_SETMARGINS(single, both, EC_USEFONTINFO): ret=0 err=-
+  EM_GETMARGINS: err=- left=0 right=0
+EM_SETMARGINS(single, EC_LEFTMARGIN, EC_USEFONTINFO) over 21,23: ret=0 err=-
+  EM_GETMARGINS: err=- left=0 right=kept
+WM_SETFONT(multi, FALSE) over 21,23
+  EM_GETMARGINS: err=- left=0 right=0
+EM_SETMARGINS(multi, both, EC_USEFONTINFO): ret=0 err=-
+  EM_GETMARGINS: err=- left=0 right=0
+EM_SETMARGINS(multi, EC_LEFTMARGIN, EC_USEFONTINFO) over 21,23: ret=0 err=-
+  EM_GETMARGINS: err=- left=0 right=kept
+-- Tahoma -11
+  the font: TrueType yes, a negative A or C width yes, avg/2 the same as letters/2 no
+WM_SETFONT(single, FALSE) over 21,23
+  EM_GETMARGINS: err=- left=letters/2 right=letters/2
+EM_SETMARGINS(single, both, EC_USEFONTINFO): ret=0 err=-
+  EM_GETMARGINS: err=- left=letters/2 right=letters/2
+EM_SETMARGINS(single, EC_LEFTMARGIN, EC_USEFONTINFO) over 21,23: ret=0 err=-
+  EM_GETMARGINS: err=- left=letters/2 right=kept
+WM_SETFONT(multi, FALSE) over 21,23
+  EM_GETMARGINS: err=- left=letters/2 right=letters/2
+EM_SETMARGINS(multi, both, EC_USEFONTINFO): ret=0 err=-
+  EM_GETMARGINS: err=- left=letters/2 right=letters/2
+EM_SETMARGINS(multi, EC_LEFTMARGIN, EC_USEFONTINFO) over 21,23: ret=0 err=-
+  EM_GETMARGINS: err=- left=letters/2 right=kept
+-- Times New Roman -24 italic
+  the font: TrueType yes, a negative A or C width yes, avg/2 the same as letters/2 no
+WM_SETFONT(single, FALSE) over 21,23
+  EM_GETMARGINS: err=- left=letters/2 right=letters/2
+EM_SETMARGINS(single, both, EC_USEFONTINFO): ret=0 err=-
+  EM_GETMARGINS: err=- left=letters/2 right=letters/2
+EM_SETMARGINS(single, EC_LEFTMARGIN, EC_USEFONTINFO) over 21,23: ret=0 err=-
+  EM_GETMARGINS: err=- left=letters/2 right=kept
+WM_SETFONT(multi, FALSE) over 21,23
+  EM_GETMARGINS: err=- left=letters/2 right=letters/2
+EM_SETMARGINS(multi, both, EC_USEFONTINFO): ret=0 err=-
+  EM_GETMARGINS: err=- left=letters/2 right=letters/2
+EM_SETMARGINS(multi, EC_LEFTMARGIN, EC_USEFONTINFO) over 21,23: ret=0 err=-
+  EM_GETMARGINS: err=- left=letters/2 right=kept
 editctl: done
 <<< exit code=0

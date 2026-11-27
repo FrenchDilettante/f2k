@@ -1,9 +1,9 @@
 # F2K capture of fswrite (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
-# date: Sat 21/11/2026  7:36:40.80
-fswrite F2KT-SOURCE-CRC=0x11333631
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:38:51.91
+fswrite F2KT-SOURCE-CRC=0xEE4C6268
 >>> fswrite.exe create
 == create
 CREATE_NEW, new: opened err=0, size now 0
@@ -337,5 +337,26 @@ GetFileAttributesA(\\?\ deep file): 0xFFFFFFFF err=206
 CreateFileW(\\?\ deep file, OPEN_EXISTING): opened err=0, read 5 bytes, match yes
 DeleteFileW(\\?\ deep file): ret=1 err=-
 RemoveDirectoryW, deepest first: removed 9
+fswrite: done
+<<< exit code=0
+>>> fswrite.exe imagewrite
+== imagewrite
+CopyFileA(the program, IMG.EXE): ret=1 err=0
+CreateFileMappingA(IMG.EXE, SEC_IMAGE): made
+MapViewOfFile: mapped
+mapped, GENERIC_WRITE: INVALID_HANDLE_VALUE err=32
+mapped, GENERIC_READ | GENERIC_WRITE: INVALID_HANDLE_VALUE err=32
+mapped, FILE_APPEND_DATA: opened err=0
+mapped, GENERIC_READ: opened err=0
+mapped, TRUNCATE_EXISTING: INVALID_HANDLE_VALUE err=32
+mapped, CREATE_ALWAYS: INVALID_HANDLE_VALUE err=32
+mapped, DELETE with FILE_FLAG_DELETE_ON_CLOSE: INVALID_HANDLE_VALUE err=5
+mapped, DeleteFileA: ret=0 err=5
+the section alone, GENERIC_WRITE: INVALID_HANDLE_VALUE err=32
+unmapped, GENERIC_READ | GENERIC_WRITE: opened err=0
+WriteFile(1 byte into the DOS stub): ret=1 n=1 err=-
+CreateFileMappingA(IMG.EXE, SEC_IMAGE) again: made
+MapViewOfFile: mapped, the stub's byte is the write's: yes
+unmapped, DeleteFileA: ret=1 err=-
 fswrite: done
 <<< exit code=0

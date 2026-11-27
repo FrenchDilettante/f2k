@@ -1,8 +1,8 @@
 # F2K capture of scroll (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026 12:58:48.37
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:56.39
 scroll F2KT-SOURCE-CRC=0x278F2ECF
 >>> scroll.exe info
 == info

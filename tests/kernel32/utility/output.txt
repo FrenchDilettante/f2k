@@ -1,8 +1,8 @@
 # F2K capture of utility (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/02/2026  6:35:00.98
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:39:09.75
 utility F2KT-SOURCE-CRC=0xAEDC9199
 >>> utility.exe muldiv
 == muldiv

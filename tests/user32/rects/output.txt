@@ -1,8 +1,8 @@
 # F2K capture of rects (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026 13:00:05.75
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:56.13
 rects F2KT-SOURCE-CRC=0xF40A4218
 >>> rects.exe empty
 == empty

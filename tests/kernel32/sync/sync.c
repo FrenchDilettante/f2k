@@ -40,6 +40,12 @@
  *                nothing, a write view through FILE_MAP_READ, a write
  *                through a file handle duplicated for GENERIC_READ (the A
  *                calls only: access is no matter of the name's form)
+ *   unicode      named objects whose names lie outside the ANSI code page
+ *                (W calls only): a CJK event name created, created again
+ *                and opened, a prefix of it and its other case not found,
+ *                the "?" name its ANSI form would be not taken, a mutex
+ *                named with a surrogate pair, a semaphore on the event's
+ *                name
  *
  * The named objects run twice: through the A calls, then through their
  * W twins on the same names (the W lines carry the W names, or "(W)").
@@ -62,14 +68,19 @@ static HANDLE start(LPTHREAD_START_ROUTINE fn, void *param)
     return h;
 }
 
-static void join(HANDLE h)
+static void join_within(HANDLE h, DWORD ms)
 {
-    DWORD w = WaitForSingleObject(h, WAIT_MS);
+    DWORD w = WaitForSingleObject(h, ms);
 
     if (w != WAIT_OBJECT_0) {
         line("join: wait %s", wr(w));
     }
     CloseHandle(h);
+}
+
+static void join(HANDLE h)
+{
+    join_within(h, WAIT_MS);
 }
 
 /* Poll one object; the result by name. Callers sequence their polls into
@@ -518,6 +529,9 @@ static volatile DWORD late_result;
 static volatile DWORD seen_before_alertable;
 static HANDLE apc_ready;
 
+/* The join on a sleeper the APC queued before its start does not wake. */
+#define APC_SPENT_MS 500
+
 static VOID CALLBACK apc_fn(DWORD param)
 {
     char d[4];
@@ -603,9 +617,12 @@ static void sec_apc(void)
     r = SleepEx(0, TRUE);
     line("SleepEx(0, TRUE) with nothing queued: %s", wr(r));
 
+    /* An APC queued before the thread first runs does not end its
+     * SleepEx, which sleeps the whole WAIT_MS: Windows 2000 runs the join
+     * out, and a shorter bound, ending inside that sleep, prints the same. */
     h = start(alertable_sleeper, NULL);
     QueueUserAPC(apc_fn, h, 6);
-    join(h);
+    join_within(h, APC_SPENT_MS);
     arm();
     q = QueueUserAPC(apc_fn, h, 7);
     line("QueueUserAPC to a closed handle: ret=%d err=%s", q, le());
@@ -1042,6 +1059,57 @@ static void sec_access(void)
     DeleteFileA("f2kacc.tmp");
 }
 
+/* Names outside the ANSI code page: the object manager keeps UTF-16. */
+static void sec_unicode(void)
+{
+    static const WCHAR cjk[] = L"F2K.sync.\x4E8B\x4EF6";
+    static const WCHAR pair[] = L"F2K.sync.\xD83D\xDE00";
+    HANDLE n1, n2, o, t, m;
+
+    arm();
+    n1 = CreateEventW(NULL, TRUE, FALSE, cjk);
+    line("CreateEventW(CJK name): created %s err=%s", yesno(n1 != NULL), le());
+    arm();
+    n2 = CreateEventW(NULL, TRUE, FALSE, cjk);
+    line("CreateEventW(CJK name) again: created %s err=%s", yesno(n2 != NULL), le());
+    arm();
+    o = OpenEventW(EVENT_ALL_ACCESS, FALSE, cjk);
+    line("OpenEventW(CJK name): opened %s err=%s", yesno(o != NULL), le());
+    SetEvent(o);
+    line("set through the open, seen through the create: %s", wr(WaitForSingleObject(n1, 0)));
+    arm();
+    t = OpenEventW(EVENT_ALL_ACCESS, FALSE, L"F2K.sync.\x4E8B");
+    line("OpenEventW(its first character only): null %s err=%s", yesno(t == NULL), le());
+    arm();
+    t = OpenEventW(EVENT_ALL_ACCESS, FALSE, L"F2K.SYNC.\x4E8B\x4EF6");
+    line("OpenEventW(other case): null %s err=%s", yesno(t == NULL), le());
+    arm();
+    t = CreateEventA(NULL, TRUE, FALSE, "F2K.sync.??");
+    line("CreateEventA(its ANSI form, two question marks): created %s err=%s", yesno(t != NULL), le());
+    if (t != NULL) {
+        CloseHandle(t);
+    }
+    arm();
+    m = CreateMutexW(NULL, FALSE, pair);
+    line("CreateMutexW(surrogate pair name): created %s err=%s", yesno(m != NULL), le());
+    arm();
+    t = OpenMutexW(MUTEX_ALL_ACCESS, FALSE, pair);
+    line("OpenMutexW(surrogate pair name): opened %s err=%s", yesno(t != NULL), le());
+    if (t != NULL) {
+        CloseHandle(t);
+    }
+    arm();
+    t = CreateSemaphoreW(NULL, 0, 1, cjk);
+    line("CreateSemaphoreW on the event's CJK name: null %s err=%s", yesno(t == NULL), le());
+    if (t != NULL) {
+        CloseHandle(t);
+    }
+    CloseHandle(m);
+    CloseHandle(o);
+    CloseHandle(n2);
+    CloseHandle(n1);
+}
+
 static const section_t sections[] = {
     { "event", sec_event, 0 },
     { "semaphore", sec_semaphore, 0 },
@@ -1054,6 +1122,7 @@ static const section_t sections[] = {
     { "pingpong", sec_pingpong, 0 },
     { "waitleak", sec_waitleak, 0 },
     { "access", sec_access, 0 },
+    { "unicode", sec_unicode, 0 },
     { NULL, NULL, 0 }
 };
 

@@ -55,6 +55,19 @@
  *   destroy   DestroyWindow of the focused child1, then of top1 with
  *             child2 focused: GetFocus, GetActiveWindow and
  *             GetForegroundWindow after each, the records
+ *   ncactivate the WM_NCACTIVATE veto: top1's procedure answering
+ *             FALSE to WM_NCACTIVATE(FALSE) (the record marks it)
+ *             while SetActiveWindow(top2) and SetForegroundWindow(top2)
+ *             activate another window of the same thread, then top2
+ *             vetoing SetActiveWindow(top1), each against the same call
+ *             unvetoed; then remote, a window of a second thread that
+ *             dispatches its own messages: SetForegroundWindow from
+ *             this thread to remote, back to top1 with remote vetoing,
+ *             and both again unvetoed. The records print split by
+ *             thread (their interleaving across the threads is not
+ *             fixed), and remote's thread answers its own
+ *             GetActiveWindow and GetFocus (a message its procedure
+ *             answers)
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat focus):
  *   cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% focus.c user32.lib
@@ -65,6 +78,13 @@
 #define CLASS_NAME "F2KFocusWin"
 
 static HWND top1, top2, child1, child2, hidden;
+/* ncactivate's window of a second thread. */
+static HWND remote;
+/* The window whose procedure answers FALSE to WM_NCACTIVATE(FALSE). */
+static HWND veto;
+/* Records come from two threads in ncactivate. */
+static CRITICAL_SECTION record_lock;
+static DWORD main_thread;
 /* A window created and destroyed again: its handle names no window. */
 static HWND dead;
 
@@ -76,7 +96,14 @@ typedef struct {
     UINT msg;
     WPARAM wparam;
     LPARAM lparam;
+    int vetoed;
+    int other_thread;
 } record_t;
+
+/* ncactivate's queries of the second thread's state, answered by
+ * remote's procedure on that thread. */
+#define WM_ASK_ACTIVE (WM_APP + 1)
+#define WM_ASK_FOCUS (WM_APP + 2)
 
 static record_t records[MAX_RECORDS];
 static int record_count;
@@ -84,6 +111,17 @@ static int records_lost;
 
 static LRESULT CALLBACK recorder(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
 {
+    int vetoed = msg == WM_NCACTIVATE && wparam == FALSE && hwnd == veto && veto != NULL;
+
+    if (msg == WM_ASK_ACTIVE) {
+        return (LRESULT)GetActiveWindow();
+    }
+    if (msg == WM_ASK_FOCUS) {
+        return (LRESULT)GetFocus();
+    }
+    if (main_thread != 0) {
+        EnterCriticalSection(&record_lock);
+    }
     switch (msg) {
     case WM_SETFOCUS:
     case WM_KILLFOCUS:
@@ -97,11 +135,19 @@ static LRESULT CALLBACK recorder(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lpar
             records[record_count].msg = msg;
             records[record_count].wparam = wparam;
             records[record_count].lparam = lparam;
+            records[record_count].vetoed = vetoed;
+            records[record_count].other_thread = main_thread != 0 && GetCurrentThreadId() != main_thread;
             record_count++;
         } else {
             records_lost++;
         }
         break;
+    }
+    if (main_thread != 0) {
+        LeaveCriticalSection(&record_lock);
+    }
+    if (vetoed) {
+        return FALSE;
     }
     return DefWindowProcA(hwnd, msg, wparam, lparam);
 }
@@ -129,6 +175,9 @@ static const char *label(HWND h)
     if (h == dead) {
         return "dead";
     }
+    if (h == remote) {
+        return "remote";
+    }
     return "other";
 }
 
@@ -138,41 +187,54 @@ static void reset_records(void)
     records_lost = 0;
 }
 
-static void print_records(void)
+/* The records, or those of one thread only (which: 0 this thread's, 1
+ * the second thread's, -1 all), each line after `indent`. */
+static void print_some(const char *indent, int which)
 {
     int i;
+    int n = 0;
     const record_t *r;
 
-    if (record_count == 0) {
-        line("  messages: none");
-    }
     for (i = 0; i < record_count; i++) {
         r = &records[i];
+        if (which >= 0 && r->other_thread != which) {
+            continue;
+        }
+        n++;
         switch (r->msg) {
         case WM_SETFOCUS:
-            line("  %s WM_SETFOCUS from %s", label(r->hwnd), label((HWND)r->wparam));
+            line("%s%s WM_SETFOCUS from %s", indent, label(r->hwnd), label((HWND)r->wparam));
             break;
         case WM_KILLFOCUS:
-            line("  %s WM_KILLFOCUS to %s", label(r->hwnd), label((HWND)r->wparam));
+            line("%s%s WM_KILLFOCUS to %s", indent, label(r->hwnd), label((HWND)r->wparam));
             break;
         case WM_ENABLE:
-            line("  %s WM_ENABLE wParam=%lu", label(r->hwnd), (unsigned long)r->wparam);
+            line("%s%s WM_ENABLE wParam=%lu", indent, label(r->hwnd), (unsigned long)r->wparam);
             break;
         case WM_ACTIVATE:
-            line("  %s WM_ACTIVATE state=%u minimized=%u other=%s", label(r->hwnd),
+            line("%s%s WM_ACTIVATE state=%u minimized=%u other=%s", indent, label(r->hwnd),
                  (unsigned)LOWORD(r->wparam), (unsigned)HIWORD(r->wparam), label((HWND)r->lparam));
             break;
         case WM_NCACTIVATE:
-            line("  %s WM_NCACTIVATE wParam=%lu", label(r->hwnd), (unsigned long)r->wparam);
+            line("%s%s WM_NCACTIVATE wParam=%lu%s", indent, label(r->hwnd), (unsigned long)r->wparam,
+                 r->vetoed ? " (answered FALSE)" : "");
             break;
         case WM_ACTIVATEAPP:
-            line("  %s WM_ACTIVATEAPP wParam=%lu", label(r->hwnd), (unsigned long)r->wparam);
+            line("%s%s WM_ACTIVATEAPP wParam=%lu", indent, label(r->hwnd), (unsigned long)r->wparam);
             break;
         case WM_CANCELMODE:
-            line("  %s WM_CANCELMODE", label(r->hwnd));
+            line("%s%s WM_CANCELMODE", indent, label(r->hwnd));
             break;
         }
     }
+    if (n == 0) {
+        line("%smessages: none", indent);
+    }
+}
+
+static void print_records(void)
+{
+    print_some("  ", -1);
     if (records_lost) {
         line("  (%d more not recorded)", records_lost);
     }
@@ -426,11 +488,158 @@ static void sec_destroy(void)
     teardown();
 }
 
+/* --- ncactivate ---------------------------------------------------- */
+
+static HANDLE remote_ready, remote_quit;
+
+/* The second thread: remote, a visible window like top1 at (480,40),
+ * shown without activation, its messages dispatched until told to
+ * stop; it destroys the window itself. */
+static DWORD WINAPI remote_main(LPVOID unused)
+{
+    MSG m;
+    DWORD r;
+
+    (void)unused;
+    remote = make(NULL, WS_POPUP | WS_CAPTION, 480, 40, 200, 120, 0);
+    if (remote != NULL) {
+        ShowWindow(remote, SW_SHOWNOACTIVATE);
+    }
+    SetEvent(remote_ready);
+    for (;;) {
+        r = MsgWaitForMultipleObjects(1, &remote_quit, FALSE, WAIT_MS, QS_ALLINPUT);
+        while (PeekMessageA(&m, NULL, 0, 0, PM_REMOVE)) {
+            TranslateMessage(&m);
+            DispatchMessageA(&m);
+        }
+        if (r == WAIT_OBJECT_0) {
+            break;
+        }
+    }
+    if (remote != NULL) {
+        DestroyWindow(remote);
+    }
+    return 0;
+}
+
+/* The second thread's active and focus windows, as it answers them. */
+static void remote_state(void)
+{
+    DWORD a = 0;
+    DWORD f = 0;
+    LRESULT ra, rf;
+
+    ra = SendMessageTimeoutA(remote, WM_ASK_ACTIVE, 0, 0, SMTO_NORMAL, WAIT_MS, &a);
+    rf = SendMessageTimeoutA(remote, WM_ASK_FOCUS, 0, 0, SMTO_NORMAL, WAIT_MS, &f);
+    line("  remote's thread: GetActiveWindow %s, GetFocus %s", ra ? label((HWND)a) : "(no answer)",
+         rf ? label((HWND)f) : "(no answer)");
+}
+
+/* SetForegroundWindow, its records split by thread when the second
+ * thread runs. */
+static void set_foreground(const char *name, HWND h)
+{
+    BOOL r;
+    DWORD e;
+
+    arm();
+    r = SetForegroundWindow(h);
+    e = GetLastError();
+    settle();
+    settle();
+    settle();
+    line("SetForegroundWindow(%s): ret=%d err=%s", name, r, le_of(e));
+    if (remote != NULL) {
+        EnterCriticalSection(&record_lock);
+        line("  this thread:");
+        print_some("    ", 0);
+        line("  remote's thread:");
+        print_some("    ", 1);
+        if (records_lost) {
+            line("  (%d more not recorded)", records_lost);
+        }
+        reset_records();
+        LeaveCriticalSection(&record_lock);
+        state(1);
+        remote_state();
+    } else {
+        print_records();
+        state(1);
+    }
+}
+
+static void veto_by(HWND h, const char *name)
+{
+    veto = h;
+    if (h != NULL) {
+        line("%s answers FALSE to WM_NCACTIVATE(FALSE)", name);
+    } else {
+        line("no window answers FALSE to WM_NCACTIVATE");
+    }
+}
+
+static void sec_ncactivate(void)
+{
+    HANDLE t;
+    DWORD tid;
+
+    InitializeCriticalSection(&record_lock);
+    main_thread = GetCurrentThreadId();
+    remote = NULL;
+    setup(1);
+
+    /* The same thread: SetActiveWindow and SetForegroundWindow. */
+    veto_by(top1, "top1");
+    set_active("top2", top2);
+    set_foreground("top2", top2);
+    veto_by(NULL, NULL);
+    set_active("top2", top2);
+    veto_by(top2, "top2");
+    set_active("top1", top1);
+    veto_by(NULL, NULL);
+    set_active("top1", top1);
+
+    /* Another thread's window. */
+    remote_ready = CreateEventA(NULL, TRUE, FALSE, NULL);
+    remote_quit = CreateEventA(NULL, TRUE, FALSE, NULL);
+    t = CreateThread(NULL, 0, remote_main, NULL, 0, &tid);
+    WaitForSingleObject(remote_ready, WAIT_MS);
+    settle();
+    EnterCriticalSection(&record_lock);
+    reset_records();
+    LeaveCriticalSection(&record_lock);
+    line("remote, a window of a second thread: made %s", yesno(remote != NULL));
+    if (remote != NULL) {
+        set_foreground("remote", remote);
+        veto_by(remote, "remote");
+        set_foreground("top1", top1);
+        veto_by(NULL, NULL);
+        set_foreground("remote", remote);
+        set_foreground("top1", top1);
+    }
+    SetEvent(remote_quit);
+    if (t != NULL) {
+        WaitForSingleObject(t, WAIT_MS);
+        CloseHandle(t);
+    }
+    CloseHandle(remote_ready);
+    CloseHandle(remote_quit);
+    settle();
+    EnterCriticalSection(&record_lock);
+    reset_records();
+    remote = NULL;
+    LeaveCriticalSection(&record_lock);
+    teardown();
+    main_thread = 0;
+    DeleteCriticalSection(&record_lock);
+}
+
 static const section_t sections[] = {
     { "focus", sec_focus, F2KT_ALWAYS },
     { "enable", sec_enable, F2KT_ALWAYS },
     { "active", sec_active, F2KT_ALWAYS },
     { "destroy", sec_destroy, F2KT_ALWAYS },
+    { "ncactivate", sec_ncactivate, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

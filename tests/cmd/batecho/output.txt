@@ -1,8 +1,8 @@
 # F2K capture of batecho (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/04/2026 10:30:33.70
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:59.93
 >>> cmd /c batecho.cmd
 text
   three blanks after echo
@@ -16,7 +16,7 @@ with echo on
 >echo
 ECHO is on.
 
-Z:\cmd\batecho>echo under the current directory's prompt 
+D:\cmd\batecho>echo under the current directory's prompt 
 under the current directory's prompt
 ECHO is off.
 <<< exit code=0

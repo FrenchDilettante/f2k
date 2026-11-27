@@ -1,9 +1,9 @@
 # F2K capture of guidisp (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/02/2026 13:24:18.93
-guidisp F2KT-SOURCE-CRC=0xE2442A5A
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:39:36.46
+guidisp F2KT-SOURCE-CRC=0xC479F950
 >>> guidisp.exe enum
 == enum
 EnumDisplaySettingsA(NULL, ENUM_CURRENT_SETTINGS, &dm): ret=1 err=- dmSize=124 dmPelsWidth=640 dmPelsHeight=480 dmBitsPerPel=32 dmFields=0x7E0020
@@ -75,5 +75,30 @@ GetMonitorInfoA(hm, &mi): ret=1 err=- rcMonitor=0 0 1024 768 rcWork=0 0 1024 740
 MonitorFromPoint({-10000, -10000}, MONITOR_DEFAULTTONULL): NULL yes err=-
 MonitorFromRect({0, 0, 100, 100}, MONITOR_DEFAULTTOPRIMARY): non-NULL yes err=-
 DestroyWindow(h): ret=1 err=-
+guidisp: done
+<<< exit code=0
+>>> guidisp.exe monitorw
+== monitorw
+MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY): non-NULL yes err=-
+GetMonitorInfoW(hm, MONITORINFO): ret=1 err=- rcMonitor as A's yes rcWork as A's yes primary yes
+GetMonitorInfoA(hm, MONITORINFOEXA): ret=1 err=- szDevice=\\.\DISPLAY1
+GetMonitorInfoW(hm, MONITORINFOEXW): ret=1 err=- szDevice=\\.\DISPLAY1 rcMonitor as A's yes
+GetMonitorInfoW(hm, cbSize 0): ret=0 err=87
+GetMonitorInfoW(NULL, MONITORINFO): ret=0 err=1461
+guidisp: done
+<<< exit code=0
+>>> guidisp.exe enumex
+== enumex
+EnumDisplaySettingsExA: present
+EnumDisplaySettingsExW: present
+EnumDisplaySettingsExA(NULL, ENUM_CURRENT_SETTINGS, 0): ret=1 err=- as EnumDisplaySettingsA's yes
+EnumDisplaySettingsExA(NULL, ENUM_REGISTRY_SETTINGS, 0): ret=1 err=- as EnumDisplaySettingsA's yes
+EnumDisplaySettingsExA(NULL, 0, 0): ret=1 err=- as EnumDisplaySettingsA's yes
+EnumDisplaySettingsExA(NULL, 0, EDS_RAWMODE): ret=1 err=- as EnumDisplaySettingsA's yes
+EnumDisplaySettingsExA(\\.\DISPLAY1, ENUM_CURRENT_SETTINGS, 0): ret=1 err=- as EnumDisplaySettingsA's yes
+EnumDisplaySettingsExA(NULL, 9999, 0): ret=0 err=-, EnumDisplaySettingsA's ret=0
+EnumDisplaySettingsExW(NULL, ENUM_CURRENT_SETTINGS, 0): ret=1 err=- dmSize=220 as EnumDisplaySettingsA's yes
+EnumDisplaySettingsExW(NULL, 9999, 0): ret=0 err=-
+modes listed: EnumDisplaySettingsExA as many as EnumDisplaySettingsA yes, at least one yes
 guidisp: done
 <<< exit code=0

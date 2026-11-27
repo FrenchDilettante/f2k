@@ -1,8 +1,8 @@
 # F2K capture of shutparm (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/09/2026 10:13:53.52
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:39:10.22
 shutparm F2KT-SOURCE-CRC=0xA7B94249
 >>> shutparm.exe default
 == default

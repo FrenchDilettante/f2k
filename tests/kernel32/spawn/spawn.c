@@ -2380,6 +2380,11 @@ static void sec_remoteexit(void)
 
 /* --- nothread ----------------------------------------------------- */
 
+/* The wait on the process with no thread that TerminateProcess was asked
+ * to end: with no thread to run the exit, Windows 2000 never signals it
+ * (its exit code stays STILL_ACTIVE), so any bound times out. */
+#define NOTHREAD_WAIT_MS 500
+
 typedef LONG (WINAPI *create_process_fn)(HANDLE *, ACCESS_MASK, void *, HANDLE, BOOLEAN, HANDLE,
                                           HANDLE, HANDLE);
 
@@ -2443,7 +2448,7 @@ static void sec_nothread(void)
         arm();
         r = TerminateProcess(process, 7);
         line("  TerminateProcess(7) ret=%d err=%s", r, le());
-        w = WaitForSingleObject(process, WAIT_MS);
+        w = WaitForSingleObject(process, NOTHREAD_WAIT_MS);
         code = 0;
         arm();
         r = GetExitCodeProcess(process, &code);

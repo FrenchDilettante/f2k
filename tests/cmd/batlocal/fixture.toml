@@ -1,8 +1,8 @@
 # batlocal: one test, the script's one block (`cmd /c batlocal.cmd`, output.txt); see tests/README.md,
 # "Script fixtures".
-# Declared ahead of its capture (shallow-gui-cmd finding 26: setlocal and endlocal).
+# Captured on the 2026-11-27 VM trip (shallow-gui-cmd finding 26: setlocal and endlocal).
 description = "batlocal - setlocal and endlocal: a variable changed, added and deleted then put back, setlocals nested, endlocal and set on one line, endlocal without a setlocal, the current directory put back, a called label's setlocal ended with it, an endlocal in a called label leaving its caller's, a called batch file's setlocal left open, setlocal's ERRORLEVEL with no argument, known ones and an unknown one, endlocal's, 33 setlocals in one batch file, and both outside a batch file."
 kind = "script"
 gate = true
 timeout = 60
-pending = "not captured yet: the placeholder block awaits the next VM trip (tests\\capture.bat batlocal)"
+pending = "F2K's setlocal with no argument leaves ERRORLEVEL as it was (5) where Windows 2000's sets 0, and an unknown argument prints no \"Invalid parameter to SETLOCAL command\""

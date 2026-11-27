@@ -1,9 +1,9 @@
 # F2K capture of files (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
-# date: Sat 21/11/2026  7:36:40.63
-files F2KT-SOURCE-CRC=0x351C887D
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:38:51.72
+files F2KT-SOURCE-CRC=0xE0B74F86
 >>> files.exe open
 == open
 DATA\SMALL.TXT: opened err=0
@@ -580,5 +580,21 @@ CreateFileW(DATA\NUL under the image directory): opened err=0, file type 2
 CreateFileW(CON, GENERIC_READ): opened err=0, file type 2
 CreateFileW(CON, GENERIC_WRITE): opened err=0, file type 2
 CreateFileW(CON, GENERIC_READ|GENERIC_WRITE): INVALID_HANDLE_VALUE err=2
+files: done
+<<< exit code=0
+>>> files.exe pagefile
+== pagefile
+system drive's file system: NTFS
+CreateFileA(pagefile.sys, GENERIC_READ): INVALID_HANDLE_VALUE err=32
+CreateFileA(pagefile.sys, GENERIC_WRITE): INVALID_HANDLE_VALUE err=32
+CreateFileA(pagefile.sys, FILE_READ_ATTRIBUTES): INVALID_HANDLE_VALUE err=32
+CreateFileA(pagefile.sys, no access): INVALID_HANDLE_VALUE err=32
+CreateFileA(pagefile.sys, DELETE): INVALID_HANDLE_VALUE err=32
+CreateFileA(pagefile.sys, TRUNCATE_EXISTING): INVALID_HANDLE_VALUE err=32
+GetFileAttributesA: 0xFFFFFFFF err=32
+GetFileAttributesExA: ret=0 err=32
+FindFirstFileA: [pagefile.sys] attributes 0x26, size nonzero
+DeleteFileA: ret=0 err=32
+MoveFileA: ret=0 err=32
 files: done
 <<< exit code=0

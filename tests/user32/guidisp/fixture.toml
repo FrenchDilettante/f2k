@@ -7,7 +7,7 @@
 # and (VERTRES), GetSystemMetrics(SM_CXSCREEN) and (SM_CYSCREEN). The lines that also hold the
 # taskbar's work area (SPI_GETWORKAREA, GetMonitorInfoA) or the VM driver's own mode list (mode 0)
 # are as captured.
-description = "guidisp - the display device and settings surface (the app-visible face of the graphics kernel): EnumDisplaySettingsA/W (current and mode 0), ChangeDisplaySettingsA/W (current mode, CDS_TEST, bogus mode, NULL), EnumDisplayDevicesA/W, gdi32 CreateDCA/GetDeviceCaps/DeleteDC on the DISPLAY driver, GetSystemMetrics, SystemParametersInfoA/W SPI_GETWORKAREA, GetSysColor/GetSysColorBrush/SetSysColors round-trip, and the single-monitor calls (EnumDisplayMonitors, MonitorFromWindow/Rect/Point, GetMonitorInfoA)."
+description = "guidisp - the display device and settings surface (the app-visible face of the graphics kernel): EnumDisplaySettingsA/W (current and mode 0), ChangeDisplaySettingsA/W (current mode, CDS_TEST, bogus mode, NULL), EnumDisplayDevicesA/W, gdi32 CreateDCA/GetDeviceCaps/DeleteDC on the DISPLAY driver, GetSystemMetrics, SystemParametersInfoA/W SPI_GETWORKAREA, GetSysColor/GetSysColorBrush/SetSysColors round-trip, and the single-monitor calls (EnumDisplayMonitors, MonitorFromWindow/Rect/Point, GetMonitorInfoA); GetMonitorInfoW against GetMonitorInfoA, MONITORINFOEX's device names (monitorw); and EnumDisplaySettingsExA/W against EnumDisplaySettingsA, as relations (enumex)."
 kind = "sectioned"
 gate = true
 
@@ -15,6 +15,9 @@ gate = true
 enum = "mode 0 is the capture machine's display driver's own first mode (VirtualBox's 800x600x8): F2K's VBE driver lists 320x200x32 first"
 metrics = "the capture's taskbar takes 28 pixels off the work area (0 0 1024 740), where F2K's, with no taskbar, is the whole 640x480 screen; and its five-button mouse answers SM_CMOUSEBUTTONS 5, where F2K, with no mouse, answers 0"
 monitors = "the capture's GetMonitorInfoA line holds the taskbar's work area (rcWork 0 0 1024 740), so it stays as captured, its 1024x768 monitor with it: F2K's monitor and work area are both the whole 640x480 screen"
+
+monitorw = "F2K's user32 lacks GetMonitorInfoW (catalogued only)"
+enumex = "F2K's user32 lacks EnumDisplaySettingsExA/W (catalogued only)"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
@@ -52,4 +55,14 @@ monitors = [
     "user32.MonitorFromPoint",
     "user32.MonitorFromRect",
     "user32.GetMonitorInfoA",
+]
+monitorw = [
+    "user32.GetMonitorInfoW",
+    "user32.GetMonitorInfoA",
+    "user32.MonitorFromPoint",
+]
+enumex = [
+    "user32.EnumDisplaySettingsExA",
+    "user32.EnumDisplaySettingsExW",
+    "user32.EnumDisplaySettingsA",
 ]

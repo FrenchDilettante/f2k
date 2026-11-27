@@ -1,0 +1,65 @@
+# manygdi: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat manygdi, tests\capture.bat manygdi).
+description = "manygdi - gdi32's handle table at scale: CreateSolidBrush until the per-process GDI quota refuses it, the count against the objects owned before and the error, and one freed slot taken again (quota); a deleted brush's slot taken by the next, its type bits kept and its reuse byte moved on (reuse); a brush handle used by a second process (foreign); and each kind's handle type bits 16-23, the stock bit among them (raw)."
+kind = "sectioned"
+gate = true
+# The quota loop makes and deletes 10,000 brushes, each a system call.
+timeout = 60
+
+[pending]
+# The slot-pool plan's slices (.scratch/plans/slot-pool.md, §7) these blocks wait for; drop each
+# entry once its block passes.
+quota = "F2K's process owns no GDI objects at its start, where Windows 2000's owns 4, so the 10,000th brush is still made and the next refused with ERROR_NOT_ENOUGH_MEMORY (Windows 2000 leaves the last error); and one freed slot is taken again, where Windows 2000 still refuses"
+raw = "F2K's GDI handles carry its own small kind codes in bits 16-23 (a DC 0x00, a pen 0x01, a brush 0x02, a font 0x06, a bitmap 0x07, a region 0x08), not Windows 2000's type codes in bits 16-22 and the stock bit 23 (slot-pool plan §15)"
+reuse = "a deleted brush's slot is taken at once by the next brush (the same low word), where Windows 2000 hands the next brush another slot"
+foreign = "another process's brush handle: F2K's GetObjectA and DeleteObject fail with ERROR_INVALID_HANDLE, where Windows 2000's GetObjectA answers ERROR_INVALID_PARAMETER and its DeleteObject leaves the last error"
+
+[masks]
+# The whole value is printed for the record only: its low word is the table index and bits 24-31
+# the slot's reuse count, both the machine's own.
+raw = ["a brush's handle, raw: *", "WHITE_BRUSH's handle, raw: *"]
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only what a section calls itself, through its own helpers too, never what the C runtime's
+# startup calls.
+quota = [
+    "gdi32.CreateSolidBrush",
+    "gdi32.DeleteObject",
+    "user32.GetGuiResources",
+    "kernel32.GetProcAddress",
+    "kernel32.GetModuleHandleA",
+    "kernel32.GetCurrentProcess",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]
+reuse = [
+    "gdi32.CreateSolidBrush",
+    "gdi32.DeleteObject",
+]
+foreign = [
+    "gdi32.CreateSolidBrush",
+    "gdi32.GetObjectA",
+    "gdi32.GetObjectType",
+    "gdi32.DeleteObject",
+    "kernel32.GetModuleFileNameA",
+    "kernel32.CreateProcessA",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GetExitCodeProcess",
+    "kernel32.CloseHandle",
+]
+raw = [
+    "gdi32.CreateCompatibleDC",
+    "gdi32.CreateSolidBrush",
+    "gdi32.CreatePen",
+    "gdi32.CreateBitmap",
+    "gdi32.CreateFontA",
+    "gdi32.CreateRectRgn",
+    "gdi32.GetStockObject",
+    "gdi32.GetCurrentObject",
+    "gdi32.GetObjectType",
+    "gdi32.DeleteObject",
+    "gdi32.DeleteDC",
+    "user32.GetDC",
+    "user32.ReleaseDC",
+]

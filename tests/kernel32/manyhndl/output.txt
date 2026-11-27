@@ -1,0 +1,16 @@
+# F2K capture of manyhndl (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:39:13.60
+manyhndl F2KT-SOURCE-CRC=0xAA47A73E
+>>> manyhndl.exe dup
+== dup
+DuplicateHandle of one event: 100000 of 100000 made
+their values: multiples of 4 yes, distinct and none the event's own yes
+one closed, one more made: ret=1 err=-, the closed one's value yes
+a then b closed, two more made: ret=1, the first b's value yes, the second a's yes
+the event through its own handle, set: WAIT_OBJECT_0
+the copies closed: 100000
+manyhndl: done
+<<< exit code=0

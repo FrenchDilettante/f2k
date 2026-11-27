@@ -1,8 +1,8 @@
 # F2K capture of ttfont (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/09/2026 14:05:54.52
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:57.60
 ttfont F2KT-SOURCE-CRC=0xF23BE2D0
 >>> ttfont.exe load
 == load

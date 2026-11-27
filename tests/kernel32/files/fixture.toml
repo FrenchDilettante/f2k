@@ -6,6 +6,9 @@ kind = "sectioned"
 gate = true
 timeout = 40
 
+[pending]
+pagefile = "the capture's system drive is NTFS, F2K's boot volume FAT32: Windows 2000 refuses every open of pagefile.sys with ERROR_SHARING_VIOLATION (the paging file held open) and lists it with FILE_ATTRIBUTE_ARCHIVE (0x26); F2K refuses them with ERROR_ACCESS_DENIED and lists it as 0x6"
+
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only what a section calls itself, through its own helpers too, never what the C runtime's
@@ -208,4 +211,18 @@ devpath = [
     "kernel32.ReadFile",
     "kernel32.WriteFile",
     "ntdll.RtlGetFullPathName_U",
+]
+pagefile = [
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.GetWindowsDirectoryA",
+    "kernel32.GetVolumeInformationA",
+    "kernel32.CreateFileA",
+    "kernel32.CloseHandle",
+    "kernel32.GetFileAttributesA",
+    "kernel32.GetFileAttributesExA",
+    "kernel32.FindFirstFileA",
+    "kernel32.FindClose",
+    "kernel32.DeleteFileA",
+    "kernel32.MoveFileA",
 ]

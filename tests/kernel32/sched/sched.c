@@ -28,7 +28,7 @@
  *            wakes only after it is resumed
  *   starve   an idle-priority thread starved by a normal-priority
  *            spinner still runs within a few seconds (the balance-set
- *            boost); takes about six seconds
+ *            boost); takes until the boost, six seconds at most
  *   pastdue  absolute times already past: waitable timers (manual and
  *            auto-reset) due in 1601, 10 s ago and an hour ago, waited
  *            for; ntdll's NtWaitForSingleObject on an unsignaled event and
@@ -501,6 +501,9 @@ static void sec_freeze(void)
 
 static volatile DWORD starved_ran_at;
 
+#define STARVE_POLL_MS 100
+#define STARVE_CEILING_MS 6000
+
 static DWORD WINAPI starved(LPVOID param)
 {
     (void)param;
@@ -518,7 +521,12 @@ static void sec_starve(void)
     hog = start(spinner, (void *)0, THREAD_PRIORITY_NORMAL, 0);
     t0 = GetTickCount();
     low = start(starved, NULL, THREAD_PRIORITY_IDLE, 0);
-    Sleep(6000);
+    /* Until the starved thread has run (the balance-set boost), 6 s at
+     * most: the verdict reads only its time, which spinning on after it
+     * would not change. */
+    while (starved_ran_at == 0 && GetTickCount() - t0 < STARVE_CEILING_MS) {
+        Sleep(STARVE_POLL_MS);
+    }
     stop_spinning = 1;
     join(hog);
     join(low);

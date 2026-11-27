@@ -1,8 +1,8 @@
 # F2K capture of gditext (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/04/2026 13:32:22.36
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:57.57
 gditext F2KT-SOURCE-CRC=0xF04723CB
 >>> gditext.exe paint
 == paint

@@ -1,8 +1,8 @@
 # F2K capture of batcall (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/04/2026 12:36:29.11
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:41:00.27
 >>> cmd /c batcall.cmd
 batcall1 arg0 [batcall1]
 batcall1 args [one] ["two words"] [three] [four] [five] [six] [""] ["a,b"] [seven]

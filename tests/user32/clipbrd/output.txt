@@ -1,8 +1,8 @@
 # F2K capture of clipbrd (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/09/2026 14:05:33.49
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:56.00
 clipbrd F2KT-SOURCE-CRC=0x58D89E96
 >>> clipbrd.exe open
 == open

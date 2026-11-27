@@ -4,7 +4,8 @@
  * EnumDisplayDevicesA/W, GetSystemMetrics, SystemParametersInfoA/W,
  * GetSysColor, GetSysColorBrush, SetSysColors, MonitorFromWindow,
  * MonitorFromPoint, MonitorFromRect, EnumDisplayMonitors,
- * GetMonitorInfoA; and gdi32's CreateDCA, GetDeviceCaps, DeleteDC.
+ * GetMonitorInfoA/W, EnumDisplaySettingsExA/W; and gdi32's CreateDCA,
+ * GetDeviceCaps, DeleteDC.
  *
  * Conventions as in common/f2kt.h: every call under observation is
  * armed with the sentinel and its line prints ret= and err=; no handle
@@ -44,6 +45,18 @@
  *             MonitorFromPoint far off-screen with
  *             MONITOR_DEFAULTTONULL; MonitorFromRect with
  *             MONITOR_DEFAULTTOPRIMARY
+ *   monitorw  GetMonitorInfoW (reached through GetProcAddress, as the
+ *             MSVC 6-era user32.lib predates it) of the primary monitor
+ *             with a MONITORINFO and a MONITORINFOEXW, against
+ *             GetMonitorInfoA's (rects equal or not, the device names),
+ *             a cbSize of 0, and a NULL monitor
+ *   enumex    EnumDisplaySettingsExA/W (through GetProcAddress too) of
+ *             the current settings, mode 0, EDS_RAWMODE, the registry
+ *             settings, the display's device name and mode 9999,
+ *             each against EnumDisplaySettingsA's answer for the same
+ *             mode (the same size, depth and frequency or not), and the
+ *             number of modes each lists, equal or not: relations only,
+ *             no mode of the capture machine
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat guidisp):
  *   cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% guidisp.c user32.lib gdi32.lib
@@ -446,6 +459,199 @@ static void sec_monitors(void)
     drain();
 }
 
+/* --- monitorw ----------------------------------------------------- */
+
+/* MONITORINFOEXA/W, declared here: the MSVC 6-era SDK has no A/W pair. */
+typedef struct {
+    DWORD cbSize;
+    RECT rcMonitor;
+    RECT rcWork;
+    DWORD dwFlags;
+    CHAR szDevice[32];
+} monitor_info_ex_a_t;
+
+typedef struct {
+    DWORD cbSize;
+    RECT rcMonitor;
+    RECT rcWork;
+    DWORD dwFlags;
+    WCHAR szDevice[32];
+} monitor_info_ex_w_t;
+
+typedef BOOL (WINAPI *get_monitor_info_t)(HMONITOR, void *);
+
+static int same_rect(const RECT *a, const RECT *b)
+{
+    return a->left == b->left && a->top == b->top && a->right == b->right && a->bottom == b->bottom;
+}
+
+static void sec_monitorw(void)
+{
+    get_monitor_info_t info_w;
+    HMONITOR hm;
+    POINT pt;
+    MONITORINFO mia;
+    MONITORINFO miw;
+    monitor_info_ex_a_t exa;
+    monitor_info_ex_w_t exw;
+    BOOL r;
+
+    info_w = (get_monitor_info_t)GetProcAddress(GetModuleHandleA("user32.dll"), "GetMonitorInfoW");
+    if (info_w == NULL) {
+        line("GetMonitorInfoW: absent");
+        return;
+    }
+    pt.x = 0;
+    pt.y = 0;
+    arm();
+    hm = MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
+    line("MonitorFromPoint({0, 0}, MONITOR_DEFAULTTOPRIMARY): non-NULL %s err=%s", yesno(hm != NULL),
+         le());
+    if (hm == NULL) {
+        return;
+    }
+
+    memset(&mia, 0, sizeof mia);
+    mia.cbSize = sizeof mia;
+    GetMonitorInfoA(hm, &mia);
+    memset(&miw, 0xEE, sizeof miw);
+    miw.cbSize = sizeof miw;
+    arm();
+    r = info_w(hm, &miw);
+    line("GetMonitorInfoW(hm, MONITORINFO): ret=%d err=%s rcMonitor as A's %s rcWork as A's %s "
+         "primary %s", r, le(), yesno(same_rect(&miw.rcMonitor, &mia.rcMonitor)),
+         yesno(same_rect(&miw.rcWork, &mia.rcWork)), yesno((miw.dwFlags & MONITORINFOF_PRIMARY) != 0));
+
+    memset(&exa, 0, sizeof exa);
+    exa.cbSize = sizeof exa;
+    arm();
+    r = GetMonitorInfoA(hm, (MONITORINFO *)&exa);
+    line("GetMonitorInfoA(hm, MONITORINFOEXA): ret=%d err=%s szDevice=%.32s", r, le(), exa.szDevice);
+    memset(&exw, 0, sizeof exw);
+    exw.cbSize = sizeof exw;
+    arm();
+    r = info_w(hm, &exw);
+    line("GetMonitorInfoW(hm, MONITORINFOEXW): ret=%d err=%s szDevice=%s rcMonitor as A's %s", r, le(),
+         wsn(exw.szDevice, 32), yesno(same_rect(&exw.rcMonitor, &mia.rcMonitor)));
+
+    memset(&miw, 0, sizeof miw);
+    arm();
+    r = info_w(hm, &miw);
+    line("GetMonitorInfoW(hm, cbSize 0): ret=%d err=%s", r, le());
+
+    memset(&miw, 0, sizeof miw);
+    miw.cbSize = sizeof miw;
+    arm();
+    r = info_w(NULL, &miw);
+    line("GetMonitorInfoW(NULL, MONITORINFO): ret=%d err=%s", r, le());
+}
+
+/* --- enumex -------------------------------------------------------- */
+
+typedef BOOL (WINAPI *enum_settings_ex_a_t)(LPCSTR, DWORD, DEVMODEA *, DWORD);
+typedef BOOL (WINAPI *enum_settings_ex_w_t)(LPCWSTR, DWORD, DEVMODEW *, DWORD);
+
+/* EnumDisplaySettingsEx's flag for the driver's raw modes. */
+#define EDS_RAWMODE_ 2
+#ifndef ENUM_REGISTRY_SETTINGS
+#define ENUM_REGISTRY_SETTINGS ((DWORD)-2)
+#endif
+
+/* The modes a lister answers, up to a bound. */
+#define MODE_BOUND 2000
+
+static int same_mode(const DEVMODEA *a, DWORD w, DWORD h, DWORD bpp, DWORD freq)
+{
+    return a->dmPelsWidth == w && a->dmPelsHeight == h && a->dmBitsPerPel == bpp &&
+           a->dmDisplayFrequency == freq;
+}
+
+/* EnumDisplaySettingsA's answer for a mode: ret, into *dm. */
+static BOOL plain_mode(DWORD mode, DEVMODEA *dm)
+{
+    memset(dm, 0, sizeof *dm);
+    dm->dmSize = sizeof *dm;
+    return EnumDisplaySettingsA(NULL, mode, dm);
+}
+
+static void ex_a_line(enum_settings_ex_a_t ex_a, LPCSTR device, DWORD mode, DWORD flags, const char *what)
+{
+    DEVMODEA dm;
+    DEVMODEA plain;
+    BOOL r, p;
+
+    p = plain_mode(mode, &plain);
+    memset(&dm, 0, sizeof dm);
+    dm.dmSize = sizeof dm;
+    arm();
+    r = ex_a(device, mode, &dm, flags);
+    if (r && p) {
+        line("EnumDisplaySettingsExA(%s): ret=%d err=%s as EnumDisplaySettingsA's %s", what, r, le(),
+             yesno(same_mode(&dm, plain.dmPelsWidth, plain.dmPelsHeight, plain.dmBitsPerPel,
+                             plain.dmDisplayFrequency)));
+    } else {
+        line("EnumDisplaySettingsExA(%s): ret=%d err=%s, EnumDisplaySettingsA's ret=%d", what, r, le(), p);
+    }
+}
+
+static void sec_enumex(void)
+{
+    HMODULE user32;
+    enum_settings_ex_a_t ex_a;
+    enum_settings_ex_w_t ex_w;
+    DEVMODEA plain;
+    DEVMODEW dmw;
+    BOOL r, p;
+    int plain_count, ex_count;
+    DEVMODEA dm;
+
+    user32 = GetModuleHandleA("user32.dll");
+    ex_a = (enum_settings_ex_a_t)GetProcAddress(user32, "EnumDisplaySettingsExA");
+    ex_w = (enum_settings_ex_w_t)GetProcAddress(user32, "EnumDisplaySettingsExW");
+    line("EnumDisplaySettingsExA: %s", ex_a != NULL ? "present" : "absent");
+    line("EnumDisplaySettingsExW: %s", ex_w != NULL ? "present" : "absent");
+    if (ex_a == NULL || ex_w == NULL) {
+        return;
+    }
+
+    ex_a_line(ex_a, NULL, ENUM_CURRENT_SETTINGS, 0, "NULL, ENUM_CURRENT_SETTINGS, 0");
+    ex_a_line(ex_a, NULL, ENUM_REGISTRY_SETTINGS, 0, "NULL, ENUM_REGISTRY_SETTINGS, 0");
+    ex_a_line(ex_a, NULL, 0, 0, "NULL, 0, 0");
+    ex_a_line(ex_a, NULL, 0, EDS_RAWMODE_, "NULL, 0, EDS_RAWMODE");
+    ex_a_line(ex_a, "\\\\.\\DISPLAY1", ENUM_CURRENT_SETTINGS, 0, "\\\\.\\DISPLAY1, ENUM_CURRENT_SETTINGS, 0");
+    ex_a_line(ex_a, NULL, 9999, 0, "NULL, 9999, 0");
+
+    p = plain_mode(ENUM_CURRENT_SETTINGS, &plain);
+    memset(&dmw, 0, sizeof dmw);
+    dmw.dmSize = sizeof dmw;
+    arm();
+    r = ex_w(NULL, ENUM_CURRENT_SETTINGS, &dmw, 0);
+    line("EnumDisplaySettingsExW(NULL, ENUM_CURRENT_SETTINGS, 0): ret=%d err=%s dmSize=%u "
+         "as EnumDisplaySettingsA's %s", r, le(), (unsigned)dmw.dmSize,
+         yesno(r && p && dmw.dmPelsWidth == plain.dmPelsWidth && dmw.dmPelsHeight == plain.dmPelsHeight &&
+               dmw.dmBitsPerPel == plain.dmBitsPerPel && dmw.dmDisplayFrequency == plain.dmDisplayFrequency));
+    memset(&dmw, 0, sizeof dmw);
+    dmw.dmSize = sizeof dmw;
+    arm();
+    r = ex_w(NULL, 9999, &dmw, 0);
+    line("EnumDisplaySettingsExW(NULL, 9999, 0): ret=%d err=%s", r, le());
+
+    for (plain_count = 0; plain_count < MODE_BOUND; plain_count++) {
+        if (!plain_mode((DWORD)plain_count, &plain)) {
+            break;
+        }
+    }
+    for (ex_count = 0; ex_count < MODE_BOUND; ex_count++) {
+        memset(&dm, 0, sizeof dm);
+        dm.dmSize = sizeof dm;
+        if (!ex_a(NULL, (DWORD)ex_count, &dm, 0)) {
+            break;
+        }
+    }
+    line("modes listed: EnumDisplaySettingsExA as many as EnumDisplaySettingsA %s, at least one %s",
+         yesno(ex_count == plain_count), yesno(ex_count > 0));
+}
+
 static const section_t sections[] = {
     { "enum", sec_enum, F2KT_ALWAYS },
     { "change", sec_change, F2KT_ALWAYS },
@@ -454,6 +660,8 @@ static const section_t sections[] = {
     { "metrics", sec_metrics, F2KT_ALWAYS },
     { "colors", sec_colors, F2KT_ALWAYS },
     { "monitors", sec_monitors, F2KT_ALWAYS },
+    { "monitorw", sec_monitorw, F2KT_ALWAYS },
+    { "enumex", sec_enumex, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

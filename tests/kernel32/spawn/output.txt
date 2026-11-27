@@ -1,14 +1,14 @@
 # F2K capture of spawn (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/31/2026  1:28:19.49
-spawn F2KT-SOURCE-CRC=0x43FF0AC5
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:38:52.36
+spawn F2KT-SOURCE-CRC=0xC21CC36B
 >>> spawn.exe layout
 == layout
 parent: TEB 0x7FFDE000, PEB 0x7FFDF000, image base 0x00400000
 parent: process parameters 0x00020000 (flags 0x00000001), process heap 0x00130000
-parent: environment 0x00010000, command line buffer 0x00020774
+parent: environment 0x00010000, command line buffer 0x00020830
 parent: stack base 0x00130000, limit 0x0012E000
 parent: the TEB's PEB pointer the PEB: yes
 second thread: TEB 0x7FFDD000, its PEB pointer the PEB: yes
@@ -20,7 +20,7 @@ NtQueryInformationThread(ThreadBasicInformation): status 0x00000000, length 28
   ExitStatus 0x00000103, its client id the child's process and thread: yes
 child: TEB 0x7FFDE000, PEB 0x7FFDF000, image base 0x00400000
 child: process parameters 0x00020000 (flags 0x00000001), process heap 0x00130000
-child: environment 0x00010000, command line buffer 0x0002077C
+child: environment 0x00010000, command line buffer 0x00020838
 child: stack base 0x00130000, limit 0x0012E000
 child: reads failed: 0
 child: exit code 0

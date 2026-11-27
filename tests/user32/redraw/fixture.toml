@@ -1,0 +1,40 @@
+# redraw: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat redraw, tests\capture.bat redraw).
+# Its window is a visible top-most 120x90 popup at the screen's top-left corner with a 40x30 child,
+# shown without activation; the procedures log WM_NCPAINT, WM_ERASEBKGND and WM_PAINT, printed
+# after each step. wrgn's WindowFromPoint looks at points of that corner: nothing else may sit on
+# top of it. Regions print as types and boxes; scrolldc reads a DIB section back.
+description = "redraw - RedrawWindow's RDW_* flags (invalidate, validate, erase, frame, internal paint, update and erase now, children) with the messages before and after its return; ValidateRgn and ExcludeUpdateRgn; LockWindowUpdate's clipping and painting; SetWindowRgn and GetWindowRgn, the region's hit-testing and the window DC's clipping; ScrollDC over a DIB section with scroll and clip rectangles and its update region."
+kind = "sectioned"
+gate = true
+
+[pending]
+# U5 (.scratch/plans/user32-gdi32-completeness.md): redraw.exe imports RedrawWindow,
+# ExcludeUpdateRgn, LockWindowUpdate, SetWindowRgn, GetWindowRgn and ScrollDC, which F2K's user32
+# has as stubs only; drop each entry once its block passes.
+redraw = "RedrawWindow is a stub"
+validate = "ExcludeUpdateRgn is a stub"
+lock = "LockWindowUpdate is a stub; and the shown window's GetDC clip box is NULLREGION from the start, where Windows 2000's is the client area (no graphics mode is set: the fixture does not boot under FiSH)"
+wrgn = "SetWindowRgn and GetWindowRgn are stubs; no window regions in hit-testing or visible regions"
+scrolldc = "ScrollDC is a stub"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers around them (the class and windows,
+# the message pump, the region calls that build and describe regions).
+redraw = ["user32.RedrawWindow", "user32.GetUpdateRgn"]
+validate = [
+    "user32.ValidateRgn",
+    "user32.ExcludeUpdateRgn",
+    "user32.GetUpdateRgn",
+    "gdi32.GetClipBox",
+]
+lock = ["user32.LockWindowUpdate", "gdi32.GetClipBox"]
+wrgn = [
+    "user32.SetWindowRgn",
+    "user32.GetWindowRgn",
+    "user32.WindowFromPoint",
+    "user32.GetWindowDC",
+    "gdi32.GetClipBox",
+]
+scrolldc = ["user32.ScrollDC"]

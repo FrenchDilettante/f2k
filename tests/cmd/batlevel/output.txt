@@ -1,8 +1,8 @@
 # F2K capture of batlevel (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/04/2026 10:30:33.77
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:59.99
 >>> cmd /c batlevel.cmd
 spawnkid exit 3: 3
 after an echo: 3

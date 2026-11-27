@@ -1,9 +1,9 @@
 # F2K capture of memory (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
-# date: Sat 21/11/2026  7:36:14.77
-memory F2KT-SOURCE-CRC=0x1AE714E3
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:37:54.85
+memory F2KT-SOURCE-CRC=0x769FB4EF
 >>> memory.exe sysinfo
 == sysinfo
 page size 0x1000 granularity 0x10000
@@ -140,7 +140,7 @@ GetModuleHandleW(NULL): the same base yes
 section .text: protect 0x20 type 0x1000000 same allocation yes
 section .rdata: protect 0x2 type 0x1000000 same allocation yes
 section .data: protect 0x8 type 0x1000000 same allocation yes
-past the image end: state 0x10000 protect 0x1 type 0x0 region 0x8000 allocprotect 0x0
+past the image end: state 0x10000 protect 0x1 type 0x0 region 0x7000 allocprotect 0x0
 memory: done
 <<< exit code=0
 >>> memory.exe mapping
@@ -184,8 +184,8 @@ memory: done
 sizes: basic 16, image 48
 the paging file, 1 MiB, committed: basic 0x00000000, length 16, base 0, attributes 0x08000000, size 0x000100000
 the paging file, 1 MiB, SEC_RESERVE: basic 0x00000000, length 16, base 0, attributes 0x04000000, size 0x000100000
-the program's file, read-only: basic 0x00000000, length 16, base 0, attributes 0x00800000, size 0x000010000
-the program's file, SEC_IMAGE: basic 0x00000000, length 16, base 0, attributes 0x01800000, size 0x000018000
+the program's file, read-only: basic 0x00000000, length 16, base 0, attributes 0x00800000, size 0x000011000
+the program's file, SEC_IMAGE: basic 0x00000000, length 16, base 0, attributes 0x01800000, size 0x000019000
   its base the image's ImageBase: no, its size the image's SizeOfImage: yes
 the program's file, SEC_IMAGE: image 0x00000000, length 48
   TransferAddress the image's entry: yes
@@ -290,5 +290,17 @@ HeapAlloc(128 KiB capped, 16 KiB) until refused: refused yes, then err=8
 HeapAlloc(16 MiB capped, HEAP_GENERATE_EXCEPTIONS, 0x100000): raised 0xC0000017 err=-
 HeapReAlloc(16 MiB capped, HEAP_GENERATE_EXCEPTIONS, NULL, 10): NULL err=0
 HeapReAlloc(the process heap, NULL, 10): NULL err=0
+memory: done
+<<< exit code=0
+>>> memory.exe heaperr
+== heaperr
+HeapAlloc(16 MiB capped, 0x7EFF8): a block err=-
+HeapAlloc(16 MiB capped, 0x7EFF9): NULL err=122
+HeapAlloc(growable, 0x7EFF9): a block err=-
+HeapReAlloc(16 MiB capped, a block, 0x80000): NULL err=122
+HeapReAlloc(16 MiB capped, a freed block, 128): a block err=87
+HeapFree(16 MiB capped, a freed block): ret=0 err=87
+GlobalUnlock(a fixed block): ret=1 err=-
+LocalUnlock(a fixed block): ret=0 err=158
 memory: done
 <<< exit code=0

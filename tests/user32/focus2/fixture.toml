@@ -1,0 +1,35 @@
+# focus2: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat focus2, tests\capture.bat focus2).
+# Both sections need the foreground: they make a visible top-most window and print whether it is
+# the foreground window, stopping when it is not; nobody touches the machine while it captures.
+# foreground runs focus2.exe --child, which reports in its exit code whether its
+# SetForegroundWindow succeeded. Windows print only as which of the section's they are.
+description = "focus2 - AttachThreadInput: a second thread's focus, active window and key state before, while and after its input is attached to the main thread's, its SetFocus while attached, and the refusals (itself, a thread id no thread has, a thread with no queue); AllowSetForegroundWindow and LockSetForegroundWindow: whether a child process may take the foreground with nothing allowed, its id or ASFW_ANY allowed, and while locked, and the refusals."
+kind = "sectioned"
+gate = true
+
+[pending]
+# U15 (.scratch/plans/user32-gdi32-completeness.md): focus2.exe imports AttachThreadInput, a stub
+# in F2K's user32; drop each entry once its block passes.
+attach = "AttachThreadInput is a stub; queues share no input state"
+foreground = "AllowSetForegroundWindow and LockSetForegroundWindow not yet implemented (catalogued only)"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers around them (the class and windows,
+# the message pump, CreateProcessA). AllowSetForegroundWindow and LockSetForegroundWindow are found
+# with GetProcAddress (MSVC 6's headers lack them).
+attach = [
+    "user32.AttachThreadInput",
+    "user32.GetFocus",
+    "user32.GetActiveWindow",
+    "user32.SetFocus",
+    "user32.GetKeyState",
+    "user32.SetKeyboardState",
+]
+foreground = [
+    "user32.AllowSetForegroundWindow",
+    "user32.LockSetForegroundWindow",
+    "user32.SetForegroundWindow",
+    "user32.GetForegroundWindow",
+]

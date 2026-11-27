@@ -1,0 +1,102 @@
+# F2K capture of timers (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:31.82
+timers F2KT-SOURCE-CRC=0x683D86C1
+>>> timers.exe ids
+== ids
+setup: the window created: yes
+SetTimer(h, id 1, 1000 ms): the id given err=-
+SetTimer(h, id 0, 1000 ms): 1 err=-
+SetTimer(h, id 0xFFFF, 1000 ms): the id given err=-
+SetTimer(h, id 0x12345, 1000 ms): the id given err=-
+SetTimer(h, id 1 again, 1000 ms): the id given err=-
+SetTimer(NULL, id 0, 1000 ms): another non-zero err=-
+SetTimer(NULL, id 0, 1000 ms, again): another non-zero err=-
+SetTimer(NULL, id 77, 1000 ms): another non-zero err=-
+the three thread timers' ids are distinct: yes
+SetTimer(NULL, the first one's id, 50 ms (replacing it)): the id given err=-
+  the same id answered: yes
+  a WM_TIMER came: hwnd NULL yes, wParam is that id: yes
+SetTimer(a destroyed window, id 3): 0 err=1400
+SetTimer(another thread's window, id 4): the id given err=-
+SetTimer(the desktop window, id 5): 0 err=5
+timers: done
+<<< exit code=0
+>>> timers.exe coalesce
+== coalesce
+setup: the window created: yes
+a 20 ms timer unread for 500 ms: 1 WM_TIMER found, each for the window and id 21: yes
+then within 200 ms: 2 or more WM_TIMER: yes
+timers: done
+<<< exit code=0
+>>> timers.exe order
+== order
+setup: the window created: yes
+a timer due, the window invalidated, a message posted: MSG_TEST (posted) WM_PAINT WM_TIMER(10)
+timers 11 then 12 set, both due: WM_TIMER(12) WM_TIMER(11)
+timers 12 then 11 set, both due: WM_TIMER(11) WM_TIMER(12)
+a window timer (13) then a thread timer set, both due: WM_TIMER(the thread timer) WM_TIMER(13)
+timers: done
+<<< exit code=0
+>>> timers.exe reset
+== reset
+setup: the window created: yes
+SetTimer(h, 30, 300 ms) again after 200 ms: the id err=-
+from the first SetTimer: the first WM_TIMER in 450 to 650 ms: yes
+a 1000 ms timer set again to 100 ms after 100 ms, from the first SetTimer: the first WM_TIMER in 150 to 400 ms: yes
+timers: done
+<<< exit code=0
+>>> timers.exe proc
+== proc
+setup: the window created: yes
+a window timer with a TIMERPROC: WM_TIMER read yes, lParam is the TIMERPROC: yes
+DispatchMessageW: ret=418859 err=-, the window procedure's WM_TIMER count 0
+  then: the callback ran 1 time(s)
+  window the window, message WM_TIMER, id is the timer's, time within 50 ms of GetTickCount: yes
+a thread timer with a TIMERPROC: WM_TIMER read yes, hwnd NULL yes, lParam is the TIMERPROC: yes
+DispatchMessageW: ret=418890 err=-
+  then: the callback ran 1 time(s)
+  window NULL, message WM_TIMER, id is the timer's, time within 50 ms of GetTickCount: yes
+a WM_TIMER posted by hand, lParam the TIMERPROC: DispatchMessageW ret=0 err=-, window procedure 0
+  then: the callback ran 0 time(s)
+a WM_TIMER posted by hand, lParam 0: DispatchMessageW ret=0 err=-, window procedure 1, id 98
+  the callback ran 0 time(s)
+timers: done
+<<< exit code=0
+>>> timers.exe filter
+== filter
+setup: the window created: yes
+PeekMessageW(h, WM_TIMER only, PM_NOREMOVE): ret=1 err=-, WM_TIMER 50
+PeekMessageW(h, WM_TIMER only, PM_NOREMOVE again): ret=1 err=-, WM_TIMER 50
+PeekMessageW(another window of the thread, any message): ret=0 err=-
+PeekMessageW(h, WM_USER to 0x7FFF): ret=0 err=-
+PeekMessageW(h, WM_NULL to WM_KEYLAST): ret=0 err=-
+PeekMessageW(NULL, WM_TIMER only, PM_REMOVE): ret=1 err=-, WM_TIMER 50
+PeekMessageW(NULL, WM_TIMER only, PM_REMOVE at once again): ret=0 err=-
+PeekMessageW((HWND)-1 (thread messages only), any message): ret=0 err=-
+PeekMessageW(NULL, any message, after KillTimer): ret=0 err=-
+timers: done
+<<< exit code=0
+>>> timers.exe elapse
+== elapse
+setup: the window created: yes
+SetTimer(h, 60, 0): the id err=-
+  a WM_TIMER within 200 ms: yes
+SetTimer(h, 60, 1): the id err=-
+  a WM_TIMER within 200 ms: yes
+SetTimer(h, 60, 0x7FFFFFFF): the id err=-
+  a WM_TIMER within 200 ms: no
+SetTimer(h, 60, 0x80000000): the id err=-
+  a WM_TIMER within 200 ms: yes
+SetTimer(h, 60, 0xFFFFFFFF): the id err=-
+  a WM_TIMER within 200 ms: yes
+timers: done
+<<< exit code=0
+>>> timers.exe rate
+== rate
+setup: the window created: yes
+a 50 ms timer read for 1 s: 15 to 21 WM_TIMER: yes; each message's time after the one before: yes
+timers: done
+<<< exit code=0

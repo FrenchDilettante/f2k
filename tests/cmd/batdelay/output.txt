@@ -1,5 +1,47 @@
 # F2K capture of batdelay (tests\capture.bat)
 
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:41:03.41
 >>> cmd /c batdelay.cmd
-(not captured yet: tests\capture.bat batdelay replaces this placeholder)
+== off by default
+[!BATDLA!]
+== setlocal enabledelayedexpansion
+[one] [one] [one]
+== a block
+percent [before] bang [after]
+== a for's command
+pass 1: [1]
+pass 2: [12]
+pass 3: [123]
+== if
+if: yes
+if GTR: yes
+== a for's set
+item [x]
+item [y]
+== the errorlevel
+percent 0 bang 3
+== edits
+[bcd] [ab-ef] [ef]
+== undefined and lone bangs
+[] [a]
+== carets
+[!BATDLA!]
+[after]
+"[!BATDLA!]"
+[ab] [cd] after
+[a^b] [cd] no bang
+== a for /f value with a bang and a caret
+[ab]
+[xc]
+== nested setlocal disabledelayedexpansion
+nested off: [!BATDLA!]
+back on: [after]
+== after endlocal
+[!BATDLA!]
+== cmd /v:on
+[v] [!BATDLNONE!]
+[!BATDLG!]
+[v]
 <<< exit code=0

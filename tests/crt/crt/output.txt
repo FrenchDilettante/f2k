@@ -1,8 +1,8 @@
 # F2K capture of crt (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/24/2026 15:28:15.46
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:59.02
 crt F2KT-SOURCE-CRC=0xBB3C0BE5
 >>> crt.exe args one "two words" back\slash "tail\\" a\\\"b "q\"uote" "" x"y z"w
 == args

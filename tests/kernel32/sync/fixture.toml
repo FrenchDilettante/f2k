@@ -1,5 +1,5 @@
 # sync: one test per block of the real-machine capture (output.txt); see tests/README.md.
-description = "sync - synchronization objects and waits (sync.c, /MT): events, semaphores, mutexes, multi-object waits, user APCs, critical sections, interlocked operations, handle duplication and closing, the original pingpong, and threads terminated inside waits on named events (whether the names outlive them)."
+description = "sync - synchronization objects and waits (sync.c, /MT): events, semaphores, mutexes, multi-object waits, user APCs, critical sections, interlocked operations, handle duplication and closing, the original pingpong, and threads terminated inside waits on named events (whether the names outlive them), and names outside the ANSI code page."
 kind = "sectioned"
 gate = true
 
@@ -151,6 +151,21 @@ waitleak = [
     "kernel32.SetLastError",
     "ntdll.NtSignalAndWaitForSingleObject",
     "ntdll.NtTerminateThread",
+]
+unicode = [
+    "kernel32.SetLastError",
+    "kernel32.CreateEventA",
+    "kernel32.CreateEventW",
+    "kernel32.OpenEventW",
+    "kernel32.SetEvent",
+    "kernel32.CreateMutexW",
+    "kernel32.OpenMutexW",
+    "kernel32.CreateSemaphoreW",
+    "ntdll.NtCreateEvent",
+    "ntdll.NtOpenEvent",
+    "ntdll.NtCreateMutant",
+    "ntdll.NtOpenMutant",
+    "ntdll.NtCreateSemaphore",
 ]
 access = [
     "kernel32.GetCurrentProcess",

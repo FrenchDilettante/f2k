@@ -106,6 +106,20 @@
  *             first such printed in hex); LoadBitmapA's pixels the same
  *             or not. Fixed resources, the same on any machine with the
  *             default metrics and colors
+ *   stockobj  GetObjectW/A of every stock object GetStockObject names:
+ *             the fonts' LOGFONTW (LOGFONTA the same, its face narrow),
+ *             the pens' LOGPEN, the brushes' LOGBRUSH, the palette's
+ *             entry count, each with its size for no buffer; short
+ *             buffers (a font's, a pen's, a stock and a solid brush's,
+ *             the palette's), larger ones and a negative size
+ *   obmclose  OBM_CLOSE's pixels as colors, which obm prints only as
+ *             '?' past the first: LoadBitmapW(NULL, OBM_CLOSE) read back
+ *             through GetDIBits as a 24-bit top-down DIB, one line a row,
+ *             each pixel RRGGBB, and how many are not gray; whether the
+ *             screen keeps 8 bits a channel (a 15 or 16-bit screen would
+ *             round the colors the bitmap holds); LoadImageW of it with
+ *             LR_CREATEDIBSECTION, its depth and its pixels against
+ *             LoadBitmapW's
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat bitmaps):
  *   rc bitmaps.rc
@@ -2172,6 +2186,212 @@ static void sec_obm(void)
     obm_rows("OBM_RGARROW", OBM_RGARROW);
 }
 
+/* --- stockobj ------------------------------------------------------ */
+
+static const struct {
+    const char *name;
+    int index;
+} stock_fonts[] = {
+    { "OEM_FIXED_FONT", OEM_FIXED_FONT },
+    { "ANSI_FIXED_FONT", ANSI_FIXED_FONT },
+    { "ANSI_VAR_FONT", ANSI_VAR_FONT },
+    { "SYSTEM_FONT", SYSTEM_FONT },
+    { "DEVICE_DEFAULT_FONT", DEVICE_DEFAULT_FONT },
+    { "SYSTEM_FIXED_FONT", SYSTEM_FIXED_FONT },
+    { "DEFAULT_GUI_FONT", DEFAULT_GUI_FONT },
+}, stock_pens[] = {
+    { "WHITE_PEN", WHITE_PEN },
+    { "BLACK_PEN", BLACK_PEN },
+    { "NULL_PEN", NULL_PEN },
+}, stock_brushes[] = {
+    { "WHITE_BRUSH", WHITE_BRUSH },
+    { "LTGRAY_BRUSH", LTGRAY_BRUSH },
+    { "GRAY_BRUSH", GRAY_BRUSH },
+    { "DKGRAY_BRUSH", DKGRAY_BRUSH },
+    { "BLACK_BRUSH", BLACK_BRUSH },
+    { "NULL_BRUSH", NULL_BRUSH },
+};
+
+/* GetObjectW of `h` with no buffer: its answer. */
+static int null_size(HGDIOBJ h)
+{
+    return GetObjectW(h, 0, NULL);
+}
+
+static void sec_stockobj(void)
+{
+    LOGFONTW lfw;
+    LOGFONTA lfa;
+    LOGPEN lp;
+    LOGBRUSH lb;
+    WORD entries;
+    BYTE buf[256];
+    /* GetObject with a size of -1 takes no limit and writes the whole object
+     * (356 bytes for SYSTEM_FONT on Windows 2000): its own, larger buffer. */
+    static BYTE big[4096];
+    char face[LF_FACESIZE];
+    HGDIOBJ h;
+    int i, n, na;
+
+    for (i = 0; i < sizeof stock_fonts / sizeof stock_fonts[0]; i++) {
+        h = GetStockObject(stock_fonts[i].index);
+        memset(&lfw, 0xCC, sizeof lfw);
+        arm();
+        n = GetObjectW(h, sizeof lfw, &lfw);
+        line("%s: ret=%d err=%s h=%ld w=%ld esc=%ld or=%ld wt=%ld ius=%u%u%u cs=%u op=%u cp=%u"
+             " q=%u pf=0x%02X face=%s", stock_fonts[i].name, n, le(), (long)lfw.lfHeight,
+             (long)lfw.lfWidth, (long)lfw.lfEscapement, (long)lfw.lfOrientation,
+             (long)lfw.lfWeight, lfw.lfItalic, lfw.lfUnderline, lfw.lfStrikeOut, lfw.lfCharSet,
+             lfw.lfOutPrecision, lfw.lfClipPrecision, lfw.lfQuality, lfw.lfPitchAndFamily,
+             wsn(lfw.lfFaceName, -1));
+        memset(&lfa, 0xCC, sizeof lfa);
+        na = GetObjectA(h, sizeof lfa, &lfa);
+        WideCharToMultiByte(CP_ACP, 0, lfw.lfFaceName, -1, face, sizeof face, NULL, NULL);
+        line("  0, NULL: %d; GetObjectA: ret=%d, 0, NULL: %d; the same, face narrow: %s",
+             null_size(h), na, GetObjectA(h, 0, NULL),
+             yesno(memcmp(&lfa, &lfw, 28) == 0 && strcmp(lfa.lfFaceName, face) == 0));
+    }
+    for (i = 0; i < sizeof stock_pens / sizeof stock_pens[0]; i++) {
+        h = GetStockObject(stock_pens[i].index);
+        memset(&lp, 0xCC, sizeof lp);
+        arm();
+        n = GetObjectW(h, sizeof lp, &lp);
+        line("%s: ret=%d err=%s style=%u width=%ld,%ld color=0x%08lX; 0, NULL: %d",
+             stock_pens[i].name, n, le(), lp.lopnStyle, (long)lp.lopnWidth.x,
+             (long)lp.lopnWidth.y, (unsigned long)lp.lopnColor, null_size(h));
+    }
+    for (i = 0; i < sizeof stock_brushes / sizeof stock_brushes[0]; i++) {
+        h = GetStockObject(stock_brushes[i].index);
+        memset(&lb, 0xCC, sizeof lb);
+        arm();
+        n = GetObjectA(h, sizeof lb, &lb);
+        line("%s: ret=%d err=%s style=%u color=0x%08lX hatch=%ld; 0, NULL: %d",
+             stock_brushes[i].name, n, le(), lb.lbStyle, (unsigned long)lb.lbColor,
+             (long)lb.lbHatch, null_size(h));
+    }
+    h = GetStockObject(DEFAULT_PALETTE);
+    entries = 0xCCCC;
+    arm();
+    n = GetObjectW(h, sizeof entries, &entries);
+    line("DEFAULT_PALETTE: ret=%d err=%s entries=%u; 0, NULL: %d", n, le(), entries,
+         null_size(h));
+
+    line("-- short and long buffers");
+    memset(buf, 0xCC, sizeof buf);
+    arm();
+    n = GetObjectW(GetStockObject(SYSTEM_FONT), 6, buf);
+    line("GetObjectW(SYSTEM_FONT, 6): ret=%d err=%s bytes %02X %02X %02X %02X %02X %02X %02X",
+         n, le(), buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6]);
+    memset(buf, 0xCC, sizeof buf);
+    arm();
+    n = GetObjectA(GetStockObject(DEFAULT_GUI_FONT), 30, buf);
+    line("GetObjectA(DEFAULT_GUI_FONT, 30): ret=%d err=%s byte 30 untouched: %s", n, le(),
+         yesno(buf[30] == 0xCC));
+    arm();
+    n = GetObjectW(GetStockObject(ANSI_VAR_FONT), sizeof buf, buf);
+    line("GetObjectW(ANSI_VAR_FONT, 256): ret=%d err=%s", n, le());
+    memset(buf, 0xCC, sizeof buf);
+    arm();
+    n = GetObjectW(GetStockObject(BLACK_PEN), sizeof(LOGPEN) - 1, buf);
+    line("GetObjectW(BLACK_PEN, sizeof(LOGPEN) - 1): ret=%d err=%s untouched: %s", n, le(),
+         yesno(buf[0] == 0xCC));
+    arm();
+    n = GetObjectW(GetStockObject(WHITE_PEN), sizeof buf, buf);
+    line("GetObjectW(WHITE_PEN, 256): ret=%d err=%s", n, le());
+    memset(buf, 0xCC, sizeof buf);
+    arm();
+    n = GetObjectW(GetStockObject(WHITE_BRUSH), sizeof(LOGBRUSH) - 1, buf);
+    line("GetObjectW(WHITE_BRUSH, sizeof(LOGBRUSH) - 1): ret=%d err=%s untouched: %s", n, le(),
+         yesno(buf[0] == 0xCC));
+    arm();
+    n = GetObjectW(GetStockObject(GRAY_BRUSH), sizeof buf, buf);
+    line("GetObjectW(GRAY_BRUSH, 256): ret=%d err=%s", n, le());
+    h = CreateSolidBrush(RGB(0x12, 0x34, 0x56));
+    memset(buf, 0xCC, sizeof buf);
+    arm();
+    n = GetObjectW(h, sizeof(LOGBRUSH) - 1, buf);
+    line("GetObjectW(CreateSolidBrush's, sizeof(LOGBRUSH) - 1): ret=%d err=%s untouched: %s", n,
+         le(), yesno(buf[0] == 0xCC));
+    DeleteObject(h);
+    memset(buf, 0xCC, sizeof buf);
+    arm();
+    n = GetObjectW(GetStockObject(DEFAULT_PALETTE), 1, buf);
+    line("GetObjectW(DEFAULT_PALETTE, 1): ret=%d err=%s untouched: %s", n, le(),
+         yesno(buf[0] == 0xCC));
+    arm();
+    n = GetObjectW(GetStockObject(SYSTEM_FONT), -1, big);
+    line("GetObjectW(SYSTEM_FONT, -1): ret=%d err=%s", n, le());
+}
+
+/* --- obmclose ---------------------------------------------------- */
+
+static void sec_obmclose(void)
+{
+    HBITMAP w, d;
+    BITMAP bm;
+    DIBSECTION ds;
+    HDC screen;
+    char row[OBM_MOST_W * 7 + 1];
+    int stride, n, nd, x, y, at, bpp, odd = 0;
+    const BYTE *p;
+    const char *e;
+
+    screen = GetDC(NULL);
+    bpp = GetDeviceCaps(screen, BITSPIXEL) * GetDeviceCaps(screen, PLANES);
+    ReleaseDC(NULL, screen);
+    line("the screen keeps 8 bits a channel (24 or 32 bits a pixel): %s", yesno(bpp >= 24));
+    arm();
+    w = LoadBitmapW(NULL, MAKEINTRESOURCEW(OBM_CLOSE));
+    e = le();
+    line("LoadBitmapW(NULL, OBM_CLOSE): non-NULL %s err=%s", yesno(w != NULL), e);
+    if (w == NULL) {
+        return;
+    }
+    ZeroMemory(&bm, sizeof bm);
+    GetObjectW(w, sizeof bm, &bm);
+    line("  size %ldx%ld", (long)bm.bmWidth, (long)bm.bmHeight);
+    if (bm.bmWidth <= 0 || bm.bmHeight <= 0 || bm.bmWidth > OBM_MOST_W || bm.bmHeight > OBM_MOST_H) {
+        line("  (pixels not printed)");
+        DeleteObject(w);
+        return;
+    }
+    stride = (bm.bmWidth * 3 + 3) & ~3;
+    arm();
+    n = read24(w, bm.bmWidth, bm.bmHeight, obm_bits);
+    e = le();
+    line("  GetDIBits(24 bits, top-down): ret=%d err=%s", n, e);
+    for (y = 0; y < bm.bmHeight; y++) {
+        at = 0;
+        for (x = 0; x < bm.bmWidth; x++) {
+            p = obm_bits + y * stride + x * 3;
+            at += sprintf(row + at, "%s%02X%02X%02X", x == 0 ? "" : " ", p[2], p[1], p[0]);
+            if (shade(p) == '?') {
+                odd++;
+            }
+        }
+        line("  %02d: %s", y, row);
+    }
+    line("  %d pixels not gray", odd);
+
+    arm();
+    d = (HBITMAP)LoadImageW(NULL, MAKEINTRESOURCEW(OBM_CLOSE), IMAGE_BITMAP, 0, 0,
+                            LR_CREATEDIBSECTION);
+    e = le();
+    line("LoadImageW(NULL, OBM_CLOSE, IMAGE_BITMAP, 0, 0, LR_CREATEDIBSECTION): non-NULL %s err=%s",
+         yesno(d != NULL), e);
+    if (d != NULL) {
+        ZeroMemory(&ds, sizeof ds);
+        n = GetObjectW(d, sizeof ds, &ds);
+        nd = read24(d, bm.bmWidth, bm.bmHeight, obm_bits_a);
+        line("  a DIB section: %s, %d bits; its pixels LoadBitmapW's: %s",
+             yesno(n == sizeof ds), (int)ds.dsBm.bmBitsPixel,
+             yesno(nd == bm.bmHeight && memcmp(obm_bits, obm_bits_a,
+                                               (size_t)(stride * bm.bmHeight)) == 0));
+        DeleteObject(d);
+    }
+    DeleteObject(w);
+}
+
 static const section_t sections[] = {
     { "compat", sec_compat, F2KT_ALWAYS },
     { "create", sec_create, F2KT_ALWAYS },
@@ -2186,6 +2406,8 @@ static const section_t sections[] = {
     { "objtype", sec_objtype, F2KT_ALWAYS },
     { "load", sec_load, F2KT_ALWAYS },
     { "obm", sec_obm, F2KT_ALWAYS },
+    { "stockobj", sec_stockobj, F2KT_ALWAYS },
+    { "obmclose", sec_obmclose, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

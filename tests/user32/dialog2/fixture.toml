@@ -1,0 +1,75 @@
+# dialog2: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat dialog2, tests\capture.bat dialog2).
+# Its templates are built in memory; the exports F2K lacks are reached through
+# GetProcAddress, so a missing one prints "<Name>: absent" and fails its own block only.
+description = "dialog2 - in-memory dialog templates and the dialog manager's remaining exports: CreateDialogIndirectParamW/A over DLGTEMPLATE without and with DS_SETFONT, an unregistered control class with and without DS_NOFAILCREATE (indirect), a DLGTEMPLATEEX (ex), the undocumented CreateDialogIndirectParamAorW and DialogBoxIndirectParamAorW's flags (aorw), DialogBoxIndirectParamW/A (modal), GetNextDlgTabItem (tabs) and GetNextDlgGroupItem (groups) over tab stops, groups, disabled and hidden controls, SendDlgItemMessageA (senditem), the unsuffixed IsDialogMessage (alias), MessageBoxExW/A's language (msgboxex) and MessageBoxIndirectW/A (msgboxind)."
+kind = "sectioned"
+gate = true
+# The modal dialogs end themselves at once; each message box takes its watcher a tick or two.
+timeout = 60
+
+[pending]
+# What F2K's user32 lacks (catalogued only in userland/user32/exports.toml); drop each entry once
+# its block passes.
+indirect = "F2K's user32 lacks CreateDialogIndirectParamA (catalogued only)"
+ex = "F2K's user32 lacks CreateDialogIndirectParamA (catalogued only); DLGTEMPLATEEX through CreateDialogIndirectParamW is uncaptured"
+aorw = "F2K's user32 lacks CreateDialogIndirectParamAorW and DialogBoxIndirectParamAorW (catalogued only)"
+modal = "DialogBoxIndirectParamW is a stub and DialogBoxIndirectParamA not yet implemented (catalogued only)"
+tabs = "F2K's user32 lacks GetNextDlgTabItem (catalogued only)"
+groups = "F2K's user32 lacks GetNextDlgGroupItem (catalogued only)"
+senditem = "F2K's user32 lacks SendDlgItemMessageA (catalogued only)"
+alias = "F2K's user32 lacks IsDialogMessage, the unsuffixed alias of IsDialogMessageA (catalogued only)"
+msgboxex = "F2K's user32 lacks MessageBoxExW and MessageBoxExA (catalogued only)"
+msgboxind = "F2K's user32 lacks MessageBoxIndirectW and MessageBoxIndirectA (catalogued only)"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers around them (the watcher thread, the
+# printing of a dialog's controls).
+indirect = [
+    "user32.CreateDialogIndirectParamW",
+    "user32.CreateDialogIndirectParamA",
+    "user32.IsWindowUnicode",
+]
+ex = [
+    "user32.CreateDialogIndirectParamW",
+    "user32.CreateDialogIndirectParamA",
+    "user32.GetDlgItem",
+]
+aorw = [
+    "user32.CreateDialogIndirectParamAorW",
+    "user32.DialogBoxIndirectParamAorW",
+    "user32.EndDialog",
+    "user32.IsWindowUnicode",
+]
+modal = [
+    "user32.DialogBoxIndirectParamW",
+    "user32.DialogBoxIndirectParamA",
+    "user32.EndDialog",
+]
+tabs = [
+    "user32.CreateDialogIndirectParamW",
+    "user32.GetNextDlgTabItem",
+]
+groups = [
+    "user32.CreateDialogIndirectParamW",
+    "user32.GetNextDlgGroupItem",
+]
+senditem = [
+    "user32.SendDlgItemMessageA",
+    "user32.SendDlgItemMessageW",
+]
+alias = [
+    "user32.IsDialogMessage",
+    "user32.IsDialogMessageA",
+    "user32.SetFocus",
+    "user32.GetFocus",
+]
+msgboxex = [
+    "user32.MessageBoxExW",
+    "user32.MessageBoxExA",
+]
+msgboxind = [
+    "user32.MessageBoxIndirectW",
+    "user32.MessageBoxIndirectA",
+]

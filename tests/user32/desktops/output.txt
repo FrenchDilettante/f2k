@@ -1,0 +1,158 @@
+# F2K capture of desktops (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:39:55.02
+desktops F2KT-SOURCE-CRC=0x24CAD29D
+>>> desktops.exe enumsta
+== enumsta
+EnumWindowStationsA: ret=1 err=-
+  listed: WinSta0 yes; any names: yes; an empty one: no
+EnumWindowStationsW: ret=1 err=-
+  listed: WinSta0 yes; any names: yes; an empty one: no
+desktops: done
+<<< exit code=0
+>>> desktops.exe enumdesk
+== enumdesk
+EnumDesktopsA(the process's window station): ret=1 err=-
+  listed: Default yes, Winlogon yes, Disconnect no; any names: yes; an empty one: no
+EnumDesktopsW(the process's window station): ret=1 err=-
+  listed: Default yes, Winlogon yes, Disconnect no; any names: yes; an empty one: no
+EnumDesktopsA(NULL): ret=1 err=-
+  listed: Default no, Winlogon no, Disconnect no; any names: yes; an empty one: no
+EnumDesktopsA(a bogus handle): ret=0 err=6, names listed no
+EnumDesktopsW(a bogus handle): ret=0 err=6, names listed no
+desktops: done
+<<< exit code=0
+>>> desktops.exe opensta
+== opensta
+OpenWindowStationA(WinSta0): non-NULL yes err=-
+  its name WinSta0, the process's handle no
+OpenWindowStationW(WinSta0): non-NULL yes err=-
+  its name WinSta0, the A call's handle no
+OpenWindowStationA(F2KNoSuchStation): non-NULL no err=2
+CloseWindowStation(the A handle): ret=1 err=-
+CloseWindowStation(it, again): ret=0 err=6
+CloseWindowStation(the W handle): ret=1 err=-
+CloseWindowStation(the process's window station): ret=0 err=-
+  GetProcessWindowStation after: non-NULL yes, its name WinSta0
+desktops: done
+<<< exit code=0
+>>> desktops.exe opendesk
+== opendesk
+OpenDesktopA(Default): non-NULL yes err=-
+  its name Default, the thread's handle no
+OpenDesktopW(Default): non-NULL yes err=-
+  its name Default, the A call's handle no
+OpenDesktopA(Winlogon): non-NULL no err=5
+OpenDesktopA(Disconnect): non-NULL no err=2
+OpenDesktopA(F2KNoSuchDesktop): non-NULL no err=2
+CloseDesktop(the A handle): ret=1 err=-
+CloseDesktop(it, again): ret=0 err=6
+CloseDesktop(the W handle): ret=1 err=-
+CloseDesktop(the thread's desktop): ret=0 err=170
+  GetThreadDesktop after: non-NULL yes, its name Default
+desktops: done
+<<< exit code=0
+>>> desktops.exe input
+== input
+OpenInputDesktop: non-NULL yes err=-
+  its name Default, the thread's desktop's Default, the thread's handle no
+SwitchDesktop(the input desktop): ret=1 err=-
+SwitchDesktop(NULL): ret=0 err=6
+CloseDesktop(the input desktop's handle): ret=1 err=-
+desktops: done
+<<< exit code=0
+>>> desktops.exe create
+== create
+CreateDesktopA(F2KDesk1): non-NULL yes err=-
+  its name F2KDesk1, the thread's handle no
+  its UOI_FLAGS: ret=1 err=- fInherit=0 fReserved=0 dwFlags=0x0
+EnumDesktopsA(the process's window station): ret=1 err=-
+  listed: F2KDesk1 yes, Default yes; any names: yes; an empty one: no
+CreateDesktopW(F2KDesk1 again): non-NULL yes err=-
+  its name F2KDesk1, the first handle no
+OpenDesktopA(F2KDesk1): non-NULL yes err=-
+SetUserObjectInformationA(it, UOI_FLAGS, fInherit 1): ret=1 err=-
+  read back UOI_FLAGS: ret=1 err=- fInherit=1 fReserved=0 dwFlags=0x0
+SetUserObjectInformationW(it, UOI_FLAGS, fInherit 0): ret=1 err=-
+  read back UOI_FLAGS: ret=1 err=- fInherit=0 fReserved=0 dwFlags=0x0
+SetUserObjectInformationA(it, UOI_FLAGS, one byte short): ret=0 err=13
+SetUserObjectInformationA(it, UOI_NAME): ret=0 err=87
+  its name after F2KDesk1
+EnumDesktopWindows(F2KDesk1): ret=0 err=- windows=0
+CloseDesktop(the opened handle): ret=1 err=-
+CloseDesktop(the W call's handle): ret=1 err=-
+CloseDesktop(the A call's handle): ret=1 err=-
+OpenDesktopA(F2KDesk1) once every handle is closed: non-NULL no err=2
+desktops: done
+<<< exit code=0
+>>> desktops.exe thread
+== thread
+the main thread's hidden window: non-NULL yes
+CreateDesktopA(F2KDesk1): non-NULL yes err=-
+SetThreadDesktop(F2KDesk1) from the main thread, which has a window: ret=0 err=170
+  the thread's desktop after Default
+SetThreadDesktop(its own desktop) from the main thread: ret=0 err=170
+a new thread's SetThreadDesktop(F2KDesk1): ret=1 err=-
+  its GetThreadDesktop after: the handle given yes, its name F2KDesk1
+  a hidden window made there: non-NULL yes err=-
+EnumDesktopWindows(F2KDesk1): ret=1 err=-, the new thread's window yes, the main thread's no
+EnumDesktopWindows(the main thread's desktop): ret=1 err=-, the new thread's window no, the main thread's yes
+EnumDesktopWindows(NULL): ret=1 err=-, the new thread's window no, the main thread's yes
+SetThreadDesktop(NULL): ret=0 err=6
+CloseDesktop(F2KDesk1) once the thread has ended: ret=1 err=-
+desktops: done
+<<< exit code=0
+>>> desktops.exe station
+== station
+CreateWindowStationA(F2KSta1): non-NULL yes err=0
+  its name F2KSta1
+  its UOI_FLAGS: ret=1 err=- fInherit=0 fReserved=0 dwFlags=0x0
+EnumWindowStationsA: ret=1 err=-
+  listed: F2KSta1 yes, WinSta0 yes; any names: yes; an empty one: no
+CreateWindowStationW(F2KSta1 again): non-NULL yes err=0
+  its name F2KSta1, the first handle no
+SetProcessWindowStation(F2KSta1): ret=1 err=-
+  GetProcessWindowStation after: F2KSta1's handle yes, its name F2KSta1
+  the thread's desktop after: Default
+CreateDesktopA(F2KDesk2) there: non-NULL yes err=-
+  its name F2KDesk2
+SetProcessWindowStation(the original): ret=1 err=-
+  GetProcessWindowStation after: the original handle yes, its name WinSta0
+a new thread's SetThreadDesktop(F2KDesk2, on F2KSta1): ret=1 err=-
+  its desktop after: F2KDesk2
+SetProcessWindowStation(NULL): ret=0 err=-
+CloseDesktop(F2KDesk2): ret=1 err=-
+CloseWindowStation(F2KSta1): ret=1 err=-
+desktops: done
+<<< exit code=0
+>>> desktops.exe security
+== security
+GetUserObjectSecurity(the window station, DACL, size query): ret=0 err=122, a size yes
+GetUserObjectSecurity(the window station, DACL): ret=1 err=-, a DACL yes, an owner no
+GetUserObjectSecurity(the window station, owner, size query): ret=0 err=122, a size yes
+GetUserObjectSecurity(the window station, owner): ret=1 err=-, a DACL no, an owner yes
+GetUserObjectSecurity(the thread's desktop, DACL, size query): ret=0 err=122, a size yes
+GetUserObjectSecurity(the thread's desktop, DACL): ret=1 err=-, a DACL yes, an owner no
+GetUserObjectSecurity(the thread's desktop, owner, size query): ret=0 err=122, a size yes
+GetUserObjectSecurity(the thread's desktop, owner): ret=1 err=-, a DACL no, an owner yes
+CreateDesktopA(F2KDesk1): non-NULL yes err=-
+GetUserObjectSecurity(F2KDesk1, DACL, size query): ret=0 err=122, a size yes
+GetUserObjectSecurity(F2KDesk1, DACL): ret=1 err=-, a DACL yes, an owner no
+SetUserObjectSecurity(F2KDesk1, DACL, its own DACL): ret=1 err=-
+GetUserObjectSecurity(a bogus handle): ret=0 err=6
+SetUserObjectSecurity(a bogus handle): ret=0 err=6
+desktops: done
+<<< exit code=0
+>>> desktops.exe gui
+== gui
+a first hidden window: non-NULL yes
+GetGuiResources(GR_USEROBJECTS): nonzero yes err=-
+  after a second window: +1; after its destruction: +0
+GetGuiResources(GR_GDIOBJECTS): ret nonzero yes err=-
+  after CreatePen: +1; after DeleteObject: +0
+GetGuiResources(flag 2): ret=0 err=87
+GetGuiResources(NULL, GR_USEROBJECTS): ret=0 err=87
+desktops: done
+<<< exit code=0

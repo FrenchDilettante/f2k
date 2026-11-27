@@ -1,0 +1,94 @@
+# keymap: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat keymap, tests\capture.bat keymap).
+#
+# The VM's layout set is unknown; nothing prints it: the layout list prints as relations, and the
+# mapping tables print against the US layout (kbdus.dll, on every Windows 2000), loaded by the
+# program with KLF_NOTELLSHELL. A section unloads it only when it was not loaded before, so the
+# user's own layouts are never unloaded. GetKeyboardType's values are the VM's keyboard. inject's
+# F24 goes to the foreground window: leave the desktop alone, the workstation unlocked.
+description = "keymap - keyboard layouts and key mapping: GetKeyboardLayout and GetKeyboardLayoutList as relations (layouts); LoadKeyboardLayoutA/W of US, a bogus id, UnloadKeyboardLayout (load); ActivateKeyboardLayout to US and back with GetKeyboardLayoutNameA/W (activate); MapVirtualKey(Ex)A/W's four map types as sums and notable rows (mapvk); VkKeyScan(Ex)A/W over 0x00-0x7F (vkscan); ToAscii(Ex) and ToUnicode(Ex) under Shift, Ctrl, Ctrl+Alt, Caps Lock and Num Lock (toascii); GetKeyNameTextA/W with the extended and don't-care bits (keyname); OemKeyScan (oemscan); GetKeyboardType and GetKBCodePage (kbtype); GetLastInputInfo, keybd_event of F24 and BlockInput(FALSE) (inject)."
+kind = "sectioned"
+gate = true
+
+[pending]
+# F2K's user32 implements GetKeyboardLayout (US, 0x04090409, for every thread) and no other export
+# here: each is catalogued only (userland/user32/exports.toml), so its section prints
+# "<name>: absent". The kbdus tables exist in rtl::console::layout (win32k's input.rs uses them).
+layouts = "F2K's user32 lacks GetKeyboardLayoutList"
+load = "F2K's user32 lacks LoadKeyboardLayoutA/W and UnloadKeyboardLayout (one layout, US, and no layout list)"
+activate = "F2K's user32 lacks ActivateKeyboardLayout and GetKeyboardLayoutNameA/W"
+mapvk = "F2K's user32 lacks MapVirtualKeyA/W/ExA/ExW (lookups over rtl::console::layout's kbdus tables to write)"
+vkscan = "F2K's user32 lacks VkKeyScanA/W/ExA/ExW"
+toascii = "F2K's user32 lacks ToAscii(Ex) and ToUnicode(Ex) (TranslateMessage's WM_CHAR logic exists in win32k)"
+keyname = "F2K's user32 lacks GetKeyNameTextA/W (and the layout's key-name tables)"
+oemscan = "F2K's user32 lacks OemKeyScan"
+kbtype = "F2K's user32 lacks GetKeyboardType and GetKBCodePage"
+inject = "F2K's user32 lacks GetLastInputInfo, keybd_event and BlockInput"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers around them.
+layouts = [
+    "user32.GetKeyboardLayout",
+    "user32.GetKeyboardLayoutList",
+]
+load = [
+    "user32.GetKeyboardLayoutList",
+    "user32.LoadKeyboardLayoutA",
+    "user32.LoadKeyboardLayoutW",
+    "user32.UnloadKeyboardLayout",
+    "user32.GetKeyboardLayout",
+]
+activate = [
+    "user32.ActivateKeyboardLayout",
+    "user32.GetKeyboardLayout",
+    "user32.GetKeyboardLayoutNameA",
+    "user32.GetKeyboardLayoutNameW",
+    "user32.LoadKeyboardLayoutA",
+    "user32.UnloadKeyboardLayout",
+]
+mapvk = [
+    "user32.MapVirtualKeyA",
+    "user32.MapVirtualKeyW",
+    "user32.MapVirtualKeyExA",
+    "user32.MapVirtualKeyExW",
+    "user32.GetKeyboardLayout",
+]
+vkscan = [
+    "user32.VkKeyScanA",
+    "user32.VkKeyScanW",
+    "user32.VkKeyScanExA",
+    "user32.VkKeyScanExW",
+]
+toascii = [
+    "user32.ToAscii",
+    "user32.ToAsciiEx",
+    "user32.ToUnicode",
+    "user32.ToUnicodeEx",
+    "user32.MapVirtualKeyA",
+    "user32.MapVirtualKeyExA",
+]
+keyname = [
+    "user32.GetKeyNameTextA",
+    "user32.GetKeyNameTextW",
+    "user32.ActivateKeyboardLayout",
+]
+oemscan = [
+    "user32.OemKeyScan",
+    "user32.ActivateKeyboardLayout",
+]
+kbtype = [
+    "user32.GetKeyboardType",
+    "user32.GetKBCodePage",
+]
+inject = [
+    "user32.GetLastInputInfo",
+    "user32.keybd_event",
+    "user32.GetAsyncKeyState",
+    "user32.BlockInput",
+]
+
+[masks]
+# Captured with a second input locale installed (internat.exe running): whether loading the US
+# layout leaves ERROR_ALREADY_EXISTS depends on the layouts already loaded, so the error is masked.
+load = ['LoadKeyboardLayoutA("00000409", KLF_NOTELLSHELL): non-NULL yes err=*']

@@ -1,0 +1,25 @@
+# memory: blocks the capture script cannot take, merged over output.txt by tests/f2kboot.py
+# (a block here replaces the captured block with the same command line, or adds one).
+#
+# memory.exe largemem: a machine with 3 GiB of RAM's answer (the 2 GiB clamp of GlobalMemoryStatus
+# for a program not linked /LARGEADDRESSAWARE), which the usual capture VM cannot give: the section
+# lists itself as interactive, so tests\capture.bat leaves it out. Run "memory.exe largemem" by hand
+# on a Windows 2000 VM with 3 GiB of RAM and its default paging file, and put its block here.
+# Until then the block below is a prediction. F2K never runs it (fixture.toml's skip): its boots
+# have 256 MiB.
+>>> memory.exe largemem
+== largemem
+this program linked /LARGEADDRESSAWARE: no
+GlobalMemoryStatusEx: ret=1 err=- length 64
+GlobalMemoryStatus: length 32
+total physical: dwTotalPhys 0x7FFFFFFF, ullTotalPhys 2 to 4 GiB, equal no
+available physical: dwAvailPhys 0x7FFFFFFF, ullAvailPhys 2 to 4 GiB
+total page file: dwTotalPageFile 0xFFFFFFFF, ullTotalPageFile 4 GiB or more, equal no
+available page file: dwAvailPageFile 0xFFFFFFFF, ullAvailPageFile 4 GiB or more
+dwAvailPhys plus dwAvailPageFile below 2 GiB: no
+total virtual: dwTotalVirtual 0x7FFE0000, ullTotalVirtual the same yes
+available virtual: dwAvailVirtual below 0x7FFFFFFF, ullAvailVirtual below 2 GiB, ullAvailExtendedVirtual 0 yes
+memory load at most 100: yes and yes
+NtQuerySystemInformation(basic): 0x00000000, physical pages times the page size 2 to 4 GiB, ullTotalPhys's yes
+memory: done
+<<< exit code=0

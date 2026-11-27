@@ -5,8 +5,6 @@ kind = "sectioned"
 gate = true
 
 [pending]
-# Written ahead of the VM trip: output.txt holds a placeholder block until runtime.exe is rebuilt
-# (tests/build.bat runtime) and the block captured (tests/capture.bat runtime).
 envnull = "F2K's GetEnvironmentVariableW, SetEnvironmentVariableW and ExpandEnvironmentStringsW read a NULL name or source (a fault), where Windows 2000 answers an error; the A forms take NULL as an empty string"
 [masks]
 # The breakpoint record's second parameter is a stack address.

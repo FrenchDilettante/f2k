@@ -3,6 +3,12 @@ description = "threads - thread lifecycle and per-thread state (threads.c, /MT):
 kind = "sectioned"
 gate = true
 
+[pending]
+lateexit = "recaptured at 1 CPU: Windows 2000's TerminateThread of a thread blocked in a wait returns before the thread has ended (GetExitCodeThread STILL_ACTIVE, the wait WAIT_TIMEOUT at once); F2K's has ended it"
+suspterm = "recaptured at 1 CPU: a thread created suspended and terminated before it ever ran ends with STATUS_THREAD_IS_TERMINATING (0xC000004B) on Windows 2000, not TerminateThread's code; F2K's ends with the code (9)"
+open = "recaptured at 1 CPU: a child terminated through OpenThread's handle ends with STATUS_THREAD_IS_TERMINATING (0xC000004B) on Windows 2000, not TerminateThread's 44; F2K's ends with 44"
+priority = "recaptured at 1 CPU: the join of the section's last child times out on Windows 2000 (join: wait WAIT_TIMEOUT); F2K's child ends within the wait"
+
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
 # calls); scripts/compat.py derives each export's coverage from them.

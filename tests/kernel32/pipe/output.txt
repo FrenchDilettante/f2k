@@ -1,8 +1,8 @@
 # F2K capture of pipe (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Fri 11/20/2026 10:44:00.04
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:38:56.49
 pipe F2KT-SOURCE-CRC=0x02880D6E
 >>> pipe.exe create
 == create

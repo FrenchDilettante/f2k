@@ -1,0 +1,234 @@
+# F2K capture of combobox (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:12.46
+combobox F2KT-SOURCE-CRC=0x76331E1A
+>>> combobox.exe create
+== create
+the parent: made yes
+GetComboBoxInfo exported: yes
+CreateWindowExW("ComboBox", CBS_SIMPLE): non-NULL yes, class ComboBox, style low bits 0x201
+  its children: ComboLBox Edit
+  WM_GETDLGCODE: 0x81
+  GetComboBoxInfo: ret=1 err=- hwndCombo the combo, hwndItem a child of the combo (Edit)
+    hwndList: class ComboLBox, parent the combo, owner NULL, shown yes
+    stateButton 0x8000, rcButton empty yes, rcItem inside the client yes
+    the list's item height is the System font's tmHeight: yes
+CreateWindowExW("ComboBox", CBS_DROPDOWN): non-NULL yes, class ComboBox, style low bits 0x202
+  its children: Edit
+  WM_GETDLGCODE: 0x81
+  GetComboBoxInfo: ret=1 err=- hwndCombo the combo, hwndItem a child of the combo (Edit)
+    hwndList: class ComboLBox, parent the desktop, owner NULL, shown no
+    stateButton 0x0, rcButton empty no, rcItem inside the client yes
+    the list's item height is the System font's tmHeight: yes
+CreateWindowExW("ComboBox", CBS_DROPDOWNLIST): non-NULL yes, class ComboBox, style low bits 0x203
+  its children: none
+  WM_GETDLGCODE: 0x81
+  GetComboBoxInfo: ret=1 err=- hwndCombo the combo, hwndItem NULL ()
+    hwndList: class ComboLBox, parent the desktop, owner NULL, shown no
+    stateButton 0x0, rcButton empty no, rcItem inside the client yes
+    the list's item height is the System font's tmHeight: yes
+GetComboBoxInfo, cbSize 0: ret=0 err=87
+GetComboBoxInfo(the parent, no combo box): ret=0 err=1423
+GetComboBoxInfo(NULL): ret=0 err=1400
+combobox: done
+<<< exit code=0
+>>> combobox.exe items
+== items
+the parent: made yes
+CreateWindowExW("ComboBox", CBS_DROPDOWN): non-NULL yes
+CB_GETCOUNT, empty: ret=0 err=-
+CB_GETCURSEL, empty: ret=-1 err=-
+CB_ADDSTRING("pear"): ret=0 err=-
+CB_ADDSTRING("apple"): ret=1 err=-
+CB_INSERTSTRING(1, "banana"): ret=1 err=-
+CB_INSERTSTRING(-1, "Blueberry"): ret=3 err=-
+CB_INSERTSTRING(9, "fig"), past the end: ret=-1 err=1413
+  4 items: "pear" "banana" "apple" "Blueberry"
+CB_GETLBTEXTLEN(1): ret=6 err=-
+CB_GETLBTEXT(1), SendMessageW: ret=6 err=- text "banana"
+CB_GETLBTEXT(3), SendMessageA: ret=9 err=- text "Blueberry"
+CB_GETLBTEXT(9), no such item: ret=-1 err=1413
+CB_GETLBTEXTLEN(9): ret=-1 err=1413
+CB_FINDSTRING(-1, "b"): ret=1 err=-
+CB_FINDSTRING(1, "b"): ret=3 err=-
+CB_FINDSTRING(-1, "kiwi"): ret=-1 err=-
+CB_FINDSTRINGEXACT(-1, "APPLE"): ret=2 err=-
+CB_FINDSTRINGEXACT(-1, "app"): ret=-1 err=-
+CB_SETITEMDATA(2, 0x55): ret=1 err=-
+CB_GETITEMDATA(2): ret=85 err=-
+CB_GETITEMDATA(9): ret=-1 err=1413
+CB_SETCURSEL(2): ret=2 err=0
+  CB_GETCURSEL 2, the edit's text "apple"
+CB_SETCURSEL(9): ret=-1 err=0
+  CB_GETCURSEL 2, the edit's text "apple"
+CB_SETCURSEL(-1): ret=-1 err=-
+  CB_GETCURSEL -1, the edit's text ""
+CB_SELECTSTRING(-1, "pe"): ret=0 err=0
+  CB_GETCURSEL 0, the edit's text "pear"
+CB_SELECTSTRING(-1, "zz"): ret=-1 err=0
+  CB_GETCURSEL 0, the edit's text "pear"
+WM_SETTEXT("typed"): ret=1 err=0; CB_GETCURSEL 0, the edit's text "typed"
+CB_DELETESTRING(0): ret=3 err=-
+CB_DELETESTRING(9): ret=-1 err=1413
+  3 items: "banana" "apple" "Blueberry"
+CB_RESETCONTENT: ret=1 err=-
+  CB_GETCOUNT 0, the edit's text ""
+  notifications: none
+CreateWindowExW("ComboBox", CBS_DROPDOWNLIST | CBS_SORT): non-NULL yes
+CB_ADDSTRING("pear"): ret=0 err=-
+CB_ADDSTRING("apple"): ret=0 err=-
+CB_ADDSTRING("Banana"): ret=1 err=-
+  3 items: "apple" "Banana" "pear"
+WM_GETTEXT, no selection: ""
+CB_SETCURSEL(1): ret=1 err=-
+WM_GETTEXT: "Banana", WM_GETTEXTLENGTH 6
+WM_SETTEXT("pear"): ret=-1 err=1422
+  CB_GETCURSEL 1, WM_GETTEXT "Banana"
+WM_SETTEXT("kiwi"): ret=-1 err=1422
+  CB_GETCURSEL 1, WM_GETTEXT "Banana"
+  notifications: none
+combobox: done
+<<< exit code=0
+>>> combobox.exe drop
+== drop
+the parent: made yes
+the parent: foreground yes
+CreateWindowExW("ComboBox", CBS_SIMPLE), 150x120, 3 items: non-NULL yes
+CB_GETDROPPEDCONTROLRECT: ret=1 err=-; its left, top and right the combo's yes yes yes, its height 120
+  the combo's own height less than 120: no
+CB_GETDROPPEDSTATE: ret=1 err=-
+CB_SHOWDROPDOWN(TRUE): ret=1 err=-
+  CB_GETDROPPEDSTATE 1, the list shown yes
+  notifications: none
+CB_SHOWDROPDOWN(TRUE) again: ret=1 err=-
+  notifications: none
+CB_SHOWDROPDOWN(FALSE): ret=1 err=-
+  CB_GETDROPPEDSTATE 1, the list shown yes
+  notifications: none
+CB_SHOWDROPDOWN(FALSE) again: ret=1 err=-
+  notifications: none
+CreateWindowExW("ComboBox", CBS_DROPDOWN), 150x120, 3 items: non-NULL yes
+CB_GETDROPPEDCONTROLRECT: ret=1 err=-; its left, top and right the combo's yes yes yes, its height 120
+  the combo's own height less than 120: yes
+CB_GETDROPPEDSTATE: ret=0 err=-
+CB_SHOWDROPDOWN(TRUE): ret=1 err=-
+  CB_GETDROPPEDSTATE 1, the list shown yes
+  notifications: CBN_DROPDOWN
+CB_SHOWDROPDOWN(TRUE) again: ret=1 err=-
+  notifications: none
+CB_SHOWDROPDOWN(FALSE): ret=1 err=-
+  CB_GETDROPPEDSTATE 0, the list shown no
+  notifications: CBN_SELENDCANCEL CBN_CLOSEUP
+CB_SHOWDROPDOWN(FALSE) again: ret=1 err=-
+  notifications: none
+CreateWindowExW("ComboBox", CBS_DROPDOWNLIST), 150x120, 3 items: non-NULL yes
+CB_GETDROPPEDCONTROLRECT: ret=1 err=-; its left, top and right the combo's yes yes yes, its height 120
+  the combo's own height less than 120: yes
+CB_GETDROPPEDSTATE: ret=0 err=-
+CB_SHOWDROPDOWN(TRUE): ret=1 err=-
+  CB_GETDROPPEDSTATE 1, the list shown yes
+  notifications: CBN_DROPDOWN
+CB_SHOWDROPDOWN(TRUE) again: ret=1 err=-
+  notifications: none
+CB_SHOWDROPDOWN(FALSE): ret=1 err=-
+  CB_GETDROPPEDSTATE 0, the list shown no
+  notifications: CBN_SELENDCANCEL CBN_CLOSEUP
+CB_SHOWDROPDOWN(FALSE) again: ret=1 err=-
+  notifications: none
+combobox: done
+<<< exit code=0
+>>> combobox.exe edit
+== edit
+the parent: made yes
+CreateWindowExW("ComboBox", CBS_DROPDOWN | CBS_AUTOHSCROLL): non-NULL yes
+  CB_GETEDITSEL: ret=0x0 err=- start 0 end 0
+CB_SETEDITSEL(1, 3): ret=1 err=5
+  CB_GETEDITSEL: ret=0x30001 err=- start 1 end 3
+CB_SETEDITSEL(0, -1): ret=1 err=5
+  CB_GETEDITSEL: ret=0x50000 err=- start 0 end 5
+CB_SETEDITSEL(-1, 0): ret=1 err=5
+  CB_GETEDITSEL: ret=0x50005 err=- start 5 end 5
+CB_LIMITTEXT(7): ret=1 err=-
+WM_CHAR a, b, c, d to the edit at the end: its text "helloab", EM_GETLIMITTEXT 7
+  notifications: CBN_EDITUPDATE CBN_EDITCHANGE CBN_EDITUPDATE CBN_EDITCHANGE
+CB_LIMITTEXT(0): ret=1 err=-
+  EM_GETLIMITTEXT of the edit: 2147483646
+CreateWindowExW("ComboBox", CBS_DROPDOWNLIST): non-NULL yes
+CB_SETEDITSEL(1, 3): ret=-1 err=1422
+  CB_GETEDITSEL: ret=0xFFFFFFFF err=1422 start 30583 end 30583
+CB_LIMITTEXT(7): ret=-1 err=1422
+combobox: done
+<<< exit code=0
+>>> combobox.exe notify
+== notify
+the parent: made yes
+the parent: foreground yes
+CreateWindowExW("ComboBox", CBS_DROPDOWNLIST), 3 items: non-NULL yes
+CB_SETCURSEL(0): ret=0 err=-
+  notifications: none
+SetFocus(the combo): the focus is the combo yes, a child of it no
+  notifications: CBN_SETFOCUS
+Down: ret=0 err=-; CB_GETCURSEL 1, dropped 0
+  notifications: CBN_SELENDOK CBN_SELCHANGE
+F4: ret=0 err=-; CB_GETCURSEL 1, dropped 1
+  notifications: CBN_DROPDOWN
+Down, dropped: ret=0 err=-; CB_GETCURSEL 2, dropped 1
+  notifications: CBN_SELCHANGE
+Enter: ret=1 err=-; CB_GETCURSEL 2, dropped 0
+  notifications: CBN_SELENDOK CBN_CLOSEUP
+F4: ret=0 err=-; CB_GETCURSEL 2, dropped 1
+  notifications: CBN_DROPDOWN
+Up, dropped: ret=0 err=-; CB_GETCURSEL 1, dropped 1
+  notifications: CBN_SELCHANGE
+Esc: ret=1 err=-; CB_GETCURSEL 1, dropped 0
+  notifications: CBN_SELENDCANCEL CBN_CLOSEUP
+F4: ret=0 err=-; CB_GETCURSEL 1, dropped 1
+  notifications: CBN_DROPDOWN
+SetFocus(the parent, dropped): the focus is the combo no, a child of it no
+  notifications: CBN_SELENDCANCEL CBN_CLOSEUP CBN_KILLFOCUS
+  dropped 0
+CreateWindowExW("ComboBox", CBS_DROPDOWN | CBS_AUTOHSCROLL), 3 items: non-NULL yes
+SetFocus(the combo): the focus is the combo no, a child of it yes
+  notifications: CBN_SETFOCUS
+WM_CHAR 't' to the edit: its text "t", CB_GETCURSEL -1
+  notifications: CBN_EDITUPDATE CBN_EDITCHANGE
+Down: ret=1 err=0; CB_GETCURSEL 1, dropped 0
+  notifications: CBN_SELENDOK CBN_SELCHANGE
+  the edit's text "two"
+CB_SETCURSEL(2): ret=2 err=0
+  notifications: none
+SetFocus(the parent): the focus is the combo no, a child of it no
+  notifications: CBN_SELENDCANCEL CBN_KILLFOCUS
+combobox: done
+<<< exit code=0
+>>> combobox.exe dir
+== dir
+f2kcbdir with a.txt, b.txt and sub made: yes
+the parent: made yes
+CreateWindowExW("ComboBox", CBS_DROPDOWNLIST | CBS_SORT): non-NULL yes
+DlgDirListComboBoxA("f2kcbdir\*.txt", DDL_DIRECTORY): ret=1 err=18 buffer after "*.TXT"
+  4 items: "a.txt" "b.txt" "[..]" "[sub]"
+DlgDirSelectComboBoxExA, "a.txt" selected: ret=0 err=- buffer "a.txt"
+DlgDirSelectComboBoxExA, "[sub]" selected: ret=1 err=- buffer "sub\"
+  the current directory is f2kcbdir now: yes; unchanged: no
+DlgDirListComboBoxW("f2kcbdir\*", DDL_READWRITE): ret=1 err=18 buffer after "*"
+  2 items: "a.txt" "b.txt"
+DlgDirSelectComboBoxExW, "b.txt" selected: ret=0 err=- buffer "b.txt"
+  the current directory is f2kcbdir now: yes; unchanged: no
+DlgDirListComboBoxA("f2knone\*.*"), a missing directory: ret=0 err=2
+  the current directory is f2kcbdir now: no; unchanged: yes
+CB_DIR(DDL_READWRITE, "f2kcbdir\*.txt"): ret=1 err=18
+  2 items: "a.txt" "b.txt"
+f2kcbdir removed: yes
+combobox: done
+<<< exit code=0
+>>> combobox.exe dialog
+== dialog
+CreateDialogIndirectParamW, a combo box by atom 0x0085 and one by name: non-NULL yes
+  item 601: found yes, class ComboBox, its list's class ComboLBox, WM_GETDLGCODE 0x81, CB_GETCOUNT 1, text "by atom"
+  item 602: found yes, class ComboBox, its list's class ComboLBox, WM_GETDLGCODE 0x81, CB_GETCOUNT 2, text ""
+DestroyWindow(the dialog): ret=1 err=-
+combobox: done
+<<< exit code=0

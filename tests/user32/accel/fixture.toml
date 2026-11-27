@@ -3,9 +3,13 @@
 # or address prints: a table prints as found or not and as the same table as another call's or not,
 # its entries as fVirt, key and cmd, a translation as its return and the messages the window
 # received.
-description = "accel - an ACCELERATORS resource of the program's own (accel.rc): LoadAcceleratorsW/A, CopyAcceleratorTableW/A's entries and DestroyAcceleratorTable; TranslateAcceleratorW/A on WM_KEYDOWN, WM_KEYUP, WM_CHAR and WM_SYSKEYDOWN posted to the program's own window, with Ctrl, Shift and Alt set in the thread's key state, the return and the WM_COMMAND the window receives; a window with a menu holding the commands, one grayed, and a disabled window."
+description = "accel - an ACCELERATORS resource of the program's own (accel.rc): LoadAcceleratorsW/A, CopyAcceleratorTableW/A's entries and DestroyAcceleratorTable; TranslateAcceleratorW/A on WM_KEYDOWN, WM_KEYUP, WM_CHAR and WM_SYSKEYDOWN posted to the program's own window, with Ctrl, Shift and Alt set in the thread's key state, the return and the WM_COMMAND the window receives; a window with a menu holding the commands, one grayed, and a disabled window; and CreateAcceleratorTableW/A with no entries, NULL, one, entries with fVirt's other bits, the A form's character keys, 1000 entries, copied back through CopyAcceleratorTableW/A, destroyed, and a table whose first entry carries the last-entry flag translated (create)."
 kind = "sectioned"
 gate = true
+
+[pending]
+create = "CreateAcceleratorTableW/A of count 0 or -1 set ERROR_INVALID_PARAMETER where Windows 2000 leaves the last error, and of a NULL table fault; the entries lose fVirt's bits above FVIRTKEY|FNOINVERT|FSHIFT|FCONTROL|FALT (0x41 and 0x7F read back as 0x01 and 0x1F); and CreateAcceleratorTableA leaves the caller's entries as they were, where Windows 2000 rewrites their keys converted (0x80 to 8364, 0x1241 to 65)"
+alias = "F2K's user32 lacks TranslateAccelerator, the unsuffixed alias (catalogued only)"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
@@ -29,4 +33,17 @@ ansi = [
 menu = [
     "user32.LoadAcceleratorsW",
     "user32.TranslateAcceleratorW",
+]
+create = [
+    "user32.CreateAcceleratorTableW",
+    "user32.CreateAcceleratorTableA",
+    "user32.CopyAcceleratorTableW",
+    "user32.CopyAcceleratorTableA",
+    "user32.DestroyAcceleratorTable",
+    "user32.TranslateAcceleratorW",
+]
+alias = [
+    "user32.TranslateAccelerator",
+    "user32.TranslateAcceleratorA",
+    "user32.LoadAcceleratorsA",
 ]

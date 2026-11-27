@@ -1,0 +1,279 @@
+# F2K capture of redraw (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:36.75
+redraw F2KT-SOURCE-CRC=0x51C1428F
+>>> redraw.exe redraw
+== redraw
+setup: the window and its child created: yes
+RedrawWindow(RDW_INVALIDATE, a rectangle outside the child): ret=1 err=-
+  before it returned: 0 message(s)
+  then: the window's update region SIMPLEREGION, box (60,40)-(80,60)
+  then: the child's update region NULLREGION
+  a pump then: 1 message(s)
+  the window: WM_PAINT, fErase 0, rcPaint (60,40)-(80,60)
+RedrawWindow(RDW_INVALIDATE | RDW_ERASE, a region): ret=1 err=-
+  before it returned: 0 message(s)
+  then: the window's update region SIMPLEREGION, box (70,5)-(100,25)
+  then: the child's update region NULLREGION
+  a pump then: 2 message(s)
+  the window: WM_ERASEBKGND
+  the window: WM_PAINT, fErase 0, rcPaint (70,5)-(100,25)
+RedrawWindow(RDW_INVALIDATE | RDW_ERASE, all): ret=1 err=-
+  before it returned: 0 message(s)
+  then: the window's update region SIMPLEREGION, box the client area
+  then: the child's update region SIMPLEREGION, box the client area
+  a pump then: 5 message(s)
+  the window: WM_ERASEBKGND
+  the window: WM_PAINT, fErase 0, rcPaint the client area
+  the child: WM_NCPAINT
+  the child: WM_ERASEBKGND
+  the child: WM_PAINT, fErase 0, rcPaint the client area
+RedrawWindow(RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN, all): ret=1 err=-
+  before it returned: 0 message(s)
+  then: the window's update region SIMPLEREGION, box the client area
+  then: the child's update region SIMPLEREGION, box the client area
+  a pump then: 5 message(s)
+  the window: WM_ERASEBKGND
+  the window: WM_PAINT, fErase 0, rcPaint the client area
+  the child: WM_NCPAINT
+  the child: WM_ERASEBKGND
+  the child: WM_PAINT, fErase 0, rcPaint the client area
+RedrawWindow(RDW_INVALIDATE | RDW_NOCHILDREN, all): ret=1 err=-
+  before it returned: 0 message(s)
+  then: the window's update region SIMPLEREGION, box the client area
+  then: the child's update region NULLREGION
+  a pump then: 1 message(s)
+  the window: WM_PAINT, fErase 0, rcPaint the client area
+RedrawWindow(RDW_INVALIDATE | RDW_FRAME, all): ret=1 err=-
+  before it returned: 0 message(s)
+  then: the window's update region SIMPLEREGION, box the client area
+  then: the child's update region SIMPLEREGION, box the client area
+  a pump then: 5 message(s)
+  the window: WM_NCPAINT
+  the window: WM_PAINT, fErase 0, rcPaint the client area
+  the child: WM_NCPAINT
+  the child: WM_ERASEBKGND
+  the child: WM_PAINT, fErase 0, rcPaint the client area
+RedrawWindow(RDW_INVALIDATE | RDW_NOFRAME, all): ret=1 err=-
+  before it returned: 0 message(s)
+  then: the window's update region SIMPLEREGION, box the client area
+  then: the child's update region SIMPLEREGION, box the client area
+  a pump then: 4 message(s)
+  the window: WM_PAINT, fErase 0, rcPaint the client area
+  the child: WM_NCPAINT
+  the child: WM_ERASEBKGND
+  the child: WM_PAINT, fErase 0, rcPaint the client area
+RedrawWindow(RDW_INTERNALPAINT): ret=1 err=-
+  before it returned: 0 message(s)
+  then: the window's update region NULLREGION
+  then: the child's update region NULLREGION
+  a pump then: 2 message(s)
+  the window: WM_PAINT, fErase 0, rcPaint empty
+  the child: WM_PAINT, fErase 0, rcPaint empty
+RedrawWindow(RDW_VALIDATE | RDW_NOINTERNALPAINT after RDW_INVALIDATE | RDW_INTERNALPAINT): ret=1 err=-
+  before it returned: 0 message(s)
+  then: the window's update region NULLREGION
+  then: the child's update region NULLREGION
+  a pump then: 0 message(s)
+RedrawWindow(RDW_INVALIDATE | RDW_ERASE | RDW_UPDATENOW, all): ret=1 err=-
+  before it returned: 5 message(s)
+  the window: WM_ERASEBKGND
+  the window: WM_PAINT, fErase 0, rcPaint the client area
+  the child: WM_NCPAINT
+  the child: WM_ERASEBKGND
+  the child: WM_PAINT, fErase 0, rcPaint the client area
+  then: the window's update region NULLREGION
+  then: the child's update region NULLREGION
+  a pump then: 0 message(s)
+RedrawWindow(RDW_INVALIDATE | RDW_ERASE | RDW_ERASENOW, all): ret=1 err=-
+  before it returned: 1 message(s)
+  the window: WM_ERASEBKGND
+  then: the window's update region SIMPLEREGION, box the client area
+  then: the child's update region SIMPLEREGION, box the client area
+  a pump then: 4 message(s)
+  the window: WM_PAINT, fErase 0, rcPaint the client area
+  the child: WM_NCPAINT
+  the child: WM_ERASEBKGND
+  the child: WM_PAINT, fErase 0, rcPaint the client area
+RedrawWindow(RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW): ret=1 err=-
+  before it returned: 5 message(s)
+  the window: WM_ERASEBKGND
+  the window: WM_PAINT, fErase 0, rcPaint the client area
+  the child: WM_NCPAINT
+  the child: WM_ERASEBKGND
+  the child: WM_PAINT, fErase 0, rcPaint the client area
+  then: the window's update region NULLREGION
+  then: the child's update region NULLREGION
+  a pump then: 0 message(s)
+RedrawWindow(RDW_NOERASE after RDW_INVALIDATE | RDW_ERASE): ret=1 err=-
+  before it returned: 0 message(s)
+  then: the window's update region SIMPLEREGION, box the client area
+  then: the child's update region SIMPLEREGION, box the client area
+  a pump then: 5 message(s)
+  the window: WM_ERASEBKGND
+  the window: WM_PAINT, fErase 0, rcPaint the client area
+  the child: WM_NCPAINT
+  the child: WM_ERASEBKGND
+  the child: WM_PAINT, fErase 0, rcPaint the client area
+RedrawWindow(RDW_VALIDATE, a rectangle, after RDW_INVALIDATE): ret=1 err=-
+  before it returned: 0 message(s)
+  then: the window's update region COMPLEXREGION, box the client area
+  then: the child's update region SIMPLEREGION, box the client area
+  a pump then: 4 message(s)
+  the window: WM_PAINT, fErase 0, rcPaint the client area
+  the child: WM_NCPAINT
+  the child: WM_ERASEBKGND
+  the child: WM_PAINT, fErase 0, rcPaint the client area
+RedrawWindow(0): ret=1 err=-
+  before it returned: 0 message(s)
+  then: the window's update region NULLREGION
+  then: the child's update region NULLREGION
+  a pump then: 0 message(s)
+redraw: done
+<<< exit code=0
+>>> redraw.exe validate
+== validate
+setup: the window and its child created: yes
+InvalidateRect(all): the window's update region SIMPLEREGION, box the client area
+ValidateRgn(the left half): ret=1 err=-
+  then: the window's update region SIMPLEREGION, box (60,0)-(118,88)
+ValidateRgn(a region outside the window): ret=1 err=-
+  then: the window's update region SIMPLEREGION, box (60,0)-(118,88)
+ExcludeUpdateRgn(the window's DC, the right half invalid): SIMPLEREGION err=-, the DC's clip box (0,0)-(60,88)
+ValidateRgn(NULL): ret=1 err=-
+  then: the window's update region NULLREGION
+ValidateRgn(NULL, nothing invalid): ret=1 err=-
+  then: the window's update region NULLREGION
+ExcludeUpdateRgn(the window's DC, nothing invalid): SIMPLEREGION err=-, the DC's clip box the client area
+ValidateRgn(NULL window, NULL): ret=0 err=-
+a pump then: 0 message(s)
+redraw: done
+<<< exit code=0
+>>> redraw.exe lock
+== lock
+setup: the window and its child created: yes
+before: GetDC's clip box SIMPLEREGION the client area
+LockWindowUpdate(the window): ret=1 err=-
+locked: GetDC's clip box NULLREGION 
+locked: GetDC's clip box NULLREGION 
+locked: GetDC's clip box SIMPLEREGION the client area
+an invalidation while locked, UpdateWindow and a pump: 3 message(s)
+  the window: WM_PAINT, fErase 0, rcPaint empty
+  the child: WM_NCPAINT
+  the child: WM_PAINT, fErase 0, rcPaint empty
+  then: the window's update region NULLREGION
+LockWindowUpdate(the other window, while locked): ret=0 err=87
+LockWindowUpdate(the window again): ret=0 err=87
+LockWindowUpdate(NULL): ret=1 err=-
+the unlock, a pump: 6 message(s)
+  the window: WM_NCPAINT
+  the window: WM_ERASEBKGND
+  the window: WM_PAINT, fErase 0, rcPaint the client area
+  the child: WM_NCPAINT
+  the child: WM_ERASEBKGND
+  the child: WM_PAINT, fErase 0, rcPaint the client area
+after: GetDC's clip box SIMPLEREGION the client area
+LockWindowUpdate(NULL again): ret=0 err=87
+redraw: done
+<<< exit code=0
+>>> redraw.exe wrgn
+== wrgn
+setup: the window and its child created: yes
+GetWindowRgn(a window with no region): ERROR err=-
+no region: GetWindowDC's clip box SIMPLEREGION (0,0)-(120,90)
+SetWindowRgn(an ellipse over the window, TRUE): ret=1 err=-
+  before it returned: 5 message(s)
+  the window: WM_WINDOWPOSCHANGING
+  the window: WM_NCCALCSIZE
+  the window: WM_NCPAINT
+  the window: WM_ERASEBKGND
+  the window: WM_WINDOWPOSCHANGED
+  the region given is still a region: no
+  a pump then: 0 message(s)
+GetWindowRgn(the window): COMPLEXREGION err=-
+  box (0,0)-(119,89), equal to the region set yes
+WindowFromPoint(the window's top-left corner, outside the ellipse): another window
+WindowFromPoint(the window's centre): the window
+the ellipse: GetWindowDC's clip box COMPLEXREGION (0,0)-(119,89)
+SetWindowRgn(the top-left quarter, FALSE): ret=1 err=-
+  before it returned: 3 message(s)
+  the window: WM_WINDOWPOSCHANGING
+  the window: WM_NCCALCSIZE
+  the window: WM_WINDOWPOSCHANGED
+  a pump then: 0 message(s)
+GetWindowRgn(the window): SIMPLEREGION err=-
+  box (0,0)-(60,45), equal to the region set yes
+  the ellipse set before is still a region: no
+WindowFromPoint(the window's centre, outside the quarter): another window
+WindowFromPoint(inside the quarter): the child
+the quarter: GetWindowDC's clip box SIMPLEREGION (0,0)-(60,45)
+SetWindowRgn(NULL, TRUE): ret=1 err=-
+  then: 6 message(s)
+  the window: WM_WINDOWPOSCHANGING
+  the window: WM_NCCALCSIZE
+  the window: WM_NCPAINT
+  the window: WM_ERASEBKGND
+  the window: WM_WINDOWPOSCHANGED
+  the window: WM_PAINT, fErase 0, rcPaint the client area
+GetWindowRgn(the window): ERROR err=-
+WindowFromPoint(the window's centre): the window
+SetWindowRgn(a destroyed window, NULL): ret=0 err=1400
+GetWindowRgn(a destroyed window): ERROR err=1400
+redraw: done
+<<< exit code=0
+>>> redraw.exe scrolldc
+== scrolldc
+each pixel prints as the column letter and row digit it was drawn at
+ScrollDC(dx 4, dy 0, all of it): ret=1 err=-
+  the update rectangle (0,0)-(4,6); the region SIMPLEREGION (0,0)-(4,6)
+  row 0: a0b0c0d0a0b0c0d0e0f0g0h0i0j0k0l0
+  row 1: a1b1c1d1a1b1c1d1e1f1g1h1i1j1k1l1
+  row 2: a2b2c2d2a2b2c2d2e2f2g2h2i2j2k2l2
+  row 3: a3b3c3d3a3b3c3d3e3f3g3h3i3j3k3l3
+  row 4: a4b4c4d4a4b4c4d4e4f4g4h4i4j4k4l4
+  row 5: a5b5c5d5a5b5c5d5e5f5g5h5i5j5k5l5
+ScrollDC(dx -3, dy 2, all of it): ret=1 err=-
+  the update rectangle (0,0)-(16,6); the region COMPLEXREGION (0,0)-(16,6)
+  row 0: a0b0c0d0e0f0g0h0i0j0k0l0m0n0o0p0
+  row 1: a1b1c1d1e1f1g1h1i1j1k1l1m1n1o1p1
+  row 2: d0e0f0g0h0i0j0k0l0m0n0o0p0n2o2p2
+  row 3: d1e1f1g1h1i1j1k1l1m1n1o1p1n3o3p3
+  row 4: d2e2f2g2h2i2j2k2l2m2n2o2p2n4o4p4
+  row 5: d3e3f3g3h3i3j3k3l3m3n3o3p3n5o5p5
+ScrollDC(dx 2, dy 1, the scroll rectangle (2,1)-(10,5)): ret=1 err=-
+  the update rectangle (2,1)-(10,5); the region COMPLEXREGION (2,1)-(10,5)
+  row 0: a0b0c0d0e0f0g0h0i0j0k0l0m0n0o0p0
+  row 1: a1b1c1d1e1f1g1h1i1j1k1l1m1n1o1p1
+  row 2: a2b2c2d2c1d1e1f1g1h1i1j1m2n2o2p2
+  row 3: a3b3c3d3c2d2e2f2g2h2i2j2m3n3o3p3
+  row 4: a4b4c4d4c3d3e3f3g3h3i3j3m4n4o4p4
+  row 5: a5b5c5d5c4d4e4f4g4h4i4j4m5n5o5p5
+ScrollDC(dx 4, dy 0, the clip rectangle (0,0)-(8,6)): ret=1 err=-
+  the update rectangle (0,0)-(4,6); the region SIMPLEREGION (0,0)-(4,6)
+  row 0: a0b0c0d0a0b0c0d0i0j0k0l0m0n0o0p0
+  row 1: a1b1c1d1a1b1c1d1i1j1k1l1m1n1o1p1
+  row 2: a2b2c2d2a2b2c2d2i2j2k2l2m2n2o2p2
+  row 3: a3b3c3d3a3b3c3d3i3j3k3l3m3n3o3p3
+  row 4: a4b4c4d4a4b4c4d4i4j4k4l4m4n4o4p4
+  row 5: a5b5c5d5a5b5c5d5i5j5k5l5m5n5o5p5
+ScrollDC(dx 4, dy 0, the scroll rectangle (2,1)-(10,5), the clip rectangle (0,0)-(8,6)): ret=1 err=-
+  the update rectangle (2,1)-(6,5); the region SIMPLEREGION (2,1)-(6,5)
+  row 0: a0b0c0d0e0f0g0h0i0j0k0l0m0n0o0p0
+  row 1: a1b1c1d1e1f1c1d1i1j1k1l1m1n1o1p1
+  row 2: a2b2c2d2e2f2c2d2i2j2k2l2m2n2o2p2
+  row 3: a3b3c3d3e3f3c3d3i3j3k3l3m3n3o3p3
+  row 4: a4b4c4d4e4f4c4d4i4j4k4l4m4n4o4p4
+  row 5: a5b5c5d5e5f5g5h5i5j5k5l5m5n5o5p5
+ScrollDC(dx 0, dy 0): ret=1 err=-
+  the update rectangle (0,0)-(0,0); the region NULLREGION (0,0)-(0,0)
+  row 0: a0b0c0d0e0f0g0h0i0j0k0l0m0n0o0p0
+  row 1: a1b1c1d1e1f1g1h1i1j1k1l1m1n1o1p1
+  row 2: a2b2c2d2e2f2g2h2i2j2k2l2m2n2o2p2
+  row 3: a3b3c3d3e3f3g3h3i3j3k3l3m3n3o3p3
+  row 4: a4b4c4d4e4f4g4h4i4j4k4l4m4n4o4p4
+  row 5: a5b5c5d5e5f5g5h5i5j5k5l5m5n5o5p5
+ScrollDC(dx 1, no update region or rectangle): ret=1 err=-
+redraw: done
+<<< exit code=0

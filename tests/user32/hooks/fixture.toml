@@ -1,0 +1,97 @@
+# hooks: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat hooks, tests\capture.bat hooks).
+# Every hook is the program's own thread's (a NULL module): no global hook. The hook procedures log
+# what they see; the log prints after the calls. keyboard and mouse inject Shift and a mouse move
+# with SendInput into a visible top-most window of their own, only while it is the foreground
+# window (nobody touches the machine while it captures); msgfilter shows a modal dialog that ends
+# itself; cbt and veto show, minimize and restore a window of their own.
+description = "hooks - thread-local hooks: WH_CBT's codes over a window's life and the MFC pattern (subclassing in HCBT_CREATEWND and unhooking there), the A form's ANSI class name, and its vetoes of creation, destruction, activation and focus; WH_GETMESSAGE (and a hook changing the message); WH_CALLWNDPROC and WH_CALLWNDPROCRET; WH_MSGFILTER through a modal dialog and CallMsgFilterW/A/CallMsgFilter; WH_KEYBOARD and WH_MOUSE with SendInput; chains and CallNextHookEx, UnhookWindowsHookEx and SetWindowsHookExW's errors; SetWindowsHookW/A and UnhookWindowsHook; and SetWinEventHook out of context, NotifyWinEvent and UnhookWinEvent."
+kind = "sectioned"
+gate = true
+
+[pending]
+# U7 (.scratch/plans/user32-gdi32-completeness.md): hooks.exe imports SetWindowsHookExW/A,
+# CallNextHookEx, UnhookWindowsHookEx and CallMsgFilterW/A, which F2K's user32 has as stubs only;
+# drop each entry once its block passes.
+cbt = "SetWindowsHookExW/A, CallNextHookEx and UnhookWindowsHookEx are stubs; no hook handle type, and WH_CBT only as window.rs's seams"
+veto = "WH_CBT not yet implemented (SetWindowsHookExW is a stub): the vetoes of creation, destruction, activation and focus"
+getmsg = "WH_GETMESSAGE not yet implemented (SetWindowsHookExW is a stub)"
+callwnd = "WH_CALLWNDPROC and WH_CALLWNDPROCRET not yet implemented (SetWindowsHookExW is a stub)"
+msgfilter = "WH_MSGFILTER not yet implemented: CallMsgFilterW/A are stubs and CallMsgFilter, the unsuffixed alias, is catalogued only"
+keyboard = "WH_KEYBOARD not yet implemented (SetWindowsHookExW is a stub)"
+mouse = "WH_MOUSE not yet implemented (SetWindowsHookExW is a stub)"
+chain = "hook chains not yet implemented: SetWindowsHookExW and CallNextHookEx are stubs"
+oldstyle = "SetWindowsHookW/A and UnhookWindowsHook not yet implemented (catalogued only)"
+winevent = "SetWinEventHook, UnhookWinEvent and NotifyWinEvent not yet implemented (catalogued only)"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers around them (the class and windows,
+# the message pump, SendInput). SetWindowsHookW/A, UnhookWindowsHook, CallMsgFilter,
+# SetWinEventHook, UnhookWinEvent and NotifyWinEvent are found with GetProcAddress.
+cbt = [
+    "user32.SetWindowsHookExW",
+    "user32.SetWindowsHookExA",
+    "user32.CallNextHookEx",
+    "user32.UnhookWindowsHookEx",
+    "user32.SetWindowLongW",
+]
+veto = [
+    "user32.SetWindowsHookExW",
+    "user32.CallNextHookEx",
+    "user32.UnhookWindowsHookEx",
+    "user32.CreateWindowExW",
+    "user32.DestroyWindow",
+    "user32.SetFocus",
+]
+getmsg = [
+    "user32.SetWindowsHookExW",
+    "user32.CallNextHookEx",
+    "user32.UnhookWindowsHookEx",
+    "user32.GetMessageW",
+    "user32.PeekMessageW",
+]
+callwnd = [
+    "user32.SetWindowsHookExW",
+    "user32.CallNextHookEx",
+    "user32.UnhookWindowsHookEx",
+    "user32.SendMessageW",
+    "user32.CallWindowProcW",
+]
+msgfilter = [
+    "user32.SetWindowsHookExW",
+    "user32.CallNextHookEx",
+    "user32.UnhookWindowsHookEx",
+    "user32.CallMsgFilterW",
+    "user32.CallMsgFilterA",
+    "user32.CallMsgFilter",
+    "user32.DialogBoxIndirectParamW",
+]
+keyboard = [
+    "user32.SetWindowsHookExW",
+    "user32.CallNextHookEx",
+    "user32.UnhookWindowsHookEx",
+    "user32.SendInput",
+]
+mouse = [
+    "user32.SetWindowsHookExW",
+    "user32.CallNextHookEx",
+    "user32.UnhookWindowsHookEx",
+    "user32.SendInput",
+]
+chain = [
+    "user32.SetWindowsHookExW",
+    "user32.CallNextHookEx",
+    "user32.UnhookWindowsHookEx",
+]
+oldstyle = [
+    "user32.SetWindowsHookW",
+    "user32.SetWindowsHookA",
+    "user32.UnhookWindowsHook",
+    "user32.CallNextHookEx",
+]
+winevent = [
+    "user32.SetWinEventHook",
+    "user32.UnhookWinEvent",
+    "user32.NotifyWinEvent",
+]

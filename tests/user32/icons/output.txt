@@ -1,0 +1,268 @@
+# F2K capture of icons (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:12.19
+icons F2KT-SOURCE-CRC=0xA8FFF94E
+>>> icons.exe stock
+== stock
+LoadIconA(NULL, IDI_APPLICATION): non-NULL yes err=-
+  IDI_APPLICATION: GetIconInfo ret=1 err=- fIcon=1 hotspot=16,16 mask=32x32 1 bit colour=32x32 screen bit
+LoadIconA(NULL, IDI_HAND): non-NULL yes err=-
+  IDI_HAND: GetIconInfo ret=1 err=- fIcon=1 hotspot=16,16 mask=32x32 1 bit colour=32x32 screen bit
+LoadIconA(NULL, IDI_QUESTION): non-NULL yes err=-
+  IDI_QUESTION: GetIconInfo ret=1 err=- fIcon=1 hotspot=16,16 mask=32x32 1 bit colour=32x32 screen bit
+LoadIconA(NULL, IDI_EXCLAMATION): non-NULL yes err=-
+  IDI_EXCLAMATION: GetIconInfo ret=1 err=- fIcon=1 hotspot=16,16 mask=32x32 1 bit colour=32x32 screen bit
+LoadIconA(NULL, IDI_ASTERISK): non-NULL yes err=-
+  IDI_ASTERISK: GetIconInfo ret=1 err=- fIcon=1 hotspot=16,16 mask=32x32 1 bit colour=32x32 screen bit
+LoadIconA(NULL, IDI_WINLOGO): non-NULL yes err=-
+  IDI_WINLOGO: GetIconInfo ret=1 err=- fIcon=1 hotspot=16,16 mask=32x32 1 bit colour=32x32 screen bit
+LoadCursorA(NULL, IDC_ARROW): non-NULL yes err=-
+  IDC_ARROW: GetIconInfo ret=1 err=- fIcon=0 hotspot=10,10 mask=32x64 1 bit colour=none
+LoadCursorA(NULL, IDC_IBEAM): non-NULL yes err=-
+  IDC_IBEAM: GetIconInfo ret=1 err=- fIcon=0 hotspot=10,10 mask=32x64 1 bit colour=none
+LoadCursorA(NULL, IDC_WAIT): non-NULL yes err=-
+  IDC_WAIT: GetIconInfo ret=1 err=- fIcon=0 hotspot=10,10 mask=32x64 1 bit colour=none
+LoadCursorA(NULL, IDC_CROSS): non-NULL yes err=-
+  IDC_CROSS: GetIconInfo ret=1 err=- fIcon=0 hotspot=10,10 mask=32x64 1 bit colour=none
+LoadIconW(NULL, IDI_APPLICATION): non-NULL yes err=-, the same as LoadIconA's yes
+GetIconInfo(NULL): ret=0 err=1402
+icons: done
+<<< exit code=0
+>>> icons.exe create
+== create
+CreateIcon(16x16, 1 plane, 1 bit): non-NULL yes err=-
+  it: GetIconInfo ret=1 err=- fIcon=0 hotspot=8,8 mask=16x32 1 bit colour=none
+  it drawn at its size: ret=1, pixels not the image's: 0
+CreateIcon(16x16, 1 plane, 32 bits): non-NULL yes err=-
+  it: GetIconInfo ret=1 err=- fIcon=0 hotspot=8,8 mask=16x16 1 bit colour=16x16 screen bit
+  it drawn at its size: ret=1, pixels not the image's: 0
+CreateCursor(hotspot 3,4, 16x16): non-NULL yes err=-
+  it: GetIconInfo ret=1 err=- fIcon=0 hotspot=3,4 mask=16x32 1 bit colour=none
+  it drawn at its size: ret=1, pixels not the image's: 0
+CreateIconIndirect(an icon, a 16x16 mask, a 32-bit colour bitmap): non-NULL yes err=-
+  it: GetIconInfo ret=1 err=- fIcon=1 hotspot=8,8 mask=16x16 1 bit colour=16x16 screen bit
+  it drawn at its size: ret=1, pixels not the image's: 0
+CreateIconIndirect(a cursor, hotspot 2,9, the same bitmaps): non-NULL yes err=-
+  it: GetIconInfo ret=1 err=- fIcon=0 hotspot=2,9 mask=16x16 1 bit colour=16x16 screen bit
+  it drawn at its size: ret=1, pixels not the image's: 0
+CreateIconIndirect(an icon, a 16x32 mask and no colour bitmap): non-NULL yes err=-
+  it: GetIconInfo ret=1 err=- fIcon=1 hotspot=8,8 mask=16x32 1 bit colour=none
+  it drawn at its size: ret=1, pixels not the image's: 0
+CreateIconIndirect(an icon with no mask): non-NULL no err=-
+  it: no handle
+the bitmaps given still there after: mask yes colour yes
+DestroyIcon(the 32-bit icon): ret=1 err=-
+DestroyIcon(it, again): ret=0 err=1402
+GetIconInfo(it) after: ret=0 err=1402
+DestroyCursor(the cursor): ret=1 err=-
+DestroyCursor(it, again): ret=0 err=1402
+DestroyCursor(the monochrome icon): ret=1 err=-
+DestroyIcon(the indirect cursor): ret=1 err=-
+DestroyIcon(IDI_APPLICATION, shared): ret=1 err=-
+GetIconInfo(it) after: ret=1 err=-
+LoadIconA(NULL, IDI_APPLICATION) after: the same handle yes
+icons: done
+<<< exit code=0
+>>> icons.exe lookup
+== lookup
+RT_GROUP_ICON 100: found yes, 48 bytes, type 1, 3 entries
+  entry 0: 16x16 colours 16 planes 1 bits 4 bytes 296, an RT_ICON of the program yes
+  entry 1: 32x32 colours 16 planes 1 bits 4 bytes 744, an RT_ICON of the program yes
+  entry 2: 32x32 colours 0 planes 1 bits 8 bytes 2216, an RT_ICON of the program yes
+RT_GROUP_CURSOR 200: found yes, 20 bytes, type 2, 1 entries
+  entry 0: width 32 height 64 planes 1 bits 1 bytes 308, an RT_CURSOR of the program yes
+LookupIconIdFromDirectory(the icon group, TRUE): entry 0 (16x16, 4 bits) err=-
+LookupIconIdFromDirectory(the cursor group, FALSE): the cursor group's entry 0 err=-
+LookupIconIdFromDirectory(the icon group, FALSE): entry 0 (16x16, 4 bits) err=-
+LookupIconIdFromDirectory(the cursor group, TRUE): the cursor group's entry 0 err=-
+LookupIconIdFromDirectoryEx(the icon group, TRUE, 16x16, LR_DEFAULTCOLOR): entry 0 (16x16, 4 bits) err=-
+LookupIconIdFromDirectoryEx(the icon group, TRUE, 24x24, LR_DEFAULTCOLOR): entry 2 (32x32, 8 bits) err=-
+LookupIconIdFromDirectoryEx(the icon group, TRUE, 32x32, LR_DEFAULTCOLOR): entry 2 (32x32, 8 bits) err=-
+LookupIconIdFromDirectoryEx(the icon group, TRUE, 48x48, LR_DEFAULTCOLOR): entry 2 (32x32, 8 bits) err=-
+LookupIconIdFromDirectoryEx(the icon group, TRUE, 0x0, LR_DEFAULTCOLOR): entry 0 (16x16, 4 bits) err=-
+LookupIconIdFromDirectoryEx(the icon group, TRUE, 16x16, LR_MONOCHROME): entry 0 (16x16, 4 bits) err=-
+LookupIconIdFromDirectoryEx(the icon group, TRUE, 32x32, LR_MONOCHROME): entry 1 (32x32, 4 bits) err=-
+LookupIconIdFromDirectoryEx(the icon group, TRUE, 32x16, LR_DEFAULTCOLOR): entry 2 (32x32, 8 bits) err=-
+LookupIconIdFromDirectoryEx(the cursor group, FALSE, 16x16, LR_DEFAULTCOLOR): the cursor group's entry 0 err=-
+icons: done
+<<< exit code=0
+>>> icons.exe fromres
+== fromres
+the icon group's entry 0: RT_ICON found yes, 296 bytes, a 40-byte header first yes
+CreateIconFromResource(it, TRUE, 0x30000): non-NULL yes err=6
+  it: GetIconInfo ret=1 err=- fIcon=1 hotspot=16,16 mask=32x32 1 bit colour=32x32 screen bit
+  it drawn at its size: ret=1, pixels not the image's: 246
+the icon group's entry 1: RT_ICON found yes, 744 bytes, a 40-byte header first yes
+CreateIconFromResource(it, TRUE, 0x30000): non-NULL yes err=-
+  it: GetIconInfo ret=1 err=- fIcon=1 hotspot=16,16 mask=32x32 1 bit colour=32x32 screen bit
+  it drawn at its size: ret=1, pixels not the image's: 0
+the icon group's entry 2: RT_ICON found yes, 2216 bytes, a 40-byte header first yes
+CreateIconFromResource(it, TRUE, 0x30000): non-NULL yes err=-
+  it: GetIconInfo ret=1 err=- fIcon=1 hotspot=16,16 mask=32x32 1 bit colour=32x32 screen bit
+  it drawn at its size: ret=1, pixels not the image's: 0
+CreateIconFromResourceEx(it, TRUE, 0x30000, 16x16): non-NULL yes err=6
+  it: GetIconInfo ret=1 err=- fIcon=1 hotspot=8,8 mask=16x16 1 bit colour=16x16 screen bit
+CreateIconFromResourceEx(it, TRUE, 0x30000, 0x0, 0): non-NULL yes err=-
+  it: GetIconInfo ret=1 err=- fIcon=1 hotspot=16,16 mask=32x32 1 bit colour=32x32 screen bit
+CreateIconFromResource(it, TRUE, 0x20000): non-NULL yes err=-
+  it: GetIconInfo ret=1 err=- fIcon=1 hotspot=16,16 mask=32x32 1 bit colour=32x32 screen bit
+CreateIconFromResource(it, TRUE, 0x10000): non-NULL no err=-
+the cursor group's entry 0: RT_CURSOR found yes, 308 bytes
+  its first words: 5,7, then a 40-byte header yes
+CreateIconFromResource(it, FALSE, 0x30000): non-NULL yes err=-
+  it: GetIconInfo ret=1 err=- fIcon=0 hotspot=5,7 mask=32x64 1 bit colour=none
+  it drawn at its size: ret=1, pixels not the image's: 0
+CreateIconFromResource(64 zero bytes, TRUE, 0x30000): non-NULL no err=-
+icons: done
+<<< exit code=0
+>>> icons.exe draw
+== draw
+LoadImageA(the icon, 16x16): non-NULL yes; (32x32): non-NULL yes; (the cursor): non-NULL yes
+DrawIconEx(the 16x16 icon, 0x0, DI_NORMAL): ret=1 err=-
+  ....334455667788
+  ...2334455667788
+  ..33445566778899
+  .233445566778899
+  33445566778899AA
+  33445566778899AA
+  445566778899AABB
+  445566778899AABB
+  5566778899AABBCC
+  5566778899AABBCC
+  66778899AABBCCDD
+  66778899AABBCCDD
+  778899AABBCCDDEE
+  778899AABBCCDDEE
+  8899AABBCCDDEEFF
+  8899AABBCCDDEEFF
+  pixels not the image's: 0
+DrawIconEx(the 16x16 icon, 0x0, DI_MASK): ret=1 err=-
+  FFFF000000000000
+  FFF0000000000000
+  FF00000000000000
+  F000000000000000
+  0000000000000000
+  0000000000000000
+  0000000000000000
+  0000000000000000
+  0000000000000000
+  0000000000000000
+  0000000000000000
+  0000000000000000
+  0000000000000000
+  0000000000000000
+  0000000000000000
+  0000000000000000
+DrawIconEx(the 16x16 icon, 0x0, DI_IMAGE): ret=1 err=-
+  0000334455667788
+  0002334455667788
+  0033445566778899
+  0233445566778899
+  33445566778899AA
+  33445566778899AA
+  445566778899AABB
+  445566778899AABB
+  5566778899AABBCC
+  5566778899AABBCC
+  66778899AABBCCDD
+  66778899AABBCCDD
+  778899AABBCCDDEE
+  778899AABBCCDDEE
+  8899AABBCCDDEEFF
+  8899AABBCCDDEEFF
+DrawIconEx(the 16x16 icon, 0x0, no flags): ret=1 err=-, the canvas untouched yes
+DrawIconEx(the 16x16 icon, a lime flicker-free brush, DI_NORMAL): ret=1 err=-
+  pixels not the image's over lime: 0, over the background: 10
+DrawIconEx(the 16x16 icon, 32x32, DI_NORMAL): ret=1 err=-, pixels not the image's doubled: 0
+DrawIconEx(the 16x16 icon, 0x0, DI_NORMAL|DI_DEFAULTSIZE): ret=1 err=-, pixels not the image's doubled: 0
+DrawIconEx(the 32x32 icon, 0x0, DI_NORMAL|DI_DEFAULTSIZE): ret=1 err=-, pixels not the 8-bit image's: 0, not the 4-bit one's: 860
+DrawIcon(the 32x32 icon): ret=1 err=-, pixels not the 8-bit image's: 0
+DrawIcon(the 16x16 icon): ret=1 err=-, pixels not the image's doubled: 0, not the image's at its size: 246
+DrawIcon(the cursor): ret=1 err=-, pixels not the image's: 0
+DrawIconEx(no DC): ret=0 err=6
+DrawIconEx(no icon): ret=0 err=1402, the canvas untouched yes
+DrawIcon(no icon): ret=0 err=1402
+icons: done
+<<< exit code=0
+>>> icons.exe copy
+== copy
+LoadImageA(the icon, 32x32): non-NULL yes
+CopyImage(the icon, IMAGE_ICON, 0x0, 0): non-NULL yes err=-, the original no
+  it: GetIconInfo ret=1 err=- fIcon=1 hotspot=16,16 mask=32x32 1 bit colour=32x32 screen bit
+  it drawn at its size: ret=1, pixels not the image's: 0
+CopyImage(the icon, IMAGE_ICON, 16x16, 0): non-NULL yes err=6, the original no
+  it: GetIconInfo ret=1 err=- fIcon=1 hotspot=8,8 mask=16x16 1 bit colour=16x16 screen bit
+CopyImage(the icon, IMAGE_ICON, 16x16, LR_COPYFROMRESOURCE): non-NULL yes err=6, the original no
+  it: GetIconInfo ret=1 err=- fIcon=1 hotspot=8,8 mask=16x16 1 bit colour=16x16 screen bit
+  it drawn at its size: ret=1, pixels not the image's: 218
+CopyImage(the icon, IMAGE_ICON, 32x32, LR_COPYRETURNORG): non-NULL yes err=-, the original yes
+CopyImage(the icon, IMAGE_ICON, 0x0, LR_COPYRETURNORG): non-NULL yes err=-, the original yes
+CopyImage(the icon, IMAGE_ICON, 16x16, LR_COPYRETURNORG): non-NULL yes err=6, the original no
+  its size: 16x16
+CopyImage(the first copy, IMAGE_ICON, 0x0, LR_COPYDELETEORG): non-NULL yes err=-, the original no
+  it: GetIconInfo ret=1 err=- fIcon=1 hotspot=16,16 mask=32x32 1 bit colour=32x32 screen bit
+  GetIconInfo(the first copy) after: ret=0 err=1402
+LoadImageA(the cursor): non-NULL yes
+CopyImage(the cursor, IMAGE_CURSOR, 0x0, 0): non-NULL yes err=-, the original no
+  it: GetIconInfo ret=1 err=- fIcon=0 hotspot=5,7 mask=32x64 1 bit colour=none
+  it drawn at its size: ret=1, pixels not the image's: 0
+CopyImage(NULL, IMAGE_ICON, 0x0, 0): non-NULL no err=1402, the original no
+CopyImage(the icon, type 7, 0x0, 0): non-NULL no err=87, the original no
+CreateBitmap(8x8, 32 bits): non-NULL yes
+CopyImage(it, IMAGE_BITMAP, 0x0, 0): non-NULL yes err=-, the original no
+  it: 8x8 32 bit, a DIB section no
+CopyImage(it, IMAGE_BITMAP, 16x16, 0): non-NULL yes err=6, the original no
+  it: 16x16 32 bit, a DIB section no
+CopyImage(it, IMAGE_BITMAP, 0x0, LR_MONOCHROME): non-NULL yes err=-, the original no
+  it: 8x8 1 bit, a DIB section no
+CopyImage(it, IMAGE_BITMAP, 0x0, LR_CREATEDIBSECTION): non-NULL yes err=8, the original no
+  it: 8x8 32 bit, a DIB section yes
+CopyIcon(the icon): non-NULL yes err=-, the original no
+  it: GetIconInfo ret=1 err=- fIcon=1 hotspot=16,16 mask=32x32 1 bit colour=32x32 screen bit
+  it drawn at its size: ret=1, pixels not the image's: 0
+icons: done
+<<< exit code=0
+>>> icons.exe extract
+== extract
+PrivateExtractIconsA(the program, 0, 32x32, no buffers): ret=1 err=0
+PrivateExtractIconsW(the program, 0, 32x32, no buffers): ret=1 err=0
+PrivateExtractIconsA(the program, 0, 32x32, 1): ret=1 err=0, an icon yes, id entry 2 (32x32, 8 bits)
+  it: GetIconInfo ret=1 err=- fIcon=1 hotspot=16,16 mask=32x32 1 bit colour=32x32 screen bit
+  it drawn at its size: ret=1, pixels not the image's: 0
+PrivateExtractIconsW(the program, 0, 16x16, 1): ret=1 err=0, an icon yes, id entry 0 (16x16, 4 bits)
+  it: GetIconInfo ret=1 err=- fIcon=1 hotspot=8,8 mask=16x16 1 bit colour=16x16 screen bit
+  it drawn at its size: ret=1, pixels not the image's: 0
+PrivateExtractIconsA(the program, index 1, 32x32, 1): ret=0 err=0, an icon no
+PrivateExtractIconsA(a missing file, 0, 32x32, 1): ret=4294967295 err=2, an icon no
+PrivateExtractIconExA(the program, -1, NULL, NULL, 0): ret=1 err=0
+PrivateExtractIconExW(the program, -1, NULL, NULL, 0): ret=1 err=0
+PrivateExtractIconExA(the program, 0, large, small, 1): ret=2 err=0
+  large: yes 32x32
+  small: yes 16x16
+PrivateExtractIconExW(the program, 0, large, small, 1): ret=2 err=0
+  large: yes 32x32
+  small: yes 16x16
+PrivateExtractIconExA(the program, 0, large, NULL, 1): ret=1 err=0, large yes
+icons: done
+<<< exit code=0
+>>> icons.exe cursors
+== cursors
+RCDATA F2KCURF: found yes, 326 bytes
+f2kicon.cur written beside the program: yes
+LoadCursorFromFileA(f2kicon.cur): non-NULL yes err=0
+  it: GetIconInfo ret=1 err=- fIcon=0 hotspot=5,7 mask=32x64 1 bit colour=none
+  it drawn at its size: ret=1, pixels not the image's: 0
+LoadCursorFromFileW(f2kicon.cur): non-NULL yes err=0, the same as A's no
+  it: GetIconInfo ret=1 err=- fIcon=0 hotspot=5,7 mask=32x64 1 bit colour=none
+LoadCursorFromFileA(a missing file): non-NULL no err=2
+LoadCursorFromFileW(a missing file): non-NULL no err=2
+GetCursorFrameInfo(the file's cursor, 0, step 0): the cursor itself yes, non-NULL yes err=- rate=0 steps=1
+GetCursorFrameInfo(IDC_ARROW, 0, step 0): the cursor itself yes, non-NULL yes err=- rate=0 steps=1
+SetSystemCursor(NULL, OCR_NORMAL): ret=0 err=1813
+DestroyCursor(the file's cursor): ret=1 err=-
+DestroyCursor(it, again): ret=0 err=1402
+f2kicon.cur deleted: yes
+icons: done
+<<< exit code=0

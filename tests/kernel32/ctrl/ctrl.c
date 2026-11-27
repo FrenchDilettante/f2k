@@ -262,11 +262,18 @@ static void send_event(DWORD event, const PROCESS_INFORMATION *pi)
 /* `event` into the child's group, then the fence. Before the fence, a
  * short wait on the child: should the event end it, the fence is not
  * sent (the group would lead nothing). The wait is a liveness check; the
- * child itself reports only after the fence. */
+ * child itself reports only after the fence. No event these sections
+ * send ends the child (its recording handler answers TRUE), so the wait
+ * always runs out; it must stay shorter than ctrlkid's GRACE_MS, the time
+ * a child that took a first Ctrl+Break for the fence still counts a
+ * second (the "a Ctrl+Break" case of ctrlc), with a margin for the
+ * second's delivery. */
+#define FENCE_GAP_MS 100
+
 static void send_then_fence(DWORD event, const PROCESS_INFORMATION *pi)
 {
     send_event(event, pi);
-    WaitForSingleObject(pi->hProcess, 300);
+    WaitForSingleObject(pi->hProcess, FENCE_GAP_MS);
     send_event(CTRL_BREAK_EVENT, pi);
 }
 

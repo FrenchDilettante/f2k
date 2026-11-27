@@ -1,9 +1,9 @@
 # F2K capture of ntquery (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026 13:05:03.97
-ntquery F2KT-SOURCE-CRC=0xE263D433
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:39:11.10
+ntquery F2KT-SOURCE-CRC=0x5B71C24A
 >>> ntquery.exe sysinfo
 == sysinfo
 NtQuerySystemInformation(5): status=0x00000000 err=- filled=yes
@@ -35,5 +35,15 @@ ntquery: done
 >>> ntquery.exe scmfail
 == scmfail
 OpenSCManagerA: ret=ok err=997
+ntquery: done
+<<< exit code=0
+>>> ntquery.exe children
+== children
+children started: 60 of 60, ready: 60
+NtQuerySystemInformation(5) into 1024 bytes: status=0xC0000004 err=-, the length it reports: zero
+NtQuerySystemInformation(5) into 512 KiB: status=0x00000000 err=-, a length reported: yes
+the listing: more than its children's entries yes, this program listed once yes
+the children found: 60; naming this program their parent 60, with one thread 60, named ntquery.exe 60
+the event set: ended with exit code 0 60
 ntquery: done
 <<< exit code=0

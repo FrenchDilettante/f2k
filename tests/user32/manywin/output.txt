@@ -1,0 +1,41 @@
+# F2K capture of manywin (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:56.83
+manywin F2KT-SOURCE-CRC=0x9522C5FF
+>>> manywin.exe quota
+== quota
+USER objects owned before: 0
+CreateMenu: 10000 made, then NULL err=1158
+  within [9900, 10000]: yes
+  made plus owned before: 10000; USER objects owned at the refusal: 10000
+DestroyMenu(the last): ret=1 err=-
+CreateMenu after it: non-NULL yes err=-
+CreateMenu again: non-NULL no err=1158
+every menu destroyed: yes
+USER objects owned after: as before yes
+manywin: done
+<<< exit code=0
+>>> manywin.exe windows
+== windows
+CreateWindowExA: 2000 windows made
+all distinct yes; IsWindow on each: 2000 alive
+USER objects owned: 2000 more than before yes
+DestroyWindow on each: 2000 destroyed; IsWindow after: 0 alive
+USER objects owned after: as before yes
+manywin: done
+<<< exit code=0
+>>> manywin.exe wrap
+== wrap
+65540 rounds: every menu made yes, the first's low word every round yes
+the high word one more each round but at a wrap to 0x0001: yes; wrapped at least once no
+high word 0 or 0xFFFF seen: yes
+manywin: done
+<<< exit code=0
+>>> manywin.exe parity
+== parity
+8 windows made: their low words all even
+8 menus made: their low words all odd
+manywin: done
+<<< exit code=0

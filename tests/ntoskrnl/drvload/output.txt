@@ -1,8 +1,8 @@
 # F2K capture of drvload (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
-# date: Sat 21/11/2026  7:37:55.82
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:41:03.49
 drvload F2KT-SOURCE-CRC=0x7F618A1F
 >>> drvload.exe load
 == load
@@ -185,7 +185,23 @@ NtUnloadDriver(F2Kdrvload), then: 0xC0000034
 drvload: done
 <<< exit code=0
 >>> drvload.exe pendirp
-(not captured yet: tests\capture.bat drvload replaces this placeholder)
+== pendirp
+the driver holds the first request: yes
+the first DeviceIoControl (a synchronous handle) still waiting: yes
+DeviceIoControl(release, on the second handle): ret=1 err=-, the driver's record:
+pend: IRQL=0, the IRP: PendingReturned=0 Cancel=0
+pend: the stack's Control: 0x00 before IoMarkIrpPending, 0x01 after
+pend: its input: "ping", OutputBufferLength=64
+pend: held, STATUS_PENDING returned
+release: in the held IRP's thread: no
+release: the held IRP: PendingReturned=0 Cancel=0, its stack's Control=0x01
+release: IoCompleteRequest(the held IRP), STATUS_SUCCESS, 23 bytes
+release: IoCompleteRequest returned
+the first DeviceIoControl returned: yes
+  ret=1 err=- returned=23
+  its output: "written by the release"
+  the byte after it untouched: yes
+drvload: done
 <<< exit code=0
 >>> drvload.exe names
 == names

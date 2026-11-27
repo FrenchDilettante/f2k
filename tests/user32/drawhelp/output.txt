@@ -1,0 +1,388 @@
+# F2K capture of drawhelp (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:36.39
+drawhelp F2KT-SOURCE-CRC=0x2398EBB2
+>>> drawhelp.exe fills
+== fills
+FillRect((1,1)-(7,5), BLACK_BRUSH): ret=1 err=-
+FillRect((5,3)-(11,7), COLOR_3DSHADOW+1): ret=1 err=-
+  row  0: ............
+  row  1: .######.....
+  row  2: .######.....
+  row  3: .####SSSSSS.
+  row  4: .####SSSSSS.
+  row  5: .....SSSSSS.
+  row  6: .....SSSSSS.
+  row  7: ............
+FillRect(an empty rectangle): ret=1 err=-
+FillRect(an inverted rectangle): ret=1 err=-
+  row  0: ............
+  row  1: .#######....
+  row  2: .#######....
+  row  3: .#######SSS.
+  row  4: .#######SSS.
+  row  5: ..######SSS.
+  row  6: .....SSSSSS.
+  row  7: ............
+FrameRect((1,1)-(9,6), BLACK_BRUSH): ret=1 err=-
+FrameRect((4,4)-(5,5)): ret=1 err=-
+FrameRect(an empty rectangle): ret=1 err=-
+FrameRect(an inverted rectangle): ret=0 err=-
+  row  0: ............
+  row  1: .########...
+  row  2: .#......#...
+  row  3: .#......#...
+  row  4: .####...#...
+  row  5: .########...
+  row  6: ............
+  row  7: ............
+InvertRect((3,2)-(10,6)) over black and white: ret=1 err=-
+InvertRect(an empty rectangle): ret=1 err=-
+InvertRect(an inverted rectangle): ret=1 err=-
+  row  0: ######HHHHHH
+  row  1: ##HHHH##HHHH
+  row  2: ##H###HH##HH
+  row  3: ##H###HH##HH
+  row  4: ##H###HH##HH
+  row  5: ##H###HH##HH
+  row  6: ######HHHHHH
+  row  7: ######HHHHHH
+drawhelp: done
+<<< exit code=0
+>>> drawhelp.exe focus
+== focus
+DrawFocusRect((1,1)-(11,7)) on white: ret=1 err=-
+  row  0: HHHHHHHHHHHH
+  row  1: HH#H#H#H#H#H
+  row  2: H#HHHHHHHHHH
+  row  3: HHHHHHHHHH#H
+  row  4: H#HHHHHHHHHH
+  row  5: HHHHHHHHHH#H
+  row  6: H#H#H#H#H#HH
+  row  7: HHHHHHHHHHHH
+DrawFocusRect again: ret=1 err=-, the canvas all white again: yes
+drawhelp: done
+<<< exit code=0
+>>> drawhelp.exe edge
+== edge
+DrawEdge((1,1)-(9,7), EDGE_RAISED, BF_RECT): ret=1 err=-
+  row  0: ..........
+  row  1: .FFFFFFFD.
+  row  2: .FHHHHHSD.
+  row  3: .FH....SD.
+  row  4: .FH....SD.
+  row  5: .FSSSSSSD.
+  row  6: .DDDDDDDD.
+  row  7: ..........
+DrawEdge((1,1)-(9,7), EDGE_SUNKEN, BF_RECT): ret=1 err=-
+  row  0: ..........
+  row  1: .SSSSSSSH.
+  row  2: .SDDDDDFH.
+  row  3: .SD....FH.
+  row  4: .SD....FH.
+  row  5: .SFFFFFFH.
+  row  6: .HHHHHHHH.
+  row  7: ..........
+DrawEdge((1,1)-(9,7), EDGE_ETCHED, BF_RECT): ret=1 err=-
+  row  0: ..........
+  row  1: .SSSSSSSH.
+  row  2: .SHHHHHSH.
+  row  3: .SH....SH.
+  row  4: .SH....SH.
+  row  5: .SSSSSSSH.
+  row  6: .HHHHHHHH.
+  row  7: ..........
+DrawEdge((1,1)-(9,7), EDGE_BUMP, BF_RECT): ret=1 err=-
+  row  0: ..........
+  row  1: .FFFFFFFD.
+  row  2: .FDDDDDFD.
+  row  3: .FD....FD.
+  row  4: .FD....FD.
+  row  5: .FFFFFFFD.
+  row  6: .DDDDDDDD.
+  row  7: ..........
+DrawEdge((1,1)-(9,7), EDGE_RAISED, BF_RECT | BF_MIDDLE): ret=1 err=-
+  row  0: ..........
+  row  1: .FFFFFFFD.
+  row  2: .FHHHHHSD.
+  row  3: .FHFFFFSD.
+  row  4: .FHFFFFSD.
+  row  5: .FSSSSSSD.
+  row  6: .DDDDDDDD.
+  row  7: ..........
+DrawEdge((1,1)-(9,7), EDGE_SUNKEN, BF_RECT | BF_FLAT): ret=1 err=-
+  row  0: ..........
+  row  1: .SSSSSSSS.
+  row  2: .SFFFFFFS.
+  row  3: .SF....FS.
+  row  4: .SF....FS.
+  row  5: .SFFFFFFS.
+  row  6: .SSSSSSSS.
+  row  7: ..........
+DrawEdge((1,1)-(9,7), EDGE_RAISED, BF_RECT | BF_MONO): ret=1 err=-
+  row  0: ..........
+  row  1: .########.
+  row  2: .#HHHHHH#.
+  row  3: .#H....H#.
+  row  4: .#H....H#.
+  row  5: .#HHHHHH#.
+  row  6: .########.
+  row  7: ..........
+DrawEdge((1,1)-(9,7), BDR_RAISEDOUTER, BF_LEFT | BF_BOTTOM): ret=1 err=-
+  row  0: ..........
+  row  1: .F........
+  row  2: .F........
+  row  3: .F........
+  row  4: .F........
+  row  5: .F........
+  row  6: .DDDDDDDD.
+  row  7: ..........
+DrawEdge((1,1)-(9,7), EDGE_RAISED, BF_DIAGONAL_ENDBOTTOMRIGHT): ret=1 err=-
+  row  0: ..........
+  row  1: .D........
+  row  2: .SD.......
+  row  3: ..SD......
+  row  4: ...SD.....
+  row  5: ....SD....
+  row  6: .....SD...
+  row  7: ..........
+DrawEdge((1,1)-(9,7), EDGE_SUNKEN, BF_RECT | BF_ADJUST): ret=1 err=-
+  the rectangle after: (3,3)-(7,5)
+  row  0: ..........
+  row  1: .SSSSSSSH.
+  row  2: .SDDDDDFH.
+  row  3: .SD....FH.
+  row  4: .SD....FH.
+  row  5: .SFFFFFFH.
+  row  6: .HHHHHHHH.
+  row  7: ..........
+DrawEdge((1,1)-(9,7), 0, BF_RECT): ret=1 err=-
+  row  0: ..........
+  row  1: ..........
+  row  2: ..........
+  row  3: ..........
+  row  4: ..........
+  row  5: ..........
+  row  6: ..........
+  row  7: ..........
+drawhelp: done
+<<< exit code=0
+>>> drawhelp.exe frame
+== frame
+DrawFrameControl((2,2)-(12,9), DFC_BUTTON, DFCS_BUTTONPUSH): ret=1 err=-
+  row  0: ..............
+  row  1: ..............
+  row  2: ..HHHHHHHHHD..
+  row  3: ..HFFFFFFFSD..
+  row  4: ..HFFFFFFFSD..
+  row  5: ..HFFFFFFFSD..
+  row  6: ..HFFFFFFFSD..
+  row  7: ..HSSSSSSSSD..
+  row  8: ..DDDDDDDDDD..
+  row  9: ..............
+  row 10: ..............
+DrawFrameControl((2,2)-(12,9), DFC_BUTTON, DFCS_BUTTONPUSH | DFCS_PUSHED): ret=1 err=-
+  row  0: ..............
+  row  1: ..............
+  row  2: ..DDDDDDDDDH..
+  row  3: ..DSSSSSSSFH..
+  row  4: ..DSFFFFFFFH..
+  row  5: ..DSFFFFFFFH..
+  row  6: ..DSFFFFFFFH..
+  row  7: ..DFFFFFFFFH..
+  row  8: ..HHHHHHHHHH..
+  row  9: ..............
+  row 10: ..............
+DrawFrameControl((2,2)-(12,9), DFC_BUTTON, DFCS_BUTTONPUSH | DFCS_FLAT): ret=1 err=-
+  row  0: ..............
+  row  1: ..............
+  row  2: ..SSSSSSSSSS..
+  row  3: ..SFFFFFFFFS..
+  row  4: ..SFFFFFFFFS..
+  row  5: ..SFFFFFFFFS..
+  row  6: ..SFFFFFFFFS..
+  row  7: ..SFFFFFFFFS..
+  row  8: ..SSSSSSSSSS..
+  row  9: ..............
+  row 10: ..............
+DrawFrameControl((2,2)-(18,18), DFC_BUTTON, DFCS_BUTTONCHECK): ret=1 err=-
+  : ink yes, outside the rectangle none
+  : the colours F H S D G # present: "FHSDG"; pixels of no such colour: none
+DrawFrameControl((2,2)-(18,18), DFC_BUTTON, DFCS_BUTTONCHECK | DFCS_CHECKED): ret=1 err=-
+  : ink yes, outside the rectangle none
+  : the colours F H S D G # present: "FHSDG#"; pixels of no such colour: none
+DrawFrameControl((2,2)-(18,18), DFC_BUTTON, DFCS_BUTTONRADIO | DFCS_CHECKED): ret=1 err=-
+  : ink yes, outside the rectangle none
+  : the colours F H S D G # present: "FHSDG#"; pixels of no such colour: none
+DrawFrameControl((2,2)-(18,18), DFC_SCROLL, DFCS_SCROLLUP): ret=1 err=-
+  : ink yes, outside the rectangle none
+  : the colours F H S D G # present: "FHSDG#"; pixels of no such colour: none
+DrawFrameControl((2,2)-(18,18), DFC_SCROLL, DFCS_SCROLLDOWN | DFCS_INACTIVE): ret=1 err=-
+  : ink yes, outside the rectangle none
+  : the colours F H S D G # present: "FHSDG"; pixels of no such colour: none
+DrawFrameControl((2,2)-(18,18), DFC_CAPTION, DFCS_CAPTIONCLOSE): ret=1 err=-
+  : ink yes, outside the rectangle none
+  : the colours F H S D G # present: "FHSDG#"; pixels of no such colour: none
+DrawFrameControl((2,2)-(18,18), DFC_MENU, DFCS_MENUCHECK): ret=1 err=-
+  : ink yes, outside the rectangle none
+  : the colours F H S D G # present: "H#"; pixels of no such colour: none
+DrawFrameControl((2,2)-(18,18), type 9): ret=0 err=-
+  : ink yes, outside the rectangle none
+  : the colours F H S D G # present: "FHSDG"; pixels of no such colour: none
+drawhelp: done
+<<< exit code=0
+>>> drawhelp.exe text
+== text
+DrawTextA(DT_CALCRECT | DT_SINGLELINE): ret is the font's height yes err=-; the width is the extent's yes, the height the font's yes
+DrawTextW(the same): ret is the font's height yes err=-; the width is the extent's yes
+DrawTextA(DT_CALCRECT | DT_WORDBREAK, half the extent wide): err=-; lines 3, a whole number of lines yes, the return the height yes, the width within the half yes
+DrawTextA(DT_SINGLELINE | DT_CENTER | DT_VCENTER): ret is the font's height no err=-
+  ink yes, outside none yes; left and right margins within 2 px yes, top and bottom within the font's height yes
+DrawTextW, the same: the same ink count yes and box yes
+DrawTextA(DT_END_ELLIPSIS | DT_MODIFYSTRING, as wide as the sample): ret=the height err=-; the string ends "...": yes, begins "A rather": yes, its extent within the width: yes
+  : ink yes, outside the rectangle none
+DrawTextW(DT_PATH_ELLIPSIS | DT_MODIFYSTRING): err=-; the string: C:\fol...\file.txt
+DrawTextA("a<tab>b", DT_CALCRECT | DT_EXPANDTABS): the width is a tab stop of 8 average characters plus "b": yes
+  DT_EXPANDTABS: the width is 8 x tmAveCharWidth plus "b": yes; with DT_TABSTOP and 4: 4 x plus "b": no
+DrawTextA("&File"): its ink box against DT_NOPREFIX's: narrower yes; lower (the underline) yes
+  its ink against "File" with no prefix: more yes
+DrawTextA(""): ret=the height err=-
+DrawTextA(a NULL DC): ret=0 err=6
+drawhelp: done
+<<< exit code=0
+>>> drawhelp.exe textex
+== textex
+DrawTextExW(DT_SINGLELINE, no parameters): ret is the height yes err=-
+DrawTextExW(iLeftMargin 20): ret is the height yes err=-; the ink moved right by 20: yes, the same ink: yes, uiLengthDrawn 14
+DrawTextExW(DT_RIGHT, iRightMargin 20): the ink ends 20 or more from the right: yes
+DrawTextExA("a<tab>b", DT_CALCRECT | DT_EXPANDTABS | DT_TABSTOP, iTabLength 2): err=-; the width is 2 x tmAveCharWidth plus "b": yes, uiLengthDrawn 3
+DrawTextExA(cbSize 4): ret=0 err=87
+drawhelp: done
+<<< exit code=0
+>>> drawhelp.exe tabbed
+== tabbed
+TabbedTextOutA("ab<tab>c", no tab stops): err=-
+  the default stop of 8 average characters: width as expected no, height the font's yes
+  ink yes, ending at the width returned (within 2 px) yes
+GetTabbedTextExtentA(the same): the same yes err=-
+GetTabbedTextExtentW(the same): the same yes err=-
+TabbedTextOutW("a<tab>b<tab>c", one stop of 40): err=-
+  repeated every 40: width as expected yes, height the font's yes
+GetTabbedTextExtentW(the same): the same yes
+TabbedTextOutA("a<tab>b<tab>c", stops 30 and 90): width as expected yes, height the font's yes
+TabbedTextOutA(three tabs, stops 30 and 90): width past 90 + "d": yes
+TabbedTextOutA(at x 20, "a<tab>b", stop 40, origin 20): width as expected yes, height the font's yes
+  the ink within x 20 to 20 + the width: yes
+TabbedTextOutA(at x 20, "a<tab>b", stop 40, origin 0): width as expected yes, height the font's yes
+TabbedTextOutA("", 0): width 0, height the font's no err=-
+drawhelp: done
+<<< exit code=0
+>>> drawhelp.exe state
+== state
+DrawStateW(DST_TEXT, DSS_NORMAL, the length given): ret=1 err=-
+  ink yes, starting at x 2 or after yes
+DrawStateA(the same): ret=1 err=-; the same ink yes
+DrawStateW(DST_TEXT, DSS_DISABLED): ret=1 err=-
+  the colours: the colours F H S D G # present: "HSG"; pixels of no such colour: none
+DrawStateW(DST_TEXT, DSS_UNION): ret=1 err=-
+  ink yes, less than DSS_NORMAL's yes
+DrawStateW(DST_TEXT, DSS_MONO with BLACK_BRUSH): ret=1 err=-
+  black only yes
+DrawStateW(DST_TEXT, length 0 (the whole string)): ret=1 err=-
+  as wide as the whole string's extent (within 2 px) yes
+DrawStateW(DST_TEXT, DSS_RIGHT, width 100): ret=1 err=-
+  the ink ends near x 100 no
+DrawStateW(DST_PREFIXTEXT "&Ab"): ret=1 err=-
+DrawStateW(DST_TEXT "&Ab"): ret=1 err=-
+  DST_PREFIXTEXT's ink box against DST_TEXT's: narrower yes
+DrawStateW(DST_BITMAP, a monochrome 8x8 cross at (2,2)): ret=1 err=-
+  row  0: ............
+  row  1: ............
+  row  2: ..#HHHHHH#..
+  row  3: ..H#HHHH#H..
+  row  4: ..HH#HH#HH..
+  row  5: ..HHH##HHH..
+  row  6: ..HHH##HHH..
+  row  7: ..HH#HH#HH..
+  row  8: ..H#HHHH#H..
+  row  9: ..#HHHHHH#..
+  row 10: ............
+  row 11: ............
+DrawStateW(DST_BITMAP, DSS_DISABLED): ret=1 err=-
+  row  0: ............
+  row  1: ............
+  row  2: ..S......S..
+  row  3: ...S....S.H.
+  row  4: ....S..S.H..
+  row  5: .....SS.H...
+  row  6: .....SSH....
+  row  7: ....S.HS....
+  row  8: ...S.H..S...
+  row  9: ..S.H....S..
+  row 10: ...H......H.
+  row 11: ............
+DrawStateW(DST_ICON, the application icon): ret=1 err=-
+  : ink yes, outside the rectangle none
+DrawStateW(DST_ICON, DSS_DISABLED): ret=1 err=-
+  the colours: the colours F H S D G # present: "HSG"; pixels of no such colour: none
+DrawStateW(DST_COMPLEX, 10x6, the callback answering TRUE): ret=1 err=-
+  the callback: 1 call(s), lParam 0x1234, wParam 0x5678, 10x6, the canvas's DC yes
+  : ink yes, outside the rectangle none
+DrawStateW(DST_COMPLEX, the callback answering FALSE): ret=0 err=-
+  the callback: 1 call(s)
+DrawStateW(DST_COMPLEX, DSS_DISABLED): ret=1 err=-
+  the callback: 1 call(s), the canvas's DC no
+  the colours: the colours F H S D G # present: "HSG"; pixels of no such colour: none
+DrawStateW(type 7): ret=0 err=-
+drawhelp: done
+<<< exit code=0
+>>> drawhelp.exe gray
+== gray
+GrayStringA("Gray", no brush, no callback): ret=1 err=-; ink yes, less than TextOutA's yes, within its box yes
+  the colours: the colours F H S D G # present: "#"; pixels of no such colour: none
+GrayStringW(the same): ret=1 err=-; the same ink yes
+GrayStringA(count 0): ret=1 err=-; the same ink yes
+GrayStringA(BLACK_BRUSH): ret=1 err=-; black only yes
+GrayStringA(a callback answering TRUE, the extent given): ret=1 err=-; 1 call(s), the canvas's DC no, data 0x4321, count 4
+  : ink yes, outside the rectangle none
+GrayStringW(a callback answering FALSE): ret=0 err=-; 1 call(s)
+  : ink no, outside the rectangle none
+GrayStringA(a callback, count 0, no extent): ret=0 err=-; 0 call(s)
+drawhelp: done
+<<< exit code=0
+>>> drawhelp.exe caption
+== caption
+SPI_GETGRADIENTCAPTIONS: 1
+setup: the window created: yes
+DrawCaption(DC_ACTIVE): ret=1 err=-
+  pixels of: COLOR_ACTIVECAPTION none, INACTIVECAPTION none, GRADIENTACTIVECAPTION none, GRADIENTINACTIVECAPTION none, 3DFACE none, CAPTIONTEXT none, INACTIVECAPTIONTEXT none; outside the rectangle none
+DrawCaption(0): ret=1 err=-
+  pixels of: COLOR_ACTIVECAPTION none, INACTIVECAPTION none, GRADIENTACTIVECAPTION none, GRADIENTINACTIVECAPTION none, 3DFACE none, CAPTIONTEXT none, INACTIVECAPTIONTEXT none; outside the rectangle none
+DrawCaption(DC_ACTIVE | DC_GRADIENT): ret=1 err=-
+  pixels of: COLOR_ACTIVECAPTION none, INACTIVECAPTION none, GRADIENTACTIVECAPTION none, GRADIENTINACTIVECAPTION none, 3DFACE none, CAPTIONTEXT none, INACTIVECAPTIONTEXT none; outside the rectangle none
+DrawCaption(DC_GRADIENT): ret=1 err=-
+  pixels of: COLOR_ACTIVECAPTION none, INACTIVECAPTION none, GRADIENTACTIVECAPTION none, GRADIENTINACTIVECAPTION none, 3DFACE none, CAPTIONTEXT none, INACTIVECAPTIONTEXT none; outside the rectangle none
+DrawCaption(DC_ACTIVE | DC_TEXT): ret=1 err=-
+  pixels of: COLOR_ACTIVECAPTION some, INACTIVECAPTION none, GRADIENTACTIVECAPTION none, GRADIENTINACTIVECAPTION none, 3DFACE none, CAPTIONTEXT some, INACTIVECAPTIONTEXT none; outside the rectangle none
+DrawCaption(DC_TEXT): ret=1 err=-
+  pixels of: COLOR_ACTIVECAPTION none, INACTIVECAPTION some, GRADIENTACTIVECAPTION none, GRADIENTINACTIVECAPTION none, 3DFACE some, CAPTIONTEXT none, INACTIVECAPTIONTEXT some; outside the rectangle none
+DrawCaption(DC_ACTIVE | DC_ICON | DC_TEXT): ret=1 err=-
+  pixels of: COLOR_ACTIVECAPTION some, INACTIVECAPTION some, GRADIENTACTIVECAPTION none, GRADIENTINACTIVECAPTION some, 3DFACE none, CAPTIONTEXT some, INACTIVECAPTIONTEXT none; outside the rectangle none
+DrawCaption(DC_ACTIVE | DC_SMALLCAP | DC_TEXT): ret=1 err=-
+  pixels of: COLOR_ACTIVECAPTION some, INACTIVECAPTION none, GRADIENTACTIVECAPTION none, GRADIENTINACTIVECAPTION none, 3DFACE none, CAPTIONTEXT some, INACTIVECAPTIONTEXT none; outside the rectangle none
+DrawCaption(DC_INBUTTON | DC_TEXT): ret=1 err=-
+  pixels of: COLOR_ACTIVECAPTION none, INACTIVECAPTION none, GRADIENTACTIVECAPTION none, GRADIENTINACTIVECAPTION none, 3DFACE some, CAPTIONTEXT none, INACTIVECAPTIONTEXT some; outside the rectangle none
+DrawCaption(a NULL window, DC_ACTIVE | DC_TEXT): ret=0 err=1400
+  pixels of: COLOR_ACTIVECAPTION none, INACTIVECAPTION none, GRADIENTACTIVECAPTION none, GRADIENTINACTIVECAPTION none, 3DFACE none, CAPTIONTEXT none, INACTIVECAPTIONTEXT none; outside the rectangle none
+drawhelp: done
+<<< exit code=0
+>>> drawhelp.exe animated
+== animated
+DrawAnimatedRects(IDANI_CAPTION): ret=1 err=-
+DrawAnimatedRects(IDANI_OPEN): ret=1 err=-
+DrawAnimatedRects(id 99): ret=1 err=-
+DrawAnimatedRects(a NULL window, IDANI_CAPTION): ret=0 err=-
+drawhelp: done
+<<< exit code=0

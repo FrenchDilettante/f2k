@@ -2,9 +2,12 @@
 # windows are hidden but for popup's. A window prints by its label, never by its handle, and thread
 # and process ids only as relations to the program's own; enumeration keeps the program's own
 # windows only.
-description = "wintree - the window tree: GetParent against GetWindow(GW_OWNER) for unowned, owned pop-up, owned overlapped, child and grandchild windows, and an owned pop-up losing WS_POPUP; GetWindowThreadProcessId of the program's own, a second thread's and the desktop window, NULL and destroyed ones; EnumWindows and EnumChildWindows (the program's windows in order, the lParam, a callback stopping early, NULL and destroyed parents); GetTopWindow and BringWindowToTop over children and top-level pop-ups; and GetLastActivePopup as owned pop-ups are shown, activated, hidden and destroyed."
+description = "wintree - the window tree: GetParent against GetWindow(GW_OWNER) for unowned, owned pop-up, owned overlapped, child and grandchild windows, and an owned pop-up losing WS_POPUP; GetWindowThreadProcessId of the program's own, a second thread's and the desktop window, NULL and destroyed ones; EnumWindows and EnumChildWindows (the program's windows in order, the lParam, a callback stopping early, NULL and destroyed parents); GetTopWindow and BringWindowToTop over children and top-level pop-ups; GetLastActivePopup as owned pop-ups are shown, activated, hidden and destroyed; and FindWindowA/W by class (name, case, atom), by title (case, prefix, a child's, a missing one), by both, by the empty title, by a class never registered, by neither, and after the windows found are destroyed (find)."
 kind = "sectioned"
 gate = true
+
+[pending]
+find = "FindWindowA/W of a class never registered leave the last error where Windows 2000 sets ERROR_FILE_NOT_FOUND"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
@@ -20,3 +23,5 @@ zorder = [
     "user32.EnumChildWindows",
 ]
 popup = ["user32.GetLastActivePopup", "user32.GetActiveWindow"]
+# find compares FindWindow's answer with GetTopWindow(NULL)'s, which zorder pins.
+find = ["user32.FindWindowA", "user32.FindWindowW"]

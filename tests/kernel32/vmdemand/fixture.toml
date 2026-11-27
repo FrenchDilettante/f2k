@@ -1,7 +1,5 @@
 # vmdemand: one test per block of the real-machine capture (output.txt); see tests/README.md.
-# Declared ahead of its real-machine files: tests\build.bat vmdemand and tests\capture.bat vmdemand
-# land vmdemand.exe and output.txt together on the VM trip; until then the suite skips the
-# fixture (f2kboot.awaited).
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat vmdemand, tests\capture.bat vmdemand).
 description = "vmdemand - the demand-paging surface: the commit charge against the commit limit with the failing status and error (commitlimit), a 1 GiB reservation with 16 MiB committed and touched at each end and what the queries report over it (reservelarge), MEM_RESET and decommit/recommit over committed, reserved and mapped pages (resetcommit), protection transitions and their query results (prottrans), NtQuerySystemInformation's performance class against GlobalMemoryStatus (sysinfo), a pattern round trip through committed private memory under pressure (pageroundtrip), a file-backed section's page-in and copy-on-write contract (filepagein), NtQueryVirtualMemory over free, reserved, committed, mapped and image regions (ntqueryvm), and the first region intact after a second is written (trimpressure)."
 kind = "sectioned"
 gate = true

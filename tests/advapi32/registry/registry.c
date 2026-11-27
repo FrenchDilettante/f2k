@@ -1312,6 +1312,7 @@ static void info_line(HKEY key, const char *where)
 {
     DWORD subkeys = UNSET, max_subkey = UNSET, max_class = UNSET, values = UNSET, max_name = UNSET,
           max_data = UNSET, cls = 64;
+    char longest_name[16], longest_data[16];
     LONG r;
 
     if (!have(query_info_key_w, query_info_key_a, "RegQueryInfoKey")) {
@@ -1326,10 +1327,14 @@ static void info_line(HKEY key, const char *where)
         r = query_info_key_a(key, (char *)cbuf.b, &cls, NULL, &subkeys, &max_subkey, &max_class, &values,
                              &max_name, &max_data, NULL, NULL);
     }
+    /* number() rotates through 4 buffers: the last two of the six numbers
+       are formatted ahead, into the line's own buffers. */
+    strcpy(longest_name, number(max_name));
+    strcpy(longest_data, number(max_data));
     line("%s(%s): ret=%ld err=%s class=%s subkeys=%s longest subkey=%s longest class=%s values=%s "
          "longest value name=%s longest data=%s", fn("RegQueryInfoKey"), where, r, le(),
          r == ERROR_SUCCESS ? name_text(cbuf.b, cls + 1) : "-", number(subkeys), number(max_subkey),
-         number(max_class), number(values), number(max_name), number(max_data));
+         number(max_class), number(values), longest_name, longest_data);
 }
 
 static void enumvalue_body(void)

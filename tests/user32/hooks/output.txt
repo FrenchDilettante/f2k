@@ -1,0 +1,244 @@
+# F2K capture of hooks (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:35.22
+hooks F2KT-SOURCE-CRC=0x7B88E92C
+>>> hooks.exe cbt
+== cbt
+SetWindowsHookExW(WH_CBT, this thread): non-NULL yes err=-
+CreateWindowExW(an overlapped window, A): 1 record(s)
+  WH_CBT: HCBT_CREATEWND, class F2KHooks, parent NULL, IsWindow yes, its procedure the class's: yes
+ShowWindow(A, SW_SHOW): 2 record(s)
+  WH_CBT: HCBT_ACTIVATE of A, fMouse 0, the active window before: NULL
+  WH_CBT: HCBT_SETFOCUS to A from NULL
+CreateWindowExW(a child of A): 1 record(s)
+  WH_CBT: HCBT_CREATEWND, class F2KHooks, parent A, IsWindow yes, its procedure the class's: yes
+SetFocus(the child): 1 record(s)
+  WH_CBT: HCBT_SETFOCUS to the child from A
+ShowWindow(A, SW_MINIMIZE): 2 record(s)
+  WH_CBT: HCBT_MINMAX of A, show command 6
+  WH_CBT: HCBT_SETFOCUS to NULL from the child
+WM_SYSCOMMAND SC_RESTORE to A: 4 record(s)
+  WH_CBT: HCBT_SYSCOMMAND 0xF120
+  WH_CBT: HCBT_MINMAX of A, show command 9
+  WH_CBT: HCBT_ACTIVATE of A, fMouse 0, the active window before: NULL
+  WH_CBT: HCBT_SETFOCUS to A from NULL
+DestroyWindow(A): 1 record(s)
+  WH_CBT: HCBT_DESTROYWND of A
+UnhookWindowsHookEx(the WH_CBT hook): ret=1 err=-
+SetWindowsHookExW(WH_CBT, the MFC pattern, this thread): non-NULL yes err=-
+CreateWindowExW(a popup, A), subclassed in HCBT_CREATEWND: 3 record(s)
+  WH_CBT: HCBT_CREATEWND, class F2KHooks, parent NULL, IsWindow yes, its procedure the class's: yes
+    subclassed; UnhookWindowsHookEx from inside: 1
+  the subclass procedure's first message: WM_NCCREATE
+  the procedure after: the subclass yes
+CreateWindowExW(another popup, B), the hook gone: 0 record(s)
+UnhookWindowsHookEx(the hook it removed itself): ret=0 err=1404
+SetWindowsHookExA(WH_CBT, this thread): non-NULL yes err=-
+CreateWindowExA(a popup): 1 record(s)
+  WH_CBT (A): HCBT_CREATEWND, class "F2KHooks", window name "ansi"
+CreateWindowExW(a popup): 1 record(s)
+  WH_CBT (A): HCBT_CREATEWND, class "F2KHooks", window name "hooks"
+both destroyed: 2 record(s)
+  WH_CBT (A): HCBT_DESTROYWND
+  WH_CBT (A): HCBT_DESTROYWND
+UnhookWindowsHookEx(the WH_CBT hook (A)): ret=1 err=-
+hooks: done
+<<< exit code=0
+>>> hooks.exe veto
+== veto
+SetWindowsHookExW(WH_CBT, this thread): non-NULL yes err=-
+CreateWindowExW, HCBT_CREATEWND vetoed: NULL yes err=2
+  then: 2 record(s)
+  WH_CBT: HCBT_CREATEWND, class F2KHooks, parent NULL, IsWindow yes, its procedure the class's: yes
+    answered 1
+DestroyWindow, HCBT_DESTROYWND vetoed: ret=0 err=-, IsWindow after: yes
+  then: 2 record(s)
+  WH_CBT: HCBT_DESTROYWND of A
+    answered 1
+ShowWindow(A), HCBT_ACTIVATE vetoed: A visible yes, the active window: NULL
+  then: 2 record(s)
+  WH_CBT: HCBT_ACTIVATE of A, fMouse 0, the active window before: NULL
+    answered 1
+SetFocus(the child), HCBT_SETFOCUS vetoed: ret NULL err=-, GetFocus after: A
+  then: 2 record(s)
+  WH_CBT: HCBT_SETFOCUS to the child from A
+    answered 1
+UnhookWindowsHookEx(the WH_CBT hook): ret=1 err=-
+hooks: done
+<<< exit code=0
+>>> hooks.exe getmsg
+== getmsg
+SetWindowsHookExW(WH_GETMESSAGE, this thread): non-NULL yes err=-
+GetMessageW of a posted message: 1 record(s)
+  WH_GETMESSAGE: code 0, PM_REMOVE, MSG_TEST wParam=1 window A
+PeekMessageW(PM_NOREMOVE): 1 record(s)
+  WH_GETMESSAGE: code 0, PM_NOREMOVE, MSG_TEST wParam=2 window A
+PeekMessageW(PM_REMOVE): 1 record(s)
+  WH_GETMESSAGE: code 0, PM_REMOVE, MSG_TEST wParam=2 window A
+SendMessageW (not through the queue): 0 record(s)
+GetMessageW, the hook setting wParam 999: 1 record(s)
+  WH_GETMESSAGE: code 0, PM_REMOVE, MSG_TEST wParam=4 window A
+  GetMessageW's message: wParam=999
+GetMessageW of a thread message: 1 record(s)
+  WH_GETMESSAGE: code 0, PM_REMOVE, MSG_TEST wParam=5 window NULL
+UnhookWindowsHookEx(the WH_GETMESSAGE hook): ret=1 err=-
+GetMessageW after the unhook: 0 record(s)
+hooks: done
+<<< exit code=0
+>>> hooks.exe callwnd
+== callwnd
+SetWindowsHookExW(WH_CALLWNDPROC, this thread): non-NULL yes err=-
+SetWindowsHookExW(WH_CALLWNDPROCRET, this thread): non-NULL yes err=-
+SendMessageW(A, MSG_TEST, 1): 3 record(s)
+  WH_CALLWNDPROC: code 0, wParam (sent by this thread) 0, MSG_TEST 1 to A
+  the window procedure: MSG_TEST wParam=1
+  WH_CALLWNDPROCRET: code 0, wParam 0, MSG_TEST 1 to A, lResult 2
+  its return: 2
+PostMessageW(A, MSG_TEST, 2), dispatched: 1 record(s)
+  the window procedure: MSG_TEST wParam=2
+CallWindowProcW(the procedure, A, MSG_TEST, 3): 1 record(s)
+  the window procedure: MSG_TEST wParam=3
+a second thread's SendMessageW(A, MSG_TEST, 7): 3 record(s)
+  WH_CALLWNDPROC: code 0, wParam (sent by this thread) non-zero, MSG_TEST 7 to A
+  the window procedure: MSG_TEST wParam=7
+  WH_CALLWNDPROCRET: code 0, wParam non-zero, MSG_TEST 7 to A, lResult 14
+UnhookWindowsHookEx(the WH_CALLWNDPROC hook): ret=1 err=-
+UnhookWindowsHookEx(the WH_CALLWNDPROCRET hook): ret=1 err=-
+hooks: done
+<<< exit code=0
+>>> hooks.exe msgfilter
+== msgfilter
+GetProcAddress(user32, CallMsgFilter): non-NULL yes
+SetWindowsHookExW(WH_MSGFILTER, this thread): non-NULL yes err=-
+DialogBoxIndirectParamW, the dialog ending itself: ret=5 err=-
+  the hook: 1 record(s)
+  WH_MSGFILTER: MSGF_DIALOGBOX, MSG_TEST wParam=1
+  MSGF_DIALOGBOX calls: some yes; other codes: none
+CallMsgFilterW(MSG_TEST, the program's code): ret=0 err=-
+  the hook: 1 record(s)
+  WH_MSGFILTER: the program's code 0x4242, MSG_TEST wParam=8, answering 0
+CallMsgFilterW(MSG_TEST, the program's code): ret=1 err=-
+  the hook: 1 record(s)
+  WH_MSGFILTER: the program's code 0x4242, MSG_TEST wParam=8, answering 1
+CallMsgFilterA(MSG_TEST, the program's code): ret=1 err=-
+  the hook: 1 record(s)
+  WH_MSGFILTER: the program's code 0x4242, MSG_TEST wParam=8, answering 1
+CallMsgFilter(MSG_TEST, the program's code): ret=1 err=-
+  the hook: 1 record(s)
+  WH_MSGFILTER: the program's code 0x4242, MSG_TEST wParam=8, answering 1
+UnhookWindowsHookEx(the WH_MSGFILTER hook): ret=1 err=-
+CallMsgFilterW, no hook(MSG_TEST, the program's code): ret=0 err=-
+  the hook: 0 record(s)
+hooks: done
+<<< exit code=0
+>>> hooks.exe keyboard
+== keyboard
+GetProcAddress(user32, SendInput): non-NULL yes
+the window is the foreground window: yes
+SetWindowsHookExW(WH_KEYBOARD, this thread): non-NULL yes err=-
+SendInput(Shift down and up): ret=2
+a PM_NOREMOVE peek, then the queue read: 5 record(s)
+  WH_KEYBOARD: HC_NOREMOVE, VK_SHIFT, down, repeat 1
+  WH_KEYBOARD: HC_ACTION, VK_SHIFT, down, repeat 1
+  the window procedure: WM_KEYDOWN wParam=16
+  WH_KEYBOARD: HC_ACTION, VK_SHIFT, up, repeat 1
+  the window procedure: WM_KEYUP wParam=16
+SendInput(Shift down and up): ret=2
+the hook swallowing the key, the queue read: 4 record(s)
+  WH_KEYBOARD: HC_ACTION, VK_SHIFT, down, repeat 1
+    answered 1
+  WH_KEYBOARD: HC_ACTION, VK_SHIFT, up, repeat 1
+    answered 1
+UnhookWindowsHookEx(the WH_KEYBOARD hook): ret=1 err=-
+hooks: done
+<<< exit code=0
+>>> hooks.exe mouse
+== mouse
+GetProcAddress(user32, SendInput): non-NULL yes
+the window is the foreground window: yes
+SetWindowsHookExW(WH_MOUSE, this thread): non-NULL yes err=-
+SendInput(a move onto A's centre): ret=1
+the queue read (the first six calls): 0 record(s)
+UnhookWindowsHookEx(the WH_MOUSE hook): ret=1 err=-
+hooks: done
+<<< exit code=0
+>>> hooks.exe chain
+== chain
+SetWindowsHookExW(WH_GETMESSAGE, the first, this thread): non-NULL yes err=-
+SetWindowsHookExW(WH_GETMESSAGE, the second, this thread): non-NULL yes err=-
+a message read, CallNextHookEx with the hook's handle: 3 record(s)
+  the second hook installed
+  the first hook installed
+    CallNextHookEx(its handle) returned 0
+a message read, CallNextHookEx with NULL: 3 record(s)
+  the second hook installed
+  the first hook installed
+    CallNextHookEx(NULL) returned 0
+a message read, the second not calling the next: 1 record(s)
+  the second hook installed
+a message read, the second removing itself: 4 record(s)
+  the second hook installed
+    UnhookWindowsHookEx(itself): 1
+  the first hook installed
+    CallNextHookEx after: 0
+a message read after: 1 record(s)
+  the first hook installed
+UnhookWindowsHookEx(the first): ret=1 err=-
+UnhookWindowsHookEx(the first again): ret=0 err=1404
+UnhookWindowsHookEx(NULL): ret=0 err=1404
+SetWindowsHookExW(id 99): non-NULL no err=1426
+SetWindowsHookExW(id -2): non-NULL no err=1426
+SetWindowsHookExW(WH_GETMESSAGE, a NULL procedure): non-NULL no err=1427
+SetWindowsHookExW(WH_GETMESSAGE, thread 0, no module): non-NULL no err=1428
+SetWindowsHookExW(WH_GETMESSAGE, a thread id no thread has): non-NULL no err=87
+SetWindowsHookExW(WH_GETMESSAGE, this thread, the program's module): non-NULL yes err=-
+hooks: done
+<<< exit code=0
+>>> hooks.exe oldstyle
+== oldstyle
+GetProcAddress(user32, SetWindowsHookW, SetWindowsHookA, UnhookWindowsHook): yes yes yes
+SetWindowsHookW(WH_GETMESSAGE): non-NULL no err=-
+  a message read: 1 record(s)
+  the old-style hook: code 0, MSG_TEST
+UnhookWindowsHook(WH_GETMESSAGE, the procedure): ret=1 err=-
+UnhookWindowsHook again: ret=0 err=1431
+  a message read after: 0 record(s)
+SetWindowsHookA(WH_GETMESSAGE): non-NULL no err=-
+  a message read: 1 record(s)
+  the old-style hook: code 0, MSG_TEST
+UnhookWindowsHook(WH_GETMESSAGE, the procedure): ret=1 err=-
+UnhookWindowsHook again: ret=0 err=1431
+  a message read after: 0 record(s)
+hooks: done
+<<< exit code=0
+>>> hooks.exe winevent
+== winevent
+GetProcAddress(user32, SetWinEventHook, UnhookWinEvent, NotifyWinEvent): yes yes yes
+SetWinEventHook(EVENT_OBJECT_CREATE to EVENT_OBJECT_DESTROY, out of context): non-NULL yes err=-
+a popup created, before the queue is read: 0 record(s)
+then the queue read: 1 record(s)
+  WinEvent: EVENT_OBJECT_CREATE, window A, idObject 0, idChild 0, the hook's handle yes, this thread yes
+the popup destroyed, the queue read: 1 record(s)
+  WinEvent: EVENT_OBJECT_DESTROY, window A, idObject 0, idChild 0, the hook's handle yes, this thread yes
+UnhookWinEvent(it): ret=1 err=-
+UnhookWinEvent(it again): ret=0 err=6
+SetWinEventHook(EVENT_MIN to EVENT_MAX, out of context): non-NULL yes err=-
+a popup created, renamed, shown and hidden: 4 record(s)
+  WinEvent: EVENT_OBJECT_CREATE, window A, idObject 0, idChild 0, the hook's handle yes, this thread yes
+  WinEvent: EVENT_OBJECT_NAMECHANGE, window A, idObject 0, idChild 0, the hook's handle yes, this thread yes
+  WinEvent: EVENT_OBJECT_SHOW, window A, idObject 0, idChild 0, the hook's handle yes, this thread yes
+  WinEvent: EVENT_OBJECT_HIDE, window A, idObject 0, idChild 0, the hook's handle yes, this thread yes
+NotifyWinEvent(the program's event, the popup, 0, 7), before the queue is read: 0 record(s)
+then the queue read: 1 record(s)
+  WinEvent: the program's event, window A, idObject 0, idChild 7, the hook's handle yes, this thread yes
+UnhookWinEvent(it): ret=1 err=-
+SetWinEventHook(the program's event only, WINEVENT_SKIPOWNTHREAD): non-NULL yes err=-
+NotifyWinEvent of it, the queue read: 0 record(s)
+UnhookWinEvent(it): ret=1 err=-
+SetWinEventHook(an inverted range): non-NULL no err=1426
+SetWinEventHook(WINEVENT_INCONTEXT, no module): non-NULL no err=1428
+UnhookWinEvent(NULL): ret=0 err=6
+hooks: done
+<<< exit code=0

@@ -1404,6 +1404,11 @@ static void sec_nofail(void)
 #define BOX_TICK_MS 100
 #define BOX_TRIES 50            /* five seconds to find the box */
 #define BOX_GRACE_TRIES 20      /* two seconds for it to go after a post */
+/* Half a second when the box has no button with the posted id: such a
+   command presses nothing (Windows 2000's capture: the box outlasted the
+   two seconds, and WM_CLOSE ended it), and the WM_CLOSE posted after it
+   still reaches the box after the command, in the order posted. */
+#define BOX_NO_BUTTON_TRIES 5
 
 static HANDLE box_thread;
 static DWORD box_owner;         /* the thread that runs the box */
@@ -1433,12 +1438,12 @@ static void record_box(HWND box)
     box_control_count = i;
 }
 
-/* Whether the box is still there after a post, given a grace period. */
-static int box_outlasts(HWND box)
+/* Whether the box is still there after a post, given `tries` ticks. */
+static int box_outlasts(HWND box, int tries)
 {
     int i;
 
-    for (i = 0; i < BOX_GRACE_TRIES; i++) {
+    for (i = 0; i < tries; i++) {
         Sleep(BOX_TICK_MS);
         if (!IsWindow(box)) {
             return 0;
@@ -1453,6 +1458,7 @@ static int box_outlasts(HWND box)
 static DWORD WINAPI box_watch(LPVOID unused)
 {
     HWND box = NULL;
+    HWND button;
     int i;
 
     (void)unused;
@@ -1467,14 +1473,14 @@ static DWORD WINAPI box_watch(LPVOID unused)
     }
     box_found = 1;
     record_box(box);
-    PostMessageW(box, WM_COMMAND, MAKEWPARAM(box_answer, BN_CLICKED),
-                 (LPARAM)GetDlgItem(box, box_answer));
-    if (!box_outlasts(box)) {
+    button = GetDlgItem(box, box_answer);
+    PostMessageW(box, WM_COMMAND, MAKEWPARAM(box_answer, BN_CLICKED), (LPARAM)button);
+    if (!box_outlasts(box, button != NULL ? BOX_GRACE_TRIES : BOX_NO_BUTTON_TRIES)) {
         return 0;
     }
     box_closed = 1;
     PostMessageW(box, WM_CLOSE, 0, 0);
-    if (!box_outlasts(box)) {
+    if (!box_outlasts(box, BOX_GRACE_TRIES)) {
         return 0;
     }
     box_gave_up = 1;

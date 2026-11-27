@@ -1,0 +1,179 @@
+# F2K capture of cursor (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:13.41
+cursor F2KT-SOURCE-CRC=0xD4CEE04E
+>>> cursor.exe show
+== show
+the counter at the start: 0 or more
+ShowCursor(TRUE): ret=start+1 err=-
+  GetCursorInfo: CURSOR_SHOWING yes
+ShowCursor(TRUE): ret=start+2 err=-
+  GetCursorInfo: CURSOR_SHOWING yes
+ShowCursor(FALSE): ret=start+1 err=-
+  GetCursorInfo: CURSOR_SHOWING yes
+ShowCursor(FALSE): ret=start+0 err=-
+  GetCursorInfo: CURSOR_SHOWING yes
+ShowCursor(FALSE): ret=start-1 err=-
+  GetCursorInfo: CURSOR_SHOWING yes
+ShowCursor(TRUE): ret=start+0 err=-
+  GetCursorInfo: CURSOR_SHOWING yes
+a second thread ran: WAIT_OBJECT_0
+second thread: ShowCursor(TRUE): ret=start+1 err=-
+second thread: ShowCursor(FALSE): ret=start+0 err=-
+ShowCursor(TRUE) on the first thread after: ret=start+1 err=-
+the counter put back: yes
+cursor: done
+<<< exit code=0
+>>> cursor.exe setget
+== setget
+setup: the window created: yes
+SetCursor(the arrow): ret=the hourglass err=-
+  GetCursor: the arrow err=-
+SetCursor(the I-beam): ret=the arrow err=-
+  GetCursor: the I-beam err=-
+SetCursor(NULL): ret=the I-beam err=-
+  GetCursor: NULL err=-
+SetCursor(the arrow): ret=NULL err=-
+  GetCursor: the arrow err=-
+SetCursor(the hourglass): ret=the arrow err=-
+  GetCursor: the hourglass err=-
+a second thread ran: WAIT_OBJECT_0
+second thread: GetCursor: the hourglass
+second thread: SetCursor(the cross): ret=the hourglass
+GetCursor on the first thread after: the hourglass err=-
+CreateCursor: non-NULL yes
+SetCursor(the program's cursor): ret=the hourglass err=-
+  GetCursor is it: yes err=-
+DestroyCursor(it): ret=1 err=-
+SetCursor(the destroyed cursor): ret=NULL err=1402
+  GetCursor: the arrow err=-
+cursor: done
+<<< exit code=0
+>>> cursor.exe clip
+== clip
+GetClipCursor at the start, against the screen: ret=1 err=-, off (0, 0, 0, 0) from it
+ClipCursor(a rectangle inside the screen): ret=1 err=-
+GetClipCursor against it: ret=1 err=-, off (0, 0, 0, 0) from it
+SetCursorPos(0, 0), against its top-left corner: the cursor is off (0, 0) from it
+SetCursorPos(the screen's last pixel), against its bottom-right corner: the cursor is off (-1, -1) from it
+SetCursorPos(above it), against (x, its top): the cursor is off (0, 0) from it
+SetCursorPos(inside it): the cursor is off (0, 0) from it
+ClipCursor(a rectangle partly off the screen): ret=1 err=-
+GetClipCursor against the part on the screen: ret=1 err=-, off (0, 0, -100, -100) from it
+  its right and bottom are the screen's: yes
+ClipCursor(an empty rectangle): ret=1 err=-
+GetClipCursor against it: ret=1 err=-, off (0, 0, 0, 0) from it
+SetCursorPos(0, 0), against its corner: the cursor is off (0, 0) from it
+ClipCursor(an inverted rectangle): ret=0 err=5
+GetClipCursor against the screen: ret=1 err=-, off (160, 120, -480, -360) from it
+ClipCursor(NULL): ret=1 err=-
+GetClipCursor after, against the screen: ret=1 err=-, off (0, 0, 0, 0) from it
+SetCursorPos(0, 0): the cursor is off (0, 0) from it
+GetClipCursor(NULL): faulted no
+cursor: done
+<<< exit code=0
+>>> cursor.exe info
+== info
+GetProcAddress(user32, GetCursorInfo): non-NULL yes
+setup: the window created: yes
+GetCursorInfo(cbSize 20): ret=1 err=-
+  flags=0x1, the cursor: the cross, the point is GetCursorPos's: yes
+GetCursorInfo(cbSize 0): ret=0 err=87
+GetCursorInfo(cbSize 40): ret=0 err=87
+cursor: done
+<<< exit code=0
+>>> cursor.exe dblclk
+== dblclk
+GetDoubleClickTime: the machine's own (500 by default) err=-
+SetDoubleClickTime(700): ret=1 err=-, GetDoubleClickTime after: 700
+SetDoubleClickTime(0): ret=1 err=-, GetDoubleClickTime after: 500
+SetDoubleClickTime(10): ret=1 err=-, GetDoubleClickTime after: 10
+SetDoubleClickTime(6000): ret=1 err=-, GetDoubleClickTime after: 5000
+the time put back: yes
+cursor: done
+<<< exit code=0
+>>> cursor.exe swap
+== swap
+the buttons set unswapped first: SM_SWAPBUTTON 0
+SwapMouseButton(TRUE): ret is non-zero no err=-, SM_SWAPBUTTON after: 1
+SwapMouseButton(TRUE): ret is non-zero yes err=-, SM_SWAPBUTTON after: 1
+SwapMouseButton(FALSE): ret is non-zero yes err=-, SM_SWAPBUTTON after: 0
+SwapMouseButton(FALSE): ret is non-zero no err=-, SM_SWAPBUTTON after: 0
+the setting put back: yes
+cursor: done
+<<< exit code=0
+>>> cursor.exe track
+== track
+GetProcAddress(user32, TrackMouseEvent): non-NULL yes
+setup: the window created: yes
+TrackMouseEvent(TME_LEAVE, the cursor outside the window): ret=1 err=-
+received in 300 ms: 1 message(s)
+  WM_MOUSELEAVE
+TrackMouseEvent(TME_QUERY): ret=1 err=-, flags=0x0, the window: NULL, hover time 0
+TrackMouseEvent(TME_LEAVE, the cursor inside): ret=1 err=-
+TrackMouseEvent(TME_QUERY): ret=1 err=-, flags=0x2, the window: the section's, hover time 0
+received in 300 ms with the cursor still: 0 message(s)
+the cursor moved out with SetCursorPos, received: 1 message(s)
+  WM_MOUSELEAVE
+WM_MOUSELEAVE came: yes
+TrackMouseEvent(TME_QUERY): ret=1 err=-, flags=0x0, the window: NULL, hover time 0
+TrackMouseEvent(TME_HOVER, HOVER_DEFAULT): ret=1 err=-
+TrackMouseEvent(TME_QUERY): ret=1 err=-, flags=0x1, the window: the section's, hover time non-zero
+WM_MOUSEHOVER came: yes, within SPI_GETMOUSEHOVERTIME and 300 ms more: yes
+TrackMouseEvent(TME_QUERY): ret=1 err=-, flags=0x0, the window: NULL, hover time 0
+TrackMouseEvent(TME_HOVER, 100 ms): ret=1 err=-
+WM_MOUSEHOVER came: yes, in 50 to 400 ms: yes
+TrackMouseEvent(TME_LEAVE): ret=1 err=-
+TrackMouseEvent(TME_LEAVE | TME_CANCEL): ret=1 err=-
+TrackMouseEvent(TME_QUERY): ret=1 err=-, flags=0x0, the window: NULL, hover time 0
+the cursor moved out after the cancel, received: 0 message(s)
+TrackMouseEvent(TME_LEAVE, cbSize 0): ret=0 err=87
+TrackMouseEvent(TME_LEAVE, cbSize 20): ret=0 err=87
+TrackMouseEvent(TME_LEAVE, NULL window): ret=0 err=1400
+TrackMouseEvent(TME_LEAVE, another thread's window): ret=1 err=-
+cursor: done
+<<< exit code=0
+>>> cursor.exe mouseev
+== mouseev
+setup: the window created: yes
+the window is the foreground window: yes
+mouse_event(an absolute move to the centre), received: 1 message(s)
+  WM_MOUSEMOVE
+WM_MOUSEMOVE came: yes
+GetCursorPos, against the centre: the cursor is off (0, 0) from it
+mouse_event(a left press and release), received: 2 message(s)
+  WM_LBUTTONDOWN
+  WM_LBUTTONUP
+WM_LBUTTONUP came: yes
+the button is up after: yes
+cursor: done
+<<< exit code=0
+>>> cursor.exe points
+== points
+GetProcAddress(user32, GetMouseMovePointsEx): non-NULL yes
+setup: the window created: yes
+the window is the foreground window: yes
+GetMouseMovePointsEx(the last move, 64 points, GMMP_USE_DISPLAY_POINTS): 3 or more yes err=-
+  the first is the last move: yes; the second the one before: yes
+  the first's time is not before the second's: yes
+GetMouseMovePointsEx(a point never moved to, display points): ret -1 err=1171
+GetMouseMovePointsEx(the last move, resolution 7): ret 2 or more err=-
+GetMouseMovePointsEx(the last move, cbSize 8): ret -1 err=87
+GetMouseMovePointsEx(the last move, 65 points): ret -1 err=87
+cursor: done
+<<< exit code=0
+>>> cursor.exe drag
+== drag
+GetProcAddress(user32, DragDetect): non-NULL yes
+setup: the window created: yes
+the window is the foreground window: yes
+DragDetect(a press, then a move past SM_CXDRAG): ret=1 err=-, returned within 100 ms: no
+  the button is up after: yes; GetCapture after: NULL
+DragDetect(a press, then a release in place): ret=0 err=-, returned within 100 ms: no
+  the button is up after: yes; GetCapture after: NULL
+DragDetect(no button down): ret=0 err=-, returned within 100 ms: yes
+  the button is up after: yes; GetCapture after: NULL
+cursor: done
+<<< exit code=0

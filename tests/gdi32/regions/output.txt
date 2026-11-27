@@ -1,8 +1,8 @@
 # F2K capture of regions (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026 12:59:44.97
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:58.00
 regions F2KT-SOURCE-CRC=0x71EA762F
 >>> regions.exe rect
 == rect

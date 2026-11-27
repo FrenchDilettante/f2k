@@ -1,9 +1,9 @@
 # F2K capture of keyinput (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026 13:00:05.83
-keyinput F2KT-SOURCE-CRC=0x25E385B4
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:55.05
+keyinput F2KT-SOURCE-CRC=0xC381BA16
 >>> keyinput.exe letters
 == letters
 RegisterClassW(F2KKeyinputLetters): atom nonzero yes err=2
@@ -365,5 +365,55 @@ read: 3 message(s)
   WM_KEYDOWN wParam=0x0058 lParam=0x002D0001 window the pop-up, focus the pop-up
   WM_CHAR wParam=0x0078 lParam=0x002D0001 window the pop-up, focus the pop-up
   WM_KEYUP wParam=0x0058 lParam=0xC02D0001 window the pop-up, focus the pop-up
+keyinput: done
+<<< exit code=0
+>>> keyinput.exe async
+== async
+RegisterClassW(F2KKeyinputAsync): atom nonzero yes err=2
+CreateWindowExW(F2KKeyinputAsync, visible pop-up): non-NULL yes err=-
+SetForegroundWindow(h): ret=1 err=-
+the foreground window: yes; the focus: yes
+keyboard layout US English (0409): yes
+Caps Lock on: no; Num Lock on: no
+-- keys no one presses
+GetAsyncKeyState('A'): down no, the other bits but the low one 0x0000 err=-
+GetAsyncKeyState('A') again: 0x0000 err=-
+GetAsyncKeyState(VK_SHIFT): down no, the other bits but the low one 0x0000 err=-
+GetAsyncKeyState(VK_LSHIFT): down no, the other bits but the low one 0x0000 err=-
+GetAsyncKeyState(VK_CONTROL): down no, the other bits but the low one 0x0000 err=-
+GetAsyncKeyState(VK_MENU): down no, the other bits but the low one 0x0000 err=-
+GetAsyncKeyState(VK_RETURN): down no, the other bits but the low one 0x0000 err=-
+GetAsyncKeyState(VK_RETURN) again: 0x0000 err=-
+GetAsyncKeyState(VK_CAPITAL): down no, the other bits but the low one 0x0000 err=-
+GetAsyncKeyState(VK_LBUTTON): down no, the other bits but the low one 0x0000 err=-
+GetAsyncKeyState(VK_F1): down no, the other bits but the low one 0x0000 err=-
+GetAsyncKeyState(0): down no, the other bits but the low one 0x0000 err=-
+GetAsyncKeyState(255): down no, the other bits but the low one 0x0000 err=-
+-- invalid keys
+GetAsyncKeyState(256): 0x0000 err=87
+GetAsyncKeyState(-1): 0x0000 err=87
+GetAsyncKeyState(0x10041): 0x0000 err=87
+-- Shift held: its key-down alone, then its key-up
+GetAsyncKeyState(VK_SHIFT) before: down no, the other bits but the low one 0x0000 err=-
+SendInput(1 event, Shift's key-down): ret=1 err=-
+  its key message arrived: yes
+GetAsyncKeyState(VK_SHIFT): 0x8001 err=-
+GetAsyncKeyState(VK_SHIFT) again: 0x8000 err=-
+GetAsyncKeyState(VK_LSHIFT): 0x0000 err=-
+GetAsyncKeyState(VK_RSHIFT): down no, the other bits but the low one 0x0000 err=-
+  GetKeyState(VK_SHIFT) down: yes
+SendInput(1 event, Shift's key-up): ret=1 err=-
+  its key message arrived: yes
+GetAsyncKeyState(VK_SHIFT): 0x0000 err=-
+GetAsyncKeyState(VK_LSHIFT): 0x0000 err=-
+-- 'Q' pressed and released
+SendInput(2 events): ret=2 err=-
+the batch arrived: yes
+received: 3 message(s)
+  WM_KEYDOWN wParam=0x0051 lParam=0x00100001 (repeat 1, scan 0x10, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no key yes
+  WM_CHAR wParam=0x0071 lParam=0x00100001 (repeat 1, scan 0x10, extended 0, context 0, previous 0, transition 0) down: shift no ctrl no alt no
+  WM_KEYUP wParam=0x0051 lParam=0xC0100001 (repeat 1, scan 0x10, extended 0, context 0, previous 1, transition 1) down: shift no ctrl no alt no key no
+GetAsyncKeyState('Q'): 0x0001 err=-
+GetAsyncKeyState('Q') again: 0x0000 err=-
 keyinput: done
 <<< exit code=0

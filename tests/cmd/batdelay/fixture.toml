@@ -1,8 +1,7 @@
 # batdelay: one test, the script's one block (`cmd /c batdelay.cmd`, output.txt); see tests/README.md,
 # "Script fixtures".
-# Declared ahead of its capture (shallow-gui-cmd finding 26: delayed expansion).
+# Captured on the 2026-11-27 VM trip (shallow-gui-cmd finding 26: delayed expansion).
 description = "batdelay - delayed expansion: off by default, setlocal enabledelayedexpansion, a block and a for's command seeing what they set, if's words, a for's set, the ERRORLEVEL as a command runs, a variable's edits, an undefined variable and a lone bang, carets with bangs (doubled, single, quoted), a bang and a caret in a for /f value, nested setlocal disabledelayedexpansion, endlocal turning it off, and cmd /v:on's command line beside cmd /c's."
 kind = "script"
 gate = true
 timeout = 60
-pending = "not captured yet: the placeholder block awaits the next VM trip (tests\\capture.bat batdelay)"

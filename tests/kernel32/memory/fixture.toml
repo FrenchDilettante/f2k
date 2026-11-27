@@ -1,11 +1,19 @@
 # memory: one test per block of the real-machine capture (output.txt); see tests/README.md.
-description = "memory - allocation, address space, and stacks (memory.c): the C runtime heap the way programs use it, the Win32 heaps, Local/Global memory, the virtual memory API and its protections, the image's own sections, paging-file mappings, stacks, NtQuerySection, a console call writing into a thread's stack guard page, GlobalFlags over the GMEM_ blocks, Local/Global handle semantics (handles) and a capped heap's limits (heapcap)."
+description = "memory - allocation, address space, and stacks (memory.c): the C runtime heap the way programs use it, the Win32 heaps, Local/Global memory, the virtual memory API and its protections, the image's own sections, paging-file mappings, stacks, NtQuerySection, a console call writing into a thread's stack guard page, GlobalFlags over the GMEM_ blocks, Local/Global handle semantics (handles), a capped heap's limits (heapcap), the largest block to the byte, a freed block's errors and a fixed block's unlock (heaperr), and GlobalMemoryStatus's 32-bit fields against GlobalMemoryStatusEx's on a 3 GiB machine (largemem, captured by hand into overrides.txt)."
 kind = "sectioned"
 gate = true
 [masks]
 # Free regions run to the next allocation, wherever the system put it.
 virtual = ["released: state 0x10000 protect 0x1 type 0x0 region * allocprotect 0x0"]
 image = ["past the image end: state 0x10000 protect 0x1 type 0x0 region * allocprotect 0x0"]
+
+[skip]
+# largemem's block is a 3 GiB machine's (overrides.txt, run by hand on such a VM): F2K's boots have
+# 256 MiB (the RAM disk keeps RAM_MEMORY, and a fixture's `memory` would boot every block at it).
+largemem = "its block is a 3 GiB machine's, captured by hand; F2K's corpus boots have 256 MiB, so every 2 GiB relation would differ"
+
+[pending]
+heaperr = "HeapReAlloc of a freed block in a capped heap (HeapCreate's maximum 16 MiB) answers NULL with ERROR_INVALID_PARAMETER, where Windows 2000 answers a block and sets the same error"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
@@ -162,4 +170,29 @@ heapcap = [
     "ntdll.RtlCreateHeap",
     "ntdll.RtlAllocateHeap",
     "ntdll.RtlReAllocateHeap",
+]
+heaperr = [
+    "kernel32.HeapCreate",
+    "kernel32.HeapDestroy",
+    "kernel32.HeapAlloc",
+    "kernel32.HeapReAlloc",
+    "kernel32.HeapFree",
+    "kernel32.GlobalAlloc",
+    "kernel32.GlobalFree",
+    "kernel32.GlobalUnlock",
+    "kernel32.LocalAlloc",
+    "kernel32.LocalFree",
+    "kernel32.LocalUnlock",
+    "ntdll.RtlAllocateHeap",
+    "ntdll.RtlReAllocateHeap",
+    "ntdll.RtlFreeHeap",
+]
+largemem = [
+    "kernel32.GlobalMemoryStatus",
+    "kernel32.GlobalMemoryStatusEx",
+    "kernel32.GetModuleHandleA",
+    "kernel32.GetProcAddress",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "ntdll.NtQuerySystemInformation",
 ]

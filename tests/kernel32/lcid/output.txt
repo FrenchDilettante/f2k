@@ -1,8 +1,8 @@
 # F2K capture of lcid (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026  0:28:18.74
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:39:11.07
 lcid F2KT-SOURCE-CRC=0xAD2FB6D1
 >>> lcid.exe badlcid
 == badlcid

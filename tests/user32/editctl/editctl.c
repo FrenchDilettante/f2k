@@ -92,6 +92,21 @@
  *   margins  EM_GETMARGINS as created, after EM_SETMARGINS with each
  *            EC_ flag and none; EC_USEFONTINFO as relations; the
  *            caret's move when the left margin grows by 10
+ *   fontmargins  EC_USEFONTINFO's margins against the font's metrics,
+ *            on fresh edits: the system font (no WM_SETFONT), then
+ *            DEFAULT_GUI_FONT, Tahoma -11 and Times New Roman -24
+ *            italic set by WM_SETFONT over margins 21,23. For each font a
+ *            line of its facts (TrueType, any negative A or C width, avg/2
+ *            and letters/2 the same); each margin prints as the names of
+ *            the values it equals, joined by '=': 0, avg/2 and avg/2-1
+ *            (tmAveCharWidth halved, rounded down, and less 1),
+ *            letters/2 (half the average width of a-z and A-Z, rounded
+ *            as GdiGetCharDimensions does: (cx / 26 + 1) / 2), negA and
+ *            negC (the widest negative A and C widths of characters
+ *            0x20-0xFF, GetCharABCWidthsW), kept (what EM_SETMARGINS set
+ *            before), or its number when it equals none of them. Margins
+ *            after WM_SETFONT, after EM_SETMARGINS(EC_USEFONTINFO) on both
+ *            and on the left alone, single-line and multiline
  *   linescroll  a two-line-high multiline edit holding six lines:
  *            EM_LINESCROLL's answers (down, up, past either end,
  *            sideways) and EM_GETFIRSTVISIBLELINE after each, EM_SCROLL
@@ -1343,6 +1358,193 @@ static void sec_margins(void)
     close_parent();
 }
 
+/* --- fontmargins ------------------------------------------------------- */
+
+/* A font's values EC_USEFONTINFO's margins are compared with. */
+typedef struct {
+    int avg;        /* tmAveCharWidth */
+    int letters;    /* the average width of a-z and A-Z, GdiGetCharDimensions' rounding */
+    int neg_a;      /* the widest negative A width, as a positive number; 0 for none */
+    int neg_c;      /* the same for C */
+    int truetype;
+} fm_t;
+
+static void font_metrics(HWND h, fm_t *m)
+{
+    static const WCHAR letters[] = L"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    TEXTMETRICW tm;
+    ABC abc[0xE0];
+    SIZE sz;
+    HDC dc;
+    HFONT font, old = NULL;
+    int i;
+
+    ZeroMemory(m, sizeof *m);
+    ZeroMemory(&tm, sizeof tm);
+    dc = GetDC(h);
+    font = (HFONT)SendMessageW(h, WM_GETFONT, 0, 0);
+    if (font != NULL) {
+        old = (HFONT)SelectObject(dc, font);
+    }
+    GetTextMetricsW(dc, &tm);
+    m->avg = tm.tmAveCharWidth;
+    m->truetype = (tm.tmPitchAndFamily & TMPF_TRUETYPE) != 0;
+    sz.cx = sz.cy = 0;
+    GetTextExtentPoint32W(dc, letters, 52, &sz);
+    m->letters = (sz.cx / 26 + 1) / 2;
+    if (GetCharABCWidthsW(dc, 0x20, 0xFF, abc)) {
+        for (i = 0; i < 0xE0; i++) {
+            if (-abc[i].abcA > m->neg_a) {
+                m->neg_a = -abc[i].abcA;
+            }
+            if (-abc[i].abcC > m->neg_c) {
+                m->neg_c = -abc[i].abcC;
+            }
+        }
+    }
+    if (font != NULL) {
+        SelectObject(dc, old);
+    }
+    ReleaseDC(h, dc);
+}
+
+/* A margin as the names of the values it equals; its number when none. */
+static const char *margin_rel(unsigned v, int kept, const fm_t *m)
+{
+    static char bufs[4][96];
+    static int next;
+    char *b = bufs[next++ & 3];
+    int n = 0;
+
+    b[0] = '\0';
+    if (v == 0) {
+        n += sprintf(b + n, "0");
+    }
+    if (v != 0 && (int)v == m->avg / 2) {
+        n += sprintf(b + n, "%savg/2", n ? "=" : "");
+    }
+    if (v != 0 && (int)v == m->avg / 2 - 1) {
+        n += sprintf(b + n, "%savg/2-1", n ? "=" : "");
+    }
+    if (v != 0 && (int)v == m->letters / 2) {
+        n += sprintf(b + n, "%sletters/2", n ? "=" : "");
+    }
+    if (v != 0 && (int)v == m->neg_a) {
+        n += sprintf(b + n, "%snegA", n ? "=" : "");
+    }
+    if (v != 0 && (int)v == m->neg_c) {
+        n += sprintf(b + n, "%snegC", n ? "=" : "");
+    }
+    if (kept >= 0 && (int)v == kept) {
+        n += sprintf(b + n, "%skept", n ? "=" : "");
+    }
+    if (n == 0) {
+        sprintf(b, "%u", v);
+    }
+    return b;
+}
+
+/* EM_GETMARGINS as relations; kept_left/kept_right: what was set before (-1: nothing). */
+static void margins_rel(HWND h, int kept_left, int kept_right, const fm_t *m)
+{
+    LRESULT r;
+    const char *e;
+
+    arm();
+    r = SendMessageW(h, EM_GETMARGINS, 0, 0);
+    e = le();
+    line("  EM_GETMARGINS: err=%s left=%s right=%s", e, margin_rel(LOWORD(r), kept_left, m),
+         margin_rel(HIWORD(r), kept_right, m));
+}
+
+/* A message's answer, then the margins as relations. */
+static void send_margins(HWND h, UINT msg, WPARAM wparam, LPARAM lparam, const char *what, int kept_left,
+                         int kept_right, const fm_t *m)
+{
+    LRESULT r;
+    const char *e;
+
+    arm();
+    r = SendMessageW(h, msg, wparam, lparam);
+    e = le();
+    line("%s: ret=%ld err=%s", what, (long)r, e);
+    margins_rel(h, kept_left, kept_right, m);
+}
+
+/* EC_USEFONTINFO on both margins, then on the left alone over 21,23. */
+static void use_font_info(HWND h, const char *name, const fm_t *m)
+{
+    char what[96];
+
+    sprintf(what, "EM_SETMARGINS(%s, both, EC_USEFONTINFO)", name);
+    send_margins(h, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELONG(EC_USEFONTINFO, EC_USEFONTINFO),
+                 what, -1, -1, m);
+    SendMessageW(h, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELONG(21, 23));
+    sprintf(what, "EM_SETMARGINS(%s, EC_LEFTMARGIN, EC_USEFONTINFO) over 21,23", name);
+    send_margins(h, EM_SETMARGINS, EC_LEFTMARGIN, MAKELONG(EC_USEFONTINFO, 0), what, 21, 23, m);
+}
+
+static void font_line(const fm_t *m)
+{
+    line("  the font: TrueType %s, a negative A or C width %s, avg/2 the same as letters/2 %s", yesno(m->truetype),
+         yesno(m->neg_a > 0 || m->neg_c > 0), yesno(m->avg / 2 == m->letters / 2));
+}
+
+static void font_margins(HFONT font, const char *font_name)
+{
+    HWND edits[2];
+    const char *names[2];
+    fm_t m;
+    int i;
+
+    edits[0] = single;
+    edits[1] = multi;
+    names[0] = "single";
+    names[1] = "multi";
+    line("-- %s", font_name);
+    for (i = 0; i < 2; i++) {
+        SendMessageW(edits[i], EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELONG(21, 23));
+        SendMessageW(edits[i], WM_SETFONT, (WPARAM)font, FALSE);
+        font_metrics(edits[i], &m);
+        if (i == 0) {
+            font_line(&m);
+        }
+        line("WM_SETFONT(%s, FALSE) over 21,23", names[i]);
+        margins_rel(edits[i], 21, 23, &m);
+        use_font_info(edits[i], names[i], &m);
+    }
+}
+
+static void sec_fontmargins(void)
+{
+    HFONT tahoma, times;
+    fm_t m;
+
+    open_parent();
+    open_edits(L"Hello", L"Hello");
+    line("-- the system font (no WM_SETFONT)");
+    font_metrics(single, &m);
+    font_line(&m);
+    line("single as created");
+    margins_rel(single, -1, -1, &m);
+    use_font_info(single, "single", &m);
+    font_metrics(multi, &m);
+    line("multi as created");
+    margins_rel(multi, -1, -1, &m);
+    use_font_info(multi, "multi", &m);
+
+    tahoma = CreateFontW(-11, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS,
+                         CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Tahoma");
+    times = CreateFontW(-24, 0, 0, 0, FW_NORMAL, TRUE, FALSE, FALSE, ANSI_CHARSET, OUT_DEFAULT_PRECIS,
+                        CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Times New Roman");
+    font_margins((HFONT)GetStockObject(DEFAULT_GUI_FONT), "DEFAULT_GUI_FONT");
+    font_margins(tahoma, "Tahoma -11");
+    font_margins(times, "Times New Roman -24 italic");
+    close_parent();
+    DeleteObject(tahoma);
+    DeleteObject(times);
+}
+
 /* --- password ---------------------------------------------------------- */
 
 static void get_password(HWND h, const char *what)
@@ -1468,6 +1670,7 @@ static const section_t sections[] = {
     { "linescroll", sec_linescroll, F2KT_ALWAYS },
     { "password", sec_password, F2KT_ALWAYS },
     { "gethandle", sec_gethandle, F2KT_ALWAYS },
+    { "fontmargins", sec_fontmargins, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

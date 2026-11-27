@@ -1,9 +1,9 @@
 # F2K capture of registry (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
-# date: Sat 21/11/2026  7:37:51.62
-registry F2KT-SOURCE-CRC=0x13E950EA
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:58.77
+registry F2KT-SOURCE-CRC=0x13BAB974
 >>> registry.exe create
 == create
 -- the W calls
@@ -399,7 +399,7 @@ RegEnumValueW(F2K, 3, 64 units, 1024): ret=0 err=- cch=3 name=bin\0 type=REG_BIN
 RegEnumValueW(F2K, 4, 64 units, 1024): ret=0 err=- cch=6 name=Longer\0 type=REG_SZ cb=26 data=a longer one\0
 RegEnumValueW(F2K, 5, 64 units, 1024): ret=259 err=- cch=64 name=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC> type=968 cb=1024 buffer=untouched
 RegEnumValueW(F2K, 50, 64 units, 1024), far past the end: ret=259 err=- cch=64 name=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC> type=968 cb=1024 buffer=untouched
-RegQueryInfoKeyW(F2K): ret=0 err=- class=\0 subkeys=1 longest subkey=3 longest class=0 values=5 longest value name=1 longest data=3
+RegQueryInfoKeyW(F2K): ret=0 err=- class=\0 subkeys=1 longest subkey=3 longest class=0 values=5 longest value name=6 longest data=26
 solo: one value, "value", REG_SZ "data!" (its terminator counted)
 RegEnumValueW(solo, 0, 0 units, 1024), a 0-unit name buffer: ret=234 err=- cch=0 name=(none) type=REG_SZ cb=12 buffer=untouched
 RegEnumValueW(solo, 0, 3 units, 1024), 3 units: ret=234 err=- cch=3 name=<U+CCCC><U+CCCC><U+CCCC> type=REG_SZ cb=12 buffer=untouched
@@ -413,7 +413,7 @@ RegEnumValueW(solo, 0, 64 units, 0), 0 bytes of data: ret=234 err=- cch=5 name=v
 RegEnumValueW(solo, 0, 3 units, 2), the name and the data both short: ret=234 err=- cch=3 name=<U+CCCC><U+CCCC><U+CCCC> type=REG_SZ cb=12 buffer=CC CC
 RegEnumValueW(solo, 1, 64 units, 1024), the end: ret=259 err=- cch=64 name=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC> type=964 cb=1024 buffer=untouched
 RegEnumValueW(solo, 0), a non-NULL lpReserved: ret=87 err=-
-RegQueryInfoKeyW(solo): ret=0 err=- class=\0 subkeys=0 longest subkey=0 longest class=0 values=1 longest value name=0 longest data=0
+RegQueryInfoKeyW(solo): ret=0 err=- class=\0 subkeys=0 longest subkey=0 longest class=0 values=1 longest value name=5 longest data=12
 RegEnumValueW(sub, 0, 64 units, 1024), a key with no values: ret=259 err=- cch=64 name=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC> type=960 cb=1024 buffer=untouched
 RegQueryInfoKeyW(sub): ret=0 err=- class=\0 subkeys=0 longest subkey=0 longest class=0 values=0 longest value name=0 longest data=0
 RegEnumValueW(a bogus handle, 0, 64 units, 1024): ret=6 err=- cch=64 name=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC> type=2147483644 cb=1024 buffer=untouched
@@ -427,7 +427,7 @@ RegEnumValueA(F2K, 3, 64 units, 1024): ret=0 err=- cch=3 name=bin\0 type=REG_BIN
 RegEnumValueA(F2K, 4, 64 units, 1024): ret=0 err=- cch=6 name=Longer\0 type=REG_SZ cb=13 data=a longer one\0
 RegEnumValueA(F2K, 5, 64 units, 1024): ret=259 err=- cch=64 name=\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC type=unset cb=1024 buffer=untouched
 RegEnumValueA(F2K, 50, 64 units, 1024), far past the end: ret=259 err=- cch=64 name=\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC type=unset cb=1024 buffer=untouched
-RegQueryInfoKeyA(F2K): ret=0 err=- class=\0 subkeys=1 longest subkey=3 longest class=0 values=5 longest value name=1 longest data=3
+RegQueryInfoKeyA(F2K): ret=0 err=- class=\0 subkeys=1 longest subkey=3 longest class=0 values=5 longest value name=6 longest data=26
 solo: one value, "value", REG_SZ "data!" (its terminator counted)
 RegEnumValueA(solo, 0, 0 units, 1024), a 0-unit name buffer: ret=234 err=- cch=0 name=(none) type=REG_SZ cb=6 buffer=written
 RegEnumValueA(solo, 0, 3 units, 1024), 3 units: ret=234 err=- cch=3 name=va\0 type=REG_SZ cb=6 buffer=written
@@ -441,7 +441,7 @@ RegEnumValueA(solo, 0, 64 units, 0), 0 bytes of data: ret=234 err=- cch=64 name=
 RegEnumValueA(solo, 0, 3 units, 2), the name and the data both short: ret=234 err=- cch=3 name=\xCC\xCC\xCC type=REG_SZ cb=6 buffer=CC CC
 RegEnumValueA(solo, 1, 64 units, 1024), the end: ret=259 err=- cch=64 name=\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC type=unset cb=1024 buffer=untouched
 RegEnumValueA(solo, 0), a non-NULL lpReserved: ret=87 err=-
-RegQueryInfoKeyA(solo): ret=0 err=- class=\0 subkeys=0 longest subkey=0 longest class=0 values=1 longest value name=0 longest data=0
+RegQueryInfoKeyA(solo): ret=0 err=- class=\0 subkeys=0 longest subkey=0 longest class=0 values=1 longest value name=5 longest data=12
 RegEnumValueA(sub, 0, 64 units, 1024), a key with no values: ret=259 err=- cch=64 name=\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC type=unset cb=1024 buffer=untouched
 RegQueryInfoKeyA(sub): ret=0 err=- class=\0 subkeys=0 longest subkey=0 longest class=0 values=0 longest value name=0 longest data=0
 RegEnumValueA(a bogus handle, 0, 64 units, 1024): ret=6 err=- cch=64 name=\xCC\xCC\xCC\xCC\xCC\xCC\xCC\xCC type=unset cb=1024 buffer=untouched

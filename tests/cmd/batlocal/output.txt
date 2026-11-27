@@ -1,5 +1,48 @@
 # F2K capture of batlocal (tests\capture.bat)
 
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:41:03.30
 >>> cmd /c batlocal.cmd
-(not captured yet: tests\capture.bat batlocal replaces this placeholder)
+== setlocal and endlocal
+inside: [inner] [new]
+after endlocal: [outer] []
+deleted inside: []
+after endlocal: [outer]
+== nested
+after one endlocal: [one]
+after the second: [outer]
+== endlocal and set on one line
+carried out: [carried]
+== endlocal without a setlocal
+still: [outer]
+== the current directory
+inside: in batlocal.d
+after endlocal: not in batlocal.d
+== a called label's setlocal ends with it
+in the label: [in the label] [the label's]
+after the call: [outer] []
+== an endlocal in a called label leaves its caller's setlocal
+in the label after endlocal: [caller]
+after the call: [caller]
+after endlocal: [outer]
+== a called batch file's setlocal left open
+after the called file: [outer]
+== setlocal's errorlevel
+no argument: 0
+enableextensions: 0
+two arguments: 0
+Invalid parameter to SETLOCAL command
+an unknown argument: 1
+after endlocal: [outer]
+endlocal keeps: 6
+== 33 setlocals
+Maximum setlocal recursion level reached.
+after 33: [33]
+after an endlocal: [32]
+exit code 0
+== outside a batch file
+exit code 0
+BATLOCD=y
+exit code 0
 <<< exit code=0

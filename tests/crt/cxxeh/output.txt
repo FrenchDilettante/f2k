@@ -1,8 +1,8 @@
 # F2K capture of cxxeh (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Thu 11/12/2026 10:40:33.39
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:59.77
 cxxeh F2KT-SOURCE-CRC=0xB5A3BE96
 >>> cxxeh.exe catch
 == catch

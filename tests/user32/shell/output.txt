@@ -1,0 +1,205 @@
+# F2K capture of shell (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:39:55.35
+shell F2KT-SOURCE-CRC=0xACC35B0E
+>>> shell.exe windows
+== windows
+GetShellWindow: non-NULL yes err=-
+  IsWindow: yes
+  GetClassNameA: ret=7 "Progman" err=-
+  GetClassNameW: ret=7 "Progman" err=-
+  this process's: no
+GetProgmanWindow: non-NULL no err=-
+GetTaskmanWindow: non-NULL yes err=-
+  IsWindow: yes
+  GetClassNameA: ret=14 "MSTaskSwWClass" err=-
+  GetClassNameW: ret=14 "MSTaskSwWClass" err=-
+  this process's: no
+the progman window is the shell window: no
+the taskman window is the shell window: no
+the shell window is the desktop window: no
+shell: done
+<<< exit code=0
+>>> shell.exe setshell
+== setshell
+a shell window held: yes
+the fixture's hidden popup: non-NULL yes
+SetShellWindow(the popup): ret=0 err=-
+  GetShellWindow unchanged: yes
+SetShellWindowEx(the popup, the popup): ret=0 err=-
+  GetShellWindow unchanged: yes
+GetShellWindow after the popup's destruction unchanged: yes
+shell: done
+<<< exit code=0
+>>> shell.exe shellhook
+== shellhook
+RegisterWindowMessageA(SHELLHOOK): in 0xC000..0xFFFF yes err=-
+RegisterShellHookWindow(the popup): ret=1 err=-
+RegisterShellHookWindow(the popup) again: ret=0 err=-
+DeregisterShellHookWindow(the popup): ret=1 err=-
+DeregisterShellHookWindow(the popup) again: ret=1 err=-
+RegisterShellHookWindow(a destroyed window): ret=0 err=-
+DeregisterShellHookWindow(a destroyed window): ret=0 err=-
+shell: done
+<<< exit code=0
+>>> shell.exe alttab
+== alttab
+GetAltTabInfo(NULL, -1, cbSize 40): ret=0 err=1168
+GetAltTabInfo(the popup, -1, cbSize 40): ret=0 err=1400
+GetAltTabInfoA(NULL, -1, cbSize 40): ret=0 err=1168
+GetAltTabInfoA(the popup, -1, cbSize 40): ret=0 err=1400
+GetAltTabInfoA(NULL, -1, cbSize 0): ret=0 err=87
+GetAltTabInfoW(NULL, -1, cbSize 40): ret=0 err=1168
+GetAltTabInfoW(the popup, -1, cbSize 40): ret=0 err=1400
+GetAltTabInfoW(NULL, -1, cbSize 0): ret=0 err=87
+shell: done
+<<< exit code=0
+>>> shell.exe endtask
+== endtask
+the child started: yes
+the child's window made: yes
+FindWindowA(its class, its title): the child's window yes
+EndTask(the child's window, FALSE, TRUE): ret=1 err=-
+the child ended within 15 s: yes
+its exit code its message loop's (7): no
+IsWindow(the child's window) after: no
+shell: done
+<<< exit code=0
+>>> shell.exe paintdesk
+== paintdesk
+PaintDesktop(a memory DC): ret=0 err=-
+PaintDesktop(the hidden popup's DC): ret=1 err=-
+PaintDesktop(NULL): ret=1 err=-
+shell: done
+<<< exit code=0
+>>> shell.exe caption
+== caption
+DrawCaptionTempA(the popup, DC_ACTIVE|DC_TEXT): ret=1 err=-
+  any pixel drawn: yes, every pixel: yes, more than one colour: yes
+DrawCaptionTempA(the popup, DC_TEXT): ret=1 err=-
+  any pixel drawn: yes, every pixel: yes, more than one colour: yes
+DrawCaptionTempA(the popup, DC_ACTIVE): ret=1 err=-
+  any pixel drawn: no, every pixel: no, more than one colour: no
+DrawCaptionTempW(the popup, DC_ACTIVE|DC_TEXT): ret=1 err=-
+  any pixel drawn: yes, every pixel: yes, more than one colour: yes
+DrawCaptionTempW(the popup, DC_TEXT): ret=1 err=-
+  any pixel drawn: yes, every pixel: yes, more than one colour: yes
+DrawCaptionTempW(the popup, DC_ACTIVE): ret=1 err=-
+  any pixel drawn: no, every pixel: no, more than one colour: no
+shell: done
+<<< exit code=0
+>>> shell.exe arrange
+== arrange
+the parent's client: 400 x 300
+CascadeWindows(the parent, 0, NULL, 4 children): ret=4 err=-
+  child 0: 66 66 378 278
+  child 1: 44 44 356 256
+  child 2: 22 22 334 234
+  child 3: 0 0 312 212
+CascadeWindows(the parent, 0, rect 20 10 220 210, 4 children): ret=4 err=-
+  child 0: 86 76 220 210
+  child 1: 64 54 198 188
+  child 2: 42 32 176 166
+  child 3: 20 10 154 144
+child 1 disabled
+CascadeWindows(the parent, MDITILE_SKIPDISABLED, NULL, 4 children): ret=3 err=-
+  child 0: 44 44 356 256
+  child 1: 30 30 150 110
+  child 2: 22 22 334 234
+  child 3: 0 0 312 212
+child 2 hidden
+CascadeWindows(the parent, 0, NULL, 4 children): ret=3 err=-
+  child 0: 44 44 356 256
+  child 1: 22 22 334 234
+  child 2: 50 50 170 130
+  child 3: 0 0 312 212
+TileWindows(the parent, MDITILE_VERTICAL, NULL, 4 children): ret=4 err=-
+  child 0: 0 0 200 150
+  child 1: 0 150 200 300
+  child 2: 200 0 400 150
+  child 3: 200 150 400 300
+TileWindows(the parent, MDITILE_HORIZONTAL, NULL, 4 children): ret=4 err=-
+  child 0: 0 0 200 150
+  child 1: 0 150 200 300
+  child 2: 200 0 400 150
+  child 3: 200 150 400 300
+TileWindows(the parent, MDITILE_VERTICAL, rect 20 10 220 210, 4 children): ret=4 err=-
+  child 0: 20 10 132 110
+  child 1: 20 110 132 210
+  child 2: 120 10 232 110
+  child 3: 120 110 232 210
+child 1 disabled
+TileWindows(the parent, MDITILE_HORIZONTAL|MDITILE_SKIPDISABLED, NULL, 4 children): ret=3 err=-
+  child 0: 0 0 400 100
+  child 1: 30 30 150 110
+  child 2: 0 100 400 200
+  child 3: 0 200 400 300
+shell: done
+<<< exit code=0
+>>> shell.exe hotkey
+== hotkey
+RegisterHotKey(the popup, 1, Ctrl+Alt+Shift+F23): ret=1 err=-
+RegisterHotKey(the popup, 1, Ctrl+Alt+Shift+F22): ret=1 err=-
+RegisterHotKey(the popup, 2, Ctrl+Alt+Shift+F23): ret=1 err=-
+RegisterHotKey(NULL, 1, Ctrl+Alt+Shift+F21): ret=1 err=-
+RegisterHotKey(a destroyed window, 3, Ctrl+Alt+F21): ret=0 err=-
+UnregisterHotKey(the popup, 2): ret=1 err=-
+UnregisterHotKey(the popup, 1): ret=1 err=-
+UnregisterHotKey(the popup, 1) again: ret=0 err=-
+RegisterHotKey(the popup, 2, Ctrl+Alt+Shift+F23) once freed: ret=1 err=-
+UnregisterHotKey(the popup, 2): ret=1 err=-
+UnregisterHotKey(the popup, 1) a third time: ret=0 err=-
+UnregisterHotKey(NULL, 1): ret=1 err=-
+UnregisterHotKey(NULL, 1) again: ret=0 err=-
+UnregisterHotKey(a destroyed window, 3): ret=0 err=-
+WM_HOTKEY received: 0
+shell: done
+<<< exit code=0
+>>> shell.exe switchto
+== switchto
+the fixture's window shown: yes
+SwitchToThisWindow(it, TRUE): err=-
+  the foreground window: yes
+  iconic: no
+minimized: yes
+SwitchToThisWindow(it, FALSE): err=87
+  the foreground window: yes
+  iconic: yes
+SwitchToThisWindow(it, TRUE) while minimized: err=-
+  the foreground window: yes
+  iconic: yes
+shell: done
+<<< exit code=0
+>>> shell.exe callback
+== callback
+SendMessageCallbackA(a window of this thread): ret=1 err=-
+  in order: procedure callback return
+  callback calls: 1
+  its window the target: yes, its message the sent one: yes, its data the given: yes, its result the procedure's: yes
+  after a retrieval: callback calls 1, in order: -
+SendMessageCallbackW(a window of this thread): ret=1 err=-
+  in order: procedure callback return
+  callback calls: 1
+  its window the target: yes, its message the sent one: yes, its data the given: yes, its result the procedure's: yes
+  after a retrieval: callback calls 1, in order: -
+SendMessageCallbackA(a window of another thread): ret=1 err=-
+  the procedure ran: yes
+  callback calls before any retrieval: 0
+  once the sender peeks:
+  callback calls: 1
+  its window the target: yes, its message the sent one: yes, its data the given: yes, its result the procedure's: yes
+  callback calls after more retrievals: 1
+SendMessageCallbackW(a window of another thread): ret=1 err=-
+  the procedure ran: yes
+  callback calls before any retrieval: 0
+  once the sender peeks:
+  callback calls: 1
+  its window the target: yes, its message the sent one: yes, its data the given: yes, its result the procedure's: yes
+  callback calls after more retrievals: 1
+SendMessageCallbackA(a destroyed window): ret=0 err=-
+SendMessageCallbackW(a destroyed window): ret=0 err=-
+  callback calls: 0
+shell: done
+<<< exit code=0

@@ -1,0 +1,45 @@
+# curves: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat curves, tests\capture.bat curves).
+# Every curve is drawn with the stock one-pixel BLACK_PEN into a 32-bit DIB section in a memory DC
+# and read back through its bits pointer as rows of letters: the points Windows 2000's rasterizer
+# chooses, pixel for pixel. LineDDA prints the points its callback receives. No handle or address
+# prints.
+description = "curves - PolyBezier and PolyBezierTo, PolylineTo and PolyPolyline, PolyDraw, Arc, ArcTo and AngleArc with GetArcDirection/SetArcDirection, LineDDA's points, GetMiterLimit/SetMiterLimit with a mitered geometric pen, and CreatePenIndirect, each drawing read back from a DIB section."
+kind = "sectioned"
+gate = true
+
+[pending]
+# G3 and G4 of .scratch/plans/user32-gdi32-completeness.md: drop each entry once its block passes.
+bezier = "F2K's gdi32 has no PolyBezier or PolyBezierTo (stubs; plan G4)"
+polyto = "F2K's gdi32 has no PolylineTo or PolyPolyline (plan G4)"
+polydraw = "F2K's gdi32 has no PolyDraw (plan G4)"
+arcs = "F2K's gdi32 has no Arc, ArcTo, AngleArc or GetArcDirection/SetArcDirection (plan G4)"
+linedda = "F2K's gdi32 has no LineDDA (plan G4)"
+miter = "F2K's gdi32 has no GetMiterLimit/SetMiterLimit (plan G4)"
+penind = "F2K's gdi32 has no CreatePenIndirect (plan G3)"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. The canvas's helpers (CreateCompatibleDC, CreateDIBSection, SelectObject, GetStockObject,
+# DeleteObject, DeleteDC, GdiFlush) are left out.
+bezier = ["gdi32.PolyBezier", "gdi32.PolyBezierTo", "gdi32.MoveToEx", "gdi32.GetCurrentPositionEx"]
+polyto = ["gdi32.PolylineTo", "gdi32.PolyPolyline", "gdi32.MoveToEx", "gdi32.GetCurrentPositionEx"]
+polydraw = ["gdi32.PolyDraw", "gdi32.MoveToEx", "gdi32.GetCurrentPositionEx"]
+arcs = [
+    "gdi32.Arc",
+    "gdi32.ArcTo",
+    "gdi32.AngleArc",
+    "gdi32.GetArcDirection",
+    "gdi32.SetArcDirection",
+    "gdi32.MoveToEx",
+    "gdi32.GetCurrentPositionEx",
+]
+linedda = ["gdi32.LineDDA"]
+miter = ["gdi32.GetMiterLimit", "gdi32.SetMiterLimit", "gdi32.ExtCreatePen", "gdi32.Polyline"]
+penind = [
+    "gdi32.CreatePenIndirect",
+    "gdi32.GetObjectW",
+    "gdi32.GetObjectType",
+    "gdi32.MoveToEx",
+    "gdi32.LineTo",
+]

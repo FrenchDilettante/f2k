@@ -90,6 +90,16 @@
  *            same low word, the high word's change); IsWindow and
  *            IsMenu of a live handle with its high word 0, 0xFFFF or
  *            one more
+ *   lifo     whether the handle slots are a per-parity LIFO, from
+ *            handles the section frees in a known order: 6 windows and
+ *            6 menus (windows' low words even, menus' odd); W1 then W3 freed and two
+ *            windows made (the second freed slot taken first), the
+ *            same for menus; W4, M4, M5, W5 freed and a menu, a window,
+ *            a menu, a window made (each from its own parity's last
+ *            freed slot); a table and an icon taking a menu's freed
+ *            slot, a menu not taking a window's; a reused slot's high
+ *            word one more; and 5,000 menus alive at once, the last 100
+ *            (slots never used before) with high word 1
  *   bar      a hidden WS_OVERLAPPEDWINDOW window, 320x200, created
  *            with menu 200: the client origin's offset less the frame
  *            and caption metrics (the menu bar's height, and whether
@@ -176,6 +186,14 @@
  *            rows and columns each color covers in the caption (inside
  *            the frame), and the title's first column (the caption's
  *            rows above its bottom separator)
+ *   endmenu  EndMenu (found with GetProcAddress) with no menu active;
+ *            track's popup tracked (TPM_RETURNCMD) while EndMenu comes
+ *            from a 100 ms timer's TimerProc on the thread, which the
+ *            menu loop dispatches, and from a second thread 200 ms in:
+ *            the return, how the menu ended (a watcher thread, as
+ *            track's, ends it with WM_CANCELMODE, then Escape), EndMenu's
+ *            return, and how many WM_EXITMENULOOP, WM_CANCELMODE and
+ *            WM_COMMAND the owner received; EndMenu once they ended
  *
  * The keyboard sections type into a visible WS_OVERLAPPEDWINDOW window
  * at (60,70), 320x200, of a class each registers, with a fresh copy of
@@ -1316,6 +1334,182 @@ static void sec_slots(void)
     unmake(K_WINDOW, w1);
 
     UnregisterClassW(L"F2KSlotsWindow", GetModuleHandleW(NULL));
+}
+
+/* --- lifo ---------------------------------------------------------- */
+
+/* Whether the slot rule holds where the desktop's own objects cannot
+ * show: each line compares handles the section made itself, freed in a
+ * known order and taken again at once. As with slots, another process
+ * making a user object between a free and the next make would show as
+ * a "no". */
+#define LIFO_EACH 6
+#define LIFO_FRESH 5000
+#define LIFO_TAIL 100
+
+/* Whether b took a's slot: the same low word. */
+static const char *same_slot(HANDLE a, HANDLE b)
+{
+    return yesno(a != NULL && b != NULL && low_of(a) == low_of(b));
+}
+
+/* b's high word less the one a had, when b took a's slot ("-" when not). */
+static const char *high_step(HANDLE a, HANDLE b)
+{
+    static char bufs[4][16];
+    static int next;
+    char *s = bufs[next++ & 3];
+
+    if (a == NULL || b == NULL || low_of(a) != low_of(b)) {
+        return "-";
+    }
+    sprintf(s, "%+d", (int)(short)(WORD)(high_of(b) - high_of(a)));
+    return s;
+}
+
+static void sec_lifo(void)
+{
+    HANDLE w[LIFO_EACH], m[LIFO_EACH];
+    HANDLE x, y, a, b, c, d, t, ic;
+    HANDLE *fresh;
+    int i, j, k, made, even, odd, same_low, up1, trials, tail1;
+
+    register_handles_class(L"F2KLifoWindow");
+    for (k = K_WINDOW; k <= K_ICON; k++) {
+        unmake(k, make(k));
+    }
+
+    /* The low word's parity: windows even, the other kinds odd. */
+    for (i = 0; i < LIFO_EACH; i++) {
+        w[i] = make(K_WINDOW);
+        m[i] = make(K_MENU);
+    }
+    made = even = odd = same_low = 0;
+    for (i = 0; i < LIFO_EACH; i++) {
+        if (w[i] != NULL) {
+            made++;
+            even += (low_of(w[i]) & 1) == 0;
+        }
+        if (m[i] != NULL) {
+            made++;
+            odd += (low_of(m[i]) & 1) == 1;
+        }
+        for (j = 0; j < LIFO_EACH; j++) {
+            if (j > i && w[i] != NULL && w[j] != NULL && low_of(w[i]) == low_of(w[j])) {
+                same_low++;
+            }
+            if (j > i && m[i] != NULL && m[j] != NULL && low_of(m[i]) == low_of(m[j])) {
+                same_low++;
+            }
+            if (w[i] != NULL && m[j] != NULL && low_of(w[i]) == low_of(m[j])) {
+                same_low++;
+            }
+        }
+    }
+    line("windows W0-W5 and menus M0-M5 made in turn: %d of %d", made, 2 * LIFO_EACH);
+    line("  windows with an even low word: %d of %d; menus with an odd one: %d of %d", even, LIFO_EACH, odd,
+         LIFO_EACH);
+    line("  pairs of the %d with the same low word: %d", 2 * LIFO_EACH, same_low);
+
+    /* Windows: W1 then W3 freed, two windows made. */
+    unmake(K_WINDOW, w[1]);
+    unmake(K_WINDOW, w[3]);
+    x = make(K_WINDOW);
+    y = make(K_WINDOW);
+    line("W1 then W3 destroyed, windows X then Y made: X in W3's slot %s, in W1's %s; Y in W1's slot %s, in W3's %s",
+         same_slot(w[3], x), same_slot(w[1], x), same_slot(w[1], y), same_slot(w[3], y));
+    line("  the high word, less the slot's previous one: X %s, Y %s", high_step(w[3], x), high_step(w[1], y));
+    unmake(K_WINDOW, y);
+    unmake(K_WINDOW, x);
+    w[1] = w[3] = NULL;
+
+    /* Menus: M1 then M3 freed, two menus made. */
+    unmake(K_MENU, m[1]);
+    unmake(K_MENU, m[3]);
+    x = make(K_MENU);
+    y = make(K_MENU);
+    line("M1 then M3 destroyed, menus X then Y made: X in M3's slot %s, in M1's %s; Y in M1's slot %s, in M3's %s",
+         same_slot(m[3], x), same_slot(m[1], x), same_slot(m[1], y), same_slot(m[3], y));
+    line("  the high word, less the slot's previous one: X %s, Y %s", high_step(m[3], x), high_step(m[1], y));
+    unmake(K_MENU, y);
+    unmake(K_MENU, x);
+    m[1] = m[3] = NULL;
+
+    /* The lanes apart: a window freed last, a menu made first. */
+    unmake(K_WINDOW, w[4]);
+    unmake(K_MENU, m[4]);
+    unmake(K_MENU, m[5]);
+    unmake(K_WINDOW, w[5]);
+    a = make(K_MENU);
+    b = make(K_WINDOW);
+    c = make(K_MENU);
+    d = make(K_WINDOW);
+    line("W4, M4, M5, W5 destroyed in turn; a menu, a window, a menu, a window made:");
+    line("  the first menu in M5's slot %s (in W5's %s); the first window in W5's %s", same_slot(m[5], a),
+         same_slot(w[5], a), same_slot(w[5], b));
+    line("  the second menu in M4's slot %s; the second window in W4's %s", same_slot(m[4], c), same_slot(w[4], d));
+    unmake(K_WINDOW, d);
+    unmake(K_MENU, c);
+    unmake(K_WINDOW, b);
+    unmake(K_MENU, a);
+    w[4] = w[5] = m[4] = m[5] = NULL;
+
+    /* The odd lane is the other kinds' together; the even one is not. */
+    unmake(K_MENU, m[0]);
+    t = make(K_TABLE);
+    unmake(K_TABLE, t);
+    ic = make(K_ICON);
+    unmake(K_ICON, ic);
+    unmake(K_WINDOW, w[0]);
+    a = make(K_MENU);
+    line("M0 destroyed, a table made: in M0's slot %s; it destroyed, an icon made: in its slot %s", same_slot(m[0], t),
+         same_slot(t, ic));
+    line("the icon destroyed, W0 destroyed, a menu made: in the icon's slot %s, in W0's %s", same_slot(ic, a),
+         same_slot(w[0], a));
+    unmake(K_MENU, a);
+    w[0] = m[0] = NULL;
+
+    /* A slot taken again: the high word one more each time. */
+    up1 = trials = 0;
+    for (k = K_WINDOW; k <= K_MENU; k++) {
+        for (i = 0; i < 5; i++) {
+            a = make(k);
+            unmake(k, a);
+            b = make(k);
+            trials++;
+            if (a != NULL && b != NULL && low_of(a) == low_of(b) && (WORD)(high_of(b) - high_of(a)) == 1) {
+                up1++;
+            }
+            unmake(k, b);
+        }
+    }
+    line("a window's or menu's slot taken again at once: the same low word, the high word one more: %d of %d",
+         up1, trials);
+
+    /* Slots never used before: the high word starts at 1. */
+    fresh = (HANDLE *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, LIFO_FRESH * sizeof(HANDLE));
+    made = tail1 = 0;
+    if (fresh != NULL) {
+        for (i = 0; i < LIFO_FRESH; i++) {
+            fresh[i] = make(K_MENU);
+            made += fresh[i] != NULL;
+        }
+        for (i = LIFO_FRESH - LIFO_TAIL; i < LIFO_FRESH; i++) {
+            tail1 += fresh[i] != NULL && high_of(fresh[i]) == 1;
+        }
+        for (i = LIFO_FRESH - 1; i >= 0; i--) {
+            unmake(K_MENU, fresh[i]);
+        }
+        HeapFree(GetProcessHeap(), 0, fresh);
+    }
+    line("%d menus alive at once: made %d; the last %d made with high word 1: %d", LIFO_FRESH, made, LIFO_TAIL,
+         tail1);
+
+    for (i = 0; i < LIFO_EACH; i++) {
+        unmake(K_WINDOW, w[i]);
+        unmake(K_MENU, m[i]);
+    }
+    UnregisterClassW(L"F2KLifoWindow", GetModuleHandleW(NULL));
 }
 
 /* --- the menu bar and the keyboard menu loop: shared ---------------- */
@@ -3634,6 +3828,164 @@ static void sec_capicon(void)
     DestroyIcon(blue);
 }
 
+/* --- endmenu ------------------------------------------------------- */
+
+/* EndMenu with no menu active, from inside the thread's own menu loop
+ * (a timer's TimerProc, which the loop dispatches), and from a second
+ * thread while the main thread's loop runs. A watcher thread, as
+ * track's, ends a menu still running with WM_CANCELMODE, then an
+ * Escape key-down, then the process. */
+static BOOL em_ret;
+static DWORD em_err;
+static volatile LONG em_called;
+static volatile LONG em_stage;
+static HANDLE em_done;
+static int em_from_other;
+
+static VOID CALLBACK em_timer(HWND hwnd, UINT msg, UINT id, DWORD time)
+{
+    (void)msg;
+    (void)time;
+    KillTimer(hwnd, id);
+    if (em_called == 0) {
+        SetLastError(F2KT_UNTOUCHED);
+        em_ret = end_menu();
+        em_err = GetLastError();
+        em_called = 1;
+    }
+}
+
+static DWORD WINAPI em_watch(LPVOID unused)
+{
+    (void)unused;
+    if (em_from_other) {
+        if (WaitForSingleObject(em_done, 200) == WAIT_OBJECT_0) {
+            return 0;
+        }
+        SetLastError(F2KT_UNTOUCHED);
+        em_ret = end_menu();
+        em_err = GetLastError();
+        em_called = 1;
+        em_stage = 1;
+    }
+    if (WaitForSingleObject(em_done, 500) == WAIT_OBJECT_0) {
+        return 0;
+    }
+    em_stage = 2;
+    SendNotifyMessageW(track_owner, WM_CANCELMODE, 0, 0);
+    if (WaitForSingleObject(em_done, 2000) == WAIT_OBJECT_0) {
+        return 0;
+    }
+    em_stage = 3;
+    PostMessageW(track_owner, WM_KEYDOWN, VK_ESCAPE, 0x00010001);
+    if (WaitForSingleObject(em_done, 2000) == WAIT_OBJECT_0) {
+        return 0;
+    }
+    line("the menu did not end: the process ends");
+    ExitProcess(3);
+    return 0;
+}
+
+/* Track the popup with TPM_RETURNCMD while EndMenu comes from a timer
+ * of the main thread (from_other 0) or from the watcher (1). */
+static void em_track(HMENU popup, int x, int y, int from_other, const char *what)
+{
+    static const char *const ended[] = {
+        "before the watcher acted", "after the second thread's EndMenu", "after WM_CANCELMODE",
+        "after the Escape key-down"
+    };
+    HANDLE thread;
+    DWORD tid;
+    BOOL r;
+    DWORD err;
+    int i, exits = 0, commands = 0, cancels = 0;
+
+    drain_menus();
+    track_record_count = 0;
+    em_stage = 0;
+    em_called = 0;
+    em_ret = -1;
+    em_err = F2KT_UNTOUCHED;
+    em_from_other = from_other;
+    ResetEvent(em_done);
+    if (!from_other) {
+        SetTimer(track_owner, 1, 100, em_timer);
+    }
+    thread = CreateThread(NULL, 0, em_watch, NULL, 0, &tid);
+    arm();
+    r = TrackPopupMenu(popup, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD, x, y, 0, track_owner,
+                       NULL);
+    err = GetLastError();
+    SetEvent(em_done);
+    WaitForSingleObject(thread, WAIT_MS);
+    CloseHandle(thread);
+    KillTimer(track_owner, 1);
+    for (i = 0; i < track_record_count; i++) {
+        exits += track_records[i].msg == WM_EXITMENULOOP;
+        commands += track_records[i].msg == WM_COMMAND;
+        cancels += track_records[i].msg == WM_CANCELMODE;
+    }
+    line("TrackPopupMenu(the popup, TPM_RETURNCMD, the window), %s: ret=%d err=%s, ended %s", what,
+         r, le_of(err), ended[em_stage]);
+    if (em_called) {
+        line("  EndMenu: ret=%d err=%s", em_ret, le_of(em_err));
+    } else {
+        line("  EndMenu: not called");
+    }
+    line("  the owner received WM_EXITMENULOOP %d, WM_CANCELMODE %d, WM_COMMAND %d", exits, cancels,
+         commands);
+    drain_menus();
+}
+
+static void sec_endmenu(void)
+{
+    HMENU popup;
+    POINT cursor;
+    BOOL r;
+    int x, y;
+
+    end_menu = (end_menu_fn)GetProcAddress(GetModuleHandleA("user32.dll"), "EndMenu");
+    line("EndMenu exported: %s", yesno(end_menu != NULL));
+    if (end_menu == NULL) {
+        return;
+    }
+    arm();
+    r = end_menu();
+    line("EndMenu(), no menu active: ret=%d err=%s", r, le());
+
+    register_owner();
+    em_done = CreateEventW(NULL, TRUE, FALSE, NULL);
+    arm();
+    track_owner = CreateWindowExW(0, OWNER_CLASS, L"menus", WS_POPUP | WS_CAPTION | WS_VISIBLE, 40, 40,
+                                  200, 120, NULL, NULL, GetModuleHandleW(NULL), NULL);
+    line("CreateWindowExW(F2KMenusOwner, WS_POPUP | WS_CAPTION | WS_VISIBLE): non-NULL %s err=%s",
+         yesno(track_owner != NULL), le());
+    SetForegroundWindow(track_owner);
+    drain_menus();
+    line("SetForegroundWindow(it): the foreground %s", yesno(GetForegroundWindow() == track_owner));
+
+    /* track's popup, away from the mouse pointer. */
+    popup = CreatePopupMenu();
+    AppendMenuW(popup, MF_STRING, 801, L"&Open");
+    AppendMenuW(popup, MF_SEPARATOR, 0, NULL);
+    AppendMenuW(popup, MF_STRING, 802, L"&Close");
+    GetCursorPos(&cursor);
+    x = cursor.x < 300 ? cursor.x + 150 : cursor.x - 300;
+    y = 40;
+
+    em_track(popup, x, y, 0, "EndMenu from a 100 ms timer's TimerProc");
+    em_track(popup, x, y, 1, "EndMenu from a second thread 200 ms in");
+    arm();
+    r = end_menu();
+    line("EndMenu() once the menus have ended: ret=%d err=%s", r, le());
+
+    DestroyMenu(popup);
+    DestroyWindow(track_owner);
+    drain_menus();
+    CloseHandle(em_done);
+    unregister_owner();
+}
+
 static const section_t sections[] = {
     { "load", sec_load, F2KT_ALWAYS },
     { "items", sec_items, F2KT_ALWAYS },
@@ -3643,6 +3995,7 @@ static const section_t sections[] = {
     { "kinds", sec_kinds, F2KT_ALWAYS },
     { "reuse", sec_reuse, F2KT_ALWAYS },
     { "slots", sec_slots, F2KT_ALWAYS },
+    { "lifo", sec_lifo, F2KT_ALWAYS },
     { "bar", sec_bar, F2KT_ALWAYS },
     { "keyloop", sec_keyloop, F2KT_ALWAYS },
     { "keyesc", sec_keyesc, F2KT_ALWAYS },
@@ -3657,6 +4010,7 @@ static const section_t sections[] = {
     { "cues", sec_cues, F2KT_ALWAYS },
     { "underline", sec_underline, F2KT_ALWAYS },
     { "capicon", sec_capicon, F2KT_ALWAYS },
+    { "endmenu", sec_endmenu, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

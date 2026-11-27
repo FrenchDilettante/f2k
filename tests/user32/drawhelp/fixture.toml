@@ -1,0 +1,52 @@
+# drawhelp: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat drawhelp, tests\capture.bat drawhelp).
+# Every drawing goes into a 32-bit DIB section in a memory DC, filled magenta first, and is read
+# back through its bits pointer. Glyph-free drawings (fills, frames, the focus rectangle, edges, a
+# push button's frame, a monochrome bitmap) print exactly as rows of letters by system colour; text
+# and glyphs print only as relations (ink or not, outside a rectangle or not, colours present,
+# bounding boxes and extents against GetTextExtentPoint32's and the font's height), so the fonts
+# F2K stands in with need not match. The capture machine's colour scheme is Windows Standard.
+# DrawAnimatedRects animates on the screen for a moment (its returns only print).
+description = "drawhelp - FillRect, FrameRect, InvertRect, DrawFocusRect, DrawEdge and DrawFrameControl as pixels; DrawTextA/W's formats (DT_CALCRECT, word breaks, centring, end and path ellipses with DT_MODIFYSTRING, tab stops, prefixes); DrawTextExW/A's margins, tab length and uiLengthDrawn; TabbedTextOutA/W and GetTabbedTextExtentA/W against the tab stops; DrawStateW/A's DST_TEXT, DST_PREFIXTEXT, DST_BITMAP, DST_ICON and DST_COMPLEX with the DSS_* states; GrayStringW/A with and without a callback; DrawCaption's flags as caption colours; DrawAnimatedRects's returns."
+kind = "sectioned"
+gate = true
+# The System font's metrics and the caption font, as on the real machine.
+system_fonts = true
+
+[pending]
+# U9 (.scratch/plans/user32-gdi32-completeness.md): drawhelp.exe imports DrawTextExA/W,
+# DrawStateA/W, GrayStringA/W, TabbedTextOutA/W, GetTabbedTextExtentA/W, DrawCaption and
+# DrawAnimatedRects, which F2K's user32 has as stubs only; the first five sections pin draw
+# natives F2K has, the others wait for U9's exports. Drop each entry once its block passes.
+fills = "FrameRect of an inverted rectangle answers TRUE where Windows 2000 answers FALSE, and the frames' pixels differ on row 4 (Windows 2000 fills x 1-4 there)"
+focus = "DrawFocusRect's dots fall one pixel off Windows 2000's along every side"
+edge = "DrawEdge draws BF_FLAT and BF_MONO edges as 3D ones, and BF_DIAGONAL fails with ERROR_CALL_NOT_IMPLEMENTED"
+frame = "DrawFrameControl of DFC_BUTTON/DFCS_BUTTONPUSH fails with ERROR_CALL_NOT_IMPLEMENTED and draws nothing"
+text = "DrawTextA/W's DT_END_ELLIPSIS and DT_PATH_ELLIPSIS with DT_MODIFYSTRING neither shorten the text nor rewrite the string, and DrawTextA of an empty string answers 0 where Windows 2000 answers the line's height"
+textex = "DrawTextExW and DrawTextExA are stubs"
+tabbed = "TabbedTextOutA/W and GetTabbedTextExtentA/W are stubs"
+state = "DrawStateW and DrawStateA are stubs"
+gray = "GrayStringW and GrayStringA are stubs"
+caption = "DrawCaption is a stub, and SPI_GETGRADIENTCAPTIONS answers 0 where Windows 2000 answers 1"
+animated = "DrawAnimatedRects is a stub"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers around them (the canvas's memory DC
+# and DIB section, GdiFlush, GetTextExtentPoint32A, GetTextMetricsA, GetSysColor, the windows).
+fills = ["user32.FillRect", "user32.FrameRect", "user32.InvertRect"]
+focus = ["user32.DrawFocusRect"]
+edge = ["user32.DrawEdge"]
+frame = ["user32.DrawFrameControl"]
+text = ["user32.DrawTextA", "user32.DrawTextW"]
+textex = ["user32.DrawTextExW", "user32.DrawTextExA"]
+tabbed = [
+    "user32.TabbedTextOutA",
+    "user32.TabbedTextOutW",
+    "user32.GetTabbedTextExtentA",
+    "user32.GetTabbedTextExtentW",
+]
+state = ["user32.DrawStateW", "user32.DrawStateA"]
+gray = ["user32.GrayStringA", "user32.GrayStringW"]
+caption = ["user32.DrawCaption"]
+animated = ["user32.DrawAnimatedRects"]

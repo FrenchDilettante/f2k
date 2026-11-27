@@ -1,0 +1,169 @@
+# F2K capture of dcstate (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:58.49
+dcstate F2KT-SOURCE-CRC=0x95CC49A7
+>>> dcstate.exe org
+== org
+GetDCOrgEx(a memory DC): ret=1 err=- 0,0
+GetDCOrgEx(GetDC(NULL)): ret=1 err=- 0,0
+a hidden WS_POPUP | WS_BORDER window at 100,80, 64x48: non-NULL yes
+GetDCOrgEx(its GetDC): ret=1 err=- 101,81
+  ClientToScreen(0,0): 101,81
+GetDCOrgEx(its GetWindowDC): ret=1 err=- 100,80
+GetDCOrgEx(NULL): ret=0 err=- -7,-7
+dcstate: done
+<<< exit code=0
+>>> dcstate.exe ic
+== ic
+CreateICA("DISPLAY", NULL, NULL, NULL): non-NULL yes err=-
+  GetObjectType: 3
+  GetDeviceCaps(TECHNOLOGY): 1
+  GetDeviceCaps(TECHNOLOGY) the same as the screen DC's: yes
+  GetDeviceCaps(HORZRES) the same as the screen DC's: yes
+  GetDeviceCaps(VERTRES) the same as the screen DC's: yes
+  GetDeviceCaps(BITSPIXEL) the same as the screen DC's: yes
+  GetDeviceCaps(PLANES) the same as the screen DC's: yes
+  GetDeviceCaps(RASTERCAPS) the same as the screen DC's: yes
+  GetDeviceCaps(LOGPIXELSX) the same as the screen DC's: yes
+  SelectObject(ANSI_VAR_FONT): non-NULL yes err=-
+  its metrics the same as a memory DC's: yes
+  PatBlt(BLACKNESS): ret=1 err=-
+  DeleteDC: ret=1 err=-
+CreateICW(L"DISPLAY", NULL, NULL, NULL): non-NULL yes err=-
+  GetObjectType: 3 GetDeviceCaps(TECHNOLOGY): 1
+CreateICA("F2KNOSUCHDRIVER", NULL, NULL, NULL): non-NULL no err=-
+dcstate: done
+<<< exit code=0
+>>> dcstate.exe resetdc
+== resetdc
+EnumDisplaySettingsA(ENUM_CURRENT_SETTINGS): ret=1
+ResetDCA(a memory DC, the display's DEVMODE): non-NULL no err=- the same DC no
+ResetDCW(a memory DC, the display's DEVMODE): non-NULL no err=- the same DC no
+CancelDC(a memory DC): ret=1 err=-
+ResetDCA(CreateDCA("DISPLAY"), the display's DEVMODE): non-NULL no err=- the same DC no
+ResetDCW(the same): non-NULL no err=- the same DC no
+CancelDC(the display DC): ret=1 err=-
+CancelDC(NULL): ret=0 err=6
+dcstate: done
+<<< exit code=0
+>>> dcstate.exe bounds
+== bounds
+GetBoundsRect(a new DC, 0): ret=0x1 err=- rect=0,0-0,0
+SetBoundsRect(NULL, DCB_ENABLE): ret=0x9 err=-
+GetBoundsRect(0): ret=0x1 err=- rect=0,0-0,0
+GetBoundsRect(after PatBlt 2,3 4x5, 0): ret=0x3 err=- rect=0,0-6,8
+GetBoundsRect(after LineTo 20,1 to 25,10, DCB_RESET): ret=0x3 err=- rect=0,0-26,11
+GetBoundsRect(0): ret=0x1 err=- rect=0,0-0,0
+SetBoundsRect(10,10-12,14, DCB_ACCUMULATE): ret=0x5 err=-
+GetBoundsRect(0): ret=0x3 err=- rect=10,10-12,14
+GetBoundsRect(after PatBlt 1,1 2x2, 0): ret=0x3 err=- rect=1,1-12,14
+SetBoundsRect(NULL, DCB_RESET): ret=0x7 err=-
+GetBoundsRect(0): ret=0x1 err=- rect=0,0-0,0
+SetBoundsRect(NULL, DCB_DISABLE): ret=0x5 err=-
+GetBoundsRect(after PatBlt 5,5 3x3, 0): ret=0x1 err=- rect=0,0-0,0
+SetBoundsRect(NULL DC): ret=0x0 err=-
+dcstate: done
+<<< exit code=0
+>>> dcstate.exe relabs
+== relabs
+GetRelAbs(a new DC): ret=1 err=-
+SetRelAbs(RELATIVE): previous=1 err=- now=2
+SetRelAbs(ABSOLUTE): previous=2 err=- now=1
+SetRelAbs(3): ret=1 err=- now=3
+SetRelAbs(NULL, RELATIVE): ret=0 err=-
+GetRelAbs(NULL): ret=0 err=-
+dcstate: done
+<<< exit code=0
+>>> dcstate.exe layout
+== layout
+GetLayout(a new DC): ret=0x0 err=-
+SetLayout(LAYOUT_RTL): previous=0x0 err=- now=0x1
+  PatBlt(0, 0, 3x1, BLACKNESS) and BitBlt(0, 1, 4x1) of red, green, blue, black: BitBlt ret=1
+  row  0: .............###
+  row  1: ............#BGR
+SetLayout(LAYOUT_RTL | LAYOUT_BITMAPORIENTATIONPRESERVED): previous=0x1 err=- now=0x9
+  row  0: .............###
+  row  1: ...........RGB#.
+SetLayout(0): previous=0x9 err=- now=0x0
+  row  0: ###.............
+  row  1: RGB#............
+SetLayout(0x80): ret=0x0 err=- now=0x80
+GetLayout(NULL): ret=0xFFFFFFFF err=87
+SetLayout(NULL, LAYOUT_RTL): ret=0xFFFFFFFF err=6
+dcstate: done
+<<< exit code=0
+>>> dcstate.exe dccolor
+== dccolor
+GetDCBrushColor(a new DC): ret=0xFFFFFF err=-
+GetDCPenColor(a new DC): ret=0x000000 err=-
+GetStockObject(DC_BRUSH): non-NULL yes err=- GetObjectType=2
+  GetObjectW(LOGBRUSH): ret=12 err=- lbStyle=0 lbColor=0xFFFFFF
+GetStockObject(DC_PEN): non-NULL yes err=- GetObjectType=1
+  GetObjectW(LOGPEN): ret=16 err=- lopnStyle=0 lopnWidth=0 lopnColor=0x000000
+SetDCBrushColor(red): previous=0xFFFFFF err=- now=0x0000FF
+SetDCPenColor(green): previous=0x000000 err=- now=0x00FF00
+DC_BRUSH and DC_PEN selected: PatBlt 0,0 4x1 red, blue set, PatBlt 4,0 4x1; LineTo row 1 green; black set, LineTo 4..8 on row 2:
+  row  0: RRRRBBBB
+  row  1: GGGGGGGG
+  row  2: ....####
+  GetObjectW(DC_BRUSH) now: lbColor=0xFFFFFF
+SetDCBrushColor(PALETTEINDEX(2)): previous=0xFF0000 err=- now=0x01000002
+SetDCBrushColor(NULL, red): ret=0xFFFFFFFF err=87
+GetDCBrushColor(NULL): ret=0xFFFFFFFF err=87
+SetDCPenColor(NULL, red): ret=0xFFFFFFFF err=87
+GetDCPenColor(NULL): ret=0xFFFFFFFF err=87
+dcstate: done
+<<< exit code=0
+>>> dcstate.exe batch
+== batch
+GdiGetBatchLimit: ret=20 err=-
+GdiSetBatchLimit(1): previous=20 err=- now=1
+GdiSetBatchLimit(10000): ret=0 err=- now=1
+GdiSetBatchLimit(0): previous=1 err=- now=20
+GdiFlush: ret=1 err=-
+dcstate: done
+<<< exit code=0
+>>> dcstate.exe aspect
+== aspect
+GetAspectRatioFilterEx(a new DC): ret=1 err=- 0,0
+SetMapperFlags(ASPECT_FILTERING): previous=0x0 err=-
+GetAspectRatioFilterEx: ret=1 err=- 96,96; ASPECTX=36 ASPECTY=36
+GetAspectRatioFilterEx(NULL): ret=0 err=-
+dcstate: done
+<<< exit code=0
+>>> dcstate.exe enumobj
+== enumobj
+  pen 0: lopnStyle=0 lopnWidth=0 lopnColor=0x000000
+  pen 1: lopnStyle=0 lopnWidth=0 lopnColor=0xFFFFFF
+  pen 2: lopnStyle=0 lopnWidth=0 lopnColor=0x0000FF
+  pen 3: lopnStyle=0 lopnWidth=0 lopnColor=0x00FF00
+EnumObjects(OBJ_PEN): ret=1 err=- pens=100
+  brush 0: lbStyle=0 lbColor=0x000000 lbHatch=0
+  brush 1: lbStyle=0 lbColor=0xFFFFFF lbHatch=0
+  brush 2: lbStyle=0 lbColor=0x0000FF lbHatch=0
+  brush 3: lbStyle=0 lbColor=0x00FF00 lbHatch=0
+EnumObjects(OBJ_BRUSH): ret=1 err=- brushes=140
+  brush 0: lbStyle=0 lbColor=0x000000 lbHatch=0
+  brush 1: lbStyle=0 lbColor=0xFFFFFF lbHatch=0
+EnumObjects(OBJ_BRUSH), the callback answering 0 at the second: ret=0 err=- calls=2
+EnumObjects(OBJ_FONT): ret=0 err=87 calls=0
+dcstate: done
+<<< exit code=0
+>>> dcstate.exe curobj
+== curobj
+GetCurrentObject(a new memory DC, OBJ_PEN): non-NULL yes err=- the stock object yes
+GetCurrentObject(a new memory DC, OBJ_BRUSH): non-NULL yes err=- the stock object yes
+GetCurrentObject(a new memory DC, OBJ_FONT): non-NULL yes err=- the stock object yes
+GetCurrentObject(a new memory DC, OBJ_PAL): non-NULL yes err=- the stock object yes
+GetCurrentObject(OBJ_BITMAP): non-NULL yes err=- GetObjectA=24 1x1, 1 bpp
+after SelectObject of a pen and a brush: OBJ_PEN theirs yes, OBJ_BRUSH theirs yes
+GetCurrentObject(OBJ_EXTPEN), a CreatePen pen selected: non-NULL yes err=- the pen yes
+GetCurrentObject(OBJ_EXTPEN), an ExtCreatePen pen selected: non-NULL yes err=- the pen yes
+GetCurrentObject(OBJ_PEN), the same: non-NULL yes err=- the pen yes
+GetCurrentObject(99): non-NULL no err=87
+GetCurrentObject(OBJ_DC): non-NULL no err=87
+GetCurrentObject(NULL, OBJ_PEN): non-NULL no err=-
+dcstate: done
+<<< exit code=0

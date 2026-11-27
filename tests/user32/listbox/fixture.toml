@@ -1,0 +1,74 @@
+# listbox: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat listbox, tests\capture.bat listbox).
+# No handle or address prints; a list box prints by its id (300), its geometry
+# only where its item height is set (no font metric prints but as a relation to the System font's
+# tmHeight). dir makes f2klbdir in the current directory and removes it at its end.
+description = "listbox - user32's ListBox control driven by messages and keys: adding, inserting, finding, reading and deleting strings, item data, the selection, the top index and the item height and rectangle, and their error returns (basic); LBS_SORT (sort); LBS_MULTIPLESEL and LBS_EXTENDEDSEL's selection messages (multi); owner-draw fixed and variable list boxes and their WM_MEASUREITEM, WM_DRAWITEM and WM_DELETEITEM (ownerfix, ownervar); the LBN_SETFOCUS, LBN_KILLFOCUS, LBN_SELCHANGE and LBN_DBLCLK notifications (notify); the arrows, Home, End, PgUp, PgDn, Space and type-ahead (keys); LB_DIR, DlgDirListA/W and DlgDirSelectExA/W over a directory the program makes (dir); GetListBoxInfo and LB_INITSTORAGE (info); and list boxes in a dialog template, by class atom and by name (dialog)."
+kind = "sectioned"
+gate = true
+
+[pending]
+# F2K registers no ListBox class yet (user32's MISSING_SYSTEM_CLASSES, userland/user32/src/class.rs):
+# every block waits for the control (gui-H). Drop each entry once its block passes.
+basic = "F2K has no ListBox class (user32's MISSING_SYSTEM_CLASSES): CreateWindowExW(\"ListBox\") fails"
+sort = "F2K has no ListBox class (user32's MISSING_SYSTEM_CLASSES): CreateWindowExW(\"ListBox\") fails"
+multi = "F2K has no ListBox class (user32's MISSING_SYSTEM_CLASSES): CreateWindowExW(\"ListBox\") fails"
+ownerfix = "F2K has no ListBox class (user32's MISSING_SYSTEM_CLASSES): no owner-draw list box, WM_MEASUREITEM or WM_DRAWITEM for one"
+ownervar = "F2K has no ListBox class (user32's MISSING_SYSTEM_CLASSES): no owner-draw list box, WM_MEASUREITEM or WM_DRAWITEM for one"
+notify = "F2K has no ListBox class (user32's MISSING_SYSTEM_CLASSES): no LBN_* notifications"
+keys = "F2K has no ListBox class (user32's MISSING_SYSTEM_CLASSES): no keyboard interface"
+dir = "F2K has no ListBox class (user32's MISSING_SYSTEM_CLASSES), and user32's DlgDirListA/W and DlgDirSelectExA/W are not implemented"
+info = "F2K has no ListBox class (user32's MISSING_SYSTEM_CLASSES), and no GetListBoxInfo"
+dialog = "F2K has no ListBox class (user32's MISSING_SYSTEM_CLASSES): a dialog template's ListBox item fails the dialog's creation"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. The control is reached through messages, its procedure being no export: only the creation,
+# the sends and the calls the blocks observe (not the parent's class and window, SetFocus or the
+# pump).
+basic = [
+    "user32.CreateWindowExW",
+    "user32.GetClassNameW",
+    "user32.SendMessageW",
+    "user32.SendMessageA",
+]
+sort = ["user32.CreateWindowExW", "user32.SendMessageW"]
+multi = ["user32.CreateWindowExW", "user32.SendMessageW"]
+ownerfix = [
+    "user32.CreateWindowExW",
+    "user32.SendMessageW",
+    "user32.InvalidateRect",
+    "user32.UpdateWindow",
+    "user32.DestroyWindow",
+]
+ownervar = ["user32.CreateWindowExW", "user32.SendMessageW", "user32.DestroyWindow"]
+notify = [
+    "user32.CreateWindowExW",
+    "user32.SendMessageW",
+    "user32.PostMessageW",
+    "user32.SetFocus",
+]
+keys = ["user32.CreateWindowExW", "user32.SendMessageW", "user32.SetFocus"]
+dir = [
+    "user32.SendMessageA",
+    "user32.DlgDirListA",
+    "user32.DlgDirListW",
+    "user32.DlgDirSelectExA",
+    "user32.DlgDirSelectExW",
+    "kernel32.GetCurrentDirectoryA",
+    "kernel32.SetCurrentDirectoryA",
+]
+# GetListBoxInfo is found with GetProcAddress (MSVC 6's headers and import library predate it).
+info = [
+    "user32.GetListBoxInfo",
+    "user32.SendMessageW",
+    "kernel32.GetProcAddress",
+]
+dialog = [
+    "user32.CreateDialogIndirectParamW",
+    "user32.GetDlgItem",
+    "user32.SendDlgItemMessageW",
+    "user32.SendMessageW",
+    "user32.GetClassNameW",
+    "user32.DestroyWindow",
+]

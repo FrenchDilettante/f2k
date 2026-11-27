@@ -1,8 +1,8 @@
 # F2K capture of guidc (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/02/2026 13:13:41.99
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:57.50
 guidc F2KT-SOURCE-CRC=0x29C34506
 >>> guidc.exe dc
 == dc

@@ -24,7 +24,7 @@ if not "%~1"=="" goto some
 set F2KT_ALL=yes
 call :srcsum
 if errorlevel 1 exit /b 1
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe newcon screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge vmdemand startup lcid ntquery locale atom winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont bitmaps mapmode shapes regions guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl registry token sdacl acccheck filesec keysec privchk ntsvc rtlsec hellomd crt seh fd wide strings process msvcrt cxxeh wmain drvload) do (
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe newcon screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge vmdemand startup lcid ntquery manyproc manythrd manyhndl locale atom winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont bitmaps mapmode shapes regions manygdi txlayout curves fills dcstate palette bitmaps2 guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl manywin desktops keymap shell dialog2 winmisc icons listbox combobox cursor msgwait timers hooks drawhelp redraw focus2 registry token sdacl acccheck filesec keysec privchk ntsvc rtlsec hellomd crt seh fd wide strings process msvcrt cxxeh wmain drvload) do (
     call :%%F
     if errorlevel 1 exit /b 1
 )
@@ -53,7 +53,7 @@ exit /b 0
 rem Whether %1 names a fixture: an unknown name fails, saying so.
 :known
 set F2KT_ONE=
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe newcon screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge vmdemand startup lcid ntquery locale atom winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont bitmaps mapmode shapes regions guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl registry token sdacl acccheck filesec keysec privchk ntsvc rtlsec hellomd crt seh fd wide strings process msvcrt cxxeh wmain drvload) do if /I "%%F"=="%~1" set F2KT_ONE=yes
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe newcon screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge vmdemand startup lcid ntquery manyproc manythrd manyhndl locale atom winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont bitmaps mapmode shapes regions manygdi txlayout curves fills dcstate palette bitmaps2 guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl manywin desktops keymap shell dialog2 winmisc icons listbox combobox cursor msgwait timers hooks drawhelp redraw focus2 registry token sdacl acccheck filesec keysec privchk ntsvc rtlsec hellomd crt seh fd wide strings process msvcrt cxxeh wmain drvload) do if /I "%%F"=="%~1" set F2KT_ONE=yes
 if not defined F2KT_ONE (
     echo build.bat: no such fixture %~1
     exit /b 1
@@ -595,6 +595,76 @@ del regions.obj
 cd ..\..
 goto :eof
 
+:manygdi
+echo === manygdi
+cd gdi32\manygdi
+call :stamp manygdi.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% manygdi.c user32.lib gdi32.lib
+if errorlevel 1 (echo build.bat: manygdi failed & exit /b 1)
+del manygdi.obj
+cd ..\..
+goto :eof
+
+:txlayout
+echo === txlayout
+cd gdi32\txlayout
+call :stamp txlayout.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% txlayout.c gdi32.lib
+if errorlevel 1 (echo build.bat: txlayout failed & exit /b 1)
+del txlayout.obj
+cd ..\..
+goto :eof
+
+:curves
+echo === curves
+cd gdi32\curves
+call :stamp curves.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% curves.c gdi32.lib
+if errorlevel 1 (echo build.bat: curves failed & exit /b 1)
+del curves.obj
+cd ..\..
+goto :eof
+
+:fills
+echo === fills
+cd gdi32\fills
+call :stamp fills.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% fills.c gdi32.lib
+if errorlevel 1 (echo build.bat: fills failed & exit /b 1)
+del fills.obj
+cd ..\..
+goto :eof
+
+:dcstate
+echo === dcstate
+cd gdi32\dcstate
+call :stamp dcstate.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% dcstate.c user32.lib gdi32.lib
+if errorlevel 1 (echo build.bat: dcstate failed & exit /b 1)
+del dcstate.obj
+cd ..\..
+goto :eof
+
+:palette
+echo === palette
+cd gdi32\palette
+call :stamp palette.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% palette.c user32.lib gdi32.lib
+if errorlevel 1 (echo build.bat: palette failed & exit /b 1)
+del palette.obj
+cd ..\..
+goto :eof
+
+:bitmaps2
+echo === bitmaps2
+cd gdi32\bitmaps2
+call :stamp bitmaps2.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% bitmaps2.c user32.lib gdi32.lib
+if errorlevel 1 (echo build.bat: bitmaps2 failed & exit /b 1)
+del bitmaps2.obj
+cd ..\..
+goto :eof
+
 :guidisp
 echo === guidisp
 cd user32\guidisp
@@ -841,6 +911,172 @@ call :stamp editctl.c
 cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% editctl.c user32.lib gdi32.lib
 if errorlevel 1 (echo build.bat: editctl failed & exit /b 1)
 del editctl.obj
+cd ..\..
+goto :eof
+
+:manywin
+echo === manywin
+cd user32\manywin
+call :stamp manywin.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% manywin.c user32.lib
+if errorlevel 1 (echo build.bat: manywin failed & exit /b 1)
+del manywin.obj
+cd ..\..
+goto :eof
+
+:desktops
+echo === desktops
+cd user32\desktops
+call :stamp desktops.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% desktops.c user32.lib gdi32.lib
+if errorlevel 1 (echo build.bat: desktops failed & exit /b 1)
+del desktops.obj
+cd ..\..
+goto :eof
+
+:keymap
+echo === keymap
+cd user32\keymap
+call :stamp keymap.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% keymap.c user32.lib
+if errorlevel 1 (echo build.bat: keymap failed & exit /b 1)
+del keymap.obj
+cd ..\..
+goto :eof
+
+:shell
+echo === shell
+cd user32\shell
+call :stamp shell.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% shell.c user32.lib gdi32.lib
+if errorlevel 1 (echo build.bat: shell failed & exit /b 1)
+del shell.obj
+cd ..\..
+goto :eof
+
+:dialog2
+echo === dialog2
+cd user32\dialog2
+call :stamp dialog2.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% dialog2.c user32.lib
+if errorlevel 1 (echo build.bat: dialog2 failed & exit /b 1)
+del dialog2.obj
+cd ..\..
+goto :eof
+
+:winmisc
+echo === winmisc
+cd user32\winmisc
+call :stamp winmisc.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% winmisc.c user32.lib
+if errorlevel 1 (echo build.bat: winmisc failed & exit /b 1)
+del winmisc.obj
+cd ..\..
+goto :eof
+
+:icons
+echo === icons
+cd user32\icons
+for %%I in (rc.exe) do if "%%~$PATH:I"=="" (
+    echo build.bat: rc.exe not found on PATH - icons needs the resource compiler
+    exit /b 1
+)
+call :stamp icons.c
+rc icons.rc
+if errorlevel 1 (echo build.bat: icons's rc failed & exit /b 1)
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% icons.c icons.res user32.lib gdi32.lib
+if errorlevel 1 (echo build.bat: icons failed & exit /b 1)
+del icons.obj icons.res
+cd ..\..
+goto :eof
+
+:listbox
+echo === listbox
+cd user32\listbox
+call :stamp listbox.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% listbox.c user32.lib gdi32.lib
+if errorlevel 1 (echo build.bat: listbox failed & exit /b 1)
+del listbox.obj
+cd ..\..
+goto :eof
+
+:combobox
+echo === combobox
+cd user32\combobox
+call :stamp combobox.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% combobox.c user32.lib gdi32.lib
+if errorlevel 1 (echo build.bat: combobox failed & exit /b 1)
+del combobox.obj
+cd ..\..
+goto :eof
+
+:cursor
+echo === cursor
+cd user32\cursor
+call :stamp cursor.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% cursor.c user32.lib
+if errorlevel 1 (echo build.bat: cursor failed & exit /b 1)
+del cursor.obj
+cd ..\..
+goto :eof
+
+:msgwait
+echo === msgwait
+cd user32\msgwait
+call :stamp msgwait.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% msgwait.c user32.lib
+if errorlevel 1 (echo build.bat: msgwait failed & exit /b 1)
+del msgwait.obj
+cd ..\..
+goto :eof
+
+:timers
+echo === timers
+cd user32\timers
+call :stamp timers.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% timers.c user32.lib
+if errorlevel 1 (echo build.bat: timers failed & exit /b 1)
+del timers.obj
+cd ..\..
+goto :eof
+
+:hooks
+echo === hooks
+cd user32\hooks
+call :stamp hooks.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% hooks.c user32.lib
+if errorlevel 1 (echo build.bat: hooks failed & exit /b 1)
+del hooks.obj
+cd ..\..
+goto :eof
+
+:drawhelp
+echo === drawhelp
+cd user32\drawhelp
+call :stamp drawhelp.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% drawhelp.c user32.lib gdi32.lib
+if errorlevel 1 (echo build.bat: drawhelp failed & exit /b 1)
+del drawhelp.obj
+cd ..\..
+goto :eof
+
+:redraw
+echo === redraw
+cd user32\redraw
+call :stamp redraw.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% redraw.c user32.lib gdi32.lib
+if errorlevel 1 (echo build.bat: redraw failed & exit /b 1)
+del redraw.obj
+cd ..\..
+goto :eof
+
+:focus2
+echo === focus2
+cd user32\focus2
+call :stamp focus2.c
+cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% focus2.c user32.lib
+if errorlevel 1 (echo build.bat: focus2 failed & exit /b 1)
+del focus2.obj
 cd ..\..
 goto :eof
 
@@ -1154,5 +1390,42 @@ call :stamp ntquery.c
 cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% ntquery.c kernel32.lib advapi32.lib
 if errorlevel 1 (echo build.bat: ntquery failed & exit /b 1)
 del ntquery.obj
+cd ..\..
+goto :eof
+
+rem manyproc's companion program, mpkid.exe (the child its sections start,
+rem hundreds at once): no C runtime and a 64 KiB stack reservation, so
+rem that each costs the machine as little as a process can.
+:manyproc
+echo === manyproc
+cd kernel32\manyproc
+cl /nologo mpkid.c /link /NODEFAULTLIB /ENTRY:KidMain /SUBSYSTEM:CONSOLE /STACK:0x10000,0x1000 kernel32.lib
+if errorlevel 1 (echo build.bat: mpkid failed & exit /b 1)
+call :stamp manyproc.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% manyproc.c
+if errorlevel 1 (echo build.bat: manyproc failed & exit /b 1)
+del manyproc.obj mpkid.obj
+cd ..\..
+goto :eof
+
+rem manythrd: a 64 KiB stack reservation, which each of its 2,000 threads
+rem takes, so that their stacks fit the address space.
+:manythrd
+echo === manythrd
+cd kernel32\manythrd
+call :stamp manythrd.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% manythrd.c /link /STACK:0x10000,0x1000
+if errorlevel 1 (echo build.bat: manythrd failed & exit /b 1)
+del manythrd.obj
+cd ..\..
+goto :eof
+
+:manyhndl
+echo === manyhndl
+cd kernel32\manyhndl
+call :stamp manyhndl.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% manyhndl.c
+if errorlevel 1 (echo build.bat: manyhndl failed & exit /b 1)
+del manyhndl.obj
 cd ..\..
 goto :eof

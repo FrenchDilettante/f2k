@@ -1,9 +1,10 @@
 /*
  * accel - keyboard accelerators from the program's own ACCELERATORS
  * resource (accel.rc, compiled by rc and linked in), as user32 and
- * win32k serve them: LoadAcceleratorsW/A, CopyAcceleratorTableW/A,
- * DestroyAcceleratorTable, and TranslateAcceleratorW/A on keyboard
- * messages the program posts to its own window.
+ * win32k serve them: LoadAcceleratorsW/A, CreateAcceleratorTableW/A,
+ * CopyAcceleratorTableW/A, DestroyAcceleratorTable, and
+ * TranslateAcceleratorW/A on keyboard messages the program posts to its
+ * own window.
  *
  * Table 300 (accel.rc): 301 the character "A" (ASCII), 302 "^C" (the
  * character 3), 303 F5, 304 Ctrl+Z, 305 Alt+X, 306 Shift+Delete, 307 K
@@ -64,6 +65,24 @@
  *              K (no item's), Ctrl+Z again once EnableMenuItem has
  *              enabled its item, and F5 while EnableWindow has disabled
  *              the window
+ *   create     CreateAcceleratorTableW and A with no entries (count 0,
+ *              and -1 for the W form), CreateAcceleratorTableW of NULL
+ *              (inside __try); one entry, its count and entries through
+ *              CopyAcceleratorTableW, a second table of it (the same
+ *              one or not), DestroyAcceleratorTable of each, the first
+ *              again, and a copy after; entries whose fVirt carries
+ *              0x80, 0x40 and every bit, copied back; the A form's
+ *              character keys (0x80, Ctrl+'a', the virtual key 0x80, a
+ *              key above 0xFF): the caller's array after the call, the
+ *              entries through CopyAcceleratorTableW and A; 1000
+ *              entries copied back whole; and TranslateAcceleratorW of
+ *              F6 and F7 on a table whose first entry (F6) carries 0x80,
+ *              the flag that ends a resource's table
+ *   alias      TranslateAccelerator, the unsuffixed export (reached
+ *              through GetProcAddress: the SDK's headers map the name to
+ *              the A or W form), whether it is the same entry as
+ *              TranslateAcceleratorA, and the ansi section's cases
+ *              through it
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat accel):
  *   rc accel.rc
@@ -111,6 +130,11 @@ static HMENU window_popup;
 
 /* The thread's key state at the section's start. */
 static BYTE saved_keys[256];
+
+/* The alias section's TranslateAccelerator, which the ANSI cases call in
+ * place of TranslateAcceleratorA while it is set. */
+typedef int (WINAPI *translate_t)(HWND, HACCEL, LPMSG);
+static translate_t alias_translate;
 
 static void record(UINT msg, WPARAM wparam, LPARAM lparam)
 {
@@ -260,7 +284,10 @@ static void try_case(HWND h, HWND target, HACCEL table, int ansi, UINT msg, WPAR
     }
     received_count = 0;
     arm();
-    if (ansi) {
+    if (ansi && alias_translate != NULL) {
+        r = alias_translate(target, table, &m);
+        line("TranslateAccelerator(%s): ret=%d err=%s", what, r, le());
+    } else if (ansi) {
         r = TranslateAcceleratorA(target, table, &m);
         line("TranslateAcceleratorA(%s): ret=%d err=%s", what, r, le());
     } else {
@@ -512,6 +539,45 @@ static void sec_ansi(void)
     DestroyWindow(h);
 }
 
+/* --- alias --------------------------------------------------------- */
+
+static void sec_alias(void)
+{
+    HMODULE user32;
+    HWND h;
+    HACCEL t;
+
+    drain();
+    user32 = GetModuleHandleA("user32.dll");
+    alias_translate = (translate_t)GetProcAddress(user32, "TranslateAccelerator");
+    if (alias_translate == NULL) {
+        line("TranslateAccelerator: absent");
+        return;
+    }
+    line("TranslateAccelerator: the same entry as TranslateAcceleratorA %s",
+         yesno((FARPROC)alias_translate == GetProcAddress(user32, "TranslateAcceleratorA")));
+    save_keys();
+    window_menu = NULL;
+    window_popup = NULL;
+    h = open_window("F2KAccelAlias", 1);
+    arm();
+    t = LoadAcceleratorsA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(TABLE_ID));
+    line("LoadAcceleratorsA(300): non-NULL %s err=%s", yesno(t != NULL), le());
+
+    set_modifiers(0, 0, 0);
+    try_case(h, h, t, 1, WM_KEYDOWN, VK_F5, KEY_LPARAM(SCAN_F5), "WM_KEYDOWN F5");
+    try_case(h, h, t, 1, WM_CHAR, 'A', KEY_LPARAM(SCAN_A), "WM_CHAR 'A'");
+    try_case(h, h, t, 1, WM_KEYDOWN, 'Z', KEY_LPARAM(SCAN_Z), "WM_KEYDOWN Z");
+
+    set_modifiers(1, 0, 0);
+    try_case(h, h, t, 1, WM_KEYDOWN, 'Z', KEY_LPARAM(SCAN_Z), "WM_KEYDOWN Z, Ctrl down");
+
+    restore_keys();
+    alias_translate = NULL;
+    DestroyAcceleratorTable(t);
+    DestroyWindow(h);
+}
+
 /* --- menu ---------------------------------------------------------- */
 
 static void sec_menu(void)
@@ -558,11 +624,158 @@ static void sec_menu(void)
     window_popup = NULL;
 }
 
+/* --- create -------------------------------------------------------- */
+
+#define MANY 1000
+
+static ACCEL many[MANY];
+static ACCEL many_back[MANY];
+
+static void set_entry(ACCEL *e, BYTE virt, WORD key, WORD cmd)
+{
+    e->fVirt = virt;
+    e->key = key;
+    e->cmd = cmd;
+}
+
+/* CreateAcceleratorTableW (ansi 0) or A of `n` entries, printed. */
+static HACCEL create(ACCEL *e, int n, int ansi, const char *what)
+{
+    HACCEL t;
+
+    arm();
+    t = ansi ? CreateAcceleratorTableA(e, n) : CreateAcceleratorTableW(e, n);
+    line("CreateAcceleratorTable%s(%s): non-NULL %s err=%s", ansi ? "A" : "W", what, yesno(t != NULL),
+         le());
+    return t;
+}
+
+/* A table's entries copied back through the W or A form, printed. */
+static void copy_back(HACCEL t, int ansi, const char *what)
+{
+    ACCEL e[16];
+    int n;
+
+    memset(e, 0xEE, sizeof e);
+    arm();
+    n = ansi ? CopyAcceleratorTableA(t, e, 16) : CopyAcceleratorTableW(t, e, 16);
+    line("CopyAcceleratorTable%s(%s, buffer, 16): ret=%d err=%s", ansi ? "A" : "W", what, n, le());
+    print_entries(e, n);
+}
+
+static void sec_create(void)
+{
+    ACCEL one[1];
+    ACCEL three[3];
+    ACCEL ansi[4];
+    ACCEL marked[2];
+    HACCEL t, t2, tm;
+    HWND h;
+    int n, i, same;
+    int faulted;
+
+    drain();
+    set_entry(&one[0], FVIRTKEY | FCONTROL, 'S', 401);
+
+    /* No entries, and a negative count (the W form only: Windows 2000's
+     * A form walks the count's entries before it checks it). */
+    create(one, 0, 0, "1 entry, count 0");
+    create(one, 0, 1, "1 entry, count 0");
+    create(one, -1, 0, "1 entry, count -1");
+    faulted = 0;
+    t = NULL;
+    __try {
+        arm();
+        t = CreateAcceleratorTableW(NULL, 1);
+        line("CreateAcceleratorTableW(NULL, count 1): non-NULL %s err=%s", yesno(t != NULL), le());
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        faulted = 1;
+    }
+    if (faulted) {
+        line("CreateAcceleratorTableW(NULL, count 1): faulted");
+    }
+
+    /* One entry, copied back, two tables of it, destroyed. */
+    t = create(one, 1, 0, "Ctrl+S, 401");
+    arm();
+    n = CopyAcceleratorTableW(t, NULL, 0);
+    line("CopyAcceleratorTableW(it, NULL, 0): ret=%d err=%s", n, le());
+    copy_back(t, 0, "it");
+    t2 = create(one, 1, 0, "the same entry again");
+    line("  the same table as the first: %s", yesno(t2 == t));
+    destroy_table(t2, "the second");
+    destroy_table(t, "the first");
+    destroy_table(t, "the first, again");
+    arm();
+    n = CopyAcceleratorTableW(t, NULL, 0);
+    line("CopyAcceleratorTableW(the first, NULL, 0) after: ret=%d err=%s", n, le());
+
+    /* fVirt's other bits: 0x80 (the resource's last-entry flag) and 0x40. */
+    set_entry(&three[0], 0x80 | FVIRTKEY, VK_F6, 402);
+    set_entry(&three[1], 0x40 | FVIRTKEY, VK_F7, 403);
+    set_entry(&three[2], 0xFF, VK_F8, 404);
+    t = create(three, 3, 0, "fVirt 0x81, 0x41, 0xFF");
+    copy_back(t, 0, "it");
+    destroy_table(t, "it");
+
+    /* The A form's character keys: from the ANSI code page (1252 on the
+     * real machine), a virtual key left alone, a key above 0xFF. */
+    set_entry(&ansi[0], 0, 0x80, 410);
+    set_entry(&ansi[1], FCONTROL, 'a', 411);
+    set_entry(&ansi[2], FVIRTKEY, 0x80, 412);
+    set_entry(&ansi[3], 0, 0x1241, 413);
+    t = create(ansi, 4, 1, "0x80, Ctrl+'a', the virtual key 0x80, 0x1241");
+    line("  the caller's keys after: %u %u %u %u", (unsigned)ansi[0].key, (unsigned)ansi[1].key,
+         (unsigned)ansi[2].key, (unsigned)ansi[3].key);
+    copy_back(t, 0, "it");
+    copy_back(t, 1, "it");
+    destroy_table(t, "it");
+
+    /* Many entries. */
+    for (i = 0; i < MANY; i++) {
+        set_entry(&many[i], (BYTE)(FVIRTKEY | ((i % 4) << 2)), (WORD)(0x30 + i % 64), (WORD)(1000 + i));
+    }
+    t = create(many, MANY, 0, "1000 entries");
+    arm();
+    n = CopyAcceleratorTableW(t, NULL, 0);
+    line("CopyAcceleratorTableW(it, NULL, 0): ret=%d err=%s", n, le());
+    memset(many_back, 0xEE, sizeof many_back);
+    arm();
+    n = CopyAcceleratorTableW(t, many_back, MANY);
+    same = n == MANY;
+    for (i = 0; i < n && i < MANY; i++) {
+        if (many_back[i].fVirt != many[i].fVirt || many_back[i].key != many[i].key ||
+            many_back[i].cmd != many[i].cmd) {
+            same = 0;
+        }
+    }
+    line("CopyAcceleratorTableW(it, buffer, 1000): ret=%d err=%s, every entry as given %s", n, le(),
+         yesno(same));
+    destroy_table(t, "it");
+
+    /* A table whose first entry carries 0x80: does the translation stop
+     * there? F6 is the first entry's, F7 the second's. */
+    set_entry(&marked[0], 0x80 | FVIRTKEY, VK_F6, 421);
+    set_entry(&marked[1], FVIRTKEY, VK_F7, 422);
+    h = open_window("F2KAccelCreate", 0);
+    tm = create(marked, 2, 0, "F6 with fVirt 0x81, F7");
+    save_keys();
+    set_modifiers(0, 0, 0);
+    try_case(h, h, tm, 0, WM_KEYDOWN, VK_F6, KEY_LPARAM(0x40), "WM_KEYDOWN F6");
+    try_case(h, h, tm, 0, WM_KEYDOWN, VK_F7, KEY_LPARAM(0x41), "WM_KEYDOWN F7");
+    restore_keys();
+    destroy_table(tm, "it");
+    DestroyWindow(h);
+    drain();
+}
+
 static const section_t sections[] = {
     { "load", sec_load, F2KT_ALWAYS },
     { "translate", sec_translate, F2KT_ALWAYS },
     { "ansi", sec_ansi, F2KT_ALWAYS },
     { "menu", sec_menu, F2KT_ALWAYS },
+    { "create", sec_create, F2KT_ALWAYS },
+    { "alias", sec_alias, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

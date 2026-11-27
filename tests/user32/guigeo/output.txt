@@ -1,9 +1,9 @@
 # F2K capture of guigeo (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
-# date: Sat 21/11/2026  7:37:11.07
-guigeo F2KT-SOURCE-CRC=0xE44A4562
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:39:16.74
+guigeo F2KT-SOURCE-CRC=0x779370B5
 >>> guigeo.exe show
 == show
 ShowWindow(SW_SHOW): ret=0 err=-
@@ -232,5 +232,53 @@ SetWindowPos(SWP_SHOWWINDOW on the shown window, 140,100 260x190): ret=1 err=-
   visible yes; moved yes, to the position asked yes; the size asked yes, the size before no
 SetWindowPos(SWP_HIDEWINDOW on the shown window, 160,110 270x170): ret=1 err=-
   visible no; moved yes, to the position asked yes; the size asked yes, the size before no
+guigeo: done
+<<< exit code=0
+>>> guigeo.exe mmdefault
+== mmdefault
+CreateWindowEx(WS_POPUP, 200x150): non-NULL yes
+  the creation's messages: WM_NCCREATE WM_NCCALCSIZE WM_CREATE
+CreateWindowEx(WS_POPUP | WS_THICKFRAME, 200x150): non-NULL yes
+  the creation's messages: WM_GETMINMAXINFO WM_NCCREATE WM_NCCALCSIZE WM_CREATE
+CreateWindowEx(WS_OVERLAPPEDWINDOW, 200x150): non-NULL yes
+  the creation's messages: WM_GETMINMAXINFO WM_NCCREATE WM_NCCALCSIZE WM_CREATE
+  WM_GETMINMAXINFO count=1; the first one's defaults:
+    ptReserved 160,24
+    ptMaxSize the screen's plus 8 by plus 8, the work area's plus 8 by plus 36
+    ptMaxPosition the work area's corner less 4,4
+    ptMinTrackSize SM_CXMINTRACK by SM_CYMINTRACK yes
+    ptMaxTrackSize the screen's plus 12 by plus 12; SM_CXMAXTRACK by SM_CYMAXTRACK yes
+  SetWindowPos to 300x200: WM_GETMINMAXINFO count=1; the size asked
+  SetWindowPos to 300x200 with SWP_NOSIZE: WM_GETMINMAXINFO count=0; the size asked
+  SetWindowPos to 3000x3000: WM_GETMINMAXINFO count=1; the screen's plus 12 by plus 12
+  SetWindowPos to 50x20: WM_GETMINMAXINFO count=1; SM_CXMINTRACK by SM_CYMINTRACK
+  WM_WINDOWPOSCHANGING kept from DefWindowProc, SetWindowPos to 50x20: WM_GETMINMAXINFO count=0; the size asked
+  WM_WINDOWPOSCHANGING kept from DefWindowProc, SetWindowPos to 3000x3000: WM_GETMINMAXINFO count=0; the size asked
+  ShowWindow(SW_MAXIMIZE): WM_GETMINMAXINFO count=2; past the work area by 4 left, 4 above, 4 right, 4 below
+guigeo: done
+<<< exit code=0
+>>> guigeo.exe xedits
+== xedits
+WM_NCCALCSIZE shrunk by 10 on each side, another thread's WS_POPUP window 200x100:
+  the window made: yes
+  after SetWindowPos to 240x120: the client the window less 10 on each side yes, the window's own size no
+  the procedure ran on the window's thread yes, every time inside a send from another thread yes
+WM_GETMINMAXINFO: tracking 300x250 to 400x300, maximized 380x280 at 20,30; another thread's WS_OVERLAPPEDWINDOW window:
+  the window made: yes
+  SetWindowPos to 100x100: the size asked no, the minimum tracking size yes, the maximum tracking size no, the maximized size no at the maximized position no
+  SetWindowPos to 600x450: the size asked no, the minimum tracking size no, the maximum tracking size yes, the maximized size no at the maximized position no
+  the procedure ran on the window's thread yes, every time inside a send from another thread yes
+  ShowWindow(SW_SHOWMAXIMIZED): the size asked no, the minimum tracking size no, the maximum tracking size no, the maximized size yes at the maximized position yes
+WM_WINDOWPOSCHANGING adding SWP_NOMOVE and setting cx to 250, another thread's WS_POPUP window 200x100:
+  the window made: yes
+  SetWindowPos(60,70 220x130): ret=1; moved no, to the position asked no; the width the procedure's 250 yes, the asked no; the height the asked yes
+  MoveWindow(80,90 230x140): ret=1; moved no, to the position asked no; the width the procedure's 250 yes, the asked no; the height the asked yes
+  the procedure ran on the window's thread yes, every time inside a send from another thread yes
+the procedure sending back to the main thread's window while the main thread waits:
+  the windows made: yes
+  SetWindowPos: ret=1; the main window's WM_USER+5 received 1, WM_WINDOWPOSCHANGING received yes, its size 150x100 yes
+the window's thread ending inside WM_WINDOWPOSCHANGING:
+  the window made: yes
+  SetWindowPos returned; the thread ended yes, its code 7; the window gone yes
 guigeo: done
 <<< exit code=0

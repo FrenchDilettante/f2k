@@ -1,8 +1,8 @@
 # F2K capture of msgtable (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/24/2026 15:28:15.26
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:38:52.25
 msgtable F2KT-SOURCE-CRC=0x6AE8BA32
 >>> msgtable.exe lookup
 == lookup

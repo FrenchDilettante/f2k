@@ -1,8 +1,8 @@
 # F2K capture of batdyn (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/04/2026 12:36:29.40
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:41:00.94
 >>> cmd /c batdyn.cmd
 CMDEXTVERSION [2]
 RANDOM a number from 0 to 32767: yes

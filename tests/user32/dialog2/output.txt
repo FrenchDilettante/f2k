@@ -1,0 +1,277 @@
+# F2K capture of dialog2 (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:39:56.14
+dialog2 F2KT-SOURCE-CRC=0x97A239D0
+>>> dialog2.exe indirect
+== indirect
+CreateDialogIndirectParamW(no font): non-NULL yes err=0
+  the procedure: WM_SETFONT 0 time(s), WM_INITDIALOG 1 time(s) lParam=0x1234
+  at WM_INITDIALOG: IsWindowUnicode yes, visible no
+  dialog: class #32770 style=0x84C00084 exstyle=0x00010101 IsWindowUnicode yes caption "F2K dialog2 é"
+  WM_GETFONT: non-NULL no
+  control 0: class Button id=0x1 style=0x50010001 exstyle=0x00000004 text "OK"
+    its font the dialog's: yes
+  control 1: class Edit id=0x65 style=0x50010080 exstyle=0x00000204 text "text é"
+    its font the dialog's: yes
+  2 controls
+CreateDialogIndirectParamW(DS_SETFONT): non-NULL yes err=0
+  the procedure: WM_SETFONT 1 time(s), WM_INITDIALOG 1 time(s) lParam=0x5678
+  at WM_INITDIALOG: IsWindowUnicode yes, visible no
+  dialog: class #32770 style=0x84C000C4 exstyle=0x00010101 IsWindowUnicode yes caption "F2K dialog2 é"
+  WM_GETFONT: non-NULL yes
+  control 0: class Button id=0x1 style=0x50010001 exstyle=0x00000004 text "OK"
+    its font the dialog's: yes
+  control 1: class Edit id=0x65 style=0x50010080 exstyle=0x00000204 text "text é"
+    its font the dialog's: yes
+  2 controls
+CreateDialogIndirectParamA(DS_SETFONT): non-NULL yes err=0
+  the procedure: WM_SETFONT 1 time(s), WM_INITDIALOG 1 time(s) lParam=0x9ABC
+  at WM_INITDIALOG: IsWindowUnicode no, visible no
+  dialog: class #32770 style=0x84C000C4 exstyle=0x00010101 IsWindowUnicode no caption "F2K dialog2 é"
+  WM_GETFONT: non-NULL yes
+  control 0: class Button id=0x1 style=0x50010001 exstyle=0x00000004 text "OK"
+    its font the dialog's: yes
+  control 1: class Edit id=0x65 style=0x50010080 exstyle=0x00000204 text "text é"
+    its font the dialog's: yes
+  2 controls
+CreateDialogIndirectParamA(a control of an unregistered class): non-NULL no err=1407
+  the procedure: WM_SETFONT 1 time(s), WM_INITDIALOG 0 time(s) lParam=0x0
+CreateDialogIndirectParamA(the same, DS_NOFAILCREATE): non-NULL yes err=1407
+  the procedure: WM_SETFONT 1 time(s), WM_INITDIALOG 1 time(s) lParam=0x2
+  at WM_INITDIALOG: IsWindowUnicode no, visible no
+  dialog: class #32770 style=0x84C00054 exstyle=0x00010100 IsWindowUnicode no caption "F2K dialog2 é"
+  WM_GETFONT: non-NULL yes
+  control 0: class Static id=0x12E style=0x50000000 exstyle=0x00000004 text "static"
+    its font the dialog's: yes
+  1 controls
+CreateDialogIndirectParamW(a control of an unregistered class): non-NULL no err=1407
+  the procedure: WM_SETFONT 1 time(s), WM_INITDIALOG 0 time(s) lParam=0x0
+CreateDialogIndirectParamW(the same, DS_NOFAILCREATE): non-NULL yes err=1407
+  the procedure: WM_SETFONT 1 time(s), WM_INITDIALOG 1 time(s) lParam=0x2
+  at WM_INITDIALOG: IsWindowUnicode yes, visible no
+  dialog: class #32770 style=0x84C00054 exstyle=0x00010100 IsWindowUnicode yes caption "F2K dialog2 é"
+  WM_GETFONT: non-NULL yes
+  control 0: class Static id=0x12E style=0x50000000 exstyle=0x00000004 text "static"
+    its font the dialog's: yes
+  1 controls
+dialog2: done
+<<< exit code=0
+>>> dialog2.exe ex
+== ex
+CreateDialogIndirectParamW(DLGTEMPLATEEX): non-NULL yes err=0
+  the procedure: WM_SETFONT 1 time(s), WM_INITDIALOG 1 time(s) lParam=0x11
+  at WM_INITDIALOG: IsWindowUnicode yes, visible no
+  dialog: class #32770 style=0x84C000C4 exstyle=0x00010501 IsWindowUnicode yes caption "F2K dialog2 ex"
+  WM_GETFONT: non-NULL yes
+  control 0: class Button id=0x1 style=0x50010001 exstyle=0x00000004 text "OK"
+    its font the dialog's: yes
+  control 1: class Edit id=0x12345 style=0x50010080 exstyle=0x00000204 text "wide id"
+    its font the dialog's: yes
+  control 2: class Static id=0x67 style=0x50000000 exstyle=0x00020004 text "edged"
+    its font the dialog's: yes
+  3 controls
+  GetDlgItem(0x12345): non-NULL yes, GetDlgItem(0x2345): non-NULL no
+CreateDialogIndirectParamA(DLGTEMPLATEEX): non-NULL yes err=0
+  the procedure: WM_SETFONT 1 time(s), WM_INITDIALOG 1 time(s) lParam=0x22
+  at WM_INITDIALOG: IsWindowUnicode no, visible no
+  dialog: class #32770 style=0x84C000C4 exstyle=0x00010501 IsWindowUnicode no caption "F2K dialog2 ex"
+  WM_GETFONT: non-NULL yes
+  control 0: class Button id=0x1 style=0x50010001 exstyle=0x00000004 text "OK"
+    its font the dialog's: yes
+  control 1: class Edit id=0x12345 style=0x50010080 exstyle=0x00000204 text "wide id"
+    its font the dialog's: yes
+  control 2: class Static id=0x67 style=0x50000000 exstyle=0x00020004 text "edged"
+    its font the dialog's: yes
+  3 controls
+dialog2: done
+<<< exit code=0
+>>> dialog2.exe aorw
+== aorw
+CreateDialogIndirectParamAorW(flags 0): non-NULL yes err=0
+  the procedure: WM_SETFONT 1 time(s), WM_INITDIALOG 1 time(s) lParam=0x100
+  at WM_INITDIALOG: IsWindowUnicode yes, visible no
+  IsWindowUnicode: yes, caption "F2K dialog2 é"
+CreateDialogIndirectParamAorW(flags 1): non-NULL yes err=0
+  the procedure: WM_SETFONT 1 time(s), WM_INITDIALOG 1 time(s) lParam=0x101
+  at WM_INITDIALOG: IsWindowUnicode yes, visible no
+  IsWindowUnicode: yes, caption "F2K dialog2 é"
+CreateDialogIndirectParamAorW(flags 2): non-NULL yes err=0
+  the procedure: WM_SETFONT 1 time(s), WM_INITDIALOG 1 time(s) lParam=0x102
+  at WM_INITDIALOG: IsWindowUnicode no, visible no
+  IsWindowUnicode: no, caption "F2K dialog2 é"
+DialogBoxIndirectParamAorW(flags 0), ended by EndDialog(1234): ret=1234 err=-
+  the procedure: WM_SETFONT 1 time(s), WM_INITDIALOG 1 time(s) lParam=0x200
+  at WM_INITDIALOG: IsWindowUnicode yes, visible no
+DialogBoxIndirectParamAorW(flags 2), ended by EndDialog(1234): ret=1234 err=-
+  the procedure: WM_SETFONT 1 time(s), WM_INITDIALOG 1 time(s) lParam=0x202
+  at WM_INITDIALOG: IsWindowUnicode no, visible no
+dialog2: done
+<<< exit code=0
+>>> dialog2.exe modal
+== modal
+DialogBoxIndirectParamW(ended by EndDialog(1234)): ret=1234 err=-
+  the procedure: WM_SETFONT 1 time(s), WM_INITDIALOG 1 time(s) lParam=0x4321
+  at WM_INITDIALOG: IsWindowUnicode yes, visible no
+DialogBoxIndirectParamW(no font, ended by EndDialog(1234)): ret=1234 err=-
+  the procedure: WM_SETFONT 0 time(s), WM_INITDIALOG 1 time(s) lParam=0x4322
+  at WM_INITDIALOG: IsWindowUnicode yes, visible no
+DialogBoxIndirectParamW(EndDialog(77) inside WM_INITDIALOG): ret=77 err=-
+  the procedure: WM_SETFONT 1 time(s), WM_INITDIALOG 1 time(s) lParam=0x4323
+  at WM_INITDIALOG: IsWindowUnicode yes, visible no
+DialogBoxIndirectParamW(a control of an unregistered class): ret=-1 err=1407
+  the procedure: WM_SETFONT 1 time(s), WM_INITDIALOG 0 time(s) lParam=0x0
+DialogBoxIndirectParamA(ended by EndDialog(1234)): ret=1234 err=-
+  the procedure: WM_SETFONT 1 time(s), WM_INITDIALOG 1 time(s) lParam=0x4321
+  at WM_INITDIALOG: IsWindowUnicode no, visible no
+DialogBoxIndirectParamA(no font, ended by EndDialog(1234)): ret=1234 err=-
+  the procedure: WM_SETFONT 0 time(s), WM_INITDIALOG 1 time(s) lParam=0x4322
+  at WM_INITDIALOG: IsWindowUnicode no, visible no
+DialogBoxIndirectParamA(EndDialog(77) inside WM_INITDIALOG): ret=77 err=-
+  the procedure: WM_SETFONT 1 time(s), WM_INITDIALOG 1 time(s) lParam=0x4323
+  at WM_INITDIALOG: IsWindowUnicode no, visible no
+DialogBoxIndirectParamA(a control of an unregistered class): ret=-1 err=1407
+  the procedure: WM_SETFONT 1 time(s), WM_INITDIALOG 0 time(s) lParam=0x0
+dialog2: done
+<<< exit code=0
+>>> dialog2.exe tabs
+== tabs
+the order dialog (201 tab group; 202 tab; 203 tab group disabled; 204 tab hidden; 205 static group; 206 tab group radio; 207, 208 disabled, 209 radios; 210 tab group): made yes
+GetNextDlgTabItem(dlg, NULL): next 201 err=-, previous NULL err=-
+GetNextDlgTabItem(dlg, 201): next 202 err=-, previous 210 err=-
+GetNextDlgTabItem(dlg, 202): next 206 err=-, previous 201 err=-
+GetNextDlgTabItem(dlg, 203): next 206 err=-, previous 202 err=-
+GetNextDlgTabItem(dlg, 204): next 206 err=-, previous 202 err=-
+GetNextDlgTabItem(dlg, 205): next 206 err=-, previous 202 err=-
+GetNextDlgTabItem(dlg, 206): next 210 err=-, previous 202 err=-
+GetNextDlgTabItem(dlg, 207): next 210 err=-, previous 206 err=-
+GetNextDlgTabItem(dlg, 208): next 210 err=-, previous 206 err=-
+GetNextDlgTabItem(dlg, 209): next 210 err=-, previous 206 err=-
+GetNextDlgTabItem(dlg, 210): next 201 err=-, previous 206 err=-
+GetNextDlgTabItem(NULL, NULL, FALSE): NULL err=1400
+GetNextDlgTabItem(NULL, 201, FALSE): NULL err=1400
+GetNextDlgTabItem(dlg, a popup outside it, FALSE): 201 err=-
+dialog2: done
+<<< exit code=0
+>>> dialog2.exe groups
+== groups
+the order dialog (201 tab group; 202 tab; 203 tab group disabled; 204 tab hidden; 205 static group; 206 tab group radio; 207, 208 disabled, 209 radios; 210 tab group): made yes
+GetNextDlgGroupItem(dlg, NULL): next 201 err=-, previous NULL err=-
+GetNextDlgGroupItem(dlg, 201): next 202 err=-, previous 202 err=-
+GetNextDlgGroupItem(dlg, 202): next 201 err=-, previous 201 err=-
+GetNextDlgGroupItem(dlg, 203): next 203 err=-, previous 203 err=-
+GetNextDlgGroupItem(dlg, 204): next 204 err=-, previous 204 err=-
+GetNextDlgGroupItem(dlg, 205): next 205 err=-, previous 205 err=-
+GetNextDlgGroupItem(dlg, 206): next 207 err=-, previous 209 err=-
+GetNextDlgGroupItem(dlg, 207): next 209 err=-, previous 206 err=-
+GetNextDlgGroupItem(dlg, 208): next 209 err=-, previous 207 err=-
+GetNextDlgGroupItem(dlg, 209): next 206 err=-, previous 207 err=-
+GetNextDlgGroupItem(dlg, 210): next 210 err=-, previous 210 err=-
+GetNextDlgGroupItem(NULL, NULL, FALSE): NULL err=1400
+GetNextDlgGroupItem(NULL, 201, FALSE): NULL err=1400
+GetNextDlgGroupItem(dlg, a popup outside it, FALSE): 201 err=-
+dialog2: done
+<<< exit code=0
+>>> dialog2.exe senditem
+== senditem
+CreateDialogIndirectParamW(DS_SETFONT): non-NULL yes err=0
+  the procedure: WM_SETFONT 1 time(s), WM_INITDIALOG 1 time(s) lParam=0x0
+  at WM_INITDIALOG: IsWindowUnicode yes, visible no
+SendDlgItemMessageA(101, WM_SETTEXT, "caf<E9> A"): ret=1 err=0
+SendDlgItemMessageA(101, WM_GETTEXTLENGTH): ret=6 err=0
+SendDlgItemMessageA(101, WM_GETTEXT, 32): ret=6 err=0 "caf<E9> A"
+SendDlgItemMessageA(101, WM_GETTEXT, 4): ret=3 err=0 "caf"
+SendDlgItemMessageW(101, WM_GETTEXT, 32): ret=6 err=0 "café A"
+SendDlgItemMessageW(101, WM_GETTEXTLENGTH): ret=6 err=-
+SendDlgItemMessageA(IDOK, WM_GETTEXTLENGTH): ret=2 err=-
+SendDlgItemMessageA(999, a missing id): ret=0 err=1421
+SendDlgItemMessageW(999, a missing id): ret=0 err=1421
+SendDlgItemMessageA(NULL, 101): ret=0 err=1400
+dialog2: done
+<<< exit code=0
+>>> dialog2.exe alias
+== alias
+the order dialog (201 tab group; 202 tab; 203 tab group disabled; 204 tab hidden; 205 static group; 206 tab group radio; 207, 208 disabled, 209 radios; 210 tab group): made yes
+SetFocus(201): the focus 201
+IsDialogMessage(dlg, WM_KEYDOWN Tab to 201): ret=1 err=0
+IsDialogMessage(dlg, WM_KEYUP Tab to 201): ret=1 err=-
+  the focus after: 202
+IsDialogMessageA(dlg, WM_KEYDOWN Tab to 202): ret=1 err=-
+IsDialogMessageA(dlg, WM_KEYUP Tab to 202): ret=1 err=-
+  the focus after: 206
+IsDialogMessage(dlg, WM_KEYDOWN Tab to a popup outside it): ret=0 err=-
+IsDialogMessageA(dlg, the same): ret=0 err=-
+  the focus after: 206
+dialog2: done
+<<< exit code=0
+>>> dialog2.exe msgboxex
+== msgboxex
+MessageBoxExW(NULL, MB_OKCANCEL, language 0), IDCANCEL posted: ret=2 err=-
+  the watcher found the box yes, closed it no, gave up no
+  box: caption "F2K dialog2 box ex", 3 controls
+    class Button id=1 style=0x50030001 text "OK"
+    class Button id=2 style=0x50010000 text "Cancel"
+    class Static id=65535 style=0x50022080 text "F2K box é"
+MessageBoxExW(NULL, MB_OKCANCEL, language English (US)), IDCANCEL posted: ret=2 err=-
+  the watcher found the box yes, closed it no, gave up no
+  box: caption "F2K dialog2 box ex", 3 controls
+    class Button id=1 style=0x50030001 text "OK"
+    class Button id=2 style=0x50010000 text "Cancel"
+    class Static id=65535 style=0x50022080 text "F2K box é"
+MessageBoxExW(NULL, MB_OKCANCEL, language French), IDCANCEL posted: ret=2 err=-
+  the watcher found the box yes, closed it no, gave up no
+  box: caption "F2K dialog2 box ex", 3 controls
+    class Button id=1 style=0x50030001 text "OK"
+    class Button id=2 style=0x50010000 text "Cancel"
+    class Static id=65535 style=0x50022080 text "F2K box é"
+MessageBoxExA(NULL, MB_OK, language 0), IDOK posted: ret=1 err=1421
+  the watcher found the box yes, closed it yes, gave up no
+  box: caption "F2K dialog2 box ex A", 2 controls
+    class Button id=2 style=0x50030001 text "OK"
+    class Static id=65535 style=0x50022080 text "F2K narrow box"
+MessageBoxExA(NULL, MB_OK, language English (US)), IDOK posted: ret=1 err=1421
+  the watcher found the box yes, closed it yes, gave up no
+  box: caption "F2K dialog2 box ex A", 2 controls
+    class Button id=2 style=0x50030001 text "OK"
+    class Static id=65535 style=0x50022080 text "F2K narrow box"
+MessageBoxExA(NULL, MB_OK, language French), IDOK posted: ret=1 err=1421
+  the watcher found the box yes, closed it yes, gave up no
+  box: caption "F2K dialog2 box ex A", 2 controls
+    class Button id=2 style=0x50030001 text "OK"
+    class Static id=65535 style=0x50022080 text "F2K narrow box"
+dialog2: done
+<<< exit code=0
+>>> dialog2.exe msgboxind
+== msgboxind
+MessageBoxIndirectW(MB_OKCANCEL), IDCANCEL posted: ret=2 err=-
+  the watcher found the box yes, closed it no, gave up no
+  box: caption "F2K dialog2 box ind", 3 controls
+    class Button id=1 style=0x50030001 text "OK"
+    class Button id=2 style=0x50010000 text "Cancel"
+    class Static id=65535 style=0x50022080 text "F2K indirect é"
+MessageBoxIndirectW(MB_OK | MB_USERICON, NULL, IDI_EXCLAMATION), IDOK posted: ret=1 err=1421
+  the watcher found the box yes, closed it yes, gave up no
+  box: caption "F2K dialog2 box ind", 3 controls
+    class Button id=2 style=0x50030001 text "OK"
+    class Static id=20 style=0x50020003 text ""
+    class Static id=65535 style=0x50022080 text "F2K indirect é"
+MessageBoxIndirectW(cbSize 0, MB_OK), IDOK posted: ret=1 err=1421
+  the watcher found the box yes, closed it yes, gave up no
+  box: caption "F2K dialog2 box ind", 2 controls
+    class Button id=2 style=0x50030001 text "OK"
+    class Static id=65535 style=0x50022080 text "F2K indirect é"
+MessageBoxIndirectA(MB_OKCANCEL), IDCANCEL posted: ret=2 err=-
+  the watcher found the box yes, closed it no, gave up no
+  box: caption "F2K dialog2 box ind A", 3 controls
+    class Button id=1 style=0x50030001 text "OK"
+    class Button id=2 style=0x50010000 text "Cancel"
+    class Static id=65535 style=0x50022080 text "F2K indirect narrow"
+MessageBoxIndirectA(MB_OK | MB_USERICON, NULL, IDI_EXCLAMATION), IDOK posted: ret=1 err=1421
+  the watcher found the box yes, closed it yes, gave up no
+  box: caption "F2K dialog2 box ind A", 3 controls
+    class Button id=2 style=0x50030001 text "OK"
+    class Static id=20 style=0x50020003 text ""
+    class Static id=65535 style=0x50022080 text "F2K indirect narrow"
+dialog2: done
+<<< exit code=0

@@ -3775,7 +3775,11 @@ ordinal = 10
 
 [[export]]
 name = "AttachThreadInput"
+group = "input"
+args = ["u32 idAttach", "u32 idAttachTo", "bool fAttach"]
+impl = { stub = "not yet implemented" }
 ordinal = 11
+fails = "FALSE"
 
 [[export]]
 name = "BlockInput"
@@ -3799,15 +3803,27 @@ ordinal = 19
 
 [[export]]
 name = "CallMsgFilterA"
+group = "message"
+args = ["ptr lpMsg", "i32 nCode"]
+impl = { stub = "not yet implemented" }
 ordinal = 20
+fails = "FALSE"
 
 [[export]]
 name = "CallMsgFilterW"
+group = "message"
+args = ["ptr lpMsg", "i32 nCode"]
+impl = { stub = "not yet implemented" }
 ordinal = 21
+fails = "FALSE"
 
 [[export]]
 name = "CallNextHookEx"
+group = "message"
+args = ["handle hhk", "i32 nCode", "u32 wParam", "u32 lParam"]
+impl = { stub = "not yet implemented" }
 ordinal = 22
+fails = "0"
 
 [[export]]
 name = "CascadeChildWindows"
@@ -3867,7 +3883,11 @@ ordinal = 59
 
 [[export]]
 name = "ClipCursor"
+group = "input"
+args = ["ptr lpRect"]
+impl = { stub = "not yet implemented" }
 ordinal = 61
+fails = "FALSE"
 
 [[export]]
 name = "CloseDesktop"
@@ -3887,7 +3907,14 @@ ordinal = 69
 
 [[export]]
 name = "CreateCursor"
+group = "resources"
+args = [
+    "handle hInst", "i32 xHotSpot", "i32 yHotSpot", "i32 nWidth", "i32 nHeight", "ptr pvANDPlane",
+    "ptr pvXORPlane",
+]
+impl = { stub = "not yet implemented" }
 ordinal = 75
+fails = "NULL"
 
 [[export]]
 name = "CreateDesktopA"
@@ -4099,7 +4126,11 @@ ordinal = 139
 
 [[export]]
 name = "DestroyCursor"
+group = "resources"
+args = ["handle hCursor"]
+impl = { stub = "not yet implemented" }
 ordinal = 142
+fails = "FALSE"
 
 [[export]]
 name = "DeviceEventWorker"
@@ -4115,39 +4146,78 @@ ordinal = 148
 
 [[export]]
 name = "DialogBoxIndirectParamW"
+group = "dialog"
+args = [
+    "handle hInstance", "ptr hDialogTemplate", "handle hWndParent", "u32 lpDialogFunc",
+    "u32 dwInitParam",
+]
+impl = { stub = "not yet implemented" }
 ordinal = 149
+fails = "-1"
 
 [[export]]
 name = "DlgDirListA"
+group = "dialog"
+args = ["handle hDlg", "ptr lpPathSpec", "i32 nIDListBox", "i32 nIDStaticPath", "u32 uFileType"]
+impl = { stub = "not yet implemented" }
 ordinal = 154
+fails = "0"
 
 [[export]]
 name = "DlgDirListComboBoxA"
+group = "dialog"
+args = ["handle hDlg", "ptr lpPathSpec", "i32 nIDComboBox", "i32 nIDStaticPath", "u32 uFiletype"]
+impl = { stub = "not yet implemented" }
 ordinal = 155
+fails = "0"
 
 [[export]]
 name = "DlgDirListComboBoxW"
+group = "dialog"
+args = ["handle hDlg", "ptr lpPathSpec", "i32 nIDComboBox", "i32 nIDStaticPath", "u32 uFiletype"]
+impl = { stub = "not yet implemented" }
 ordinal = 156
+fails = "0"
 
 [[export]]
 name = "DlgDirListW"
+group = "dialog"
+args = ["handle hDlg", "ptr lpPathSpec", "i32 nIDListBox", "i32 nIDStaticPath", "u32 uFileType"]
+impl = { stub = "not yet implemented" }
 ordinal = 157
+fails = "0"
 
 [[export]]
 name = "DlgDirSelectComboBoxExA"
+group = "dialog"
+args = ["handle hDlg", "ptr lpString", "i32 nCount", "i32 nIDComboBox"]
+impl = { stub = "not yet implemented" }
 ordinal = 158
+fails = "FALSE"
 
 [[export]]
 name = "DlgDirSelectComboBoxExW"
+group = "dialog"
+args = ["handle hDlg", "ptr lpString", "i32 nCount", "i32 nIDComboBox"]
+impl = { stub = "not yet implemented" }
 ordinal = 159
+fails = "FALSE"
 
 [[export]]
 name = "DlgDirSelectExA"
+group = "dialog"
+args = ["handle hDlg", "ptr lpString", "i32 nCount", "i32 nIDListBox"]
+impl = { stub = "not yet implemented" }
 ordinal = 160
+fails = "FALSE"
 
 [[export]]
 name = "DlgDirSelectExW"
+group = "dialog"
+args = ["handle hDlg", "ptr lpString", "i32 nCount", "i32 nIDListBox"]
+impl = { stub = "not yet implemented" }
 ordinal = 161
+fails = "FALSE"
 
 [[export]]
 name = "DragDetect"
@@ -4159,11 +4229,19 @@ ordinal = 163
 
 [[export]]
 name = "DrawAnimatedRects"
+group = "draw"
+args = ["handle hwnd", "i32 idAni", "ptr lprcFrom", "ptr lprcTo"]
+impl = { stub = "not yet implemented" }
 ordinal = 164
+fails = "FALSE"
 
 [[export]]
 name = "DrawCaption"
+group = "draw"
+args = ["handle hwnd", "handle hdc", "ptr lprc", "u32 uFlags"]
+impl = { stub = "not yet implemented" }
 ordinal = 165
+fails = "FALSE"
 
 [[export]]
 name = "DrawCaptionTempA"
@@ -4193,19 +4271,41 @@ ordinal = 175
 
 [[export]]
 name = "DrawStateA"
+group = "draw"
+args = [
+    "handle hdc", "handle hbr", "u32 lpOutputFunc", "u32 lData", "u32 wData", "i32 x", "i32 y",
+    "i32 cx", "i32 cy", "u32 fuFlags",
+]
+impl = { stub = "not yet implemented" }
 ordinal = 176
+fails = "FALSE"
 
 [[export]]
 name = "DrawStateW"
+group = "draw"
+args = [
+    "handle hdc", "handle hbr", "u32 lpOutputFunc", "u32 lData", "u32 wData", "i32 x", "i32 y",
+    "i32 cx", "i32 cy", "u32 fuFlags",
+]
+impl = { stub = "not yet implemented" }
 ordinal = 177
+fails = "FALSE"
 
 [[export]]
 name = "DrawTextExA"
+group = "draw"
+args = ["handle hdc", "ptr lpchText", "i32 cchText", "ptr lprc", "u32 dwDTFormat", "ptr lpDTParams"]
+impl = { stub = "not yet implemented" }
 ordinal = 179
+fails = "0"
 
 [[export]]
 name = "DrawTextExW"
+group = "draw"
+args = ["handle hdc", "ptr lpchText", "i32 cchText", "ptr lprc", "u32 dwDTFormat", "ptr lpDTParams"]
+impl = { stub = "not yet implemented" }
 ordinal = 180
+fails = "0"
 
 [[export]]
 name = "EditWndProc"
@@ -4266,7 +4366,11 @@ ordinal = 210
 
 [[export]]
 name = "ExcludeUpdateRgn"
+group = "message"
+args = ["handle hDC", "handle hWnd"]
+impl = { stub = "not yet implemented" }
 ordinal = 213
+fails = "0"
 
 [[export]]
 name = "FindWindowExA"
@@ -4322,7 +4426,11 @@ ordinal = 243
 
 [[export]]
 name = "GetClipCursor"
+group = "input"
+args = ["ptr lpRect"]
+impl = { stub = "not yet implemented" }
 ordinal = 245
+fails = "FALSE"
 
 [[export]]
 name = "GetClipboardSequenceNumber"
@@ -4346,7 +4454,11 @@ ordinal = 255
 
 [[export]]
 name = "GetDoubleClickTime"
+group = "input"
+args = []
+impl = { stub = "not yet implemented" }
 ordinal = 266
+fails = "0"
 
 [[export]]
 name = "GetIconInfo"
@@ -4358,7 +4470,11 @@ ordinal = 272
 
 [[export]]
 name = "GetInputState"
+group = "message"
+args = []
+impl = { stub = "not yet implemented" }
 ordinal = 273
+fails = "0"
 
 [[export]]
 name = "GetInternalWindowPos"
@@ -4414,7 +4530,11 @@ ordinal = 293
 
 [[export]]
 name = "GetMessageExtraInfo"
+group = "message"
+args = []
+impl = { stub = "not yet implemented" }
 ordinal = 303
+fails = "0"
 
 [[export]]
 name = "GetMonitorInfoW"
@@ -4442,7 +4562,11 @@ ordinal = 317
 
 [[export]]
 name = "GetQueueStatus"
+group = "message"
+args = ["u32 flags"]
+impl = { stub = "not yet implemented" }
 ordinal = 320
+fails = "0"
 
 [[export]]
 name = "GetScrollBarInfo"
@@ -4454,11 +4578,19 @@ ordinal = 325
 
 [[export]]
 name = "GetTabbedTextExtentA"
+group = "draw"
+args = ["handle hDC", "ptr lpString", "i32 nCount", "i32 nTabPositions", "ptr lpnTabStopPositions"]
+impl = { stub = "not yet implemented" }
 ordinal = 331
+fails = "0"
 
 [[export]]
 name = "GetTabbedTextExtentW"
+group = "draw"
+args = ["handle hDC", "ptr lpString", "i32 nCount", "i32 nTabPositions", "ptr lpnTabStopPositions"]
+impl = { stub = "not yet implemented" }
 ordinal = 332
+fails = "0"
 
 [[export]]
 name = "GetTaskmanWindow"
@@ -4498,15 +4630,33 @@ ordinal = 351
 
 [[export]]
 name = "GetWindowRgn"
+group = "window"
+args = ["handle hWnd", "handle hRgn"]
+impl = { stub = "not yet implemented" }
 ordinal = 354
+fails = "0"
 
 [[export]]
 name = "GrayStringA"
+group = "draw"
+args = [
+    "handle hDC", "handle hBrush", "u32 lpOutputFunc", "u32 lpData", "i32 nCount", "i32 X", "i32 Y",
+    "i32 nWidth", "i32 nHeight",
+]
+impl = { stub = "not yet implemented" }
 ordinal = 361
+fails = "FALSE"
 
 [[export]]
 name = "GrayStringW"
+group = "draw"
+args = [
+    "handle hDC", "handle hBrush", "u32 lpOutputFunc", "u32 lpData", "i32 nCount", "i32 X", "i32 Y",
+    "i32 nWidth", "i32 nHeight",
+]
+impl = { stub = "not yet implemented" }
 ordinal = 362
+fails = "FALSE"
 
 [[export]]
 name = "HiliteMenuItem"
@@ -4630,7 +4780,11 @@ ordinal = 435
 
 [[export]]
 name = "LockWindowUpdate"
+group = "message"
+args = ["handle hWndLock"]
+impl = { stub = "not yet implemented" }
 ordinal = 436
+fails = "FALSE"
 
 [[export]]
 name = "LockWorkStation"
@@ -4811,7 +4965,11 @@ ordinal = 501
 
 [[export]]
 name = "RedrawWindow"
+group = "message"
+args = ["handle hWnd", "ptr lprcUpdate", "handle hrgnUpdate", "u32 flags"]
+impl = { stub = "not yet implemented" }
 ordinal = 502
+fails = "FALSE"
 
 [[export]]
 name = "RegisterDeviceNotificationA"
@@ -4847,7 +5005,11 @@ ordinal = 516
 
 [[export]]
 name = "ReplyMessage"
+group = "message"
+args = ["u32 lResult"]
+impl = { stub = "not yet implemented" }
 ordinal = 524
+fails = "FALSE"
 
 [[export]]
 name = "ResolveDesktopForWOW"
@@ -4863,7 +5025,14 @@ ordinal = 528
 
 [[export]]
 name = "ScrollDC"
+group = "scroll"
+args = [
+    "handle hDC", "i32 dx", "i32 dy", "ptr lprcScroll", "ptr lprcClip", "handle hrgnUpdate",
+    "ptr lprcUpdate",
+]
+impl = { stub = "not yet implemented" }
 ordinal = 529
+fails = "FALSE"
 
 [[export]]
 name = "SendDlgItemMessageA"
@@ -4879,11 +5048,19 @@ ordinal = 535
 
 [[export]]
 name = "SendMessageCallbackA"
+group = "message"
+args = ["handle hWnd", "u32 Msg", "u32 wParam", "u32 lParam", "u32 lpCallBack", "u32 dwData"]
+impl = { stub = "not yet implemented" }
 ordinal = 538
+fails = "FALSE"
 
 [[export]]
 name = "SendMessageCallbackW"
+group = "message"
+args = ["handle hWnd", "u32 Msg", "u32 wParam", "u32 lParam", "u32 lpCallBack", "u32 dwData"]
+impl = { stub = "not yet implemented" }
 ordinal = 539
+fails = "FALSE"
 
 [[export]]
 name = "SetCaretBlinkTime"
@@ -4915,7 +5092,11 @@ ordinal = 559
 
 [[export]]
 name = "SetDoubleClickTime"
+group = "input"
+args = ["u32 uInterval"]
+impl = { stub = "not yet implemented" }
 ordinal = 563
+fails = "FALSE"
 
 [[export]]
 name = "SetInternalWindowPos"
@@ -5019,7 +5200,11 @@ ordinal = 605
 
 [[export]]
 name = "SetWindowRgn"
+group = "window"
+args = ["handle hWnd", "handle hRgn", "bool bRedraw"]
+impl = { stub = "not yet implemented" }
 ordinal = 610
+fails = "0"
 
 [[export]]
 name = "SetWindowStationUser"
@@ -5031,11 +5216,19 @@ ordinal = 615
 
 [[export]]
 name = "SetWindowsHookExA"
+group = "message"
+args = ["i32 idHook", "u32 lpfn", "handle hMod", "u32 dwThreadId"]
+impl = { stub = "not yet implemented" }
 ordinal = 616
+fails = "NULL"
 
 [[export]]
 name = "SetWindowsHookExW"
+group = "message"
+args = ["i32 idHook", "u32 lpfn", "handle hMod", "u32 dwThreadId"]
+impl = { stub = "not yet implemented" }
 ordinal = 617
+fails = "NULL"
 
 [[export]]
 name = "SetWindowsHookW"
@@ -5043,7 +5236,11 @@ ordinal = 618
 
 [[export]]
 name = "ShowCursor"
+group = "input"
+args = ["bool bShow"]
+impl = { stub = "not yet implemented" }
 ordinal = 620
+fails = "0"
 
 [[export]]
 name = "ShowOwnedPopups"
@@ -5059,7 +5256,11 @@ ordinal = 626
 
 [[export]]
 name = "SwapMouseButton"
+group = "input"
+args = ["bool fSwap"]
+impl = { stub = "not yet implemented" }
 ordinal = 628
+fails = "FALSE"
 
 [[export]]
 name = "SwitchDesktop"
@@ -5071,11 +5272,25 @@ ordinal = 630
 
 [[export]]
 name = "TabbedTextOutA"
+group = "draw"
+args = [
+    "handle hDC", "i32 X", "i32 Y", "ptr lpString", "i32 nCount", "i32 nTabPositions",
+    "ptr lpnTabStopPositions", "i32 nTabOrigin",
+]
+impl = { stub = "not yet implemented" }
 ordinal = 633
+fails = "0"
 
 [[export]]
 name = "TabbedTextOutW"
+group = "draw"
+args = [
+    "handle hDC", "i32 X", "i32 Y", "ptr lpString", "i32 nCount", "i32 nTabPositions",
+    "ptr lpnTabStopPositions", "i32 nTabOrigin",
+]
+impl = { stub = "not yet implemented" }
 ordinal = 634
+fails = "0"
 
 [[export]]
 name = "TileChildWindows"
@@ -5127,7 +5342,11 @@ ordinal = 651
 
 [[export]]
 name = "UnhookWindowsHookEx"
+group = "message"
+args = ["handle hhk"]
+impl = { stub = "not yet implemented" }
 ordinal = 652
+fails = "FALSE"
 
 [[export]]
 name = "UnloadKeyboardLayout"
@@ -5227,7 +5446,11 @@ ordinal = 682
 
 [[export]]
 name = "WaitForInputIdle"
+group = "message"
+args = ["handle hProcess", "u32 dwMilliseconds"]
+impl = { stub = "not yet implemented" }
 ordinal = 683
+fails = "WAIT_FAILED"
 
 [[export]]
 name = "Win32PoolAllocationStats"
@@ -5239,5 +5462,9 @@ ordinal = 690
 
 [[export]]
 name = "mouse_event"
+group = "input"
+args = ["u32 dwFlags", "u32 dx", "u32 dy", "u32 dwData", "u32 dwExtraInfo"]
+impl = { stub = "not yet implemented" }
 ordinal = 691
+fails = "void"
 

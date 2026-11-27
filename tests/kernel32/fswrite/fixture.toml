@@ -1,9 +1,12 @@
 # fswrite: one test per block of the real-machine capture (output.txt); see tests/README.md. The dirs
 # block's hundred files take about twenty seconds in the unoptimized kernel, hence the longer timeout.
-description = "fswrite - the write side of the file API (fswrite.c): create dispositions, writes and truncation, share modes, rename, copy and delete, directories, file times, CRT writes, and LockFile/UnlockFile between two handles (the I/O a lock refuses, unlocks of ranges never locked), MoveFileEx's refusals that leave both names (moveinto), truncating opens against another handle's sharing (overwrite), overlapped file I/O (overlap), negative OVERLAPPED offsets (negoff) and a tree past MAX_PATH through \\\\?\\ (deep), in a scratch directory."
+description = "fswrite - the write side of the file API (fswrite.c): create dispositions, writes and truncation, share modes, rename, copy and delete, directories, file times, CRT writes, and LockFile/UnlockFile between two handles (the I/O a lock refuses, unlocks of ranges never locked), MoveFileEx's refusals that leave both names (moveinto), truncating opens against another handle's sharing (overwrite), overlapped file I/O (overlap), negative OVERLAPPED offsets (negoff), a tree past MAX_PATH through \\\\?\\ (deep), and opens for writing of a file mapped as an image (imagewrite), in a scratch directory."
 kind = "sectioned"
 gate = true
 timeout = 40
+
+[pending]
+imagewrite = "once the image's views are unmapped and its section closed, CreateFileA(GENERIC_READ | GENERIC_WRITE) of the file panics the kernel (kernel/src/fs/file.rs: an open names a live record), where Windows 2000 opens it and the next image mapping sees the write"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
@@ -193,4 +196,18 @@ deep = [
     "kernel32.ReadFile",
     "kernel32.WriteFile",
     "ntdll.RtlDosPathNameToNtPathName_U",
+]
+imagewrite = [
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "kernel32.GetModuleFileNameA",
+    "kernel32.CopyFileA",
+    "kernel32.CreateFileA",
+    "kernel32.CloseHandle",
+    "kernel32.CreateFileMappingA",
+    "kernel32.MapViewOfFile",
+    "kernel32.UnmapViewOfFile",
+    "kernel32.SetFilePointer",
+    "kernel32.WriteFile",
+    "kernel32.DeleteFileA",
 ]

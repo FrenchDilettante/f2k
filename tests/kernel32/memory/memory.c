@@ -75,6 +75,22 @@
  *            growable heap's; the error a full capped heap's refusal
  *            leaves; HEAP_GENERATE_EXCEPTIONS past the limit; HeapReAlloc
  *            of a NULL block on that heap and the process heap
+ *   heaperr  the capped heap's largest block (0x7EFF8: Windows 2000's
+ *            0x7F000 threshold holds the 8-byte header, rounded) and the
+ *            next size, against a growable heap's; a block grown past it;
+ *            HeapReAlloc and HeapFree of a freed block; GlobalUnlock and
+ *            LocalUnlock of a fixed block
+ *   largemem GlobalMemoryStatus against GlobalMemoryStatusEx (reached
+ *            through GetProcAddress) and ntdll's basic information, on
+ *            a machine with 3 GiB of RAM: which of the 32-bit fields
+ *            are clamped for a program not linked /LARGEADDRESSAWARE
+ *            (this one), and to what. Each field prints as a relation
+ *            to 2 GiB and 4 GiB (below 0x7FFFFFFF, exactly 0x7FFFFFFF,
+ *            exactly 0x80000000, between, exactly 0xFFFFFFFF), so the
+ *            block holds on any 3 GiB machine. Listed as interactive so
+ *            tests\capture.bat leaves it out: the owner runs
+ *            "memory.exe largemem" by hand on a VM with 3 GiB of RAM
+ *            and puts the block in overrides.txt
  *
  * The named mappings run twice: through the A calls, then through their
  * W twins on the same names (the W lines carry the W names, or "(W)");
@@ -1644,6 +1660,195 @@ static void sec_heapcap(void)
     HeapDestroy(hx);
 }
 
+/* --- largemem ------------------------------------------------------ */
+
+/* GlobalMemoryStatusEx's structure, which the MSVC 6 headers lack. */
+typedef struct {
+    DWORD dwLength;
+    DWORD dwMemoryLoad;
+    DWORDLONG ullTotalPhys;
+    DWORDLONG ullAvailPhys;
+    DWORDLONG ullTotalPageFile;
+    DWORDLONG ullAvailPageFile;
+    DWORDLONG ullTotalVirtual;
+    DWORDLONG ullAvailVirtual;
+    DWORDLONG ullAvailExtendedVirtual;
+} memstatusex_t;
+
+typedef BOOL (WINAPI *memstatusex_fn)(memstatusex_t *);
+
+/* ntdll's SystemBasicInformation (class 0). */
+typedef struct {
+    ULONG Reserved;
+    ULONG TimerResolution;
+    ULONG PageSize;
+    ULONG NumberOfPhysicalPages;
+    ULONG LowestPhysicalPageNumber;
+    ULONG HighestPhysicalPageNumber;
+    ULONG AllocationGranularity;
+    ULONG MinimumUserModeAddress;
+    ULONG MaximumUserModeAddress;
+    ULONG ActiveProcessorsAffinityMask;
+    CHAR NumberOfProcessors;
+} basic_info_t;
+
+typedef LONG (WINAPI *query_system_fn)(ULONG, PVOID, ULONG, PULONG);
+
+#define GIB2 ((DWORDLONG)0x80000000u)
+#define GIB4 ((DWORDLONG)1 << 32)
+
+#ifndef IMAGE_FILE_LARGE_ADDRESS_AWARE
+#define IMAGE_FILE_LARGE_ADDRESS_AWARE 0x0020
+#endif
+
+/* A 32-bit field against 2 GiB and 4 GiB. */
+static const char *dw_class(DWORD v)
+{
+    if (v < 0x7FFFFFFFu) {
+        return "below 0x7FFFFFFF";
+    }
+    if (v == 0x7FFFFFFFu) {
+        return "0x7FFFFFFF";
+    }
+    if (v == 0x80000000u) {
+        return "0x80000000";
+    }
+    if (v == 0xFFFFFFFFu) {
+        return "0xFFFFFFFF";
+    }
+    return "between 2 and 4 GiB";
+}
+
+/* A 64-bit field against 2 GiB and 4 GiB. */
+static const char *ull_class(DWORDLONG v)
+{
+    if (v < GIB2) {
+        return "below 2 GiB";
+    }
+    if (v < GIB4) {
+        return "2 to 4 GiB";
+    }
+    return "4 GiB or more";
+}
+
+static void sec_largemem(void)
+{
+    MEMORYSTATUS ms;
+    memstatusex_t mx;
+    basic_info_t bi;
+    memstatusex_fn status_ex;
+    query_system_fn query_system;
+    IMAGE_DOS_HEADER *dos;
+    IMAGE_NT_HEADERS *nt;
+    DWORDLONG pages;
+    LONG st;
+    BOOL r;
+
+    dos = (IMAGE_DOS_HEADER *)GetModuleHandleA(NULL);
+    nt = (IMAGE_NT_HEADERS *)((BYTE *)dos + dos->e_lfanew);
+    line("this program linked /LARGEADDRESSAWARE: %s",
+         yesno((nt->FileHeader.Characteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE) != 0));
+
+    status_ex = (memstatusex_fn)GetProcAddress(GetModuleHandleA("kernel32.dll"), "GlobalMemoryStatusEx");
+    if (status_ex == NULL) {
+        line("GlobalMemoryStatusEx: not found");
+        return;
+    }
+    ZeroMemory(&mx, sizeof mx);
+    mx.dwLength = sizeof mx;
+    arm();
+    r = status_ex(&mx);
+    line("GlobalMemoryStatusEx: ret=%d err=%s length %lu", r, le(), mx.dwLength);
+    ZeroMemory(&ms, sizeof ms);
+    GlobalMemoryStatus(&ms);
+    line("GlobalMemoryStatus: length %lu", ms.dwLength);
+
+    /* Each field, the 32-bit value's class against the 64-bit one's; the
+       totals compared exactly (the available amounts move between the
+       two calls). */
+    line("total physical: dwTotalPhys %s, ullTotalPhys %s, equal %s", dw_class(ms.dwTotalPhys),
+         ull_class(mx.ullTotalPhys), yesno(ms.dwTotalPhys == mx.ullTotalPhys));
+    line("available physical: dwAvailPhys %s, ullAvailPhys %s", dw_class(ms.dwAvailPhys),
+         ull_class(mx.ullAvailPhys));
+    line("total page file: dwTotalPageFile %s, ullTotalPageFile %s, equal %s", dw_class(ms.dwTotalPageFile),
+         ull_class(mx.ullTotalPageFile), yesno(ms.dwTotalPageFile == mx.ullTotalPageFile));
+    line("available page file: dwAvailPageFile %s, ullAvailPageFile %s", dw_class(ms.dwAvailPageFile),
+         ull_class(mx.ullAvailPageFile));
+    line("dwAvailPhys plus dwAvailPageFile below 2 GiB: %s",
+         yesno((DWORDLONG)ms.dwAvailPhys + ms.dwAvailPageFile < GIB2));
+    line("total virtual: dwTotalVirtual 0x%08lX, ullTotalVirtual the same %s", ms.dwTotalVirtual,
+         yesno(ms.dwTotalVirtual == mx.ullTotalVirtual));
+    line("available virtual: dwAvailVirtual %s, ullAvailVirtual %s, ullAvailExtendedVirtual 0 %s",
+         dw_class(ms.dwAvailVirtual), ull_class(mx.ullAvailVirtual), yesno(mx.ullAvailExtendedVirtual == 0));
+    line("memory load at most 100: %s and %s", yesno(ms.dwMemoryLoad <= 100), yesno(mx.dwMemoryLoad <= 100));
+
+    /* What the kernel counts: the physical pages times the page size. */
+    query_system = (query_system_fn)GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQuerySystemInformation");
+    if (query_system == NULL) {
+        line("ntdll's NtQuerySystemInformation: not found");
+        return;
+    }
+    ZeroMemory(&bi, sizeof bi);
+    st = query_system(0, &bi, sizeof bi, NULL);
+    pages = (DWORDLONG)bi.NumberOfPhysicalPages * bi.PageSize;
+    line("NtQuerySystemInformation(basic): 0x%08lX, physical pages times the page size %s, ullTotalPhys's %s",
+         (DWORD)st, ull_class(pages), yesno(pages == mx.ullTotalPhys));
+}
+
+/* --- heaperr ------------------------------------------------------- */
+
+static void sec_heaperr(void)
+{
+    HANDLE capped, grow;
+    HGLOBAL g;
+    HLOCAL l;
+    void *p, *q;
+    BOOL r;
+    const char *e;
+
+    /* The threshold to the byte: 0x7EFF8 plus the 8-byte header is
+       0x7F000. */
+    capped = HeapCreate(0, 0, 16 * MB);
+    grow = HeapCreate(0, 0, 0);
+    heap_try("16 MiB capped", capped, 0x7EFF8);
+    heap_try("16 MiB capped", capped, 0x7EFF9);
+    heap_try("growable", grow, 0x7EFF9);
+
+    /* A block grown past it, then a freed block reallocated and freed. */
+    p = HeapAlloc(capped, 0, 64);
+    arm();
+    q = HeapReAlloc(capped, 0, p, 0x80000);
+    e = le();
+    line("HeapReAlloc(16 MiB capped, a block, 0x80000): %s err=%s", q == NULL ? "NULL" : "a block", e);
+    HeapFree(capped, 0, q != NULL ? q : p);
+    p = q != NULL ? q : p;
+    arm();
+    q = HeapReAlloc(capped, 0, p, 128);
+    e = le();
+    line("HeapReAlloc(16 MiB capped, a freed block, 128): %s err=%s", q == NULL ? "NULL" : "a block", e);
+    arm();
+    r = HeapFree(capped, 0, p);
+    e = le();
+    line("HeapFree(16 MiB capped, a freed block): ret=%d err=%s", r, e);
+
+    /* A fixed block has no lock to release. */
+    g = GlobalAlloc(GMEM_FIXED, 16);
+    arm();
+    r = GlobalUnlock(g);
+    e = le();
+    line("GlobalUnlock(a fixed block): ret=%d err=%s", r, e);
+    GlobalFree(g);
+    l = LocalAlloc(LMEM_FIXED, 16);
+    arm();
+    r = LocalUnlock(l);
+    e = le();
+    line("LocalUnlock(a fixed block): ret=%d err=%s", r, e);
+    LocalFree(l);
+
+    HeapDestroy(capped);
+    HeapDestroy(grow);
+}
+
 static const section_t sections[] = {
     { "sysinfo", sec_sysinfo, 0 },
     { "malloc", sec_malloc, 0 },
@@ -1659,6 +1864,10 @@ static const section_t sections[] = {
     { "globalflags", sec_globalflags, 0 },
     { "handles", sec_handles, 0 },
     { "heapcap", sec_heapcap, 0 },
+    { "heaperr", sec_heaperr, 0 },
+    /* Listed as interactive for capture.bat's sake alone: its block is a
+       3 GiB machine's, taken by hand into overrides.txt (see the top). */
+    { "largemem", sec_largemem, F2KT_INTERACTIVE },
     { NULL, NULL, 0 }
 };
 

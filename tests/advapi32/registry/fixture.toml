@@ -20,8 +20,7 @@ delete = [
     "RegQueryValueExA(\"x\"), the old handle, the name created anew with a value x: ret=1018 err=- type=* cb=1024 buffer=untouched",
 ]
 # RegEnumValueW's failure writes the type with what advapi32 had at hand (the key's handle value),
-# not an answer; RegEnumValueA leaves it. RegQueryInfoKey needs no mask: the capture's longest
-# value name/data are the subkey counts re-printed (number()'s 4-buffer ring, info_line's 6 calls).
+# not an answer; RegEnumValueA leaves it.
 enumvalue = [
     "RegEnumValueW(F2K, 5, 64 units, 1024): ret=259 err=- cch=64 name=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC> type=* cb=1024 buffer=untouched",
     "RegEnumValueW(F2K, 50, 64 units, 1024), far past the end: ret=259 err=- cch=64 name=<U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC><U+CCCC> type=* cb=1024 buffer=untouched",

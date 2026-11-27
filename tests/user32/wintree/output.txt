@@ -1,9 +1,9 @@
 # F2K capture of wintree (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Wed 11/11/2026 12:58:48.32
-wintree F2KT-SOURCE-CRC=0x8A2CBF9E
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:56.32
+wintree F2KT-SOURCE-CRC=0xA55CF3FA
 >>> wintree.exe parent
 == parent
 top: GetParent=NULL err=-, GetWindow(GW_OWNER)=NULL err=-
@@ -96,5 +96,46 @@ P2 destroyed
 GetLastActivePopup(owner): owner err=-; the active window: owner
 GetLastActivePopup(lone): lone err=-; the active window: owner
 GetLastActivePopup(NULL): NULL err=1400; the active window: owner
+wintree: done
+<<< exit code=0
+>>> wintree.exe find
+== find
+RegisterClassA(F2KWintreeFind, F2KWintreeFind2): atoms nonzero yes
+FindWindowA(the class): two (made after one) err=-
+FindWindowW(the class): two (made after one) err=-
+FindWindowA(the class in lower case): two (made after one) err=-
+FindWindowW(the class in lower case): two (made after one) err=-
+FindWindowA(the class's atom): two (made after one) err=-
+FindWindowW(the class's atom): two (made after one) err=-
+FindWindowA(NULL, one's title): one err=-
+FindWindowW(NULL, one's title): one err=-
+FindWindowA(NULL, one's title in other case): one err=-
+FindWindowW(NULL, one's title in other case): one err=-
+FindWindowA(the class, one's title): one err=-
+FindWindowW(the class, one's title): one err=-
+FindWindowA(the second class, one's title): NULL err=-
+FindWindowW(the second class, one's title): NULL err=-
+FindWindowA(NULL, the start of one's title): NULL err=-
+FindWindowW(NULL, the start of one's title): NULL err=-
+FindWindowA(NULL, the child's title): NULL err=-
+FindWindowW(NULL, the child's title): NULL err=-
+FindWindowA(NULL, a title no window has): NULL err=-
+FindWindowW(NULL, a title no window has): NULL err=-
+FindWindowA(a class never registered, NULL): NULL err=2
+FindWindowW(a class never registered, NULL): NULL err=2
+FindWindowA(a class never registered, one's title): NULL err=2
+FindWindowW(a class never registered, one's title): NULL err=2
+FindWindowA(the second class, the empty title): untitled (of the second class) err=-
+FindWindowW(the second class, the empty title): untitled (of the second class) err=-
+FindWindowA(the class, the empty title): NULL err=-
+FindWindowW(the class, the empty title): NULL err=-
+FindWindowA(NULL, NULL): a window yes, GetTopWindow(NULL)'s yes err=-
+FindWindowW(NULL, NULL): a window yes, GetTopWindow(NULL)'s yes err=-
+two destroyed
+FindWindowA(the class): one err=-
+FindWindowW(the class): one err=-
+one destroyed
+FindWindowA(the class): NULL err=-
+FindWindowW(the class): NULL err=-
 wintree: done
 <<< exit code=0

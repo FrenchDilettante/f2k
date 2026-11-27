@@ -2,7 +2,7 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sun 22/11/2026  0:58:40.45
+# date: Fri 11/27/2026 21:39:10.53
 vmdemand F2KT-SOURCE-CRC=0x23C19D8B
 >>> vmdemand.exe commitlimit
 == commitlimit
@@ -82,7 +82,7 @@ vmdemand: done
 performance class: status=0x00000000 err=- retlen>=128: yes
 commit: limit pages == dwTotalPageFile/pages: yes, avail == (limit-committed): yes
 fault counts nonzero: page faults yes, demand zero yes, transitions yes, copy-on-write yes
-memory load 43 <= 100: yes
+memory load 46 <= 100: yes
 vmdemand: done
 <<< exit code=0
 >>> vmdemand.exe pageroundtrip

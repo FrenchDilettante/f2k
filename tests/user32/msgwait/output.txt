@@ -1,0 +1,279 @@
+# F2K capture of msgwait (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:17.72
+msgwait F2KT-SOURCE-CRC=0x7A18AED9
+>>> msgwait.exe masks
+== masks
+setup: the window created: yes
+MsgWaitForMultipleObjects(the queue empty, QS_KEY): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the queue empty, QS_MOUSEMOVE): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the queue empty, QS_MOUSEBUTTON): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the queue empty, QS_POSTMESSAGE): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the queue empty, QS_TIMER): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the queue empty, QS_PAINT): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the queue empty, QS_SENDMESSAGE): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the queue empty, QS_HOTKEY): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the queue empty, QS_ALLPOSTMESSAGE): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the queue empty, QS_INPUT): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the queue empty, QS_ALLEVENTS): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the queue empty, QS_ALLINPUT): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a message posted, QS_KEY): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a message posted, QS_MOUSEMOVE): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a message posted, QS_MOUSEBUTTON): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a message posted, QS_POSTMESSAGE): WAIT_OBJECT_0+0 (input) err=-, at once: yes
+MsgWaitForMultipleObjects(a message posted, QS_TIMER): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a message posted, QS_PAINT): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a message posted, QS_SENDMESSAGE): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a message posted, QS_HOTKEY): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a message posted, QS_ALLPOSTMESSAGE): WAIT_OBJECT_0+0 (input) err=-, at once: yes
+MsgWaitForMultipleObjects(a message posted, QS_INPUT): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a message posted, QS_ALLEVENTS): WAIT_OBJECT_0+0 (input) err=-, at once: yes
+MsgWaitForMultipleObjects(a message posted, QS_ALLINPUT): WAIT_OBJECT_0+0 (input) err=-, at once: yes
+MsgWaitForMultipleObjects(a thread message posted, QS_POSTMESSAGE): WAIT_OBJECT_0+0 (input) err=-, at once: yes
+MsgWaitForMultipleObjects(a thread message posted, QS_ALLPOSTMESSAGE): WAIT_OBJECT_0+0 (input) err=-, at once: yes
+a second thread's send is waiting: yes
+MsgWaitForMultipleObjects(a second thread's send waiting, QS_KEY): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a second thread's send waiting, QS_MOUSEMOVE): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a second thread's send waiting, QS_MOUSEBUTTON): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a second thread's send waiting, QS_POSTMESSAGE): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a second thread's send waiting, QS_TIMER): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a second thread's send waiting, QS_PAINT): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a second thread's send waiting, QS_SENDMESSAGE): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a second thread's send waiting, QS_HOTKEY): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a second thread's send waiting, QS_ALLPOSTMESSAGE): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a second thread's send waiting, QS_INPUT): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a second thread's send waiting, QS_ALLEVENTS): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a second thread's send waiting, QS_ALLINPUT): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the send waiting, QS_POSTMESSAGE, 300 ms): WAIT_TIMEOUT err=-, at once: no
+the second thread's send returned 103
+received: 2 event(s)
+  main: the procedure: MSG_TEST wParam=1
+  main: the procedure: MSG_TEST wParam=3
+MsgWaitForMultipleObjects(a timer due, QS_KEY): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a timer due, QS_MOUSEMOVE): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a timer due, QS_MOUSEBUTTON): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a timer due, QS_POSTMESSAGE): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a timer due, QS_TIMER): WAIT_OBJECT_0+0 (input) err=-, at once: yes
+MsgWaitForMultipleObjects(a timer due, QS_PAINT): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a timer due, QS_SENDMESSAGE): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a timer due, QS_HOTKEY): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a timer due, QS_ALLPOSTMESSAGE): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a timer due, QS_INPUT): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a timer due, QS_ALLEVENTS): WAIT_OBJECT_0+0 (input) err=-, at once: yes
+MsgWaitForMultipleObjects(a timer due, QS_ALLINPUT): WAIT_OBJECT_0+0 (input) err=-, at once: yes
+MsgWaitForMultipleObjects(the window invalidated, QS_KEY): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the window invalidated, QS_MOUSEMOVE): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the window invalidated, QS_MOUSEBUTTON): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the window invalidated, QS_POSTMESSAGE): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the window invalidated, QS_TIMER): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the window invalidated, QS_PAINT): WAIT_OBJECT_0+0 (input) err=-, at once: yes
+MsgWaitForMultipleObjects(the window invalidated, QS_SENDMESSAGE): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the window invalidated, QS_HOTKEY): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the window invalidated, QS_ALLPOSTMESSAGE): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the window invalidated, QS_INPUT): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the window invalidated, QS_ALLEVENTS): WAIT_OBJECT_0+0 (input) err=-, at once: yes
+MsgWaitForMultipleObjects(the window invalidated, QS_ALLINPUT): WAIT_OBJECT_0+0 (input) err=-, at once: yes
+a message posted, then peeked (PM_NOREMOVE): seen yes
+MsgWaitForMultipleObjects(the peeked message, QS_ALLINPUT): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the peeked message, QS_ALLINPUT, 200 ms): WAIT_TIMEOUT err=-, at once: no
+MsgWaitForMultipleObjectsEx(the peeked message, QS_ALLINPUT, MWMO_INPUTAVAILABLE): WAIT_OBJECT_0+0 (input) err=-, at once: yes
+MsgWaitForMultipleObjectsEx(the peeked message, QS_ALLINPUT, MWMO_WAITALL): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjectsEx(the peeked message, QS_ALLINPUT, MWMO_ALERTABLE): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a signaled event and a message posted, QS_ALLINPUT): WAIT_OBJECT_0+1 (input) err=-, at once: yes
+MsgWaitForMultipleObjects(a signaled and an unsignaled event, fWaitAll, a message posted, QS_ALLINPUT): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(a signaled and an unsignaled event, fWaitAll, no message, QS_ALLINPUT): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(two signaled events, fWaitAll, no message, QS_ALLINPUT): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(two signaled events, fWaitAll, a message posted, QS_ALLINPUT): WAIT_OBJECT_0+0 err=-, at once: yes
+MsgWaitForMultipleObjects(two signaled events, fWaitAll, that message again, QS_ALLINPUT): WAIT_OBJECT_0+0 err=-, at once: yes
+MsgWaitForMultipleObjects(no handles, mask 0, 0 ms): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(no handles, mask 0x8000): WAIT_TIMEOUT err=-, at once: yes
+msgwait: done
+<<< exit code=0
+>>> msgwait.exe status
+== status
+setup: the window created: yes
+GetQueueStatus(QS_ALLINPUT), the queue empty (): current 0x0000 new 0x0000 err=-
+GetQueueStatus(QS_ALLINPUT), a message posted (): current 0x0008 new 0x0008 err=-
+GetQueueStatus(QS_ALLINPUT), again (): current 0x0008 new 0x0000 err=-
+GetQueueStatus(QS_ALLINPUT), a second message posted (): current 0x0008 new 0x0008 err=-
+GetQueueStatus(QS_ALLINPUT), after PeekMessageW PM_NOREMOVE (): current 0x0008 new 0x0000 err=-
+GetQueueStatus(QS_ALLINPUT), one message removed of two (): current 0x0008 new 0x0000 err=-
+GetQueueStatus(QS_ALLINPUT), both removed (): current 0x0000 new 0x0000 err=-
+GetQueueStatus(QS_TIMER | QS_PAINT), a message posted (): current 0x0000 new 0x0000 err=-
+GetQueueStatus(QS_POSTMESSAGE), the same message (): current 0x0008 new 0x0008 err=-
+GetQueueStatus(0), the same message (): current 0x0000 new 0x0000 err=-
+GetQueueStatus(QS_ALLINPUT), the window shown and validated (): current 0x0000 new 0x0000 err=-
+GetQueueStatus(QS_ALLINPUT), the window invalidated (): current 0x0020 new 0x0020 err=-
+GetQueueStatus(QS_ALLINPUT), after UpdateWindow (): current 0x0000 new 0x0000 err=-
+GetQueueStatus(QS_ALLINPUT), a 50 ms timer set (): current 0x0000 new 0x0000 err=-
+GetQueueStatus(QS_ALLINPUT), the timer due (): current 0x0010 new 0x0010 err=-
+GetQueueStatus(QS_ALLINPUT), the timer killed (): current 0x0000 new 0x0000 err=-
+a second thread's send is waiting: yes
+GetQueueStatus(QS_ALLINPUT), a second thread's send waiting (): current 0x0040 new 0x0000 err=-
+GetQueueStatus(QS_SENDMESSAGE), the same (): current 0x0040 new 0x0000 err=-
+GetQueueStatus(QS_ALLINPUT), the send taken (): current 0x0000 new 0x0000 err=-
+received: 2 event(s)
+  main: the procedure: MSG_TEST wParam=3
+  main: the procedure: MSG_TEST wParam=4
+GetQueueStatus(QS_ALLINPUT), after PostQuitMessage (): current 0x0008 new 0x0008 err=-
+GetQueueStatus(QS_POSTMESSAGE), the same (): current 0x0008 new 0x0000 err=-
+GetQueueStatus(QS_ALLINPUT), the queue drained (): current 0x0000 new 0x0000 err=-
+msgwait: done
+<<< exit code=0
+>>> msgwait.exe input
+== input
+GetProcAddress(user32, SendInput): non-NULL yes
+setup: the window created: yes
+the window is the foreground window: yes
+GetInputState with no input: 0 err=-
+GetInputState with a WM_KEYDOWN posted: 0 err=-
+GetQueueStatus(QS_ALLINPUT), a WM_KEYDOWN posted (): current 0x0008 new 0x0008 err=-
+SendInput(Shift down and up): ret=2 err=-
+GetInputState after it: non-zero err=-
+GetQueueStatus(QS_ALLINPUT), after it (): current 0x0001 new 0x0000 err=-
+MsgWaitForMultipleObjects(the keys queued, QS_KEY): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the keys queued, QS_MOUSE): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the keys queued, QS_INPUT): WAIT_TIMEOUT err=-, at once: yes
+GetMessageW: WM_KEYDOWN, GetMessageExtraInfo after: the input's
+GetInputState the keys read: 0 err=-
+SendInput(a mouse move onto the window): ret=1 err=-
+GetInputState after it: 0 err=-
+GetQueueStatus(QS_ALLINPUT), after it (): current 0x0000 new 0x0000 err=-
+MsgWaitForMultipleObjects(the move queued, QS_MOUSEMOVE): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the move queued, QS_MOUSEBUTTON): WAIT_TIMEOUT err=-, at once: yes
+MsgWaitForMultipleObjects(the move queued, QS_KEY): WAIT_TIMEOUT err=-, at once: yes
+PeekMessageW: no WM_MOUSEMOVE
+msgwait: done
+<<< exit code=0
+>>> msgwait.exe insend
+== insend
+GetProcAddress(user32, InSendMessageEx): non-NULL yes
+setup: the window created: yes
+InSendMessage outside any send: 0 err=-
+InSendMessageEx outside any send: 0x0 ISMEX_NOSEND err=-
+SendMessageW from the same thread: 1 event(s)
+  main: the procedure: InSendMessage 0, InSendMessageEx 0x0 ISMEX_NOSEND
+PostMessageW, dispatched: 1 event(s)
+  main: the procedure: InSendMessage 0, InSendMessageEx 0x0 ISMEX_NOSEND
+SendMessageW from a second thread: 1 event(s)
+  main: the procedure: InSendMessage 1, InSendMessageEx 0x1 ISMEX_SEND
+SendNotifyMessageW from a second thread: 1 event(s)
+  main: the procedure: InSendMessage 1, InSendMessageEx 0x2 ISMEX_NOTIFY
+SendMessageCallbackW from a second thread: 1 event(s)
+  main: the procedure: InSendMessage 1, InSendMessageEx 0x4 ISMEX_CALLBACK
+SendMessageW from a second thread, ReplyMessage(5) inside: 2 event(s)
+  main: the procedure: InSendMessage 1, InSendMessageEx 0x1 ISMEX_SEND
+  main: the procedure: after ReplyMessage, InSendMessageEx 0xA ISMEX_NOTIFY ISMEX_REPLIED
+  the second thread's SendMessageW returned 5
+msgwait: done
+<<< exit code=0
+>>> msgwait.exe reply
+== reply
+setup: the window created: yes
+ReplyMessage(1) outside any send: ret=0 err=-
+SendMessageW(MSG_REPLY) from the same thread: 7
+the procedure: 1 event(s)
+  main: the procedure: ReplyMessage(42): ret=0 err=-
+SendMessageW(MSG_REPLY) from a second thread: 1 event(s)
+  main: the procedure: ReplyMessage(42): ret=1 err=-
+  its SendMessageW returned 42; it woke before the procedure returned: yes
+again, ReplyMessage twice: 2 event(s)
+  main: the procedure: ReplyMessage(42): ret=1 err=-
+  main: the procedure: ReplyMessage(43) again: ret=0 err=-
+  its SendMessageW returned 42
+msgwait: done
+<<< exit code=0
+>>> msgwait.exe callback
+== callback
+setup: the window created: yes
+SendMessageCallbackW to the thread's own window, before any read: 3 event(s)
+  main: the procedure: MSG_TEST wParam=1
+  main: the callback: window the target, message MSG_TEST, data 0x1111, result 101
+  main: SendMessageCallbackW returned 1 err=-
+after PeekMessageW: 0 event(s)
+SendMessageCallbackA to the thread's own window, then the queue read: 3 event(s)
+  main: the procedure: MSG_TEST wParam=2
+  main: the callback: window the target, message MSG_TEST, data 0x2222, result 102
+  main: SendMessageCallbackA returned 1 err=-
+SendMessageCallbackW to a second thread's window, 300 ms later, the queue unread: 2 event(s)
+  main: SendMessageCallbackW returned 1 err=-
+  second: the procedure: MSG_TEST wParam=3
+GetQueueStatus(QS_ALLINPUT), then (): current 0x0040 new 0x0040 err=-
+the queue read: 1 event(s)
+  main: the callback: window the target, message MSG_TEST, data 0x3333, result 103
+SendMessageCallbackA(the second thread's window, no callback): ret=1 err=-
+then: 1 event(s)
+  second: the procedure: MSG_TEST wParam=4
+SendMessageCallbackW(a bogus window): ret=0 err=1400
+then: 0 event(s)
+msgwait: done
+<<< exit code=0
+>>> msgwait.exe broadcast
+== broadcast
+GetProcAddress(user32, BroadcastSystemMessage, A, W): yes yes yes
+setup: the window created: yes
+BroadcastSystemMessageW(BSF_POSTMESSAGE, BSM_APPLICATIONS): ret=positive err=-, recipients unchanged
+  the window then: 1 event(s)
+  main: the procedure: the broadcast message wParam=1
+BroadcastSystemMessageA(BSF_POSTMESSAGE, BSM_APPLICATIONS): ret=positive err=-, recipients unchanged
+  the window then: 1 event(s)
+  main: the procedure: the broadcast message wParam=1
+BroadcastSystemMessage(BSF_POSTMESSAGE, BSM_APPLICATIONS): ret=positive err=-, recipients unchanged
+  the window then: 1 event(s)
+  main: the procedure: the broadcast message wParam=1
+BroadcastSystemMessageW(BSF_SENDNOTIFYMESSAGE, BSM_APPLICATIONS): ret=positive err=-, recipients unchanged
+  the window then: 1 event(s)
+  main: the procedure: the broadcast message wParam=2
+BroadcastSystemMessageW(BSF_QUERY | BSF_NOHANG, BSM_APPLICATIONS), the window denying: ret=0 err=-, recipients unchanged
+  the window then: 1 event(s)
+  main: the procedure: the broadcast message wParam=3
+BroadcastSystemMessageW(BSF_QUERY | BSF_NOHANG, BSM_APPLICATIONS), the window agreeing: ret=positive err=-, recipients unchanged
+  the window then: 1 event(s)
+  main: the procedure: the broadcast message wParam=4
+BroadcastSystemMessageW(BSF_POSTMESSAGE | BSF_IGNORECURRENTTASK, BSM_APPLICATIONS): ret=positive err=-, recipients unchanged
+  the window then: 0 event(s)
+BroadcastSystemMessageW(BSF_POSTMESSAGE, no recipients pointer): ret=positive err=-
+  the window then: 1 event(s)
+  main: the procedure: the broadcast message wParam=6
+BroadcastSystemMessageW(BSF_POSTMESSAGE, recipients 0): ret=positive err=-, recipients unchanged
+  the window then: 1 event(s)
+  main: the procedure: the broadcast message wParam=7
+BroadcastSystemMessageW(flags 0x80000000, BSM_APPLICATIONS): ret=0 err=87, recipients unchanged
+  the window then: 0 event(s)
+BroadcastSystemMessageW(BSF_POSTMESSAGE, recipients 0x80000000): ret=0 err=87, recipients unchanged
+  the window then: 0 event(s)
+msgwait: done
+<<< exit code=0
+>>> msgwait.exe extra
+== extra
+GetProcAddress(user32, SetMessageExtraInfo): non-NULL yes
+setup: the window created: yes
+GetMessageExtraInfo at the start: 0x0 err=-
+SetMessageExtraInfo(0x1234): previous 0x0 err=-
+SetMessageExtraInfo(0x5678): previous 0x1234 err=-
+GetMessageExtraInfo: 0x5678 err=-
+GetMessageExtraInfo after GetMessageW of a posted message: 0x0
+GetMessageExtraInfo after a SendMessageW to the thread's own window: 0x9ABC
+msgwait: done
+<<< exit code=0
+>>> msgwait.exe queue
+== queue
+GetProcAddress(user32, SetMessageQueue): non-NULL yes
+SetMessageQueue(100): ret=1 err=-
+SetMessageQueue(1): ret=1 err=-
+SetMessageQueue(0): ret=1 err=-
+msgwait: done
+<<< exit code=0
+>>> msgwait.exe idle
+== idle
+WaitForInputIdle(a child pumping at once, 5000 ms): WAIT_FAILED err=-, in 0 to 2000 ms: yes
+WaitForInputIdle(that child, ended): WAIT_FAILED err=-, in 0 to 100 ms: yes
+WaitForInputIdle(a child sleeping 1.5 s before its first read, 300 ms): WAIT_FAILED err=-, in 250 to 700 ms: no
+WaitForInputIdle(the same child, INFINITE): WAIT_FAILED err=-, in 800 to 2500 ms: no
+WaitForInputIdle(a child that never makes a window, 1000 ms): WAIT_FAILED err=-, in 0 to 1200 ms: yes
+WaitForInputIdle(the program itself, 0 ms): WAIT_FAILED err=-, in 0 to 100 ms: yes
+WaitForInputIdle(a closed handle, 0 ms): WAIT_FAILED err=6, in 0 to 100 ms: yes
+msgwait: done
+<<< exit code=0

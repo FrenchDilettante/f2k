@@ -1,9 +1,9 @@
 # F2K capture of guimsg (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
-# date: Sat 21/11/2026  7:37:14.44
-guimsg F2KT-SOURCE-CRC=0xA38C8CB5
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:39:20.11
+guimsg F2KT-SOURCE-CRC=0xEC52D758
 >>> guimsg.exe post
 == post
 RegisterClass(F2KGuimsgPost): atom nonzero yes err=2
@@ -254,5 +254,82 @@ SendMessageW from a thread of its own: returned within 5 s yes, ret=0 err=1400
 SendMessageTimeoutW(SMTO_NORMAL, 1000) from a thread of its own: returned within 5 s yes, ret=0 err=1400
 PostMessageW(its window): ret=0 err=1400
 the procedure saw: count=0
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe killtimer
+== killtimer
+SetTimer(the window, 7, 10 s): its id 7 yes err=-
+KillTimer(the window, 7): ret=1 err=-
+KillTimer(the window, 7) again: ret=0 err=-
+KillTimer(the window, 8), never set: ret=0 err=-
+KillTimer(NULL, 0): ret=0 err=-
+KillTimer(the window, 9), come due, its WM_TIMER unread: ret=1 err=-
+  a WM_TIMER of it read after: no
+SetTimer(NULL, 0, 10 s): an id yes err=-
+KillTimer(the window, the thread timer's id): ret=0 err=-
+KillTimer(NULL, the thread timer's id): ret=1 err=-
+KillTimer(NULL, the thread timer's id) again: ret=0 err=-
+KillTimer(NULL, 11), the window's timer 11 set: ret=0 err=-
+KillTimer(the window, 11): ret=1 err=-
+KillTimer(the desktop window, 1): ret=0 err=-
+KillTimer(a destroyed window, 1): ret=0 err=1400
+a second thread ran: WAIT_OBJECT_0
+  its KillTimer(the window, 12), the main thread's window's timer: ret=1 err=-
+  its KillTimer(NULL, the main thread's thread timer's id): ret=1 err=-
+KillTimer(the window, 12) after: ret=0 err=-
+KillTimer(NULL, the thread timer's id) after: ret=0 err=-
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe msgwait
+== msgwait
+MsgWaitForMultipleObjectsEx exported: yes
+MsgWaitForMultipleObjectsEx(no handles, the queue empty, 0 ms, QS_ALLINPUT, 0): WAIT_TIMEOUT err=-, 0-100 ms yes
+MsgWaitForMultipleObjectsEx(no handles, the queue empty, 300 ms, QS_ALLINPUT, 0): WAIT_TIMEOUT err=-, 250-2000 ms yes
+MsgWaitForMultipleObjectsEx(no handles, a message posted, INFINITE, QS_POSTMESSAGE, 0): WAIT_OBJECT_0 err=-, 0-100 ms yes
+MsgWaitForMultipleObjectsEx(no handles, that message again, 0 ms, QS_ALLINPUT, 0): WAIT_OBJECT_0 err=-, 0-100 ms yes
+MsgWaitForMultipleObjectsEx(no handles, a message posted, 0 ms, QS_ALLPOSTMESSAGE, 0): WAIT_OBJECT_0 err=-, 0-100 ms yes
+MsgWaitForMultipleObjectsEx(no handles, a message posted, 0 ms, QS_TIMER | QS_KEY, 0): WAIT_TIMEOUT err=-, 0-100 ms yes
+MsgWaitForMultipleObjectsEx(no handles, that message, 0 ms, QS_TIMER | QS_KEY, MWMO_INPUTAVAILABLE): WAIT_TIMEOUT err=-, 0-100 ms yes
+a message posted, PeekMessageW(PM_NOREMOVE): it yes
+MsgWaitForMultipleObjectsEx(no handles, the peeked message, 0 ms, QS_ALLINPUT, 0): WAIT_TIMEOUT err=-, 0-100 ms yes
+MsgWaitForMultipleObjectsEx(no handles, the peeked message, 0 ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE): WAIT_OBJECT_0 err=-, 0-100 ms yes
+MsgWaitForMultipleObjectsEx(no handles, a 100 ms timer, 2000 ms, QS_TIMER, 0): WAIT_OBJECT_0 err=-, 50-1000 ms yes
+MsgWaitForMultipleObjectsEx(no handles, a 100 ms timer, 500 ms, QS_POSTMESSAGE, 0): WAIT_TIMEOUT err=-, 450-2000 ms yes
+MsgWaitForMultipleObjectsEx(a signaled event, the queue empty, INFINITE, QS_ALLINPUT, 0): WAIT_OBJECT_0 err=-, 0-100 ms yes
+MsgWaitForMultipleObjectsEx(an unsignaled event, the queue empty, 300 ms, QS_ALLINPUT, 0): WAIT_TIMEOUT err=-, 250-2000 ms yes
+MsgWaitForMultipleObjectsEx(a signaled event, a message posted, INFINITE, QS_ALLINPUT, 0): WAIT_OBJECT_0+1 err=-, 0-100 ms yes
+MsgWaitForMultipleObjectsEx(an unsignaled event, a message posted, INFINITE, QS_ALLINPUT, 0): WAIT_OBJECT_0+1 err=-, 0-100 ms yes
+MsgWaitForMultipleObjectsEx(an event a second thread sets after 200 ms, 2000 ms, QS_ALLINPUT, 0): WAIT_OBJECT_0 err=-, 100-1500 ms yes
+MsgWaitForMultipleObjectsEx(an unsignaled event, a second thread posts after 200 ms, 2000 ms, QS_POSTMESSAGE, 0): WAIT_OBJECT_0+1 err=-, 100-1500 ms yes
+MsgWaitForMultipleObjectsEx(two signaled events, the queue empty, 0 ms, QS_ALLINPUT, MWMO_WAITALL): WAIT_TIMEOUT err=-, 0-100 ms yes
+MsgWaitForMultipleObjectsEx(two signaled events, a message posted, 0 ms, QS_ALLINPUT, MWMO_WAITALL): WAIT_OBJECT_0 err=-, 0-100 ms yes
+MsgWaitForMultipleObjectsEx(a signaled and an unsignaled event, a message posted, 0 ms, QS_ALLINPUT, MWMO_WAITALL): WAIT_TIMEOUT err=-, 0-100 ms yes
+MsgWaitForMultipleObjectsEx(no handles, an APC queued, 2000 ms, QS_ALLINPUT, MWMO_ALERTABLE): WAIT_IO_COMPLETION err=-, 0-100 ms yes
+  the APC ran: 1
+MsgWaitForMultipleObjectsEx(no handles, an APC queued, 300 ms, QS_ALLINPUT, 0): WAIT_TIMEOUT err=-, 250-2000 ms yes
+  the APC ran: 0
+  the APC ran after SleepEx(0, TRUE): 1
+MsgWaitForMultipleObjectsEx(no handles, 0 ms, QS_ALLINPUT, flags 0x10): WAIT_FAILED err=87, 0-100 ms yes
+MsgWaitForMultipleObjectsEx(a closed handle, 0 ms, QS_ALLINPUT, 0): WAIT_FAILED err=6, 0-100 ms yes
+MsgWaitForMultipleObjectsEx(63 handles (a signaled event each), 0 ms, QS_ALLINPUT, 0): WAIT_OBJECT_0 err=-, 0-100 ms yes
+MsgWaitForMultipleObjectsEx(64 handles (a signaled event each), 0 ms, QS_ALLINPUT, 0): WAIT_FAILED err=87, 0-100 ms yes
+guimsg: done
+<<< exit code=0
+>>> guimsg.exe postlimit
+== postlimit
+PostMessageW to the thread's own window until it fails: 10000 posts succeeded
+  the first that failed: ret=0 err=-
+PostMessageW once more: ret=0 err=-
+PostMessageA: ret=0 err=-
+PostThreadMessageW(the thread itself): ret=0 err=-
+PostThreadMessageA(the thread itself): ret=0 err=-
+a second thread ran: WAIT_OBJECT_0
+  its PostMessageW(the window): ret=0 err=-
+  its PostThreadMessageW(the main thread): ret=0 err=-
+PeekMessageW(PM_REMOVE): ret=1 err=-, the first post (wParam 0) yes
+PostMessageW with one message taken out: ret=1 err=-
+PostMessageW after it: ret=0 err=-
+the queue emptied: 10000 messages, each the next post yes
+PostThreadMessageW(the thread itself) once the queue is empty: ret=1 err=-
 guimsg: done
 <<< exit code=0

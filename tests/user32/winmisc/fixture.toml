@@ -1,0 +1,109 @@
+# winmisc: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat winmisc, tests\capture.bat winmisc).
+# Every export observed is reached through GetProcAddress: a missing one prints "<Name>: absent" and
+# fails its own block. No handle prints: windows print by the names the sections give them.
+# iconic shows its window minimized and then restored and active: leave the desktop alone while it
+# runs.
+description = "winmisc - the rest of user32's window calls: SetParent (the messages a moved child receives, GetParent, the desktop, a popup, refusals), GetAncestor, FindWindowExA/W, RealGetWindowClass/A/W and RealChildWindowFromPoint, GetWindowInfo and GetTitleBarInfo, CloseWindow and OpenIcon, ShowOwnedPopups and AnyPopup, EnumThreadWindows, FlashWindow(Ex), Get/SetClassWord, GetWindowModuleFileName/A/W, Get/SetInternalWindowPos, and Get/SetWindowContextHelpId and Get/SetMenuContextHelpId."
+kind = "sectioned"
+gate = true
+
+[pending]
+setparent = "F2K's user32 lacks SetParent and GetAncestor (catalogued only)"
+ancestor = "F2K's user32 lacks GetAncestor (catalogued only)"
+findwin = "F2K's user32 lacks FindWindowExA/W (catalogued only; FindWindowW runs over NtUserFindWindowEx already)"
+realclass = "F2K's user32 lacks RealGetWindowClass/A/W and RealChildWindowFromPoint (catalogued only)"
+info = "F2K's user32 lacks GetWindowInfo and GetTitleBarInfo (catalogued only)"
+iconic = "F2K's user32 lacks CloseWindow and OpenIcon (catalogued only)"
+popups = "F2K's user32 lacks ShowOwnedPopups and AnyPopup (catalogued only)"
+enumthr = "F2K's user32 lacks EnumThreadWindows (catalogued only)"
+flash = "F2K's user32 lacks FlashWindow and FlashWindowEx (catalogued only)"
+classword = "F2K's user32 lacks GetClassWord and SetClassWord (catalogued only)"
+modname = "F2K's user32 lacks GetWindowModuleFileName/A/W (catalogued only)"
+intpos = "F2K's user32 lacks GetInternalWindowPos and SetInternalWindowPos (catalogued only)"
+helpid = "F2K's user32 lacks Get/SetWindowContextHelpId and Get/SetMenuContextHelpId (catalogued only)"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers it calls around them.
+setparent = [
+    "user32.SetParent",
+    "user32.GetAncestor",
+    "user32.GetParent",
+    "user32.IsChild",
+]
+ancestor = [
+    "user32.GetAncestor",
+    "user32.GetParent",
+]
+findwin = [
+    "user32.FindWindowExA",
+    "user32.FindWindowExW",
+]
+realclass = [
+    "user32.RealGetWindowClassA",
+    "user32.RealGetWindowClass",
+    "user32.RealGetWindowClassW",
+    "user32.RealChildWindowFromPoint",
+    "user32.ChildWindowFromPointEx",
+    "user32.GetClassNameA",
+]
+info = [
+    "user32.GetWindowInfo",
+    "user32.GetTitleBarInfo",
+]
+iconic = [
+    "user32.CloseWindow",
+    "user32.OpenIcon",
+    "user32.IsIconic",
+    "user32.IsWindowVisible",
+    "user32.IsZoomed",
+]
+popups = [
+    "user32.ShowOwnedPopups",
+    "user32.AnyPopup",
+    "user32.IsWindowVisible",
+]
+enumthr = [
+    "user32.EnumThreadWindows",
+]
+flash = [
+    "user32.FlashWindow",
+    "user32.FlashWindowEx",
+]
+classword = [
+    "user32.GetClassWord",
+    "user32.SetClassWord",
+    "user32.GetClassLongA",
+]
+modname = [
+    "user32.GetWindowModuleFileNameA",
+    "user32.GetWindowModuleFileName",
+    "user32.GetWindowModuleFileNameW",
+]
+intpos = [
+    "user32.GetInternalWindowPos",
+    "user32.SetInternalWindowPos",
+    "user32.GetWindowPlacement",
+]
+helpid = [
+    "user32.SetWindowContextHelpId",
+    "user32.GetWindowContextHelpId",
+    "user32.SetMenuContextHelpId",
+    "user32.GetMenuContextHelpId",
+]
+
+[masks]
+# Captured with a second input locale installed: internat.exe's indicdll.dll loaded into the
+# program at its first window and left last errors behind successful calls elsewhere (183, 87,
+# 1400). These lines' errors after a success have no clean capture to correct them by, so the
+# error is masked; the calls' returns are still compared.
+setparent = ["SetParent(C hidden, NULL): returned P1 err=*"]
+info = [
+    "GetWindowInfo(overlapped, cbSize 0): ret=1 err=*, cbSize after=0",
+    "GetWindowInfo(popup, cbSize 0): ret=1 err=*, cbSize after=0",
+]
+enumthr = [
+    "EnumThreadWindows(a thread with no window): ret=1 err=*, called 0 time(s)",
+    "EnumThreadWindows(an ended thread): ret=1 err=*, called 0 time(s)",
+]

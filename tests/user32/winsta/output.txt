@@ -1,8 +1,8 @@
 # F2K capture of winsta (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-AC9F3E6, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/24/2026 15:28:15.33
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:39:15.44
 winsta F2KT-SOURCE-CRC=0xB511859E
 >>> winsta.exe handles
 == handles

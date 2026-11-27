@@ -19,9 +19,6 @@ description = "drvload - the plumbing a legacy driver lives on and the NT layout
 kind = "sectioned"
 gate = true
 
-[pending]
-pendirp = "not captured yet (tests\\build.bat drvload in the DDK's build environment, then tests\\capture.bat drvload, replace the placeholder block in output.txt); F2K's I/O manager takes a dispatch's STATUS_PENDING for STATUS_NOT_IMPLEMENTED and frees the request's buffers (its DeviceIoControl returns at once, never waiting for the completion)"
-
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, the driver's load, its device and
 # link, its requests and its unload); scripts/compat.py derives each export's coverage from them.

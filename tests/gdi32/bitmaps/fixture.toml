@@ -2,12 +2,14 @@
 # pixel it prints is read from a DIB section or a bitmap of an explicit format; a bitmap of the
 # screen's format prints its depth and pixels only as relations. Its own bitmap, bitmaps.bmp, is
 # compiled into the program from bitmaps.rc. No handle or address prints.
-description = "bitmaps - CreateCompatibleDC and its default 1x1 monochrome bitmap, CreateCompatibleBitmap (as relations), CreateBitmap at 1-32 bits and GetObjectA/W, CreateDIBSection top-down, bottom-up, palettized and BI_BITFIELDS with its bits written and read back, BitBlt's raster operations and monochrome/color conversions, StretchBlt and the stretch modes, GetDIBits/SetDIBits, SetDIBitsToDevice, StretchDIBits, CreateDIBitmap, CreatePatternBrush with SetBrushOrgEx/GetBrushOrgEx, GetObjectType of each kind of object, and user32's LoadBitmapA/W and LoadImageA/W of OBM_CLOSE, OBM_CHECK and the program's own bitmap; and the OBM_ bitmaps' pixels (OBM_CHECK, OBM_CLOSE, OBM_CHECKBOXES and the four scroll-bar arrows) as rows of shades read back through a 24-bit DIB."
+description = "bitmaps - CreateCompatibleDC and its default 1x1 monochrome bitmap, CreateCompatibleBitmap (as relations), CreateBitmap at 1-32 bits and GetObjectA/W, CreateDIBSection top-down, bottom-up, palettized and BI_BITFIELDS with its bits written and read back, BitBlt's raster operations and monochrome/color conversions, StretchBlt and the stretch modes, GetDIBits/SetDIBits, SetDIBitsToDevice, StretchDIBits, CreateDIBitmap, CreatePatternBrush with SetBrushOrgEx/GetBrushOrgEx, GetObjectType of each kind of object, and user32's LoadBitmapA/W and LoadImageA/W of OBM_CLOSE, OBM_CHECK and the program's own bitmap; and the OBM_ bitmaps' pixels (OBM_CHECK, OBM_CLOSE, OBM_CHECKBOXES and the four scroll-bar arrows) as rows of shades read back through a 24-bit DIB; and OBM_CLOSE's pixels as RRGGBB colors, one line a row (obmclose)."
 kind = "sectioned"
 gate = true
 
 [pending]
 objtype = "F2K's gdi32 has no pens (CreatePen, ExtCreatePen) or hatch brushes (CreateHatchBrush) yet: GetObjectType of each answers 0 with ERROR_INVALID_HANDLE; every other object's line matches"
+stockobj = "F2K's stock fonts' LOGFONTs differ: no output precision, clip precision or quality (Windows 2000's say 1/2/2 or 0/2/2), other pitch and family bytes (ANSI_FIXED_FONT 0x31, ANSI_VAR_FONT and DEFAULT_GUI_FONT 0x22, for 0x01, 0x02 and 0x00) and SYSTEM_FIXED_FONT 16 high, not 15; NULL_PEN's width is 0, not 1; GetObjectW of a font into 256 bytes answers 92, not 256; of a brush into a buffer one byte short of a LOGBRUSH it answers 0, where Windows 2000 answers 12 and writes it; and GetObjectW(SYSTEM_FONT, -1) fails with ERROR_INVALID_PARAMETER where Windows 2000 answers 356"
+obmclose = "F2K's OBM_CLOSE (user32's obm.rs) is not Windows 2000's bitmap: its background is C0C0C0 where the capture's is D4D0C8 (the 3D face colour), and 13 of its 22 rows' glyph pixels differ besides"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
@@ -47,3 +49,5 @@ pattern = [
 objtype = ["gdi32.GetObjectType"]
 load = ["user32.LoadBitmapW", "user32.LoadBitmapA", "user32.LoadImageW", "user32.LoadImageA"]
 obm = ["user32.LoadBitmapW", "user32.LoadBitmapA", "gdi32.GetDIBits"]
+stockobj = ["gdi32.GetObjectW", "gdi32.GetObjectA"]
+obmclose = ["user32.LoadBitmapW", "user32.LoadImageW", "gdi32.GetDIBits"]

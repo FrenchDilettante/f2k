@@ -1,0 +1,214 @@
+# F2K capture of palette (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:58.58
+palette F2KT-SOURCE-CRC=0x8CFF4895
+>>> palette.exe create
+== create
+CreatePalette(4 entries: red, green, blue, grey): non-NULL yes err=- GetObjectType=5
+GetObjectW(sizeof(WORD)): ret=2 err=- count=4
+GetObjectW(0, NULL): ret=2 err=-
+GetPaletteEntries(it, 0, 4): ret=4 err=- FF0000/0 00FF00/0 0000FF/0 808080/0
+GetPaletteEntries(it, 0, 0, NULL): ret=4 err=-
+GetPaletteEntries(it, 0, 8, NULL): ret=4 err=-
+GetPaletteEntries(it, 2, 4): ret=2 err=- 0000FF/0 808080/0
+GetPaletteEntries(it, 5, 1): ret=0 err=- 
+CreatePalette(0 entries): non-NULL no err=-
+CreatePalette(version 0x200, 2 entries): non-NULL no err=-
+GetPaletteEntries(DEFAULT_PALETTE, 0, 0, NULL): ret=20 err=-
+GetPaletteEntries(DEFAULT_PALETTE, 0, 10): ret=10 err=- 000000/0 800000/0 008000/0 808000/0 000080/0 800080/0 008080/0 C0C0C0/0 C0DCC0/0 A6CAF0/0
+GetPaletteEntries(DEFAULT_PALETTE, 10, 10): ret=10 err=- FFFBF0/0 A0A0A4/0 808080/0 FF0000/0 00FF00/0 FFFF00/0 0000FF/0 FF00FF/0 00FFFF/0 FFFFFF/0
+palette: done
+<<< exit code=0
+>>> palette.exe entries
+== entries
+SetPaletteEntries(1, 2: yellow, cyan/PC_NOCOLLAPSE): ret=2 err=-
+GetPaletteEntries(it, 0, 4): ret=4 err=- FF0000/0 FFFF00/0 00FFFF/4 808080/0
+SetPaletteEntries(3, 3): ret=1 err=-
+GetPaletteEntries(it, 0, 4): ret=4 err=- FF0000/0 FFFF00/0 00FFFF/4 FFFF00/0
+SetPaletteEntries(4, 1): ret=0 err=-
+SetPaletteEntries(0, 0): ret=0 err=-
+SetPaletteEntries(0, 1: magenta/PC_RESERVED): ret=1 err=-
+GetPaletteEntries(it, 0, 1): ret=1 err=- FF00FF/1
+SetPaletteEntries(DEFAULT_PALETTE, 0, 1): ret=0 err=-
+GetPaletteEntries(DEFAULT_PALETTE, 0, 1): ret=1 err=- 000000/0
+SetPaletteEntries(the palette, deleted): ret=0 err=-
+palette: done
+<<< exit code=0
+>>> palette.exe resize
+== resize
+ResizePalette(4 to 6): ret=1 err=-
+GetPaletteEntries(it, 0, 8): ret=6 err=- FF0000/0 00FF00/0 0000FF/0 808080/0 000000/0 000000/0
+ResizePalette(6 to 2): ret=1 err=-
+GetPaletteEntries(it, 0, 8): ret=2 err=- FF0000/0 00FF00/0
+ResizePalette(2 to 3): ret=1 err=-
+GetPaletteEntries(it, 0, 8): ret=3 err=- FF0000/0 00FF00/0 000000/0
+ResizePalette(3 to 0): ret=0 err=-
+GetPaletteEntries(it, 0, 8): ret=3 err=- FF0000/0 00FF00/0 000000/0
+ResizePalette(1025): ret=0 err=-
+ResizePalette(DEFAULT_PALETTE, 30): ret=0 err=-
+GetPaletteEntries(DEFAULT_PALETTE, 18, 4): ret=2 err=- 00FFFF/0 FFFFFF/0
+palette: done
+<<< exit code=0
+>>> palette.exe nearest
+== nearest
+GetNearestPaletteIndex(RGB(255,0,0)): ret=0 err=-
+GetNearestPaletteIndex(RGB(250,10,10)): ret=0 err=-
+GetNearestPaletteIndex(RGB(0,0,0)): ret=3 err=-
+GetNearestPaletteIndex(RGB(128,128,129)): ret=3 err=-
+GetNearestPaletteIndex(RGB(100,100,200)): ret=3 err=-
+GetNearestPaletteIndex(PALETTEINDEX(1)): ret=1 err=-
+GetNearestPaletteIndex(PALETTEINDEX(9)): ret=0 err=-
+GetNearestPaletteIndex(PALETTERGB(1,2,3)): ret=3 err=-
+GetNearestPaletteIndex(RGB(1,2,3)): ret=3 err=-
+GetNearestColor(the memory DC, RGB(255,0,0)): ret=0x000000FF err=-; the screen DC's the same: yes
+GetNearestColor(the memory DC, RGB(250,10,10)): ret=0x000A0AFA err=-; the screen DC's the same: yes
+GetNearestColor(the memory DC, RGB(0,0,0)): ret=0x00000000 err=-; the screen DC's the same: yes
+GetNearestColor(the memory DC, RGB(128,128,129)): ret=0x00818080 err=-; the screen DC's the same: yes
+GetNearestColor(the memory DC, RGB(100,100,200)): ret=0x00C86464 err=-; the screen DC's the same: yes
+GetNearestColor(the memory DC, PALETTEINDEX(1)): ret=0x00000080 err=-; the screen DC's the same: yes
+GetNearestColor(the memory DC, PALETTEINDEX(9)): ret=0x00F0CAA6 err=-; the screen DC's the same: yes
+GetNearestColor(the memory DC, PALETTERGB(1,2,3)): ret=0x00030201 err=-; the screen DC's the same: yes
+GetNearestColor(the memory DC, RGB(1,2,3)): ret=0x00030201 err=-; the screen DC's the same: yes
+SetPixel(0, 0, RGB(255,0,0)), the default palette: ret=0x000000FF
+SetPixel(1, 0, RGB(250,10,10)), the default palette: ret=0x000A0AFA
+SetPixel(2, 0, RGB(0,0,0)), the default palette: ret=0x00000000
+SetPixel(3, 0, RGB(128,128,129)), the default palette: ret=0x00818080
+SetPixel(4, 0, RGB(100,100,200)), the default palette: ret=0x00C86464
+SetPixel(5, 0, PALETTEINDEX(1)), the default palette: ret=0x00000080
+SetPixel(6, 0, PALETTEINDEX(9)), the default palette: ret=0x00F0CAA6
+SetPixel(7, 0, PALETTERGB(1,2,3)), the default palette: ret=0x00030201
+SetPixel(8, 0, RGB(1,2,3)), the default palette: ret=0x00030201
+GetNearestColor(the memory DC, the palette selected, RGB(255,0,0)): ret=0x000000FF err=-
+  SetPixel(0, 1): ret=0x000000FF
+GetNearestColor(the memory DC, the palette selected, RGB(250,10,10)): ret=0x000A0AFA err=-
+  SetPixel(1, 1): ret=0x000A0AFA
+GetNearestColor(the memory DC, the palette selected, RGB(0,0,0)): ret=0x00000000 err=-
+  SetPixel(2, 1): ret=0x00000000
+GetNearestColor(the memory DC, the palette selected, RGB(128,128,129)): ret=0x00818080 err=-
+  SetPixel(3, 1): ret=0x00818080
+GetNearestColor(the memory DC, the palette selected, RGB(100,100,200)): ret=0x00C86464 err=-
+  SetPixel(4, 1): ret=0x00C86464
+GetNearestColor(the memory DC, the palette selected, PALETTEINDEX(1)): ret=0x0000FF00 err=-
+  SetPixel(5, 1): ret=0x0000FF00
+GetNearestColor(the memory DC, the palette selected, PALETTEINDEX(9)): ret=0x000000FF err=-
+  SetPixel(6, 1): ret=0x000000FF
+GetNearestColor(the memory DC, the palette selected, PALETTERGB(1,2,3)): ret=0x00030201 err=-
+  SetPixel(7, 1): ret=0x00030201
+GetNearestColor(the memory DC, the palette selected, RGB(1,2,3)): ret=0x00030201 err=-
+  SetPixel(8, 1): ret=0x00030201
+pixels 0,0 and 0,1: 0x00FF0000 0x00FF0000
+pixels 1,0 and 1,1: 0x00FA0A0A 0x00FA0A0A
+pixels 2,0 and 2,1: 0x00000000 0x00000000
+pixels 3,0 and 3,1: 0x00808081 0x00808081
+pixels 4,0 and 4,1: 0x006464C8 0x006464C8
+pixels 5,0 and 5,1: 0x00800000 0x0000FF00
+pixels 6,0 and 6,1: 0x00A6CAF0 0x00FF0000
+pixels 7,0 and 7,1: 0x00010203 0x00010203
+pixels 8,0 and 8,1: 0x00010203 0x00010203
+GetNearestPaletteIndex(NULL): ret=0xFFFFFFFF err=6
+GetNearestColor(NULL): ret=0xFFFFFFFF err=-
+palette: done
+<<< exit code=0
+>>> palette.exe halftone
+== halftone
+CreateHalftonePalette(the screen DC): non-NULL yes err=-
+  entries=256 first: 000000/0 800000/0 008000/0 808000/0
+  last: 0000FF/0 FF00FF/0 00FFFF/0 FFFFFF/0 checksum=0x6242A749 xor=0x0090FCCA
+CreateHalftonePalette(a memory DC): non-NULL yes err=-
+  entries=256 first: 000000/0 800000/0 008000/0 808000/0
+  last: 0000FF/0 FF00FF/0 00FFFF/0 FFFFFF/0 checksum=0x6242A749 xor=0x0090FCCA
+  the same entries as the screen DC's: yes
+CreateHalftonePalette(NULL): non-NULL yes err=-
+  entries=256 first: 000000/0 800000/0 008000/0 808000/0
+  last: 0000FF/0 FF00FF/0 00FFFF/0 FFFFFF/0 checksum=0x6242A749 xor=0x0090FCCA
+palette: done
+<<< exit code=0
+>>> palette.exe select
+== select
+SelectPalette(a memory DC, the palette, FALSE): non-NULL yes err=- DEFAULT_PALETTE yes
+  GetCurrentObject(OBJ_PAL) the palette: yes
+  RealizePalette: ret=0x0 err=-
+  RealizePalette again: ret=0x0 err=-
+  UpdateColors: ret=0 err=-
+SelectPalette(the memory DC, DEFAULT_PALETTE, TRUE): the palette yes err=-
+  RealizePalette: ret=0x0 err=-
+SelectPalette(the screen DC, the palette, TRUE): DEFAULT_PALETTE yes err=-
+  RealizePalette: ret=0x0 err=-
+  UpdateColors: ret=0 err=-
+SelectPalette(the screen DC, DEFAULT_PALETTE, FALSE): the palette yes err=-
+SelectPalette(a brush): non-NULL no err=-
+SelectPalette(NULL DC): non-NULL no err=6
+RealizePalette(NULL): ret=0xFFFFFFFF err=6
+palette: done
+<<< exit code=0
+>>> palette.exe system
+== system
+the screen DC: RC_PALETTE no SIZEPALETTE=0 NUMRESERVED=20 NUMCOLORS=-1
+GetSystemPaletteUse(the screen DC): ret=0 err=-
+SetSystemPaletteUse(SYSPAL_STATIC): ret=0 err=-
+SetSystemPaletteUse(SYSPAL_NOSTATIC): ret=0 err=- now=0
+SetSystemPaletteUse(7): ret=0 err=-
+GetSystemPaletteEntries(the screen DC, 0, 0, NULL): ret=0 err=-
+GetSystemPaletteEntries(the screen DC, 0, 4): ret=0 err=- 
+GetSystemPaletteUse(a memory DC): ret=0 err=-
+GetSystemPaletteEntries(a memory DC, 0, 4): ret=0 err=-
+GetSystemPaletteUse(NULL): ret=0 err=-
+palette: done
+<<< exit code=0
+>>> palette.exe animate
+== animate
+GetPaletteEntries(the palette, 1 and 2 PC_RESERVED, 0, 4): ret=4 err=- FF0000/0 00FF00/1 0000FF/1 808080/0
+AnimatePalette(0, 4: 102233 202233/PC_RESERVED 302233/PC_RESERVED 402233/PC_RESERVED): ret=1 err=-
+GetPaletteEntries(it, 0, 4): ret=4 err=- FF0000/0 202233/1 302233/1 808080/0
+AnimatePalette(3, 4): ret=0 err=-
+GetPaletteEntries(it, 0, 4): ret=4 err=- FF0000/0 202233/1 302233/1 808080/0
+AnimatePalette(6, 1): ret=0 err=-
+palette: done
+<<< exit code=0
+>>> palette.exe dibpal
+== dibpal
+CreateDIBSection(8 bpp, DIB_PAL_COLORS {3, 2, 1, 0}, the palette selected): non-NULL yes err=8
+  GetDIBColorTable(0, 8): ret=8 err=-
+    0: 808080/0 GetPixel(0, 0)=0x808080
+    1: 0000FF/0 GetPixel(1, 0)=0xFF0000
+    2: 00FF00/0 GetPixel(2, 0)=0x00FF00
+    3: FF0000/0 GetPixel(3, 0)=0x0000FF
+    4: 000000/0 GetPixel(4, 0)=0x000000
+    5: 000000/0 GetPixel(5, 0)=0x000000
+    6: 000000/0 GetPixel(6, 0)=0x000000
+    7: 000000/0 GetPixel(7, 0)=0x000000
+  SetDIBColorTable(0, 1: 123456): ret=1 err=- GetPixel(0, 0)=0x563412
+CreateDIBSection(8 bpp, DIB_PAL_COLORS {3, 2, 1, 0}, DEFAULT_PALETTE selected): non-NULL yes err=8
+  GetDIBColorTable(0, 8): ret=8 err=-
+    0: 808000/0 GetPixel(0, 0)=0x008080
+    1: 008000/0 GetPixel(1, 0)=0x008000
+    2: 800000/0 GetPixel(2, 0)=0x000080
+    3: 000000/0 GetPixel(3, 0)=0x000000
+    4: 000000/0 GetPixel(4, 0)=0x000000
+    5: 000000/0 GetPixel(5, 0)=0x000000
+    6: 000000/0 GetPixel(6, 0)=0x000000
+    7: 000000/0 GetPixel(7, 0)=0x000000
+  SetDIBColorTable(0, 1: 123456): ret=1 err=- GetPixel(0, 0)=0x563412
+palette: done
+<<< exit code=0
+>>> palette.exe adjust
+== adjust
+GetColorAdjustment(a new DC): ret=1 err=- caSize=24 caFlags=0 caIlluminantIndex=0 gamma=10000,10000,10000 black=0 white=10000 contrast=0 brightness=0 colorfulness=0 tint=0
+SetColorAdjustment(red gamma 20000, contrast 50, brightness -30, CA_NEGATIVE): ret=1 err=-
+  GetColorAdjustment: ret=1 err=- caSize=24 caFlags=1 caIlluminantIndex=0 gamma=20000,10000,10000 black=0 white=10000 contrast=50 brightness=-30 colorfulness=0 tint=0
+SetColorAdjustment(red gamma 1000): ret=0 err=-
+SetColorAdjustment(caSize 4): ret=0 err=-
+  GetColorAdjustment: ret=1 err=- caSize=24 caFlags=1 caIlluminantIndex=0 gamma=20000,10000,10000 black=0 white=10000 contrast=50 brightness=-30 colorfulness=0 tint=0
+GetColorAdjustment(NULL): ret=0 err=6
+palette: done
+<<< exit code=0
+>>> palette.exe gamma
+== gamma
+GetDeviceGammaRamp(the screen DC): ret=1 err=-; i<<8: yes; i*257: no
+SetDeviceGammaRamp(the screen DC, the ramp read): ret=0 err=87
+GetDeviceGammaRamp(a memory DC): ret=0 err=87
+GetDeviceGammaRamp(NULL): ret=0 err=87
+palette: done
+<<< exit code=0

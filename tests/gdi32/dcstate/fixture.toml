@@ -1,0 +1,91 @@
+# dcstate: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat dcstate, tests\capture.bat dcstate).
+# Drawing goes into a 32-bit DIB section in a memory DC, read back as rows of letters. The org
+# section's window is a hidden popup at 100,80, so its DCs' origins are fixed points; the screen's
+# sizes print only as relations. Windows 2000's additions (the DC brush and pen colors, GetLayout and
+# SetLayout) and GetRelAbs/SetRelAbs are reached through GetProcAddress. No handle or address prints.
+description = "dcstate - GetDCOrgEx, CreateICA/W, ResetDCA/W and CancelDC, GetBoundsRect/SetBoundsRect, GetRelAbs/SetRelAbs, GetLayout/SetLayout with mirrored drawing, the DC brush and pen (Get/SetDCBrushColor, Get/SetDCPenColor, DC_BRUSH, DC_PEN), GdiGetBatchLimit/GdiSetBatchLimit and GdiFlush, GetAspectRatioFilterEx, EnumObjects and GetCurrentObject."
+kind = "sectioned"
+gate = true
+
+[pending]
+# G3 and G8 of .scratch/plans/user32-gdi32-completeness.md: drop each entry once its block passes.
+org = "F2K's gdi32 has no GetDCOrgEx (a stub; plan G8)"
+ic = "F2K's gdi32 has no CreateICA/W (plan G8)"
+resetdc = "F2K's gdi32 has no ResetDCA/W or CancelDC (plan G8)"
+bounds = "F2K's gdi32 has no GetBoundsRect/SetBoundsRect (plan G8)"
+relabs = "F2K's gdi32 has no GetRelAbs/SetRelAbs (plan G8)"
+layout = "F2K's gdi32 has no GetLayout/SetLayout, so no mirrored DC (plan G8)"
+dccolor = "F2K's gdi32 has no DC brush or pen: Get/SetDCBrushColor, Get/SetDCPenColor (plan G3)"
+batch = "F2K's gdi32 has no GdiGetBatchLimit/GdiSetBatchLimit, and its GdiFlush answers FALSE (plan G8)"
+aspect = "F2K's gdi32 has no GetAspectRatioFilterEx or SetMapperFlags (plan G8, G10)"
+enumobj = "F2K's gdi32 has no EnumObjects (plan G8)"
+curobj = "F2K's gdi32 has no palette objects, so a new DC's GetCurrentObject(OBJ_PAL) fails with ERROR_INVALID_PARAMETER (no DEFAULT_PALETTE selected); GetCurrentObject(OBJ_EXTPEN) fails too, and of a NULL DC sets an error where Windows 2000 leaves it"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. The canvas's helpers (CreateCompatibleDC, CreateDIBSection, SelectObject, GetStockObject,
+# DeleteObject, DeleteDC, GdiFlush) are left out.
+org = [
+    "gdi32.GetDCOrgEx",
+    "user32.GetDC",
+    "user32.GetWindowDC",
+    "user32.ReleaseDC",
+    "user32.ClientToScreen",
+    "user32.RegisterClassA",
+    "user32.CreateWindowExA",
+    "user32.DestroyWindow",
+    "user32.UnregisterClassA",
+]
+ic = [
+    "gdi32.CreateICA",
+    "gdi32.CreateICW",
+    "gdi32.GetObjectType",
+    "gdi32.GetDeviceCaps",
+    "gdi32.GetTextMetricsA",
+    "gdi32.PatBlt",
+    "gdi32.DeleteDC",
+]
+resetdc = [
+    "gdi32.ResetDCA",
+    "gdi32.ResetDCW",
+    "gdi32.CancelDC",
+    "gdi32.CreateDCA",
+    "user32.EnumDisplaySettingsA",
+    "user32.EnumDisplaySettingsW",
+]
+bounds = ["gdi32.GetBoundsRect", "gdi32.SetBoundsRect", "gdi32.PatBlt", "gdi32.MoveToEx", "gdi32.LineTo"]
+relabs = ["gdi32.GetRelAbs", "gdi32.SetRelAbs", "kernel32.GetProcAddress", "kernel32.GetModuleHandleA"]
+layout = [
+    "gdi32.GetLayout",
+    "gdi32.SetLayout",
+    "gdi32.PatBlt",
+    "gdi32.BitBlt",
+    "kernel32.GetProcAddress",
+    "kernel32.GetModuleHandleA",
+]
+dccolor = [
+    "gdi32.GetDCBrushColor",
+    "gdi32.SetDCBrushColor",
+    "gdi32.GetDCPenColor",
+    "gdi32.SetDCPenColor",
+    "gdi32.GetStockObject",
+    "gdi32.GetObjectType",
+    "gdi32.GetObjectW",
+    "gdi32.PatBlt",
+    "gdi32.LineTo",
+    "kernel32.GetProcAddress",
+    "kernel32.GetModuleHandleA",
+]
+batch = ["gdi32.GdiGetBatchLimit", "gdi32.GdiSetBatchLimit", "gdi32.GdiFlush"]
+aspect = ["gdi32.GetAspectRatioFilterEx", "gdi32.SetMapperFlags", "gdi32.GetDeviceCaps"]
+enumobj = ["gdi32.EnumObjects"]
+curobj = [
+    "gdi32.GetCurrentObject",
+    "gdi32.GetStockObject",
+    "gdi32.GetObjectA",
+    "gdi32.CreatePen",
+    "gdi32.ExtCreatePen",
+    "gdi32.CreateSolidBrush",
+    "gdi32.SelectObject",
+]

@@ -1,9 +1,9 @@
 # F2K capture of sync (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
-# date: Sat 21/11/2026  7:36:18.02
-sync F2KT-SOURCE-CRC=0xB5DAE4DB
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:38:33.08
+sync F2KT-SOURCE-CRC=0x03E06257
 >>> sync.exe event
 == event
 manual, initially set: WAIT_OBJECT_0, still WAIT_OBJECT_0
@@ -208,5 +208,19 @@ timer, SYNCHRONIZE: CancelWaitableTimer ret=0 err=5
 mapping, FILE_MAP_READ: a write view no err=5
 file, duplicated GENERIC_READ: WriteFile ret=0 wrote 0 err=5
 file, its open: WriteFile ret=1 wrote 1 err=-
+sync: done
+<<< exit code=0
+>>> sync.exe unicode
+== unicode
+CreateEventW(CJK name): created yes err=0
+CreateEventW(CJK name) again: created yes err=183
+OpenEventW(CJK name): opened yes err=-
+set through the open, seen through the create: WAIT_OBJECT_0
+OpenEventW(its first character only): null yes err=2
+OpenEventW(other case): null yes err=2
+CreateEventA(its ANSI form, two question marks): created yes err=0
+CreateMutexW(surrogate pair name): created yes err=0
+OpenMutexW(surrogate pair name): opened yes err=-
+CreateSemaphoreW on the event's CJK name: null yes err=6
 sync: done
 <<< exit code=0

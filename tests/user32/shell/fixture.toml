@@ -1,0 +1,84 @@
+# shell: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat shell, tests\capture.bat shell).
+# The capture machine runs explorer, which holds the shell, progman and taskman windows: `windows`
+# prints them found and another process's, and `setshell` prints SetShellWindow(Ex) refused. F2K has
+# no shell, so those two blocks are environmental. `switchto` takes the foreground and `arrange`
+# shows a 400x300 popup at 0,0: leave the desktop alone while they run.
+description = "shell - user32's shell integration: GetShellWindow, GetProgmanWindow, GetTaskmanWindow (windows); SetShellWindow and SetShellWindowEx refused while explorer holds the shell window (setshell); Register/DeregisterShellHookWindow (shellhook); GetAltTabInfo/A/W with no Alt+Tab window (alttab); EndTask of a child process's own window (endtask); PaintDesktop (paintdesk); DrawCaptionTempA/W into a DIB section (caption); CascadeWindows and TileWindows over the fixture's own children (arrange); RegisterHotKey and UnregisterHotKey (hotkey); SwitchToThisWindow (switchto); SendMessageCallbackA/W within and across threads (callback)."
+kind = "sectioned"
+gate = true
+# endtask waits up to 15 s for its child; callback up to 5 s for its other thread.
+timeout = 60
+
+[pending]
+# Every export observed here but SendMessageCallbackA/W (stubs) is catalogued only in F2K's user32
+# (userland/user32/exports.toml): the program resolves each through GetProcAddress and prints it
+# absent.
+windows = "F2K's user32 lacks GetShellWindow, GetProgmanWindow and GetTaskmanWindow; and F2K runs no shell (the capture's explorer holds the three windows): environmental once they land"
+setshell = "F2K's user32 lacks GetShellWindow, SetShellWindow and SetShellWindowEx; and the capture's refusals come from explorer holding the shell window, which F2K has no shell to hold: environmental"
+shellhook = "F2K's user32 lacks RegisterShellHookWindow and DeregisterShellHookWindow"
+alttab = "F2K's user32 lacks GetAltTabInfo, GetAltTabInfoA and GetAltTabInfoW"
+endtask = "F2K's user32 lacks EndTask (Windows 2000's goes through CSRSS's end-task path)"
+paintdesk = "F2K's user32 lacks PaintDesktop"
+caption = "F2K's user32 lacks DrawCaptionTempA and DrawCaptionTempW"
+arrange = "F2K's user32 lacks CascadeWindows and TileWindows"
+hotkey = "F2K's user32 lacks RegisterHotKey and UnregisterHotKey"
+switchto = "F2K's user32 lacks SwitchToThisWindow"
+callback = "SendMessageCallbackA and SendMessageCallbackW are stubs"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers around them (its windows, DCs,
+# process and threads).
+windows = [
+    "user32.GetShellWindow",
+    "user32.GetProgmanWindow",
+    "user32.GetTaskmanWindow",
+    "user32.GetClassNameA",
+    "user32.GetClassNameW",
+    "user32.GetWindowThreadProcessId",
+]
+setshell = [
+    "user32.GetShellWindow",
+    "user32.SetShellWindow",
+    "user32.SetShellWindowEx",
+]
+shellhook = [
+    "user32.RegisterWindowMessageA",
+    "user32.RegisterShellHookWindow",
+    "user32.DeregisterShellHookWindow",
+]
+alttab = [
+    "user32.GetAltTabInfo",
+    "user32.GetAltTabInfoA",
+    "user32.GetAltTabInfoW",
+]
+endtask = [
+    "user32.EndTask",
+    "user32.FindWindowA",
+    "user32.GetWindowThreadProcessId",
+]
+paintdesk = [
+    "user32.PaintDesktop",
+]
+caption = [
+    "user32.DrawCaptionTempA",
+    "user32.DrawCaptionTempW",
+]
+arrange = [
+    "user32.CascadeWindows",
+    "user32.TileWindows",
+]
+hotkey = [
+    "user32.RegisterHotKey",
+    "user32.UnregisterHotKey",
+]
+switchto = [
+    "user32.SwitchToThisWindow",
+    "user32.GetForegroundWindow",
+    "user32.IsIconic",
+]
+callback = [
+    "user32.SendMessageCallbackA",
+    "user32.SendMessageCallbackW",
+]

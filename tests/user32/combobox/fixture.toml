@@ -1,0 +1,62 @@
+# combobox: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat combobox, tests\capture.bat
+# combobox). No handle or address prints: a window prints by what it is to the combo box
+# (the combo, a child of it, the desktop, NULL), rectangles as relations to the combo box's own, no
+# font metric but as a relation to the System font's tmHeight. dir makes f2kcbdir in the current
+# directory and removes it at its end.
+description = "combobox - user32's ComboBox control driven by messages and keys: CBS_SIMPLE, CBS_DROPDOWN and CBS_DROPDOWNLIST, their Edit and ComboLBox children and GetComboBoxInfo (create); the CB_* item messages, their error returns, the edit's text after each selection, CBS_SORT (items); CB_SHOWDROPDOWN, CB_GETDROPPEDSTATE and CB_GETDROPPEDCONTROLRECT (drop); CB_SETEDITSEL, CB_GETEDITSEL and CB_LIMITTEXT (edit); the CBN_* notifications in order for focus, the arrows, F4, Enter, Esc and typing (notify); DlgDirListComboBoxA/W, DlgDirSelectComboBoxExA/W and CB_DIR over a directory the program makes (dir); and combo boxes in a dialog template, by class atom and by name (dialog)."
+kind = "sectioned"
+gate = true
+
+[pending]
+# F2K registers no ComboBox or ComboLBox class yet (user32's MISSING_SYSTEM_CLASSES,
+# userland/user32/src/class.rs): every block waits for the control (gui-H). Drop each entry once its
+# block passes.
+create = "F2K has no ComboBox or ComboLBox class (user32's MISSING_SYSTEM_CLASSES), and no GetComboBoxInfo"
+items = "F2K has no ComboBox class (user32's MISSING_SYSTEM_CLASSES): CreateWindowExW(\"ComboBox\") fails"
+drop = "F2K has no ComboBox or ComboLBox class (user32's MISSING_SYSTEM_CLASSES): no drop-down list"
+edit = "F2K has no ComboBox class (user32's MISSING_SYSTEM_CLASSES): CreateWindowExW(\"ComboBox\") fails"
+notify = "F2K has no ComboBox class (user32's MISSING_SYSTEM_CLASSES): no CBN_* notifications"
+dir = "F2K has no ComboBox class (user32's MISSING_SYSTEM_CLASSES), and user32's DlgDirListComboBoxA/W and DlgDirSelectComboBoxExA/W are not implemented"
+dialog = "F2K has no ComboBox class (user32's MISSING_SYSTEM_CLASSES): a dialog template's ComboBox item fails the dialog's creation"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. The control is reached through messages, its procedure being no export: only the creation,
+# the sends and the calls the blocks observe (not the parent's class and window, SetFocus to the
+# parent or the pump).
+# GetComboBoxInfo is found with GetProcAddress (MSVC 6's headers and import library predate it).
+create = [
+    "user32.CreateWindowExW",
+    "user32.GetClassNameW",
+    "user32.GetWindow",
+    "user32.SendMessageW",
+    "user32.GetComboBoxInfo",
+    "kernel32.GetProcAddress",
+]
+items = ["user32.CreateWindowExW", "user32.SendMessageW", "user32.SendMessageA"]
+drop = [
+    "user32.CreateWindowExW",
+    "user32.SendMessageW",
+    "user32.GetWindowRect",
+    "user32.IsWindowVisible",
+]
+edit = ["user32.CreateWindowExW", "user32.SendMessageW"]
+notify = ["user32.CreateWindowExW", "user32.SendMessageW", "user32.SetFocus", "user32.GetFocus"]
+dir = [
+    "user32.DlgDirListComboBoxA",
+    "user32.DlgDirListComboBoxW",
+    "user32.DlgDirSelectComboBoxExA",
+    "user32.DlgDirSelectComboBoxExW",
+    "user32.SendMessageW",
+    "kernel32.GetCurrentDirectoryA",
+    "kernel32.SetCurrentDirectoryA",
+]
+dialog = [
+    "user32.CreateDialogIndirectParamW",
+    "user32.GetDlgItem",
+    "user32.SendDlgItemMessageW",
+    "user32.SendMessageW",
+    "user32.GetClassNameW",
+    "user32.DestroyWindow",
+]

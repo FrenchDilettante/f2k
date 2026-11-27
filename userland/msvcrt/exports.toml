@@ -4089,7 +4089,11 @@ ordinal = 744
 
 [[export]]
 name = "tolower"
+group = "characters"
+args = ["i32 c"]
+impl = { stub = "not yet implemented" }
 ordinal = 745
+fails = "never"
 
 [[export]]
 name = "wcscoll"

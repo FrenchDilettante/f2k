@@ -95,6 +95,12 @@
  *               devices opened by name: NUL, nul.txt, \\.\NUL and DATA\NUL
  *               (a write and a read each), and CON for reading, writing and
  *               both (opened, never written)
+ *   pagefile    the paging file, pagefile.sys at the system drive's root,
+ *               which the memory manager holds open: the drive's file
+ *               system, CreateFileA for reading, writing, attributes only,
+ *               no access and an overwrite, GetFileAttributesA/ExA,
+ *               FindFirstFileA (its attributes; the size never printed),
+ *               DeleteFileA and MoveFileA
  *
  * The opens, paths, metadata, listings and mappings run twice: through
  * the A calls, then through their W twins on the same paths (converted
@@ -1890,6 +1896,77 @@ static void sec_devpath(void)
     devices(1);
 }
 
+static char pagefile[MAX_PATH];     /* X:\pagefile.sys on the system drive */
+
+static void open_pagefile(const char *label, DWORD access, DWORD disposition)
+{
+    HANDLE h;
+    const char *e;
+
+    arm();
+    h = CreateFileA(pagefile, access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    NULL, disposition, FILE_ATTRIBUTE_NORMAL, NULL);
+    e = le();
+    if (h == INVALID_HANDLE_VALUE) {
+        line("CreateFileA(pagefile.sys, %s): INVALID_HANDLE_VALUE err=%s", label, e);
+    } else {
+        line("CreateFileA(pagefile.sys, %s): opened err=%s", label, e);
+        CloseHandle(h);
+    }
+}
+
+static void sec_pagefile(void)
+{
+    char root[4];
+    char fsname[32];
+    char moved[MAX_PATH];
+    WIN32_FILE_ATTRIBUTE_DATA ad;
+    WIN32_FIND_DATAA fd;
+    HANDLE f;
+    DWORD a;
+    BOOL r;
+
+    GetWindowsDirectoryA(pagefile, sizeof pagefile);
+    sprintf(root, "%c:\\", pagefile[0]);
+    sprintf(pagefile, "%spagefile.sys", root);
+    sprintf(moved, "%sf2kpf.sys", root);
+    fsname[0] = 0;
+    GetVolumeInformationA(root, NULL, 0, NULL, NULL, NULL, fsname, sizeof fsname);
+    line("system drive's file system: %s", fsname);
+
+    open_pagefile("GENERIC_READ", GENERIC_READ, OPEN_EXISTING);
+    open_pagefile("GENERIC_WRITE", GENERIC_WRITE, OPEN_EXISTING);
+    open_pagefile("FILE_READ_ATTRIBUTES", FILE_READ_ATTRIBUTES, OPEN_EXISTING);
+    open_pagefile("no access", 0, OPEN_EXISTING);
+    open_pagefile("DELETE", DELETE, OPEN_EXISTING);
+    open_pagefile("TRUNCATE_EXISTING", GENERIC_WRITE, TRUNCATE_EXISTING);
+
+    arm();
+    a = GetFileAttributesA(pagefile);
+    line("GetFileAttributesA: 0x%08lX err=%s", a, le());
+    arm();
+    r = GetFileAttributesExA(pagefile, GetFileExInfoStandard, &ad);
+    line("GetFileAttributesExA: ret=%d err=%s%s", r, le(),
+         r && ad.dwFileAttributes != a ? " (attributes differ)" : "");
+
+    arm();
+    f = FindFirstFileA(pagefile, &fd);
+    if (f == INVALID_HANDLE_VALUE) {
+        line("FindFirstFileA: INVALID_HANDLE_VALUE err=%s", le());
+    } else {
+        line("FindFirstFileA: [%s] attributes 0x%lX, size %s", fd.cFileName, fd.dwFileAttributes,
+             fd.nFileSizeLow || fd.nFileSizeHigh ? "nonzero" : "zero");
+        FindClose(f);
+    }
+
+    arm();
+    r = DeleteFileA(pagefile);
+    line("DeleteFileA: ret=%d err=%s", r, le());
+    arm();
+    r = MoveFileA(pagefile, moved);
+    line("MoveFileA: ret=%d err=%s", r, le());
+}
+
 static const section_t sections[] = {
     { "open", sec_open, 0 },
     { "read", sec_read, 0 },
@@ -1907,6 +1984,7 @@ static const section_t sections[] = {
     { "dupshare", sec_dupshare, 0 },
     { "imagesec", sec_imagesec, 0 },
     { "devpath", sec_devpath, 0 },
+    { "pagefile", sec_pagefile, 0 },
     { NULL, NULL, 0 }
 };
 

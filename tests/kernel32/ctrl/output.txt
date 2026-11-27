@@ -1,9 +1,9 @@
 # F2K capture of ctrl (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sat 10/31/2026  8:45:49.61
-ctrl F2KT-SOURCE-CRC=0xBD0AC690
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:39:03.94
+ctrl F2KT-SOURCE-CRC=0x55373D25
 >>> ctrl.exe order
 == order
 -- three handlers, the first registered answering TRUE (ctrlkid chain TFF)

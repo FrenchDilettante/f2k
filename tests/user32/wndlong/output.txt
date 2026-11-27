@@ -1,9 +1,9 @@
 # F2K capture of wndlong (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/09/2026 14:06:20.28
-wndlong F2KT-SOURCE-CRC=0xEA34E567
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:41.46
+wndlong F2KT-SOURCE-CRC=0xEC059796
 >>> wndlong.exe style
 == style
 RegisterClassW(F2KWndlongStyle, 0 extra bytes): atom nonzero yes err=2
@@ -173,5 +173,37 @@ CreateWindowExW(F2KWndlongGone, top-level): non-NULL yes err=-
 GetWindowLongW(a destroyed window, GWL_STYLE): ret=0x00000000 err=1400
 GetWindowLongA(a destroyed window, 0): ret=0x00000000 err=1400
 SetWindowLongW(a destroyed window, GWL_USERDATA, 1): ret=0x00000000 err=1400
+wndlong: done
+<<< exit code=0
+>>> wndlong.exe stylechg
+== stylechg
+RegisterClassW(F2KWndlongEdit, the editing procedure): atom nonzero yes err=2
+CreateWindowExW(F2KWndlongEdit, top-level): non-NULL yes err=-
+GWL_STYLE 0x04C00000, GWL_EXSTYLE 0x00000100
+SetWindowLongW(GWL_STYLE, 0x04C80000), the procedure adding WS_THICKFRAME, taking WS_SYSMENU off: ret=0x04C00000 err=-
+  GetWindowLongW after: 0x04C40000
+  the procedure received 2 style messages
+    WM_STYLECHANGING wParam=-16 old=0x04C00000 new=0x04C80000
+    WM_STYLECHANGED wParam=-16 old=0x04C00000 new=0x04C40000
+SetWindowLongW(GWL_STYLE, 0x04C00000), the procedure putting styleOld back: ret=0x04C40000 err=-
+  GetWindowLongW after: 0x04C40000
+  the procedure received 2 style messages
+    WM_STYLECHANGING wParam=-16 old=0x04C40000 new=0x04C00000
+    WM_STYLECHANGED wParam=-16 old=0x04C40000 new=0x04C40000
+SetWindowLongW(GWL_STYLE, 0x04C00000), the procedure editing nothing: ret=0x04C40000 err=-
+  GetWindowLongW after: 0x04C00000
+  the procedure received 2 style messages
+    WM_STYLECHANGING wParam=-16 old=0x04C40000 new=0x04C00000
+    WM_STYLECHANGED wParam=-16 old=0x04C40000 new=0x04C00000
+SetWindowLongW(GWL_EXSTYLE, 0x00000180), the procedure adding WS_EX_CLIENTEDGE: ret=0x00000100 err=-
+  GetWindowLongW after: 0x00000380
+  the procedure received 2 style messages
+    WM_STYLECHANGING wParam=-20 old=0x00000100 new=0x00000180
+    WM_STYLECHANGED wParam=-20 old=0x00000100 new=0x00000380
+SetWindowLongW(GWL_EXSTYLE, 0x00000100), the procedure editing nothing: ret=0x00000380 err=-
+  GetWindowLongW after: 0x00000100
+  the procedure received 2 style messages
+    WM_STYLECHANGING wParam=-20 old=0x00000380 new=0x00000100
+    WM_STYLECHANGED wParam=-20 old=0x00000380 new=0x00000100
 wndlong: done
 <<< exit code=0

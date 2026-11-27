@@ -2,11 +2,13 @@
  * wintree - the window tree in user32: parents and owners (GetParent,
  * GetWindow GW_OWNER), the thread and process a window belongs to
  * (GetWindowThreadProcessId), enumeration (EnumWindows,
- * EnumChildWindows), the z-order (GetTopWindow, BringWindowToTop) and
- * an owner's last active pop-up (GetLastActivePopup).
+ * EnumChildWindows), the z-order (GetTopWindow, BringWindowToTop), an
+ * owner's last active pop-up (GetLastActivePopup) and the search by
+ * class and title (FindWindowA/W).
  *
  * Every window is the program's own, of its class F2KWintree (a
- * procedure handing everything to DefWindowProcW), created at explicit
+ * procedure handing everything to DefWindowProcW; find's are of two
+ * classes of their own), created at explicit
  * coordinates; all are hidden but for `popup`'s, which activates them.
  * A window prints by its label (top, popup, child...), never by its
  * handle: "NULL", "the desktop", or "another window" for one the
@@ -15,7 +17,8 @@
  * on the desktop, so the callbacks keep only the program's own windows
  * and print their order: the other windows, the console's and the
  * shell's among them, never show. GetTopWindow(NULL), the desktop's top
- * window, is another program's and is not called.
+ * window, is another program's: find compares FindWindow's answer with
+ * it, and it never prints.
  *
  * Conventions as the other fixtures on f2kt.h: every call under
  * observation is armed with the last-error sentinel, and its line
@@ -48,6 +51,15 @@
  *           pop-up hidden, and each destroyed; of a pop-up itself, of
  *           an unowned window, of NULL. The section asks for the
  *           foreground first and prints whether it got it
+ *   find    FindWindowA and FindWindowW over hidden windows of two
+ *           classes of its own (F2KWintreeFind, registered with
+ *           RegisterClassA, holding one and two, made in that order,
+ *           and one's child; F2KWintreeFind2, holding an untitled
+ *           window): by class (its name, in lower case, its atom), by
+ *           title (in other case, a prefix, the child's, one no
+ *           window has), by both, by the empty title, by a class never
+ *           registered; by neither, as a relation to GetTopWindow(NULL);
+ *           and by class once two, then one, are destroyed
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat wintree):
  *   cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% wintree.c user32.lib
@@ -569,12 +581,129 @@ static void sec_popup(void)
     finish();
 }
 
+/* --- find ---------------------------------------------------------- */
+
+#define FIND_CLASS "F2KWintreeFind"
+#define FIND_CLASS2 "F2KWintreeFind2"
+
+static LRESULT CALLBACK find_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    return DefWindowProcA(hwnd, msg, wparam, lparam);
+}
+
+static ATOM find_register(const char *name)
+{
+    WNDCLASSA wc;
+
+    ZeroMemory(&wc, sizeof wc);
+    wc.lpfnWndProc = find_proc;
+    wc.hInstance = GetModuleHandleA(NULL);
+    wc.lpszClassName = name;
+    return RegisterClassA(&wc);
+}
+
+/* A hidden window of the class, titled `title` (NULL: no title). */
+static HWND find_make(const char *label, const char *cls, const char *title, DWORD style,
+                      HWND parent)
+{
+    HWND r;
+
+    r = CreateWindowExA(0, cls, title, style, 0, 0, 100, 100, parent, NULL,
+                        GetModuleHandleA(NULL), NULL);
+    if (r == NULL) {
+        line("setup: CreateWindowExA(%s) failed, err=%lu", label, GetLastError());
+    }
+    know(r, label);
+    return r;
+}
+
+/* FindWindowA, then FindWindowW on the same names (a class atom passes
+ * through as it is). */
+static void find(const char *what, const char *cls, const char *title)
+{
+    WCHAR clsw[64];
+    WCHAR titlew[64];
+    const WCHAR *cw;
+    HWND r;
+
+    arm();
+    r = FindWindowA(cls, title);
+    line("FindWindowA(%s): %s err=%s", what, label(r), le());
+    if (cls == NULL || HIWORD((DWORD)cls) == 0) {
+        cw = (const WCHAR *)cls;
+    } else {
+        MultiByteToWideChar(CP_ACP, 0, cls, -1, clsw, 64);
+        cw = clsw;
+    }
+    if (title != NULL) {
+        MultiByteToWideChar(CP_ACP, 0, title, -1, titlew, 64);
+    }
+    arm();
+    r = FindWindowW(cw, title != NULL ? titlew : NULL);
+    line("FindWindowW(%s): %s err=%s", what, label(r), le());
+}
+
+static void sec_find(void)
+{
+    ATOM atom, atom2;
+    HWND one, two, top;
+    HWND r;
+
+    start();
+    atom = find_register(FIND_CLASS);
+    atom2 = find_register(FIND_CLASS2);
+    line("RegisterClassA(%s, %s): atoms nonzero %s", FIND_CLASS, FIND_CLASS2,
+         yesno(atom != 0 && atom2 != 0));
+    one = find_make("one", FIND_CLASS, "F2K find one", WS_POPUP, NULL);
+    two = find_make("two (made after one)", FIND_CLASS, "F2K find two", WS_POPUP, NULL);
+    find_make("the child of one", FIND_CLASS, "F2K find child", WS_CHILD, one);
+    find_make("untitled (of the second class)", FIND_CLASS2, NULL, WS_POPUP, NULL);
+
+    find("the class", FIND_CLASS, NULL);
+    find("the class in lower case", "f2kwintreefind", NULL);
+    find("the class's atom", (const char *)MAKEINTATOM(atom), NULL);
+    find("NULL, one's title", NULL, "F2K find one");
+    find("NULL, one's title in other case", NULL, "f2k FIND ONE");
+    find("the class, one's title", FIND_CLASS, "F2K find one");
+    find("the second class, one's title", FIND_CLASS2, "F2K find one");
+    find("NULL, the start of one's title", NULL, "F2K find");
+    find("NULL, the child's title", NULL, "F2K find child");
+    find("NULL, a title no window has", NULL, "F2K no such window");
+    find("a class never registered, NULL", "F2KNoSuchClass", NULL);
+    find("a class never registered, one's title", "F2KNoSuchClass", "F2K find one");
+    find("the second class, the empty title", FIND_CLASS2, "");
+    find("the class, the empty title", FIND_CLASS, "");
+
+    /* Neither: the desktop's top window, another program's as likely
+     * as not; it prints only as a relation. */
+    top = GetTopWindow(NULL);
+    arm();
+    r = FindWindowA(NULL, NULL);
+    line("FindWindowA(NULL, NULL): a window %s, GetTopWindow(NULL)'s %s err=%s", yesno(r != NULL),
+         yesno(r == top), le());
+    arm();
+    r = FindWindowW(NULL, NULL);
+    line("FindWindowW(NULL, NULL): a window %s, GetTopWindow(NULL)'s %s err=%s", yesno(r != NULL),
+         yesno(r == top), le());
+
+    DestroyWindow(two);
+    line("two destroyed");
+    find("the class", FIND_CLASS, NULL);
+    DestroyWindow(one);
+    line("one destroyed");
+    find("the class", FIND_CLASS, NULL);
+    finish();
+    UnregisterClassA(FIND_CLASS, GetModuleHandleA(NULL));
+    UnregisterClassA(FIND_CLASS2, GetModuleHandleA(NULL));
+}
+
 static const section_t sections[] = {
     { "parent", sec_parent, F2KT_ALWAYS },
     { "ids", sec_ids, F2KT_ALWAYS },
     { "enum", sec_enum, F2KT_ALWAYS },
     { "zorder", sec_zorder, F2KT_ALWAYS },
     { "popup", sec_popup, F2KT_ALWAYS },
+    { "find", sec_find, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

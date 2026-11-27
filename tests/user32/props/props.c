@@ -1,6 +1,7 @@
 /*
  * props - window properties in user32: SetPropW/A, GetPropW/A and
- * RemovePropW/A, by string and by atom.
+ * RemovePropW/A, by string and by atom, and EnumPropsW/A and
+ * EnumPropsExW/A.
  *
  * A property's name is a global atom: a string names the atom of that
  * string (GlobalAddAtom's, case-insensitive; "#291" is the integer atom
@@ -40,6 +41,14 @@
  *   errors  NULL, destroyed and another process's windows; a name
  *           never set; the empty name and a 300-character one; a NULL
  *           name (inside __try)
+ *   enum    EnumPropsW/A and EnumPropsExW/A (found with GetProcAddress,
+ *           so the program loads where user32 lacks them) over four
+ *           properties (three names and MAKEINTATOM(291)): each one
+ *           received, its value, their order against the order set,
+ *           the return, the window and lParam passed; a callback
+ *           answering FALSE early; a window with none, NULL and a
+ *           destroyed window; a callback removing each property it is
+ *           given, then the list after
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat props):
  *   cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% props.c user32.lib
@@ -413,12 +422,225 @@ static void sec_errors(void)
     end_section(h);
 }
 
+/* --- enum ---------------------------------------------------------- */
+
+/* EnumPropsA/W and EnumPropsExA/W, found with GetProcAddress so that
+ * the program still loads where user32 lacks them (the other sections
+ * run regardless); their callbacks in the MSVC 6 headers' shapes. */
+typedef BOOL (CALLBACK *enum_w_cb)(HWND, LPCWSTR, HANDLE);
+typedef BOOL (CALLBACK *enum_a_cb)(HWND, LPCSTR, HANDLE);
+typedef BOOL (CALLBACK *enum_ex_w_cb)(HWND, LPWSTR, HANDLE, DWORD);
+typedef BOOL (CALLBACK *enum_ex_a_cb)(HWND, LPSTR, HANDLE, DWORD);
+typedef int (WINAPI *enum_w_fn)(HWND, enum_w_cb);
+typedef int (WINAPI *enum_a_fn)(HWND, enum_a_cb);
+typedef int (WINAPI *enum_ex_w_fn)(HWND, enum_ex_w_cb, LPARAM);
+typedef int (WINAPI *enum_ex_a_fn)(HWND, enum_ex_a_cb, LPARAM);
+
+/* What the callbacks saw: each property's name (one of the section's
+ * four by index, or "other") and value, in the order received. */
+#define ENUM_MAX 16
+static int enum_seen;
+static int enum_name[ENUM_MAX];         /* 0..2 the string names, 3 "#291", -1 other */
+static DWORD enum_value[ENUM_MAX];
+static HWND enum_hwnd_seen;
+static DWORD enum_param_seen;
+static int enum_stop_after;             /* answer FALSE at this call (1-based), 0 never */
+static int enum_remove;                 /* RemovePropW each property it is given */
+static BOOL enum_removed_ok;
+
+static const WCHAR *const enum_names_w[] = { L"F2KPropsOne", L"F2KPropsTwo", L"F2KPropsZero" };
+static const char *const enum_names_a[] = { "F2KPropsOne", "F2KPropsTwo", "F2KPropsZero" };
+
+static void enum_reset(int stop_after, int remove)
+{
+    enum_seen = 0;
+    enum_hwnd_seen = NULL;
+    enum_param_seen = 0;
+    enum_stop_after = stop_after;
+    enum_remove = remove;
+    enum_removed_ok = TRUE;
+}
+
+/* Record one call; the name is a string or an integer atom (a high
+ * word of zero). */
+static BOOL enum_record(HWND h, const WCHAR *wname, const char *aname, HANDLE v)
+{
+    DWORD n = wname != NULL ? (DWORD)wname : (DWORD)aname;
+    int i, which = -1;
+
+    enum_hwnd_seen = h;
+    if (HIWORD(n) == 0) {
+        which = LOWORD(n) == 291 ? 3 : -1;
+    } else {
+        for (i = 0; i < 3; i++) {
+            if (wname != NULL ? lstrcmpW(wname, enum_names_w[i]) == 0
+                              : lstrcmpA(aname, enum_names_a[i]) == 0) {
+                which = i;
+            }
+        }
+    }
+    if (enum_seen < ENUM_MAX) {
+        enum_name[enum_seen] = which;
+        enum_value[enum_seen] = (DWORD)v;
+    }
+    enum_seen++;
+    if (enum_remove && wname != NULL
+        && RemovePropW(h, HIWORD(n) == 0 ? ATOM_W(LOWORD(n)) : wname) != v) {
+        enum_removed_ok = FALSE;
+    }
+    return enum_stop_after == 0 || enum_seen < enum_stop_after;
+}
+
+static BOOL CALLBACK enum_w(HWND h, LPCWSTR name, HANDLE v)
+{
+    return enum_record(h, name, NULL, v);
+}
+
+static BOOL CALLBACK enum_a(HWND h, LPCSTR name, HANDLE v)
+{
+    return enum_record(h, NULL, name, v);
+}
+
+static BOOL CALLBACK enum_ex_w(HWND h, LPWSTR name, HANDLE v, DWORD param)
+{
+    enum_param_seen = param;
+    return enum_record(h, name, NULL, v);
+}
+
+static BOOL CALLBACK enum_ex_a(HWND h, LPSTR name, HANDLE v, DWORD param)
+{
+    enum_param_seen = param;
+    return enum_record(h, NULL, name, v);
+}
+
+/* The properties received, each by name, in the order received, then
+ * whether that order is the order they were set in, its reverse, or
+ * neither (the section sets One, Two, Zero, then #291). */
+static void enum_report(HWND h, int ret, const char *err)
+{
+    static const char *const label[] = { "F2KPropsOne", "F2KPropsTwo", "F2KPropsZero", "#291" };
+    int i, forward = 1, backward = 1;
+
+    line("  ret=%d err=%s, %d call(s), the window passed is h: %s", ret, err, enum_seen,
+         enum_seen == 0 ? "-" : yesno(enum_hwnd_seen == h));
+    for (i = 0; i < enum_seen && i < ENUM_MAX; i++) {
+        line("  %s = 0x%lX", enum_name[i] < 0 ? "another property" : label[enum_name[i]],
+             enum_value[i]);
+        if (enum_name[i] != i) {
+            forward = 0;
+        }
+        if (enum_name[i] != enum_seen - 1 - i) {
+            backward = 0;
+        }
+    }
+    if (enum_seen > 1) {
+        line("  the order: %s", forward ? "as set" : backward ? "the reverse of the order set" : "neither");
+    }
+}
+
+static void sec_enum(void)
+{
+    HMODULE user = GetModuleHandleA("user32.dll");
+    enum_w_fn ew = (enum_w_fn)GetProcAddress(user, "EnumPropsW");
+    enum_a_fn ea = (enum_a_fn)GetProcAddress(user, "EnumPropsA");
+    enum_ex_w_fn exw = (enum_ex_w_fn)GetProcAddress(user, "EnumPropsExW");
+    enum_ex_a_fn exa = (enum_ex_a_fn)GetProcAddress(user, "EnumPropsExA");
+    HWND h, empty, dead;
+    int r;
+
+    line("GetProcAddress(user32, EnumPropsW/A, EnumPropsExW/A): %s %s %s %s", yesno(ew != NULL),
+         yesno(ea != NULL), yesno(exw != NULL), yesno(exa != NULL));
+    if (ew == NULL || ea == NULL || exw == NULL || exa == NULL) {
+        return;
+    }
+    forget_atoms();
+    h = make_window();
+    empty = make_window();
+    dead = make_window();
+    DestroyWindow(dead);
+    set_w("h, L\"F2KPropsOne\"", h, L"F2KPropsOne", 0x1111);
+    set_w("h, L\"F2KPropsTwo\"", h, L"F2KPropsTwo", 0x2222);
+    set_w("h, L\"F2KPropsZero\"", h, L"F2KPropsZero", 0);
+    set_w("h, MAKEINTATOM(291)", h, ATOM_W(291), 0x3333);
+
+    line("EnumPropsW(h):");
+    enum_reset(0, 0);
+    arm();
+    r = ew(h, enum_w);
+    enum_report(h, r, le());
+    line("EnumPropsA(h):");
+    enum_reset(0, 0);
+    arm();
+    r = ea(h, enum_a);
+    enum_report(h, r, le());
+    line("EnumPropsExW(h, lParam 0x5A5A):");
+    enum_reset(0, 0);
+    arm();
+    r = exw(h, enum_ex_w, 0x5A5A);
+    enum_report(h, r, le());
+    line("  the lParam received: 0x%lX", enum_param_seen);
+    line("EnumPropsExA(h, lParam 0xA5A5):");
+    enum_reset(0, 0);
+    arm();
+    r = exa(h, enum_ex_a, 0xA5A5);
+    enum_report(h, r, le());
+    line("  the lParam received: 0x%lX", enum_param_seen);
+
+    line("EnumPropsW(h), the callback answering FALSE at its first call:");
+    enum_reset(1, 0);
+    arm();
+    r = ew(h, enum_w);
+    enum_report(h, r, le());
+    line("EnumPropsExW(h), the callback answering FALSE at its second call:");
+    enum_reset(2, 0);
+    arm();
+    r = exw(h, enum_ex_w, 0);
+    enum_report(h, r, le());
+
+    line("EnumPropsW(a window with no properties):");
+    enum_reset(0, 0);
+    arm();
+    r = ew(empty, enum_w);
+    enum_report(empty, r, le());
+    line("EnumPropsExW(a window with no properties):");
+    enum_reset(0, 0);
+    arm();
+    r = exw(empty, enum_ex_w, 0);
+    enum_report(empty, r, le());
+    line("EnumPropsW(NULL):");
+    enum_reset(0, 0);
+    arm();
+    r = ew(NULL, enum_w);
+    enum_report(NULL, r, le());
+    line("EnumPropsW(a destroyed window):");
+    enum_reset(0, 0);
+    arm();
+    r = ew(dead, enum_w);
+    enum_report(dead, r, le());
+
+    line("EnumPropsExW(h), the callback removing each property it is given:");
+    enum_reset(0, 1);
+    arm();
+    r = exw(h, enum_ex_w, 0);
+    enum_report(h, r, le());
+    line("  each RemovePropW answered the value given: %s", yesno(enum_removed_ok));
+    line("EnumPropsW(h) after:");
+    enum_reset(0, 0);
+    arm();
+    r = ew(h, enum_w);
+    enum_report(h, r, le());
+
+    DestroyWindow(empty);
+    end_section(h);
+}
+
 static const section_t sections[] = {
     { "string", sec_string, F2KT_ALWAYS },
     { "atom", sec_atom, F2KT_ALWAYS },
     { "refs", sec_refs, F2KT_ALWAYS },
     { "thread", sec_thread, F2KT_ALWAYS },
     { "errors", sec_errors, F2KT_ALWAYS },
+    { "enum", sec_enum, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

@@ -1,8 +1,8 @@
 # F2K capture of batpipe (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Fri 11/20/2026 10:44:07.94
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:41:02.30
 >>> cmd /c batpipe.cmd
 == two stages
 HELLO 
@@ -48,8 +48,8 @@ PIPEKID: LINE 1
 X
 Y
 == built-ins
-TWO.TXT
 ONE.TXT
+TWO.TXT
 pipekid: count: 2 lines, 18 bytes; the last read: ret=0 err=109
 pipekid: count: 0 lines, 0 bytes; the last read: ret=0 err=109
 BATPIPEV: not set

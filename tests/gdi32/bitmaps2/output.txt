@@ -1,0 +1,226 @@
+# F2K capture of bitmaps2 (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:58.68
+bitmaps2 F2KT-SOURCE-CRC=0x95E501C8
+>>> bitmaps2.exe indirect
+== indirect
+CreateBitmapIndirect(8x2, 1 bpp, rows A5 and 3C): non-NULL yes err=-
+  GetObjectW(it, BITMAP): ret=24 err=- 8x2 bmWidthBytes=2 bmPlanes=1 bmBitsPixel=1 bmBits NULL
+  GetBitmapBits(4): ret=4 err=- A5 00 3C 00
+  GetBitmapBits(1): ret=1 err=- A5 EE EE EE
+  GetBitmapBits(32): ret=4 err=- A5 00 3C 00 EE EE
+  GetBitmapBits(0, NULL): ret=4 err=-
+  SetBitmapBits(2: F0 0F): ret=2 err=-; read back: F0 0F 3C 00
+CreateBitmapIndirect(2x2, 32 bpp): non-NULL yes err=-
+  GetObjectW(it, BITMAP): ret=24 err=- 2x2 bmWidthBytes=8 bmPlanes=1 bmBitsPixel=32 bmBits NULL
+  GetBitmapBits(16): ret=16 err=- 00 00 FF 00 00 FF 00 00 FF 00 00 00 56 34 12 00
+CreateBitmapIndirect(width 0): non-NULL yes err=-
+  GetObjectW(it, BITMAP): ret=24 err=- 1x1 bmWidthBytes=2 bmPlanes=1 bmBitsPixel=1 bmBits NULL
+  a new memory DC's 1x1 bitmap: yes
+GetBitmapBits(a 2x1 32-bit DIB section, 8): ret=8 err=- 33 22 11 00 66 55 44 00
+bitmaps2: done
+<<< exit code=0
+>>> bitmaps2.exe discard
+== discard
+CreateDiscardableBitmap(a memory DC, 8, 4): non-NULL yes err=-
+  GetObjectW(it, BITMAP): ret=24 err=- 8x4 bmWidthBytes=2 bmPlanes=1 bmBitsPixel=1 bmBits NULL
+CreateDiscardableBitmap(the screen DC, 8, 4): non-NULL yes err=-
+  8x4, the screen's depth: yes
+bitmaps2: done
+<<< exit code=0
+>>> bitmaps2.exe dimension
+== dimension
+GetBitmapDimensionEx(a new bitmap): ret=1 err=- 0,0
+SetBitmapDimensionEx(100, 50): ret=1 err=- previous=0,0
+SetBitmapDimensionEx(-3, 7, NULL): ret=1 err=-
+  GetBitmapDimensionEx: -3,7
+GetBitmapDimensionEx(the bitmap, deleted): ret=0 err=6
+SetBitmapDimensionEx(a DIB section, 20, 30): ret=1 err=-; read back 20,30
+bitmaps2: done
+<<< exit code=0
+>>> bitmaps2.exe colortable
+== colortable
+an 8-bit 4x1 DIB section of 4 colours (red, green, blue, white): non-NULL yes
+  GetDIBColorTable(0, 256): ret=256 err=- FF0000/0 00FF00/0 0000FF/0 FFFFFF/0 000000/0 000000/0 000000/0 000000/0 000000/0 000000/0 000000/0 000000/0 000000/0 000000/0 000000/0 000000/0
+  GetDIBColorTable(2, 4): ret=4 err=- 0000FF/0 FFFFFF/0 000000/0 000000/0
+  GetDIBColorTable(4, 1): ret=1 err=- 000000/0
+  SetDIBColorTable(1, 2: 000000 123456): ret=2 err=-
+  GetDIBColorTable(0, 4): ret=4 err=- FF0000/0 000000/0 123456/0 FFFFFF/0
+  GetPixel 0..3: 0x0000FF 0x000000 0x563412 0xFFFFFF
+  SetDIBColorTable(3, 4): ret=4 err=-
+  SetDIBColorTable(4, 1): ret=1 err=-
+a 4-bit DIB section with biClrUsed 0: non-NULL yes
+  GetDIBColorTable(0, 16): ret=16 err=- FF0000/0 00FF00/0 0000FF/0 FFFFFF/0 000000/0 000000/0 000000/0 000000/0 000000/0 000000/0 000000/0 000000/0 000000/0 000000/0 000000/0 000000/0
+a 32-bit DIB section:
+  GetDIBColorTable(0, 4): ret=0 err=6
+a 1-bit device bitmap:
+  GetDIBColorTable(0, 2): ret=2 err=- 000000/0 FFFFFF/0
+  SetDIBColorTable(0, 1): ret=0 err=6
+bitmaps2: done
+<<< exit code=0
+>>> bitmaps2.exe maskblt
+== maskblt
+MaskBlt(red over blue, mask rows 1010 and 1100, MAKEROP4(SRCCOPY, D)): ret=1 err=-
+  row  0: RBRB
+  row  1: RRBB
+MaskBlt(the same, MAKEROP4(D, SRCCOPY)): ret=1 err=-
+  row  0: BRBR
+  row  1: BBRR
+MaskBlt(to 1,0 3x2, mask from 1,0, MAKEROP4(SRCCOPY, BLACKNESS)): ret=1 err=-
+  row  0: B#R#
+  row  1: BR##
+MaskBlt(no mask): ret=1 err=-
+  row  0: RRRR
+  row  1: RRRR
+MaskBlt(a 32-bit mask): ret=0 err=6
+  row  0: BBBB
+  row  1: BBBB
+bitmaps2: done
+<<< exit code=0
+>>> bitmaps2.exe plgblt
+== plgblt
+the source: 4x4, red and green over blue and black
+PlgBlt(translated: 2,2 6,2 2,6): ret=1 err=-
+  row  0: ........
+  row  1: ........
+  row  2: ..RRGG..
+  row  3: ..RRGG..
+  row  4: ..BB##..
+  row  5: ..BB##..
+  row  6: ........
+  row  7: ........
+PlgBlt(rotated 90 degrees clockwise: 6,2 6,6 2,2): ret=1 err=-
+  row  0: ........
+  row  1: ........
+  row  2: ..BBRR..
+  row  3: ..BBRR..
+  row  4: ..##GG..
+  row  5: ..##GG..
+  row  6: ........
+  row  7: ........
+PlgBlt(mirrored: 6,2 2,2 6,6): ret=1 err=-
+  row  0: ........
+  row  1: ........
+  row  2: ...GGRR.
+  row  3: ...GGRR.
+  row  4: ...##BB.
+  row  5: ...##BB.
+  row  6: ........
+  row  7: ........
+PlgBlt(doubled: 0,0 8,0 0,8): ret=1 err=-
+  row  0: RRRRGGGG
+  row  1: RRRRGGGG
+  row  2: RRRRGGGG
+  row  3: RRRRGGGG
+  row  4: BBBB####
+  row  5: BBBB####
+  row  6: BBBB####
+  row  7: BBBB####
+PlgBlt(translated, through a checker mask: 2,2 6,2 2,6): ret=1 err=-
+  row  0: ........
+  row  1: ........
+  row  2: ..RR....
+  row  3: ..RR....
+  row  4: ....##..
+  row  5: ....##..
+  row  6: ........
+  row  7: ........
+PlgBlt(three points in a line: 0,0 4,4 8,8): ret=1 err=-
+  row  0: ........
+  row  1: ........
+  row  2: ........
+  row  3: ........
+  row  4: ........
+  row  5: ........
+  row  6: ........
+  row  7: ........
+bitmaps2: done
+<<< exit code=0
+>>> bitmaps2.exe alpha
+== alpha
+GdiAlphaBlend(red over white, constant alpha 128): ret=1 err=-
+  row 0: 00FF7F7F 00FF7F7F 00FF7F7F 00FF7F7F
+GdiAlphaBlend(red over blue, constant alpha 128): ret=1 err=-
+  row 0: 0080007F 0080007F 0080007F 0080007F
+GdiAlphaBlend(AC_SRC_ALPHA: FFFF0000 80800000 00000000 40004000 over white): ret=1 err=-
+  row 0: FFFF0000 80FF7F7F 00FFFFFF 40BFFFBF
+GdiAlphaBlend(the same, constant alpha 128 too): ret=1 err=-
+  row 0: 80FF7F7F 40FFBFBF 00FFFFFF 20DFFFDF
+GdiAlphaBlend(red, blue stretched to 4, constant alpha 255): ret=1 err=-
+  row 0: 00FF0000 00FF0000 000000FF 000000FF
+GdiAlphaBlend(a source rectangle past the source's edge): ret=0 err=87
+  row 0: 00FFFFFF 00FFFFFF 00FFFFFF 00FFFFFF
+GdiAlphaBlend(BlendOp 1): ret=0 err=87
+bitmaps2: done
+<<< exit code=0
+>>> bitmaps2.exe transparent
+== transparent
+the source: 4x2, rows R.R. and .R.R
+GdiTransparentBlt(onto blue, white transparent): ret=1 err=-
+  row  0: RBRBBBBB
+  row  1: BRBRBBBB
+GdiTransparentBlt(stretched to 8x2, red transparent): ret=1 err=-
+  row  0: BB..BB..
+  row  1: ..BB..BB
+GdiTransparentBlt(width -4): ret=0 err=-
+  row  0: BBBBBBBB
+  row  1: BBBBBBBB
+bitmaps2: done
+<<< exit code=0
+>>> bitmaps2.exe gradient
+== gradient
+GdiGradientFill(0,0 black to 8,1 FF00,8000,0000, GRADIENT_FILL_RECT_H): ret=1 err=-
+  row 0: 00000000 001F1000 003F2000 005F3000 007F4000 009F5000 00BF6000 00DF7000
+GdiGradientFill(mode 3): ret=0 err=87
+  row 0: 00FFFFFF 00FFFFFF 00FFFFFF 00FFFFFF 00FFFFFF 00FFFFFF 00FFFFFF 00FFFFFF
+GdiGradientFill(0,0 blue to 1,4 red, GRADIENT_FILL_RECT_V): ret=1 err=-
+  row 0: 000000FF
+  row 1: 003F00BF
+  row 2: 007F007F
+  row 3: 00BF003F
+GdiGradientFill(0,0 red, 8,0 green, 0,8 blue, GRADIENT_FILL_TRIANGLE): ret=1 err=-
+  corners 0,0 7,0 0,7 7,7: 00FF0000 001FDF00 001F00DF 00FFFFFF; checksum 0x00D9B244
+  row  0: R???????
+  row  1: ???????.
+  row  2: ??????..
+  row  3: ?????...
+  row  4: ????....
+  row  5: ???.....
+  row  6: ??......
+  row  7: ?.......
+  other colors: 35, the first 0x00DF1F00
+bitmaps2: done
+<<< exit code=0
+>>> bitmaps2.exe msimg32
+== msimg32
+LoadLibraryA("msimg32.dll"): non-NULL yes err=-
+  AlphaBlend: exported yes, the same as gdi32's GdiAlphaBlend: no
+  TransparentBlt: exported yes, the same as gdi32's GdiTransparentBlt: no
+  GradientFill: exported yes, the same as gdi32's GdiGradientFill: no
+  AlphaBlend(red over blue, constant alpha 96): ret=1 err=-, GdiAlphaBlend's pixels: yes
+bitmaps2: done
+<<< exit code=0
+>>> bitmaps2.exe dibpattern
+== dibpattern
+CreateDIBPatternBrushPt(a bottom-up 8x8 1-bit checker, 0 red 1 blue, the bottom row AA): non-NULL yes err=-
+  GetObjectW(LOGBRUSH): ret=12 err=- lbStyle=5 lbColor=0x0 lbHatch nonzero GetObjectType=2
+  PatBlt 8x2: ret=1 err=-
+  row  0: RBRBRBRB
+  row  1: BRBRBRBR
+CreateDIBPatternBrush(the same in global memory): non-NULL yes err=0
+  GetObjectW(LOGBRUSH): ret=12 err=- lbStyle=5 lbColor=0x0 lbHatch nonzero GetObjectType=2
+  PatBlt 8x2: ret=1 err=-
+  row  0: RBRBRBRB
+  row  1: BRBRBRBR
+CreateDIBPatternBrushPt(a top-down 2x2 32-bit DIB: RG over B#): non-NULL yes err=-
+  GetObjectW(LOGBRUSH): ret=12 err=- lbStyle=5 lbColor=0x0 lbHatch nonzero GetObjectType=2
+  PatBlt 4x4: ret=1 err=-
+  row  0: RGRG
+  row  1: B#B#
+  row  2: RGRG
+  row  3: B#B#
+CreateDIBPatternBrushPt(usage 7): non-NULL no err=87
+bitmaps2: done
+<<< exit code=0

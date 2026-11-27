@@ -96,6 +96,35 @@
  *              SendMessageW, SendMessageTimeoutW and PostMessageW to it;
  *              each send runs on a thread of its own, waited for 5 s,
  *              so a send that never returns shows as such
+ *   killtimer  KillTimer of a window's live timer, of it again, of an id
+ *              never set, of a timer come due whose WM_TIMER is unread
+ *              (and whether one is read after); of a thread timer
+ *              (SetTimer with NULL) with the window and with NULL, again;
+ *              NULL with a window timer's id; the desktop window and a
+ *              destroyed window; and from a second thread, of the main
+ *              thread's window timer and thread timer
+ *   msgwait    MsgWaitForMultipleObjectsEx (found with GetProcAddress)
+ *              with no handles: an empty queue at 0 and 300 ms, a
+ *              posted message for QS_POSTMESSAGE, QS_ALLPOSTMESSAGE and a
+ *              mask without it (with MWMO_INPUTAVAILABLE too), a message
+ *              a PeekMessageW PM_NOREMOVE has seen (with and without
+ *              MWMO_INPUTAVAILABLE), a 100 ms timer for QS_TIMER and for
+ *              QS_POSTMESSAGE; with events: signaled, unsignaled (a
+ *              timeout), signaled with a message posted, set or posted
+ *              to by a second thread after 200 ms; MWMO_WAITALL over two
+ *              events with and without a message; MWMO_ALERTABLE and not
+ *              with a user APC queued; an unknown flag, a closed handle,
+ *              63 and 64 handles. Each wait prints its result and
+ *              whether it took as long as a band says
+ *   postlimit  the posted-message quota exactly: PostMessageW to the
+ *              thread's own window, its queue never read, until a post
+ *              fails: how many succeeded, the failing post's return and
+ *              last error; PostMessageW and PostMessageA once more,
+ *              PostThreadMessageW and A to the thread itself, and a
+ *              second thread's PostMessageW and PostThreadMessageW to
+ *              the full queue; one message taken out (the first post),
+ *              then one post more and the next; the queue emptied (each
+ *              message the next post), and a thread message after
  *
  * The sections from regmsg on use a window of a class registered with
  * RegisterClassW, F2KGuimsgW, whose procedure records the test
@@ -846,6 +875,9 @@ static void sec_smto(void)
 
 typedef BOOL (WINAPI *is_hung_fn)(HWND);
 
+/* The wait for a message the second thread no longer has to handle. */
+#define HUNG_NOTHING_MS 500
+
 static void hung_check(is_hung_fn is_hung, HWND h, const char *when)
 {
     BOOL r;
@@ -893,7 +925,10 @@ static void sec_hung(void)
                SMTO_ABORTIFHUNG, 2000, w.tid);
         smto_w("the sleeping thread's window, SMTO_NORMAL", w.window, 5, 6, SMTO_NORMAL, 2000,
                w.tid);
-        r = WaitForSingleObject(w_handled, WAIT_MS);
+        /* Nothing is left for it to handle (SMTO_NORMAL's message was
+         * handled, the timed-out ones were taken back): Windows 2000 runs
+         * this wait out, so a short one prints the same. */
+        r = WaitForSingleObject(w_handled, HUNG_NOTHING_MS);
         line("the second thread handled a message once it read its queue again: %s", wr(r));
         Sleep(200);
         hung_check(is_hung, w.window, "after it read its queue again");
@@ -1507,6 +1542,413 @@ static void sec_deadthr(void)
     line("the procedure saw: count=%ld", (long)w_count);
 }
 
+/* --- killtimer ----------------------------------------------------- */
+
+/* What the second thread's KillTimer calls answered. */
+typedef struct {
+    HWND window;    /* the main thread's window */
+    UINT window_id; /* a timer of that window, set by the main thread */
+    UINT thread_id; /* a thread timer of the main thread */
+    BOOL window_ret;
+    DWORD window_err;
+    BOOL thread_ret;
+    DWORD thread_err;
+} kill_other_t;
+
+static DWORD WINAPI kill_from_other(LPVOID param)
+{
+    kill_other_t *k = (kill_other_t *)param;
+
+    SetLastError(F2KT_UNTOUCHED);
+    k->window_ret = KillTimer(k->window, k->window_id);
+    k->window_err = GetLastError();
+    SetLastError(F2KT_UNTOUCHED);
+    k->thread_ret = KillTimer(NULL, k->thread_id);
+    k->thread_err = GetLastError();
+    return 0;
+}
+
+static void kill_line(const char *what, const char *note, HWND h, UINT id)
+{
+    BOOL r;
+
+    arm();
+    r = KillTimer(h, id);
+    line("KillTimer(%s)%s: ret=%d err=%s", what, note, r, le());
+}
+
+static void sec_killtimer(void)
+{
+    HWND h, dead;
+    MSG m;
+    UINT r, tid_timer;
+    BOOL got;
+    kill_other_t k;
+    HANDLE th;
+    DWORD tid, w;
+
+    drain_w();
+    reset_wide();
+    h = make_wide(L"killtimer");
+    dead = make_wide(L"killtimer dead");
+    DestroyWindow(dead);
+
+    arm();
+    r = SetTimer(h, 7, 10000, NULL);
+    line("SetTimer(the window, 7, 10 s): its id 7 %s err=%s", yesno(r == 7), le());
+    kill_line("the window, 7", "", h, 7);
+    kill_line("the window, 7", " again", h, 7);
+    kill_line("the window, 8", ", never set", h, 8);
+    kill_line("NULL, 0", "", NULL, 0);
+
+    /* A timer come due, its WM_TIMER not read yet, then killed. */
+    SetTimer(h, 9, 10, NULL);
+    Sleep(100);
+    kill_line("the window, 9", ", come due, its WM_TIMER unread", h, 9);
+    got = PeekMessageW(&m, NULL, WM_TIMER, WM_TIMER, PM_REMOVE);
+    line("  a WM_TIMER of it read after: %s", yesno(got));
+
+    arm();
+    tid_timer = SetTimer(NULL, 0, 10000, NULL);
+    line("SetTimer(NULL, 0, 10 s): an id %s err=%s", yesno(tid_timer != 0), le());
+    kill_line("the window, the thread timer's id", "", h, tid_timer);
+    kill_line("NULL, the thread timer's id", "", NULL, tid_timer);
+    kill_line("NULL, the thread timer's id", " again", NULL, tid_timer);
+
+    SetTimer(h, 11, 10000, NULL);
+    kill_line("NULL, 11", ", the window's timer 11 set", NULL, 11);
+    kill_line("the window, 11", "", h, 11);
+
+    kill_line("the desktop window, 1", "", GetDesktopWindow(), 1);
+    kill_line("a destroyed window, 1", "", dead, 1);
+
+    /* The main thread's timers, killed from a second thread. */
+    k.window = h;
+    k.window_id = 12;
+    SetTimer(h, 12, 10000, NULL);
+    k.thread_id = SetTimer(NULL, 0, 10000, NULL);
+    k.window_ret = k.thread_ret = -1;
+    k.window_err = k.thread_err = F2KT_UNTOUCHED;
+    th = CreateThread(NULL, 0, kill_from_other, &k, 0, &tid);
+    w = th != NULL ? WaitForSingleObject(th, WAIT_MS) : WAIT_FAILED;
+    line("a second thread ran: %s", wr(w));
+    line("  its KillTimer(the window, 12), the main thread's window's timer: ret=%d err=%s",
+         k.window_ret, le_of(k.window_err));
+    line("  its KillTimer(NULL, the main thread's thread timer's id): ret=%d err=%s", k.thread_ret,
+         le_of(k.thread_err));
+    if (th != NULL) {
+        CloseHandle(th);
+    }
+    kill_line("the window, 12", " after", h, 12);
+    kill_line("NULL, the thread timer's id", " after", NULL, k.thread_id);
+
+    DestroyWindow(h);
+    drain_w();
+}
+
+/* --- msgwait ------------------------------------------------------- */
+
+/* MsgWaitForMultipleObjectsEx and its flags are Windows 2000's: MSVC 6's
+ * headers declare them only for WINVER 0x0500. */
+#ifndef MWMO_WAITALL
+#define MWMO_WAITALL 0x0001
+#endif
+#ifndef MWMO_ALERTABLE
+#define MWMO_ALERTABLE 0x0002
+#endif
+#ifndef MWMO_INPUTAVAILABLE
+#define MWMO_INPUTAVAILABLE 0x0004
+#endif
+#ifndef QS_ALLPOSTMESSAGE
+#define QS_ALLPOSTMESSAGE 0x0100
+#endif
+
+typedef DWORD (WINAPI *msg_wait_ex_fn)(DWORD count, const HANDLE *handles, DWORD ms, DWORD mask,
+                                       DWORD flags);
+
+static msg_wait_ex_fn msg_wait_ex;
+
+/* One wait: its result, its error, and how long it took against a band. */
+static void mw(const char *what, DWORD count, const HANDLE *handles, DWORD ms, DWORD mask,
+               DWORD flags, DWORD lo, DWORD hi)
+{
+    DWORD t, elapsed, r;
+
+    t = GetTickCount();
+    arm();
+    r = msg_wait_ex(count, handles, ms, mask, flags);
+    elapsed = GetTickCount() - t;
+    line("MsgWaitForMultipleObjectsEx(%s): %s err=%s, %lu-%lu ms %s", what, wr(r), le(),
+         (unsigned long)lo, (unsigned long)hi, band(elapsed, lo, hi));
+}
+
+static DWORD WINAPI late_setter(LPVOID param)
+{
+    Sleep(200);
+    SetEvent((HANDLE)param);
+    return 0;
+}
+
+static volatile LONG apc_ran;
+
+static VOID CALLBACK mw_apc(DWORD param)
+{
+    (void)param;
+    InterlockedIncrement((LONG *)&apc_ran);
+}
+
+static void sec_msgwait(void)
+{
+    HWND h;
+    MSG m;
+    HANDLE on, on2, off, closed;
+    HANDLE pair[2];
+    HANDLE many[MAXIMUM_WAIT_OBJECTS];
+    HANDLE th;
+    DWORD tid;
+    BOOL got;
+    int i;
+
+    msg_wait_ex = (msg_wait_ex_fn)GetProcAddress(GetModuleHandleA("user32.dll"),
+                                                 "MsgWaitForMultipleObjectsEx");
+    line("MsgWaitForMultipleObjectsEx exported: %s", yesno(msg_wait_ex != NULL));
+    if (msg_wait_ex == NULL) {
+        return;
+    }
+    drain_w();
+    reset_wide();
+    h = make_wide(L"msgwait");
+    on = CreateEventA(NULL, TRUE, TRUE, NULL);
+    on2 = CreateEventA(NULL, TRUE, TRUE, NULL);
+    off = CreateEventA(NULL, TRUE, FALSE, NULL);
+    closed = CreateEventA(NULL, TRUE, TRUE, NULL);
+    CloseHandle(closed);
+    drain_w();
+
+    /* No handles. */
+    mw("no handles, the queue empty, 0 ms, QS_ALLINPUT, 0", 0, NULL, 0, QS_ALLINPUT, 0, 0, 100);
+    mw("no handles, the queue empty, 300 ms, QS_ALLINPUT, 0", 0, NULL, 300, QS_ALLINPUT, 0, 250,
+       2000);
+    PostMessageW(h, MSG_TEST, 1, 0);
+    mw("no handles, a message posted, INFINITE, QS_POSTMESSAGE, 0", 0, NULL, INFINITE,
+       QS_POSTMESSAGE, 0, 0, 100);
+    mw("no handles, that message again, 0 ms, QS_ALLINPUT, 0", 0, NULL, 0, QS_ALLINPUT, 0, 0, 100);
+    drain_w();
+    PostMessageW(h, MSG_TEST, 2, 0);
+    mw("no handles, a message posted, 0 ms, QS_ALLPOSTMESSAGE, 0", 0, NULL, 0, QS_ALLPOSTMESSAGE,
+       0, 0, 100);
+    drain_w();
+    PostMessageW(h, MSG_TEST, 3, 0);
+    mw("no handles, a message posted, 0 ms, QS_TIMER | QS_KEY, 0", 0, NULL, 0, QS_TIMER | QS_KEY,
+       0, 0, 100);
+    mw("no handles, that message, 0 ms, QS_TIMER | QS_KEY, MWMO_INPUTAVAILABLE", 0, NULL, 0,
+       QS_TIMER | QS_KEY, MWMO_INPUTAVAILABLE, 0, 100);
+    drain_w();
+
+    /* A message a peek has seen: no longer new; MWMO_INPUTAVAILABLE
+     * still finds it. */
+    PostMessageW(h, MSG_TEST, 4, 0);
+    got = PeekMessageW(&m, NULL, 0, 0, PM_NOREMOVE);
+    line("a message posted, PeekMessageW(PM_NOREMOVE): it %s", yesno(got && m.message == MSG_TEST));
+    mw("no handles, the peeked message, 0 ms, QS_ALLINPUT, 0", 0, NULL, 0, QS_ALLINPUT, 0, 0, 100);
+    mw("no handles, the peeked message, 0 ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE", 0, NULL, 0,
+       QS_ALLINPUT, MWMO_INPUTAVAILABLE, 0, 100);
+    drain_w();
+
+    /* A timer. */
+    SetTimer(h, 5, 100, NULL);
+    mw("no handles, a 100 ms timer, 2000 ms, QS_TIMER, 0", 0, NULL, 2000, QS_TIMER, 0, 50, 1000);
+    KillTimer(h, 5);
+    drain_w();
+    SetTimer(h, 6, 100, NULL);
+    mw("no handles, a 100 ms timer, 500 ms, QS_POSTMESSAGE, 0", 0, NULL, 500, QS_POSTMESSAGE, 0,
+       450, 2000);
+    KillTimer(h, 6);
+    drain_w();
+
+    /* Handles. */
+    mw("a signaled event, the queue empty, INFINITE, QS_ALLINPUT, 0", 1, &on, INFINITE,
+       QS_ALLINPUT, 0, 0, 100);
+    mw("an unsignaled event, the queue empty, 300 ms, QS_ALLINPUT, 0", 1, &off, 300, QS_ALLINPUT,
+       0, 250, 2000);
+    PostMessageW(h, MSG_TEST, 6, 0);
+    mw("a signaled event, a message posted, INFINITE, QS_ALLINPUT, 0", 1, &on, INFINITE,
+       QS_ALLINPUT, 0, 0, 100);
+    drain_w();
+    PostMessageW(h, MSG_TEST, 7, 0);
+    mw("an unsignaled event, a message posted, INFINITE, QS_ALLINPUT, 0", 1, &off, INFINITE,
+       QS_ALLINPUT, 0, 0, 100);
+    drain_w();
+    th = CreateThread(NULL, 0, late_setter, off, 0, &tid);
+    mw("an event a second thread sets after 200 ms, 2000 ms, QS_ALLINPUT, 0", 1, &off, 2000,
+       QS_ALLINPUT, 0, 100, 1500);
+    if (th != NULL) {
+        WaitForSingleObject(th, WAIT_MS);
+        CloseHandle(th);
+    }
+    ResetEvent(off);
+    th = CreateThread(NULL, 0, late_poster, h, 0, &tid);
+    mw("an unsignaled event, a second thread posts after 200 ms, 2000 ms, QS_POSTMESSAGE, 0", 1,
+       &off, 2000, QS_POSTMESSAGE, 0, 100, 1500);
+    if (th != NULL) {
+        WaitForSingleObject(th, WAIT_MS);
+        CloseHandle(th);
+    }
+    drain_w();
+
+    /* MWMO_WAITALL: every object and an input. */
+    pair[0] = on;
+    pair[1] = on2;
+    mw("two signaled events, the queue empty, 0 ms, QS_ALLINPUT, MWMO_WAITALL", 2, pair, 0,
+       QS_ALLINPUT, MWMO_WAITALL, 0, 100);
+    PostMessageW(h, MSG_TEST, 8, 0);
+    mw("two signaled events, a message posted, 0 ms, QS_ALLINPUT, MWMO_WAITALL", 2, pair, 0,
+       QS_ALLINPUT, MWMO_WAITALL, 0, 100);
+    drain_w();
+    pair[1] = off;
+    PostMessageW(h, MSG_TEST, 9, 0);
+    mw("a signaled and an unsignaled event, a message posted, 0 ms, QS_ALLINPUT, MWMO_WAITALL", 2,
+       pair, 0, QS_ALLINPUT, MWMO_WAITALL, 0, 100);
+    drain_w();
+
+    /* MWMO_ALERTABLE: a user APC queued to the thread. */
+    apc_ran = 0;
+    QueueUserAPC(mw_apc, GetCurrentThread(), 0);
+    mw("no handles, an APC queued, 2000 ms, QS_ALLINPUT, MWMO_ALERTABLE", 0, NULL, 2000,
+       QS_ALLINPUT, MWMO_ALERTABLE, 0, 100);
+    line("  the APC ran: %ld", (long)apc_ran);
+    apc_ran = 0;
+    QueueUserAPC(mw_apc, GetCurrentThread(), 0);
+    mw("no handles, an APC queued, 300 ms, QS_ALLINPUT, 0", 0, NULL, 300, QS_ALLINPUT, 0, 250,
+       2000);
+    line("  the APC ran: %ld", (long)apc_ran);
+    SleepEx(0, TRUE);
+    line("  the APC ran after SleepEx(0, TRUE): %ld", (long)apc_ran);
+
+    /* Refusals. */
+    mw("no handles, 0 ms, QS_ALLINPUT, flags 0x10", 0, NULL, 0, QS_ALLINPUT, 0x10, 0, 100);
+    mw("a closed handle, 0 ms, QS_ALLINPUT, 0", 1, &closed, 0, QS_ALLINPUT, 0, 0, 100);
+    for (i = 0; i < MAXIMUM_WAIT_OBJECTS; i++) {
+        many[i] = on;
+    }
+    mw("63 handles (a signaled event each), 0 ms, QS_ALLINPUT, 0", MAXIMUM_WAIT_OBJECTS - 1, many,
+       0, QS_ALLINPUT, 0, 0, 100);
+    mw("64 handles (a signaled event each), 0 ms, QS_ALLINPUT, 0", MAXIMUM_WAIT_OBJECTS, many, 0,
+       QS_ALLINPUT, 0, 0, 100);
+
+    CloseHandle(on);
+    CloseHandle(on2);
+    CloseHandle(off);
+    DestroyWindow(h);
+    drain_w();
+}
+
+/* --- postlimit ----------------------------------------------------- */
+
+/* What the second thread's posts to the full queue answered. */
+typedef struct {
+    HWND window;
+    DWORD thread;
+    BOOL post_ret;
+    DWORD post_err;
+    BOOL thread_ret;
+    DWORD thread_err;
+} full_post_t;
+
+static DWORD WINAPI post_to_full(LPVOID param)
+{
+    full_post_t *f = (full_post_t *)param;
+
+    SetLastError(F2KT_UNTOUCHED);
+    f->post_ret = PostMessageW(f->window, MSG_TEST + 1, 0, 0);
+    f->post_err = GetLastError();
+    SetLastError(F2KT_UNTOUCHED);
+    f->thread_ret = PostThreadMessageW(f->thread, MSG_TEST + 2, 0, 0);
+    f->thread_err = GetLastError();
+    return 0;
+}
+
+static void sec_postlimit(void)
+{
+    HWND h;
+    MSG m;
+    long posted = 0;
+    long drained = 0;
+    long in_order = 0;
+    BOOL r = TRUE;
+    BOOL got;
+    DWORD e = 0;
+    full_post_t f;
+    HANDLE th;
+    DWORD tid, w;
+
+    drain_w();
+    reset_wide();
+    h = make_wide(L"postlimit");
+    while (posted < QUOTA_CAP) {
+        arm();
+        r = PostMessageW(h, MSG_TEST + 1, (WPARAM)posted, 0);
+        if (!r) {
+            e = GetLastError();
+            break;
+        }
+        posted++;
+    }
+    line("PostMessageW to the thread's own window until it fails: %ld posts succeeded", posted);
+    line("  the first that failed: ret=%d err=%s", r, r ? "-" : le_of(e));
+    arm();
+    r = PostMessageW(h, MSG_TEST + 1, 0, 0);
+    line("PostMessageW once more: ret=%d err=%s", r, le());
+    arm();
+    r = PostMessageA(h, MSG_TEST + 1, 0, 0);
+    line("PostMessageA: ret=%d err=%s", r, le());
+    arm();
+    r = PostThreadMessageW(GetCurrentThreadId(), MSG_TEST + 2, 0, 0);
+    line("PostThreadMessageW(the thread itself): ret=%d err=%s", r, le());
+    arm();
+    r = PostThreadMessageA(GetCurrentThreadId(), MSG_TEST + 2, 0, 0);
+    line("PostThreadMessageA(the thread itself): ret=%d err=%s", r, le());
+
+    f.window = h;
+    f.thread = GetCurrentThreadId();
+    f.post_ret = f.thread_ret = -1;
+    f.post_err = f.thread_err = F2KT_UNTOUCHED;
+    th = CreateThread(NULL, 0, post_to_full, &f, 0, &tid);
+    w = th != NULL ? WaitForSingleObject(th, WAIT_MS) : WAIT_FAILED;
+    line("a second thread ran: %s", wr(w));
+    line("  its PostMessageW(the window): ret=%d err=%s", f.post_ret, le_of(f.post_err));
+    line("  its PostThreadMessageW(the main thread): ret=%d err=%s", f.thread_ret,
+         le_of(f.thread_err));
+    if (th != NULL) {
+        CloseHandle(th);
+    }
+
+    arm();
+    got = PeekMessageW(&m, NULL, 0, 0, PM_REMOVE);
+    line("PeekMessageW(PM_REMOVE): ret=%d err=%s, the first post (wParam 0) %s", got, le(),
+         yesno(got && m.message == MSG_TEST + 1 && m.wParam == 0));
+    arm();
+    r = PostMessageW(h, MSG_TEST + 1, (WPARAM)posted, 0);
+    line("PostMessageW with one message taken out: ret=%d err=%s", r, le());
+    arm();
+    r = PostMessageW(h, MSG_TEST + 1, 0, 0);
+    line("PostMessageW after it: ret=%d err=%s", r, le());
+
+    while (PeekMessageW(&m, NULL, 0, 0, PM_REMOVE)) {
+        if (m.message == MSG_TEST + 1 && m.wParam == (WPARAM)(drained + 1)) {
+            in_order++;
+        }
+        drained++;
+    }
+    line("the queue emptied: %ld messages, each the next post %s", drained,
+         yesno(in_order == drained));
+    arm();
+    r = PostThreadMessageW(GetCurrentThreadId(), MSG_TEST + 2, 0, 0);
+    line("PostThreadMessageW(the thread itself) once the queue is empty: ret=%d err=%s", r, le());
+    DestroyWindow(h);
+    drain_w();
+}
+
 static const section_t sections[] = {
     { "post", sec_post, F2KT_ALWAYS },
     { "peek", sec_peek, F2KT_ALWAYS },
@@ -1529,6 +1971,9 @@ static const section_t sections[] = {
     { "syscmd", sec_syscmd, F2KT_ALWAYS },
     { "ctxmenu", sec_ctxmenu, F2KT_ALWAYS },
     { "deadthr", sec_deadthr, F2KT_ALWAYS },
+    { "killtimer", sec_killtimer, F2KT_ALWAYS },
+    { "msgwait", sec_msgwait, F2KT_ALWAYS },
+    { "postlimit", sec_postlimit, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

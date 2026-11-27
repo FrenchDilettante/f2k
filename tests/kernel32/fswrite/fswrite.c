@@ -72,6 +72,14 @@
  *            levels deep, a file created, its attributes, reopened and
  *            read; the same path without \\?\ and through the A calls;
  *            DeleteFileW and RemoveDirectoryW
+ *   imagewrite a copy of the program mapped as an image (SEC_IMAGE, a
+ *            view): opens of it for writing (GENERIC_WRITE, read and
+ *            write, FILE_APPEND_DATA, TRUNCATE_EXISTING, CREATE_ALWAYS),
+ *            for reading, for delete-on-close, and DeleteFileA, while the
+ *            view lives, then with the section alone; then with neither,
+ *            an open for writing and a one-byte write into the DOS stub,
+ *            the image mapped again (does its view see the write?), and
+ *            the copy deleted
  *
  * The create, share, names, dirs, movex, moveinto and overwrite
  * observations run twice:
@@ -1520,6 +1528,121 @@ static void sec_deep(void)
     line("RemoveDirectoryW, deepest first: removed %d", deep_remove());
 }
 
+/* --- imagewrite --------------------------------------------------- */
+
+/* The DOS stub's message ("This program cannot be run in DOS mode.")
+   starts here in a linker-made image. */
+#define STUB_MESSAGE 0x4E
+
+/* CreateFileA of IMG.EXE (sharing everything) with `access`, `disposition`
+   and `flags`: the result, closed at once. */
+static void image_open(const char *label, DWORD access, DWORD disposition, DWORD flags)
+{
+    HANDLE h;
+    const char *e;
+
+    arm();
+    h = CreateFileA(at("IMG.EXE"), access, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                    disposition, FILE_ATTRIBUTE_NORMAL | flags, NULL);
+    e = le();
+    line("%s: %s err=%s", label, h == INVALID_HANDLE_VALUE ? "INVALID_HANDLE_VALUE" : "opened", e);
+    if (h != INVALID_HANDLE_VALUE) {
+        CloseHandle(h);
+    }
+}
+
+/* IMG.EXE's image section (SEC_IMAGE, through a handle closed at once),
+   printed under `label`; NULL when it is refused. */
+static HANDLE image_section(const char *label)
+{
+    HANDLE f, m;
+    const char *e;
+
+    f = CreateFileA(at("IMG.EXE"), GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    arm();
+    m = f != INVALID_HANDLE_VALUE ? CreateFileMappingA(f, NULL, PAGE_READONLY | SEC_IMAGE, 0, 0, NULL) : NULL;
+    e = le();
+    if (m == NULL) {
+        line("%s: NULL err=%s", label, e);
+    } else {
+        line("%s: made", label);
+    }
+    if (f != INVALID_HANDLE_VALUE) {
+        CloseHandle(f);
+    }
+    return m;
+}
+
+static void sec_imagewrite(void)
+{
+    char self[MAX_PATH];
+    HANDLE m, h;
+    BYTE *v;
+    BYTE x = 'X';
+    DWORD n;
+    BOOL r;
+    const char *e;
+
+    GetModuleFileNameA(NULL, self, sizeof self);
+    arm();
+    r = CopyFileA(self, at("IMG.EXE"), FALSE);
+    line("CopyFileA(the program, IMG.EXE): ret=%d err=%s", r, le());
+    m = image_section("CreateFileMappingA(IMG.EXE, SEC_IMAGE)");
+    if (m == NULL) {
+        return;
+    }
+    v = (BYTE *)MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0);
+    line("MapViewOfFile: %s", v != NULL ? "mapped" : "NULL");
+
+    /* The image in use: a view and its section. */
+    image_open("mapped, GENERIC_WRITE", GENERIC_WRITE, OPEN_EXISTING, 0);
+    image_open("mapped, GENERIC_READ | GENERIC_WRITE", GENERIC_READ | GENERIC_WRITE, OPEN_EXISTING, 0);
+    image_open("mapped, FILE_APPEND_DATA", FILE_APPEND_DATA, OPEN_EXISTING, 0);
+    image_open("mapped, GENERIC_READ", GENERIC_READ, OPEN_EXISTING, 0);
+    image_open("mapped, TRUNCATE_EXISTING", GENERIC_WRITE, TRUNCATE_EXISTING, 0);
+    image_open("mapped, CREATE_ALWAYS", GENERIC_WRITE, CREATE_ALWAYS, 0);
+    image_open("mapped, DELETE with FILE_FLAG_DELETE_ON_CLOSE", DELETE, OPEN_EXISTING, FILE_FLAG_DELETE_ON_CLOSE);
+    arm();
+    r = DeleteFileA(at("IMG.EXE"));
+    line("mapped, DeleteFileA: ret=%d err=%s", r, le());
+
+    /* The section alone. */
+    if (v != NULL) {
+        UnmapViewOfFile(v);
+    }
+    image_open("the section alone, GENERIC_WRITE", GENERIC_WRITE, OPEN_EXISTING, 0);
+    CloseHandle(m);
+
+    /* Neither: a write into the DOS stub's message. */
+    arm();
+    h = CreateFileA(at("IMG.EXE"), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                    FILE_ATTRIBUTE_NORMAL, NULL);
+    e = le();
+    line("unmapped, GENERIC_READ | GENERIC_WRITE: %s err=%s", h == INVALID_HANDLE_VALUE ? "INVALID_HANDLE_VALUE" : "opened",
+         e);
+    if (h != INVALID_HANDLE_VALUE) {
+        SetFilePointer(h, STUB_MESSAGE, NULL, FILE_BEGIN);
+        n = 0;
+        arm();
+        r = WriteFile(h, &x, 1, &n, NULL);
+        line("WriteFile(1 byte into the DOS stub): ret=%d n=%lu err=%s", r, n, le());
+        CloseHandle(h);
+    }
+    m = image_section("CreateFileMappingA(IMG.EXE, SEC_IMAGE) again");
+    if (m != NULL) {
+        v = (BYTE *)MapViewOfFile(m, FILE_MAP_READ, 0, 0, 0);
+        line("MapViewOfFile: %s, the stub's byte is the write's: %s", v != NULL ? "mapped" : "NULL",
+             yesno(v != NULL && v[STUB_MESSAGE] == 'X'));
+        if (v != NULL) {
+            UnmapViewOfFile(v);
+        }
+        CloseHandle(m);
+    }
+    arm();
+    r = DeleteFileA(at("IMG.EXE"));
+    line("unmapped, DeleteFileA: ret=%d err=%s", r, le());
+}
+
 static const section_t sections[] = {
     { "create", sec_create, 0 },
     { "write", sec_write, 0 },
@@ -1535,6 +1658,7 @@ static const section_t sections[] = {
     { "overlap", sec_overlap, 0 },
     { "negoff", sec_negoff, 0 },
     { "deep", sec_deep, 0 },
+    { "imagewrite", sec_imagewrite, 0 },
     { NULL, NULL, 0 }
 };
 

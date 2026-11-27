@@ -1,0 +1,68 @@
+# txlayout: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat txlayout, tests\capture.bat txlayout).
+# Text is drawn black on a green opaque background into a 32-bit DIB section in a memory DC, so a
+# drawing prints as the box of its character cells, which follow from the font's widths and metrics
+# alone, never its glyphs' shapes. The font is the memory DC's default, the stock SYSTEM_FONT; its
+# boot carries the system's fonts (system_fonts), as guidc's. Glyph indices print only as relations.
+# No handle or address prints.
+description = "txlayout - SetTextAlign/GetTextAlign over every TA_ alignment and TA_UPDATECP, SetTextCharacterExtra/GetTextCharacterExtra, SetTextJustification, GetTextExtentPointA/W, GetTextExtentExPointA/W/I, GetTextExtentPointI, GetCharacterPlacementA/W, PolyTextOutA/W, GetTextCharset, GetTextCharsetInfo, GetFontLanguageInfo and TranslateCharsetInfo, over the stock SYSTEM_FONT in a memory DC, the cells drawn read back from a DIB section."
+kind = "sectioned"
+gate = true
+system_fonts = true
+
+[pending]
+# G9 of .scratch/plans/user32-gdi32-completeness.md: drop each entry once its block passes.
+align = "F2K's gdi32 has no SetTextAlign/GetTextAlign (stubs; plan G9)"
+updatecp = "F2K's gdi32 has no SetTextAlign, so no TA_UPDATECP (plan G9)"
+extra = "F2K's gdi32 has no SetTextCharacterExtra/GetTextCharacterExtra (plan G9)"
+justify = "F2K's gdi32 has no SetTextJustification (plan G9)"
+extentex = "F2K's gdi32 has no GetTextExtentExPointA/W/I, GetTextExtentPointA/I or GetGlyphIndicesW (plan G9, G10)"
+placement = "F2K's gdi32 has no GetCharacterPlacementA/W (plan G9)"
+polytext = "F2K's gdi32 has no PolyTextOutA/W (plan G9)"
+charset = "F2K's gdi32 has no GetTextCharset, GetTextCharsetInfo, GetFontLanguageInfo or TranslateCharsetInfo (plan G9)"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. The canvas's helpers (CreateCompatibleDC, CreateDIBSection, SelectObject, DeleteObject,
+# DeleteDC, GdiFlush, the text and background colors and mode) are left out.
+metrics = ["gdi32.GetTextMetricsA", "gdi32.GetTextExtentPoint32A"]
+align = ["gdi32.GetTextAlign", "gdi32.SetTextAlign", "gdi32.TextOutA"]
+updatecp = [
+    "gdi32.SetTextAlign",
+    "gdi32.TextOutA",
+    "gdi32.ExtTextOutA",
+    "gdi32.MoveToEx",
+    "gdi32.GetCurrentPositionEx",
+]
+extra = [
+    "gdi32.GetTextCharacterExtra",
+    "gdi32.SetTextCharacterExtra",
+    "gdi32.GetTextExtentPoint32A",
+    "gdi32.TextOutA",
+]
+justify = ["gdi32.SetTextJustification", "gdi32.GetTextExtentPoint32A", "gdi32.TextOutA"]
+extentex = [
+    "gdi32.GetTextExtentExPointA",
+    "gdi32.GetTextExtentExPointW",
+    "gdi32.GetTextExtentExPointI",
+    "gdi32.GetTextExtentPointA",
+    "gdi32.GetTextExtentPointW",
+    "gdi32.GetTextExtentPointI",
+    "gdi32.GetTextExtentPoint32A",
+    "gdi32.GetTextExtentPoint32W",
+    "gdi32.GetGlyphIndicesW",
+    "kernel32.GetProcAddress",
+    "kernel32.GetModuleHandleA",
+]
+placement = [
+    "gdi32.GetCharacterPlacementA",
+    "gdi32.GetCharacterPlacementW",
+    "gdi32.GetTextExtentPoint32A",
+]
+polytext = ["gdi32.PolyTextOutA", "gdi32.PolyTextOutW"]
+charset = [
+    "gdi32.GetTextCharset",
+    "gdi32.GetTextCharsetInfo",
+    "gdi32.GetFontLanguageInfo",
+    "gdi32.TranslateCharsetInfo",
+]

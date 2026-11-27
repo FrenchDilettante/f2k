@@ -1,7 +1,7 @@
 # wndlong: one test per block of the real-machine capture (output.txt); see tests/README.md. No
 # handle or address prints: a window procedure prints as the same as a given procedure or not; the
 # styles, ids, user data and extra bytes print as values.
-description = "wndlong - a window's data through GetWindowLongW/A and SetWindowLongW/A: GWL_STYLE and GWL_EXSTYLE with WM_STYLECHANGING/WM_STYLECHANGED, GWL_ID, GWL_HWNDPARENT, GWL_HINSTANCE, GWL_USERDATA, the class's extra bytes (and GetWindowWord/SetWindowWord) and their bounds, GWL_WNDPROC subclassing through both forms (the chain through CallWindowProcW/A, IsWindowUnicode), a dialog's DWL_DLGPROC, DWL_USER and DWL_MSGRESULT (CreateDialogIndirectParamW), and the errors on NULL and destroyed windows."
+description = "wndlong - a window's data through GetWindowLongW/A and SetWindowLongW/A: GWL_STYLE and GWL_EXSTYLE with WM_STYLECHANGING/WM_STYLECHANGED, GWL_ID, GWL_HWNDPARENT, GWL_HINSTANCE, GWL_USERDATA, the class's extra bytes (and GetWindowWord/SetWindowWord) and their bounds, GWL_WNDPROC subclassing through both forms (the chain through CallWindowProcW/A, IsWindowUnicode), a dialog's DWL_DLGPROC, DWL_USER and DWL_MSGRESULT (CreateDialogIndirectParamW), the errors on NULL and destroyed windows, and a procedure editing WM_STYLECHANGING's new style (stylechg)."
 kind = "sectioned"
 gate = true
 
@@ -56,4 +56,8 @@ errors = [
     "user32.GetWindowLongW",
     "user32.GetWindowLongA",
     "user32.SetWindowLongW",
+]
+stylechg = [
+    "user32.SetWindowLongW",
+    "user32.GetWindowLongW",
 ]

@@ -1,9 +1,9 @@
 # F2K capture of sched (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
-# date: Sat 21/11/2026  7:36:29.48
-sched F2KT-SOURCE-CRC=0xA167EC7D
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:38:36.64
+sched F2KT-SOURCE-CRC=0x1FC190D6
 >>> sched.exe sleep
 == sleep
 Sleep(200) in [190, 300] ms: yes

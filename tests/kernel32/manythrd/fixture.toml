@@ -1,0 +1,18 @@
+# manythrd: one test per block of the real-machine capture (output.txt); see tests/README.md. Built
+# with /MD and a 64 KiB stack reservation, so that 2,000 threads' stacks fit the address space
+# (the slot-pool plan's "manythreads": an 8.3 name, as every program in \CORPUS has). The
+# plan's thread-cap fixture, captured on the 2026-11-27 VM trip.
+description = "manythrd - many threads alive at once in one process: 2,000 threads each waiting on one event, their ids as relations (multiples of 4, distinct), their ends and exit codes, and OpenThread by an ended one's id (alive)."
+kind = "sectioned"
+timeout = 60
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only what a section calls itself and observes.
+alive = [
+    "kernel32.CreateThread",
+    "kernel32.GetExitCodeThread",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GetCurrentThreadId",
+    "kernel32.OpenThread",
+]

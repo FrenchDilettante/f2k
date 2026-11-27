@@ -1,8 +1,8 @@
 # F2K capture of vmedge (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
-# date: Sat 21/11/2026  7:37:10.46
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:39:10.49
 vmedge F2KT-SOURCE-CRC=0x9CFCD30F
 >>> vmedge.exe guardwalk
 == guardwalk

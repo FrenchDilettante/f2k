@@ -1,9 +1,9 @@
 # F2K capture of accel (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-8B19664, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Mon 11/09/2026 14:06:24.48
-accel F2KT-SOURCE-CRC=0xE387AB3E
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:54.85
+accel F2KT-SOURCE-CRC=0xD73E43AF
 >>> accel.exe load
 == load
 LoadAcceleratorsW(300): non-NULL yes err=-
@@ -142,5 +142,73 @@ EnableWindow(window, FALSE): ret=0 err=-
 TranslateAcceleratorW(WM_KEYDOWN F5, the window disabled): ret=1 err=-
   received WM_INITMENU: wParam == the window's menu yes lParam=0
   received WM_INITMENUPOPUP: wParam == the Edit popup yes LOWORD(lParam)=0 HIWORD(lParam)=0
+accel: done
+<<< exit code=0
+>>> accel.exe create
+== create
+CreateAcceleratorTableW(1 entry, count 0): non-NULL no err=-
+CreateAcceleratorTableA(1 entry, count 0): non-NULL no err=-
+CreateAcceleratorTableW(1 entry, count -1): non-NULL no err=-
+CreateAcceleratorTableW(NULL, count 1): non-NULL no err=-
+CreateAcceleratorTableW(Ctrl+S, 401): non-NULL yes err=-
+CopyAcceleratorTableW(it, NULL, 0): ret=1 err=-
+CopyAcceleratorTableW(it, buffer, 16): ret=1 err=-
+  entry 0: fVirt=0x09 key=83 cmd=401
+CreateAcceleratorTableW(the same entry again): non-NULL yes err=-
+  the same table as the first: no
+DestroyAcceleratorTable(the second): ret=1 err=-
+DestroyAcceleratorTable(the first): ret=1 err=-
+DestroyAcceleratorTable(the first, again): ret=0 err=1403
+CopyAcceleratorTableW(the first, NULL, 0) after: ret=0 err=1403
+CreateAcceleratorTableW(fVirt 0x81, 0x41, 0xFF): non-NULL yes err=-
+CopyAcceleratorTableW(it, buffer, 16): ret=3 err=-
+  entry 0: fVirt=0x01 key=117 cmd=402
+  entry 1: fVirt=0x41 key=118 cmd=403
+  entry 2: fVirt=0x7F key=119 cmd=404
+DestroyAcceleratorTable(it): ret=1 err=-
+CreateAcceleratorTableA(0x80, Ctrl+'a', the virtual key 0x80, 0x1241): non-NULL yes err=-
+  the caller's keys after: 8364 97 128 65
+CopyAcceleratorTableW(it, buffer, 16): ret=4 err=-
+  entry 0: fVirt=0x00 key=8364 cmd=410
+  entry 1: fVirt=0x08 key=97 cmd=411
+  entry 2: fVirt=0x01 key=128 cmd=412
+  entry 3: fVirt=0x00 key=65 cmd=413
+CopyAcceleratorTableA(it, buffer, 16): ret=4 err=-
+  entry 0: fVirt=0x00 key=8320 cmd=410
+  entry 1: fVirt=0x08 key=97 cmd=411
+  entry 2: fVirt=0x01 key=128 cmd=412
+  entry 3: fVirt=0x00 key=65 cmd=413
+DestroyAcceleratorTable(it): ret=1 err=-
+CreateAcceleratorTableW(1000 entries): non-NULL yes err=-
+CopyAcceleratorTableW(it, NULL, 0): ret=1000 err=-
+CopyAcceleratorTableW(it, buffer, 1000): ret=1000 err=-, every entry as given yes
+DestroyAcceleratorTable(it): ret=1 err=-
+RegisterClassW(F2KAccelCreate): atom nonzero yes err=2
+CreateWindowExW(F2KAccelCreate, WS_OVERLAPPEDWINDOW, hidden, 320x200): non-NULL yes err=-
+CreateAcceleratorTableW(F6 with fVirt 0x81, F7): non-NULL yes err=-
+keys: Ctrl down no, Shift down no, Alt down no
+TranslateAcceleratorW(WM_KEYDOWN F6): ret=1 err=-
+  received WM_COMMAND: HIWORD(wParam)=1 LOWORD(wParam)=421 lParam=0
+TranslateAcceleratorW(WM_KEYDOWN F7): ret=0 err=-
+  received: nothing
+DestroyAcceleratorTable(it): ret=1 err=-
+accel: done
+<<< exit code=0
+>>> accel.exe alias
+== alias
+TranslateAccelerator: the same entry as TranslateAcceleratorA yes
+RegisterClassA(F2KAccelAlias): atom nonzero yes err=2
+CreateWindowExA(F2KAccelAlias, WS_OVERLAPPEDWINDOW, hidden, 320x200): non-NULL yes err=-
+LoadAcceleratorsA(300): non-NULL yes err=-
+keys: Ctrl down no, Shift down no, Alt down no
+TranslateAccelerator(WM_KEYDOWN F5): ret=1 err=-
+  received WM_COMMAND: HIWORD(wParam)=1 LOWORD(wParam)=303 lParam=0
+TranslateAccelerator(WM_CHAR 'A'): ret=1 err=-
+  received WM_COMMAND: HIWORD(wParam)=1 LOWORD(wParam)=301 lParam=0
+TranslateAccelerator(WM_KEYDOWN Z): ret=0 err=-
+  received: nothing
+keys: Ctrl down yes, Shift down no, Alt down no
+TranslateAccelerator(WM_KEYDOWN Z, Ctrl down): ret=1 err=-
+  received WM_COMMAND: HIWORD(wParam)=1 LOWORD(wParam)=304 lParam=0
 accel: done
 <<< exit code=0

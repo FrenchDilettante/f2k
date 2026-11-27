@@ -1,0 +1,46 @@
+# manywin: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat manywin, tests\capture.bat manywin).
+description = "manywin - user32's handle table at scale: CreateMenu until the per-process USER quota refuses it, the count against the objects owned before and the error, and one freed slot taken again (quota); 2,000 windows alive at once (windows); one menu's slot made and destroyed 65,540 times, its high word wrapping (wrap); and the low words' parity for windows and menus (parity)."
+kind = "sectioned"
+gate = true
+# The quota loop makes 10,000 menus and wrap 65,540 more, each a system call or two.
+timeout = 60
+
+[pending]
+# The slot-pool plan's slices (.scratch/plans/slot-pool.md, §7) these blocks wait for; drop each
+# entry once its block passes.
+wrap = "F2K's handle high word skips 0xFFFF and 0, going from 0xFFFE to 0x0001 within the 65,540 rounds, where Windows 2000's reaches 0 or 0xFFFF and has not come round to 0x0001"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only what a section calls itself, through its own helpers too, never what the C runtime's
+# startup calls.
+quota = [
+    "user32.CreateMenu",
+    "user32.DestroyMenu",
+    "user32.GetGuiResources",
+    "kernel32.GetProcAddress",
+    "kernel32.GetModuleHandleA",
+    "kernel32.GetCurrentProcess",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]
+windows = [
+    "user32.RegisterClassA",
+    "user32.CreateWindowExA",
+    "user32.DefWindowProcA",
+    "user32.IsWindow",
+    "user32.DestroyWindow",
+    "user32.GetGuiResources",
+]
+wrap = [
+    "user32.CreateMenu",
+    "user32.DestroyMenu",
+]
+parity = [
+    "user32.RegisterClassA",
+    "user32.CreateWindowExA",
+    "user32.DestroyWindow",
+    "user32.CreateMenu",
+    "user32.DestroyMenu",
+]

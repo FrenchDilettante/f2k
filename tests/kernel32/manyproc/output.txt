@@ -1,0 +1,26 @@
+# F2K capture of manyproc (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:39:11.36
+manyproc F2KT-SOURCE-CRC=0x756A4F04
+>>> manyproc.exe alive
+== alive
+CreateProcessA, child 551: failed err=1450
+children started: 550 of 600
+ready (each released the semaphore once): 550, still active all together: 550
+their process ids: multiples of 4 yes, distinct yes
+their thread ids: multiples of 4 yes, distinct yes
+no id twice among their process and thread ids, this process's and this thread's: yes
+the event set: ended 550, with exit code 0 550
+manyproc: done
+<<< exit code=0
+>>> manyproc.exe reuse
+== reuse
+child A: its end WAIT_OBJECT_0, exit code 7
+OpenProcess by A's id, A ended, its handles open: opened no err=87
+child B, started once A's handles were closed: its process id A's no, its thread id A's no
+  its process id A's thread id yes, its thread id A's process id yes
+child B: its end WAIT_OBJECT_0, exit code 7
+manyproc: done
+<<< exit code=0

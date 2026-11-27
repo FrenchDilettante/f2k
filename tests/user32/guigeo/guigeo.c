@@ -83,6 +83,24 @@
  *            on a hidden window and on a shown one, and with
  *            SWP_HIDEWINDOW on a shown one: the visibility, and whether
  *            the window moved and took the size
+ *   mmdefault WM_GETMINMAXINFO from a procedure that hands every message
+ *            to DefWindowProc: the creation's messages in order (a popup,
+ *            a thick-framed popup, a WS_OVERLAPPEDWINDOW window), the
+ *            window manager's MINMAXINFO as relations to the screen, the
+ *            work area and the tracking metrics, the messages' count and
+ *            the size a SetWindowPos gives (inside, above and below the
+ *            tracking sizes, SWP_NOSIZE, and with WM_WINDOWPOSCHANGING
+ *            kept from DefWindowProc), and SW_MAXIMIZE's
+ *   xedits   the edits section's procedure on a window another thread
+ *            made and serves (GetMessage), the main thread calling
+ *            SetWindowPos, MoveWindow and ShowWindow: the client area,
+ *            the tracking and maximized sizes and the WINDOWPOS edits as
+ *            in edits, and whether the procedure ran on the window's
+ *            thread inside a send (InSendMessage); the procedure sending
+ *            to and moving a window of the main thread's while the main
+ *            thread waits in SetWindowPos; and the window's thread
+ *            ending inside WM_WINDOWPOSCHANGING (SetWindowPos returns,
+ *            the window gone)
  *
  * The edits, createmax and swpshow windows sit at small explicit
  * positions; what prints is only how their rects relate to the ones
@@ -1041,6 +1059,371 @@ static void sec_swpshow(void)
     drain();
 }
 
+/* --- mmdefault ----------------------------------------------------- */
+
+/* The WM_GETMINMAXINFO messages the procedure received, and the first
+ * one's MINMAXINFO as the window manager filled it in. */
+static int mm_count;
+static MINMAXINFO mm_first;
+
+/* The creation's messages, in order, while mm_logging. */
+static int mm_logging;
+static char mm_log[256];
+
+/* 1: the procedure keeps WM_WINDOWPOSCHANGING from DefWindowProc. */
+static int mm_keep_changing;
+
+static void mm_note(const char *name)
+{
+    if (mm_logging && strlen(mm_log) + strlen(name) + 2 < sizeof mm_log) {
+        if (mm_log[0] != '\0') {
+            strcat(mm_log, " ");
+        }
+        strcat(mm_log, name);
+    }
+}
+
+static LRESULT CALLBACK mmdefault_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg) {
+    case WM_GETMINMAXINFO:
+        if (mm_count == 0) {
+            mm_first = *(MINMAXINFO *)lParam;
+        }
+        mm_count++;
+        mm_note("WM_GETMINMAXINFO");
+        break;
+    case WM_NCCREATE:
+        mm_note("WM_NCCREATE");
+        break;
+    case WM_NCCALCSIZE:
+        mm_note("WM_NCCALCSIZE");
+        break;
+    case WM_CREATE:
+        mm_note("WM_CREATE");
+        break;
+    case WM_WINDOWPOSCHANGING:
+        if (mm_keep_changing) {
+            return 0;
+        }
+        break;
+    }
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+/* A window of the class with `style`, 200x150 at 10,10, the creation's
+ * messages printed. */
+static HWND mm_create(const char *what, DWORD style)
+{
+    HWND h;
+
+    mm_count = 0;
+    mm_log[0] = '\0';
+    mm_logging = 1;
+    h = create_at("F2KGuigeoMmDefault", style, 10, 10, 200, 150);
+    mm_logging = 0;
+    line("CreateWindowEx(%s, 200x150): non-NULL %s", what, yesno(h != NULL));
+    line("  the creation's messages: %s", mm_log);
+    return h;
+}
+
+/* SetWindowPos of `h` to cx by cy with `flags`: the WM_GETMINMAXINFO
+ * count, and the size: the one asked, the minimum tracking size, or
+ * against the screen's. */
+static void mm_resize(const char *what, HWND h, int cx, int cy, UINT flags)
+{
+    RECT wr;
+    long w, ht;
+
+    mm_count = 0;
+    SetWindowPos(h, NULL, 0, 0, cx, cy, flags | SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    GetWindowRect(h, &wr);
+    w = wr.right - wr.left;
+    ht = wr.bottom - wr.top;
+    if (w == cx && ht == cy) {
+        line("  %s: WM_GETMINMAXINFO count=%d; the size asked", what, mm_count);
+    } else if (w == GetSystemMetrics(SM_CXMINTRACK) && ht == GetSystemMetrics(SM_CYMINTRACK)) {
+        line("  %s: WM_GETMINMAXINFO count=%d; SM_CXMINTRACK by SM_CYMINTRACK", what, mm_count);
+    } else {
+        line("  %s: WM_GETMINMAXINFO count=%d; the screen's plus %ld by plus %ld", what, mm_count,
+             w - GetSystemMetrics(SM_CXSCREEN), ht - GetSystemMetrics(SM_CYSCREEN));
+    }
+}
+
+static void sec_mmdefault(void)
+{
+    HWND h;
+    RECT work, wr;
+    long cx_screen, cy_screen;
+
+    register_class_proc("F2KGuigeoMmDefault", mmdefault_proc);
+    cx_screen = GetSystemMetrics(SM_CXSCREEN);
+    cy_screen = GetSystemMetrics(SM_CYSCREEN);
+    SystemParametersInfo(SPI_GETWORKAREA, 0, &work, 0);
+
+    h = mm_create("WS_POPUP", WS_POPUP);
+    if (h != NULL) {
+        DestroyWindow(h);
+    }
+    h = mm_create("WS_POPUP | WS_THICKFRAME", WS_POPUP | WS_THICKFRAME);
+    if (h != NULL) {
+        DestroyWindow(h);
+    }
+    h = mm_create("WS_OVERLAPPEDWINDOW", WS_OVERLAPPEDWINDOW);
+    if (h == NULL) {
+        return;
+    }
+    line("  WM_GETMINMAXINFO count=%d; the first one's defaults:", mm_count);
+    line("    ptReserved %ld,%ld", (long)mm_first.ptReserved.x, (long)mm_first.ptReserved.y);
+    line("    ptMaxSize the screen's plus %ld by plus %ld, the work area's plus %ld by plus %ld",
+         (long)mm_first.ptMaxSize.x - cx_screen, (long)mm_first.ptMaxSize.y - cy_screen,
+         (long)(mm_first.ptMaxSize.x - (work.right - work.left)),
+         (long)(mm_first.ptMaxSize.y - (work.bottom - work.top)));
+    line("    ptMaxPosition the work area's corner less %ld,%ld",
+         (long)(work.left - mm_first.ptMaxPosition.x), (long)(work.top - mm_first.ptMaxPosition.y));
+    line("    ptMinTrackSize SM_CXMINTRACK by SM_CYMINTRACK %s",
+         yesno(mm_first.ptMinTrackSize.x == GetSystemMetrics(SM_CXMINTRACK) &&
+               mm_first.ptMinTrackSize.y == GetSystemMetrics(SM_CYMINTRACK)));
+    line("    ptMaxTrackSize the screen's plus %ld by plus %ld; SM_CXMAXTRACK by SM_CYMAXTRACK %s",
+         (long)mm_first.ptMaxTrackSize.x - cx_screen, (long)mm_first.ptMaxTrackSize.y - cy_screen,
+         yesno(mm_first.ptMaxTrackSize.x == GetSystemMetrics(SM_CXMAXTRACK) &&
+               mm_first.ptMaxTrackSize.y == GetSystemMetrics(SM_CYMAXTRACK)));
+    mm_resize("SetWindowPos to 300x200", h, 300, 200, 0);
+    mm_resize("SetWindowPos to 300x200 with SWP_NOSIZE", h, 300, 200, SWP_NOSIZE);
+    mm_resize("SetWindowPos to 3000x3000", h, 3000, 3000, 0);
+    mm_resize("SetWindowPos to 50x20", h, 50, 20, 0);
+    mm_keep_changing = 1;
+    mm_resize("WM_WINDOWPOSCHANGING kept from DefWindowProc, SetWindowPos to 50x20", h, 50, 20, 0);
+    mm_resize("WM_WINDOWPOSCHANGING kept from DefWindowProc, SetWindowPos to 3000x3000", h, 3000,
+              3000, 0);
+    mm_keep_changing = 0;
+    mm_count = 0;
+    ShowWindow(h, SW_MAXIMIZE);
+    drain();
+    GetWindowRect(h, &wr);
+    line("  ShowWindow(SW_MAXIMIZE): WM_GETMINMAXINFO count=%d; past the work area by %ld left, "
+         "%ld above, %ld right, %ld below",
+         mm_count, (long)(work.left - wr.left), (long)(work.top - wr.top),
+         (long)(wr.right - work.right), (long)(wr.bottom - work.bottom));
+    DestroyWindow(h);
+    drain();
+}
+
+/* --- xedits ------------------------------------------------------- */
+
+/* The window a second thread makes and serves, and the main thread's
+ * own window, which the second thread's procedure sends to while the
+ * main thread waits. */
+static HWND x_window;
+static HWND x_main;
+static DWORD x_owner;
+static HANDLE x_ready;
+
+/* What the second thread's procedure does on WM_WINDOWPOSCHANGING
+ * besides edits_proc's edit. */
+#define X_NEST 1
+#define X_EXIT 2
+static int x_mode;
+
+/* The edited messages (WM_NCCALCSIZE, WM_GETMINMAXINFO,
+ * WM_WINDOWPOSCHANGING) the second thread's procedure handled, those
+ * handled on another thread than the window's, and those for which
+ * InSendMessage answered TRUE; and what the main window received. */
+static volatile LONG x_handled;
+static volatile LONG x_foreign;
+static volatile LONG x_insend;
+static volatile LONG x_main_user;
+static volatile LONG x_main_changing;
+
+static LRESULT CALLBACK xedits_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_NCCALCSIZE || msg == WM_GETMINMAXINFO || msg == WM_WINDOWPOSCHANGING) {
+        InterlockedIncrement((LONG *)&x_handled);
+        if (GetCurrentThreadId() != x_owner) {
+            InterlockedIncrement((LONG *)&x_foreign);
+        }
+        if (InSendMessage()) {
+            InterlockedIncrement((LONG *)&x_insend);
+        }
+    }
+    if (msg == WM_WINDOWPOSCHANGING && (x_mode & X_NEST)) {
+        x_mode &= ~X_NEST;
+        SendMessage(x_main, WM_USER + 5, 0, 0);
+        SetWindowPos(x_main, NULL, 0, 0, 150, 100, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+    }
+    if (msg == WM_WINDOWPOSCHANGING && (x_mode & X_EXIT)) {
+        x_mode &= ~X_EXIT;
+        ExitThread(7);
+    }
+    return edits_proc(hwnd, msg, wParam, lParam);
+}
+
+static LRESULT CALLBACK xmain_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    if (msg == WM_USER + 5) {
+        InterlockedIncrement((LONG *)&x_main_user);
+        return 0;
+    }
+    if (msg == WM_WINDOWPOSCHANGING) {
+        InterlockedIncrement((LONG *)&x_main_changing);
+    }
+    return DefWindowProc(hwnd, msg, wParam, lParam);
+}
+
+/* The second thread: its window (the style the parameter names, 10,10
+ * 200x100), made with no edit, then its messages until WM_QUIT. */
+static DWORD WINAPI x_thread_main(LPVOID param)
+{
+    MSG m;
+
+    x_window = create_at("F2KGuigeoXEdits", (DWORD)param, 10, 10, 200, 100);
+    SetEvent(x_ready);
+    if (x_window == NULL) {
+        return 1;
+    }
+    while (GetMessage(&m, NULL, 0, 0) > 0) {
+        TranslateMessage(&m);
+        DispatchMessage(&m);
+    }
+    DestroyWindow(x_window);
+    return 0;
+}
+
+/* Start the second thread with its window; NULL when either failed. */
+static HANDLE x_start(DWORD style)
+{
+    HANDLE t;
+
+    x_window = NULL;
+    x_mode = 0;
+    edit_mode = 0;
+    ResetEvent(x_ready);
+    t = CreateThread(NULL, 0, x_thread_main, (LPVOID)style, 0, &x_owner);
+    if (t == NULL) {
+        return NULL;
+    }
+    WaitForSingleObject(x_ready, WAIT_MS);
+    if (x_window == NULL) {
+        WaitForSingleObject(t, WAIT_MS);
+        CloseHandle(t);
+        return NULL;
+    }
+    x_handled = 0;
+    x_foreign = 0;
+    x_insend = 0;
+    return t;
+}
+
+/* End the second thread: WM_QUIT, and its end waited for. */
+static void x_stop(HANDLE t)
+{
+    edit_mode = 0;
+    x_mode = 0;
+    PostThreadMessage(x_owner, WM_QUIT, 0, 0);
+    WaitForSingleObject(t, WAIT_MS);
+    CloseHandle(t);
+}
+
+/* Where the edited messages were handled. */
+static void x_where(void)
+{
+    line("  the procedure ran on the window's thread %s, every time inside a send from another "
+         "thread %s",
+         yesno(x_handled > 0 && x_foreign == 0), yesno(x_handled > 0 && x_insend == x_handled));
+}
+
+static void sec_xedits(void)
+{
+    HANDLE t;
+    RECT before;
+    BOOL r;
+    DWORD code;
+
+    register_class_proc("F2KGuigeoXEdits", xedits_proc);
+    register_class_proc("F2KGuigeoXMain", xmain_proc);
+    x_ready = CreateEvent(NULL, TRUE, FALSE, NULL);
+
+    line("WM_NCCALCSIZE shrunk by 10 on each side, another thread's WS_POPUP window 200x100:");
+    t = x_start(WS_POPUP);
+    line("  the window made: %s", yesno(t != NULL));
+    if (t != NULL) {
+        edit_mode = EDIT_NCCALC;
+        SetWindowPos(x_window, NULL, 0, 0, 240, 120, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        print_nccalc("after SetWindowPos to 240x120", x_window);
+        x_where();
+        x_stop(t);
+    }
+
+    line("WM_GETMINMAXINFO: tracking 300x250 to 400x300, maximized 380x280 at 20,30; another "
+         "thread's WS_OVERLAPPEDWINDOW window:");
+    t = x_start(WS_OVERLAPPEDWINDOW);
+    line("  the window made: %s", yesno(t != NULL));
+    if (t != NULL) {
+        edit_mode = EDIT_MINMAX;
+        SetWindowPos(x_window, NULL, 0, 0, 100, 100, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        print_minmax("SetWindowPos to 100x100", x_window, 100, 100);
+        SetWindowPos(x_window, NULL, 0, 0, 600, 450, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        print_minmax("SetWindowPos to 600x450", x_window, 600, 450);
+        /* Before the show: its activation reaches the window's thread
+         * on its own time. */
+        x_where();
+        ShowWindow(x_window, SW_SHOWMAXIMIZED);
+        print_minmax("ShowWindow(SW_SHOWMAXIMIZED)", x_window, 0, 0);
+        x_stop(t);
+    }
+
+    line("WM_WINDOWPOSCHANGING adding SWP_NOMOVE and setting cx to 250, another thread's "
+         "WS_POPUP window 200x100:");
+    t = x_start(WS_POPUP);
+    line("  the window made: %s", yesno(t != NULL));
+    if (t != NULL) {
+        edit_mode = EDIT_POSCHANGING;
+        GetWindowRect(x_window, &before);
+        r = SetWindowPos(x_window, NULL, 60, 70, 220, 130, SWP_NOZORDER | SWP_NOACTIVATE);
+        print_poschanging("  SetWindowPos(60,70 220x130)", r, x_window, &before, 60, 70, 220, 130);
+        GetWindowRect(x_window, &before);
+        r = MoveWindow(x_window, 80, 90, 230, 140, FALSE);
+        print_poschanging("  MoveWindow(80,90 230x140)", r, x_window, &before, 80, 90, 230, 140);
+        x_where();
+        x_stop(t);
+    }
+
+    line("the procedure sending back to the main thread's window while the main thread waits:");
+    x_main = create_at("F2KGuigeoXMain", WS_POPUP, 30, 30, 200, 120);
+    t = x_start(WS_POPUP);
+    line("  the windows made: %s", yesno(x_main != NULL && t != NULL));
+    if (x_main != NULL && t != NULL) {
+        x_main_user = 0;
+        x_main_changing = 0;
+        x_mode = X_NEST;
+        r = SetWindowPos(x_window, NULL, 0, 0, 220, 130, SWP_NOMOVE | SWP_NOZORDER |
+                         SWP_NOACTIVATE);
+        GetWindowRect(x_main, &before);
+        line("  SetWindowPos: ret=%d; the main window's WM_USER+5 received %ld, "
+             "WM_WINDOWPOSCHANGING received %s, its size 150x100 %s",
+             r, x_main_user, yesno(x_main_changing > 0),
+             yesno(before.right - before.left == 150 && before.bottom - before.top == 100));
+        x_stop(t);
+    }
+    if (x_main != NULL) {
+        DestroyWindow(x_main);
+    }
+    drain();
+
+    line("the window's thread ending inside WM_WINDOWPOSCHANGING:");
+    t = x_start(WS_POPUP);
+    line("  the window made: %s", yesno(t != NULL));
+    if (t != NULL) {
+        x_mode = X_EXIT;
+        SetWindowPos(x_window, NULL, 0, 0, 220, 130, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE);
+        line("  SetWindowPos returned; the thread ended %s, its code %lu; the window gone %s",
+             yesno(WaitForSingleObject(t, WAIT_MS) == WAIT_OBJECT_0),
+             GetExitCodeThread(t, &code) ? code : 0xFFFFFFFFu, yesno(!IsWindow(x_window)));
+        CloseHandle(t);
+    }
+    CloseHandle(x_ready);
+}
+
 static const section_t sections[] = {
     { "show", sec_show, 0 },
     { "move", sec_move, 0 },
@@ -1054,6 +1437,8 @@ static const section_t sections[] = {
     { "edits", sec_edits, 0 },
     { "createmax", sec_createmax, 0 },
     { "swpshow", sec_swpshow, 0 },
+    { "mmdefault", sec_mmdefault, 0 },
+    { "xedits", sec_xedits, 0 },
     { NULL, NULL, 0 }
 };
 

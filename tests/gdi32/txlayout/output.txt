@@ -1,0 +1,168 @@
+# F2K capture of txlayout (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:58.27
+txlayout F2KT-SOURCE-CRC=0xA1B9C8ED
+>>> txlayout.exe metrics
+== metrics
+GetTextMetricsA: ret=1 err=- tmHeight=16 tmAscent=13 tmDescent=3 tmBreakChar=32 tmCharSet=0
+extent of "Ab": 16,16
+extent of "Hello": 34,16
+extent of "a b c": 31,16
+extent of " ": 4,16
+txlayout: done
+<<< exit code=0
+>>> txlayout.exe align
+== align
+GetTextAlign(a new DC): ret=TA_LEFT|TA_TOP|TA_NOUPDATECP err=-
+SetTextAlign(TA_LEFT|TA_TOP): previous=TA_LEFT|TA_TOP|TA_NOUPDATECP err=- now=TA_LEFT|TA_TOP|TA_NOUPDATECP
+  TextOutA(48, 24, "Ab"): ret=1 err=- box x 48..63 y 24..39, green 184
+SetTextAlign(TA_CENTER|TA_TOP): previous=TA_LEFT|TA_TOP|TA_NOUPDATECP err=- now=TA_CENTER|TA_TOP|TA_NOUPDATECP
+  TextOutA(48, 24, "Ab"): ret=1 err=- box x 40..55 y 24..39, green 184
+SetTextAlign(TA_RIGHT|TA_TOP): previous=TA_CENTER|TA_TOP|TA_NOUPDATECP err=- now=TA_RIGHT|TA_TOP|TA_NOUPDATECP
+  TextOutA(48, 24, "Ab"): ret=1 err=- box x 32..47 y 24..39, green 184
+SetTextAlign(TA_LEFT|TA_BASELINE): previous=TA_RIGHT|TA_TOP|TA_NOUPDATECP err=- now=TA_LEFT|TA_BASELINE|TA_NOUPDATECP
+  TextOutA(48, 24, "Ab"): ret=1 err=- box x 48..63 y 11..26, green 184
+SetTextAlign(TA_LEFT|TA_BOTTOM): previous=TA_LEFT|TA_BASELINE|TA_NOUPDATECP err=- now=TA_LEFT|TA_BOTTOM|TA_NOUPDATECP
+  TextOutA(48, 24, "Ab"): ret=1 err=- box x 48..63 y 8..23, green 184
+SetTextAlign(TA_CENTER|TA_BASELINE): previous=TA_LEFT|TA_BOTTOM|TA_NOUPDATECP err=- now=TA_CENTER|TA_BASELINE|TA_NOUPDATECP
+  TextOutA(48, 24, "Ab"): ret=1 err=- box x 40..55 y 11..26, green 184
+SetTextAlign(TA_RIGHT|TA_BOTTOM): previous=TA_CENTER|TA_BASELINE|TA_NOUPDATECP err=- now=TA_RIGHT|TA_BOTTOM|TA_NOUPDATECP
+  TextOutA(48, 24, "Ab"): ret=1 err=- box x 32..47 y 8..23, green 184
+SetTextAlign(TA_RTLREADING): previous=TA_RIGHT|TA_BOTTOM|TA_NOUPDATECP err=- now=TA_LEFT|TA_TOP|TA_NOUPDATECP|TA_RTLREADING
+SetTextAlign(0x1000): previous=TA_LEFT|TA_TOP|TA_NOUPDATECP|TA_RTLREADING err=- now=TA_LEFT|TA_TOP|TA_NOUPDATECP (0x1000)
+SetTextAlign(TA_RIGHT|TA_BASELINE|TA_UPDATECP): previous=TA_LEFT|TA_TOP|TA_NOUPDATECP (0x1000) err=- now=TA_RIGHT|TA_BASELINE|TA_UPDATECP
+SetTextAlign(NULL, TA_CENTER): ret=GDI_ERROR err=6
+GetTextAlign(NULL): ret=GDI_ERROR err=-
+txlayout: done
+<<< exit code=0
+>>> txlayout.exe updatecp
+== updatecp
+TA_LEFT|TA_UPDATECP: MoveToEx(40, 10), TextOutA(5, 30, "Ab"): ret=1 err=- position=56,10 box x 40..55 y 10..25, green 184
+  again: ret=1 err=- position=72,10
+TA_RIGHT|TA_UPDATECP: MoveToEx(40, 10), TextOutA(5, 30, "Ab"): ret=1 err=- position=24,10 box x 24..39 y 10..25, green 184
+  again: ret=1 err=- position=8,10
+TA_CENTER|TA_UPDATECP: MoveToEx(40, 10), TextOutA(5, 30, "Ab"): ret=1 err=- position=40,10 box x 32..47 y 10..25, green 184
+  again: ret=1 err=- position=40,10
+TA_LEFT|TA_BASELINE|TA_UPDATECP: MoveToEx(40, 10), TextOutA(5, 30, "Ab"): ret=1 err=- position=56,10 box x 40..55 y 0..12, green 136
+  again: ret=1 err=- position=72,10
+TA_LEFT|TA_UPDATECP: MoveToEx(20, 10), ExtTextOutA("abc", dx 10 12 14): ret=1 err=- position=56,10 box x 20..55 y 10..25, green 489
+TA_NOUPDATECP: TextOutA after MoveToEx(20, 10): position=20,10
+txlayout: done
+<<< exit code=0
+>>> txlayout.exe extra
+== extra
+GetTextCharacterExtra(a new DC): ret=0 err=-
+SetTextCharacterExtra(3): previous=0 err=- now=3
+  GetTextExtentPoint32A("Hello"): ret=1 err=- 49,16
+SetTextCharacterExtra(-2): previous=3 err=- now=-2
+  GetTextExtentPoint32A("Hello"): 24,16
+extra 4: TextOutA(10, 8, "Ab"): ret=1 err=- box x 10..33 y 8..23, green 312
+extra 0: TextOutA(10, 8, "Ab"): box x 10..25 y 8..23, green 184
+SetTextCharacterExtra(NULL, 1): ret=0x80000000 err=87
+GetTextCharacterExtra(NULL): ret=0x80000000 err=-
+txlayout: done
+<<< exit code=0
+>>> txlayout.exe justify
+== justify
+SetTextJustification(10, 2): ret=1 err=-
+  GetTextExtentPoint32A("a b c"): 41,16
+  TextOutA(10, 8, "a b c"): box x 10..50 y 8..23, green 569
+  drawn again: box x 10..50 y 8..23, green 569
+SetTextJustification(11, 2): ret=1 err=-
+  GetTextExtentPoint32A("a b c"): 42,16
+  GetTextExtentPoint32A("a b"): 26,16
+  TextOutA(10, 8, "a b c"): box x 10..51 y 8..23, green 585
+SetTextJustification(6, 0): ret=1 err=-
+  GetTextExtentPoint32A("a b c"): 31,16
+SetTextJustification(-4, 2): ret=1 err=-
+  GetTextExtentPoint32A("a b c"): 27,16
+SetTextJustification(0, 0): ret=1 err=-
+  GetTextExtentPoint32A("a b c"): 31,16
+SetTextJustification(NULL, 10, 2): ret=0 err=-
+txlayout: done
+<<< exit code=0
+>>> txlayout.exe extentex
+== extentex
+GetTextExtentPoint32A("Hello world"): 73,16
+GetTextExtentExPointA("Hello world", max 0): ret=1 err=- fit=0 size=73,16 dx=
+GetTextExtentExPointW(L"Hello world", max 0): ret=1 err=- fit=0 size=73,16 dx=
+GetTextExtentExPointA("Hello world", max 20): ret=1 err=- fit=2 size=73,16 dx=10 18
+GetTextExtentExPointW(L"Hello world", max 20): ret=1 err=- fit=2 size=73,16 dx=10 18
+GetTextExtentExPointA("Hello world", max 40): ret=1 err=- fit=6 size=73,16 dx=10 18 22 26 34 38
+GetTextExtentExPointW(L"Hello world", max 40): ret=1 err=- fit=6 size=73,16 dx=10 18 22 26 34 38
+GetTextExtentExPointA("Hello world", max 1000): ret=1 err=- fit=11 size=73,16 dx=10 18 22 26 34 38 48 56 61 65 73
+GetTextExtentExPointW(L"Hello world", max 1000): ret=1 err=- fit=11 size=73,16 dx=10 18 22 26 34 38 48 56 61 65 73
+GetTextExtentExPointA("Hello", max 20, NULL fit): ret=1 err=- size=34,16 dx=10 18 22 26 34
+GetTextExtentExPointA("Hello", max 20, NULL dx): ret=1 err=- fit=2 size=34,16
+GetTextExtentExPointA(count 0): ret=0 err=87 fit=-1 size=-1,-1
+GetTextExtentExPointA("Hello", max -1): ret=1 err=- fit=5 size=34,16
+GetTextExtentPointA("Hello"): ret=1 err=- 34,16
+GetTextExtentPointW(L"Hello"): ret=1 err=- 34,16
+GetTextExtentPointA(count 0): ret=1 err=- 0,0
+GetGlyphIndicesW(L"Hello world"): ret=11 err=- 'l' twice the same index: yes, 'H' and 'e' differ: yes
+GetTextExtentPointI(the indices): ret=1 err=- the same as GetTextExtentPoint32W's: yes
+GetTextExtentExPointI(the indices, max 40): ret=1 err=- fit, dx and size the same as GetTextExtentExPointW's: no no no
+GetTextExtentPointI(count 0): ret=1 err=- 0,0
+txlayout: done
+<<< exit code=0
+>>> txlayout.exe placement
+== placement
+extent of "Hello": 34,16
+GetCharacterPlacementA("Hello", 0): ret=34,16 err=- nGlyphs=5 nMaxFit=5 out="Hello"
+  dx=10 8 4 4 8 caret=0 10 18 22 26 order=0 1 2 3 4
+GetCharacterPlacementW(L"Hello", 0): ret=34,16 err=- nGlyphs=5 nMaxFit=5 out="Hello"
+  dx=10 8 4 4 8 caret=0 10 18 22 26 order=0 1 2 3 4
+GetCharacterPlacementA("Hello", GCP_MAXEXTENT, 20): ret=34,16 err=- nGlyphs=2 nMaxFit=2 out="He"
+  dx=10 8 0 0 0 caret=0 10 0 0 0 order=0 1 0 0 0
+GetCharacterPlacementW(L"Hello", GCP_MAXEXTENT, 20): ret=34,16 err=- nGlyphs=2 nMaxFit=2 out="He"
+  dx=10 8 0 0 0 caret=0 10 0 0 0 order=0 1 0 0 0
+GetCharacterPlacementA("Hello", NULL results): ret=34,16 err=-
+GetCharacterPlacementW(L"Hello", NULL results): ret=34,16 err=-
+GetCharacterPlacementA(count 0): ret=0,0 err=87
+txlayout: done
+<<< exit code=0
+>>> txlayout.exe polytext
+== polytext
+PolyTextOutA("Ab" at 4,2; "abc" at 30,26): ret=1 err=-
+  rows 0-23: box x 4..19 y 2..17, green 184
+  rows 24-47: box x 30..52 y 26..41, green 281
+PolyTextOutW(L"Ab" at 4,2; L"abc" at 30,26): ret=1 err=-
+  rows 0-23: box x 4..19 y 2..17, green 184
+  rows 24-47: box x 30..52 y 26..41, green 281
+PolyTextOutA, the second ETO_OPAQUE over 20,24-90,46: ret=1 err=-
+  rows 0-23: box x 4..19 y 2..17, green 184
+  rows 24-47: box x 20..89 y 24..45, green 1453
+PolyTextOutA(count 0): ret=1 err=- box empty
+txlayout: done
+<<< exit code=0
+>>> txlayout.exe charset
+== charset
+GetTextCharset(SYSTEM_FONT): ret=0 err=-
+GetTextCharsetInfo(SYSTEM_FONT): ret=0 err=- fsCsb=0x00000000,0x00000000 fsUsb=0x00000000,0x00000000,0x00000000,0x00000000
+GetTextCharsetInfo(SYSTEM_FONT, NULL): ret=0 err=-
+GetFontLanguageInfo(SYSTEM_FONT): ret=0x00000000 err=-
+GetTextCharset(NULL): ret=1 err=6
+GetFontLanguageInfo(NULL): ret=0x00008000 err=-
+TranslateCharsetInfo(0, TCI_SRCCHARSET): ret=1 err=- ciCharset=0 ciACP=1252 fsCsb=0x00000001,0x00000000 fsUsb=0x00000000,0x00000000,0x00000000,0x00000000
+TranslateCharsetInfo(2, TCI_SRCCHARSET): ret=1 err=- ciCharset=2 ciACP=42 fsCsb=0x80000000,0x00000000 fsUsb=0x00000000,0x00000000,0x00000000,0x00000000
+TranslateCharsetInfo(128, TCI_SRCCHARSET): ret=1 err=- ciCharset=128 ciACP=932 fsCsb=0x00020000,0x00000000 fsUsb=0x00000000,0x00000000,0x00000000,0x00000000
+TranslateCharsetInfo(161, TCI_SRCCHARSET): ret=1 err=- ciCharset=161 ciACP=1253 fsCsb=0x00000008,0x00000000 fsUsb=0x00000000,0x00000000,0x00000000,0x00000000
+TranslateCharsetInfo(204, TCI_SRCCHARSET): ret=1 err=- ciCharset=204 ciACP=1251 fsCsb=0x00000004,0x00000000 fsUsb=0x00000000,0x00000000,0x00000000,0x00000000
+TranslateCharsetInfo(238, TCI_SRCCHARSET): ret=1 err=- ciCharset=238 ciACP=1250 fsCsb=0x00000002,0x00000000 fsUsb=0x00000000,0x00000000,0x00000000,0x00000000
+TranslateCharsetInfo(255, TCI_SRCCHARSET): ret=0 err=- ciCharset=0 ciACP=0 fsCsb=0x00000000,0x00000000 fsUsb=0x00000000,0x00000000,0x00000000,0x00000000
+TranslateCharsetInfo(99, TCI_SRCCHARSET): ret=0 err=- ciCharset=0 ciACP=0 fsCsb=0x00000000,0x00000000 fsUsb=0x00000000,0x00000000,0x00000000,0x00000000
+TranslateCharsetInfo(1252, TCI_SRCCODEPAGE): ret=1 err=- ciCharset=0 ciACP=1252 fsCsb=0x00000001,0x00000000 fsUsb=0x00000000,0x00000000,0x00000000,0x00000000
+TranslateCharsetInfo(1250, TCI_SRCCODEPAGE): ret=1 err=- ciCharset=238 ciACP=1250 fsCsb=0x00000002,0x00000000 fsUsb=0x00000000,0x00000000,0x00000000,0x00000000
+TranslateCharsetInfo(932, TCI_SRCCODEPAGE): ret=1 err=- ciCharset=128 ciACP=932 fsCsb=0x00020000,0x00000000 fsUsb=0x00000000,0x00000000,0x00000000,0x00000000
+TranslateCharsetInfo(437, TCI_SRCCODEPAGE): ret=0 err=- ciCharset=0 ciACP=0 fsCsb=0x00000000,0x00000000 fsUsb=0x00000000,0x00000000,0x00000000,0x00000000
+TranslateCharsetInfo(0, TCI_SRCCODEPAGE): ret=0 err=- ciCharset=0 ciACP=0 fsCsb=0x00000000,0x00000000 fsUsb=0x00000000,0x00000000,0x00000000,0x00000000
+TranslateCharsetInfo(fsCsb 0x00000001, TCI_SRCFONTSIG): ret=1 err=- ciCharset=0 ciACP=1252 fsCsb=0x00000001,0x00000000 fsUsb=0x00000000,0x00000000,0x00000000,0x00000000
+TranslateCharsetInfo(fsCsb 0x00000002, TCI_SRCFONTSIG): ret=1 err=- ciCharset=238 ciACP=1250 fsCsb=0x00000002,0x00000000 fsUsb=0x00000000,0x00000000,0x00000000,0x00000000
+TranslateCharsetInfo(fsCsb 0x00020000, TCI_SRCFONTSIG): ret=1 err=- ciCharset=128 ciACP=932 fsCsb=0x00020000,0x00000000 fsUsb=0x00000000,0x00000000,0x00000000,0x00000000
+TranslateCharsetInfo(fsCsb 0x00000006, TCI_SRCFONTSIG): ret=0 err=- ciCharset=0 ciACP=0 fsCsb=0x00000000,0x00000000 fsUsb=0x00000000,0x00000000,0x00000000,0x00000000
+TranslateCharsetInfo(fsCsb 0x00000000, TCI_SRCFONTSIG): ret=0 err=- ciCharset=0 ciACP=0 fsCsb=0x00000000,0x00000000 fsUsb=0x00000000,0x00000000,0x00000000,0x00000000
+TranslateCharsetInfo(0, flag 7): ret=0 err=87 ciCharset=0 ciACP=0 fsCsb=0x00000000,0x00000000 fsUsb=0x00000000,0x00000000,0x00000000,0x00000000
+txlayout: done
+<<< exit code=0

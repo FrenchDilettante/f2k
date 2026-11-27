@@ -1,0 +1,31 @@
+/*
+ * icons' resources: rc compiles them into icons.res, which links into
+ * icons.exe. The language is given as numbers (no header is included):
+ * 9, 1 is LANG_ENGLISH, SUBLANG_ENGLISH_US (0x0409).
+ *
+ * icons.ico holds three images, in this order (x, y counted from the
+ * top left; a transparent pixel has its mask bit set and its colour
+ * index 0; the colour tables start with the 16 VGA colours, the 8-bit
+ * one's other 240 entries black):
+ *
+ *   16x16, 4 bits   transparent where x + y < 4, else the index
+ *                   ((x / 2) + (y / 2)) mod 15 + 1
+ *   32x32, 4 bits   transparent where x + y < 8, else the index
+ *                   ((x / 4) + (y / 4)) mod 15 + 1
+ *   32x32, 8 bits   transparent where x + y < 8, else the index
+ *                   15 - ((x / 4) + (y / 4)) mod 15
+ *
+ * icons.cur holds one 32x32 monochrome image, its hotspot 5, 7: opaque
+ * where 4 <= x < 28 and 4 <= y < 28, white where x < 16 there and black
+ * elsewhere in it, transparent outside.
+ *
+ * Both files are checked in beside this one; icons.c holds the same
+ * formulas. The cursor's file is also here as raw data (F2KCURF), which
+ * the program writes out for LoadCursorFromFileA/W.
+ */
+
+LANGUAGE 9, 1
+
+100 ICON "icons.ico"
+200 CURSOR "icons.cur"
+F2KCURF RCDATA "icons.cur"

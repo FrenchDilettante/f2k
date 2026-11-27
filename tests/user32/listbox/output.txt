@@ -1,0 +1,327 @@
+# F2K capture of listbox (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:12.28
+listbox F2KT-SOURCE-CRC=0xD521A9FE
+>>> listbox.exe basic
+== basic
+the parent: made yes
+CreateWindowExW("ListBox", LBS_NOTIFY | LBS_NOINTEGRALHEIGHT), 150x60: non-NULL yes, class ListBox
+  the parent received nothing
+LB_GETCOUNT, empty: ret=0 err=-
+LB_GETCURSEL, empty: ret=-1 err=-
+LB_ADDSTRING("pear"): ret=0 err=-
+LB_ADDSTRING("apple"): ret=1 err=-
+LB_ADDSTRING("banana"): ret=2 err=-
+LB_INSERTSTRING(1, "cherry"): ret=1 err=-
+LB_INSERTSTRING(-1, "Blueberry"): ret=4 err=-
+LB_INSERTSTRING(9, "fig"), past the end: ret=-1 err=1413
+  5 items: "pear" "cherry" "apple" "banana" "Blueberry"
+LB_GETTEXTLEN(2): ret=5 err=-
+LB_GETTEXT(2), SendMessageW: ret=5 err=- text "apple"
+LB_GETTEXT(3), SendMessageA: ret=6 err=- text "banana"
+LB_GETTEXT(9), no such item: ret=-1 err=1413
+LB_GETTEXTLEN(9): ret=-1 err=1413
+LB_FINDSTRING(-1, "b"): ret=3 err=-
+LB_FINDSTRING(3, "b"): ret=4 err=-
+LB_FINDSTRING(4, "b"), wrapping: ret=3 err=-
+LB_FINDSTRING(-1, "APP"): ret=2 err=-
+LB_FINDSTRING(-1, "kiwi"): ret=-1 err=-
+LB_FINDSTRINGEXACT(-1, "BANANA"): ret=3 err=-
+LB_FINDSTRINGEXACT(-1, "ban"): ret=-1 err=-
+LB_GETITEMDATA(0), never set: ret=0 err=-
+LB_SETITEMDATA(0, 0x1234): ret=1 err=-
+LB_GETITEMDATA(0): ret=4660 err=-
+LB_SETITEMDATA(9): ret=-1 err=1413
+LB_GETITEMDATA(9): ret=-1 err=1413
+LB_SETCURSEL(2): ret=2 err=-
+LB_GETCURSEL: ret=2 err=-
+LB_SETCURSEL(9): ret=-1 err=-
+LB_GETCURSEL: ret=2 err=-
+LB_SETCURSEL(-1): ret=-1 err=-
+LB_GETCURSEL: ret=-1 err=-
+LB_SELECTSTRING(-1, "ch"): ret=1 err=-
+LB_GETCURSEL: ret=1 err=-
+LB_SELECTSTRING(-1, "zz"): ret=-1 err=-
+LB_GETCURSEL: ret=1 err=-
+  the parent received nothing
+LB_GETITEMHEIGHT(0) is the System font's tmHeight: yes
+LB_SETITEMHEIGHT(0, 20): ret=0 err=-
+LB_GETITEMHEIGHT(0): ret=20 err=-
+LB_GETITEMHEIGHT(9): ret=20 err=-
+LB_SETTOPINDEX(2): ret=0 err=-
+LB_GETTOPINDEX: ret=2 err=-
+LB_SETTOPINDEX(9): ret=-1 err=1413
+LB_GETTOPINDEX: ret=2 err=-
+LB_GETITEMRECT(3), top index 2: ret=1 err=- rect=0 20 150 40
+LB_GETITEMRECT(0), above the top: ret=0 err=- rect=0 -40 150 -20
+LB_GETITEMRECT(9): ret=-1 err=1413
+LB_DELETESTRING(1): ret=4 err=-
+LB_DELETESTRING(9): ret=-1 err=1413
+  4 items: "pear" "apple" "banana" "Blueberry"
+LB_RESETCONTENT: ret=0 err=-
+LB_GETCOUNT: ret=0 err=-
+  WM_DELETEITEM CtlType=2 CtlID=300 itemID=1 itemData=0x0
+listbox: done
+<<< exit code=0
+>>> listbox.exe sort
+== sort
+the parent: made yes
+CreateWindowExW("ListBox", LBS_SORT): non-NULL yes
+its style has LBS_NOTIFY no, LBS_SORT yes
+LB_ADDSTRING("pear"): ret=0 err=-
+LB_ADDSTRING("apple"): ret=0 err=-
+LB_ADDSTRING("Banana"): ret=1 err=-
+LB_ADDSTRING("cherry"): ret=2 err=-
+LB_ADDSTRING("apricot"): ret=1 err=-
+LB_ADDSTRING("10"): ret=0 err=-
+LB_ADDSTRING("9"): ret=1 err=-
+  7 items: "10" "9" "apple" "apricot" "Banana" "cherry" "pear"
+LB_INSERTSTRING(0, "zebra"): ret=0 err=-
+LB_INSERTSTRING(-1, "aardvark"): ret=8 err=-
+  9 items: "zebra" "10" "9" "apple" "apricot" "Banana" "cherry" "pear" "aardvark"
+LB_FINDSTRING(-1, "ap"): ret=3 err=-
+LB_FINDSTRINGEXACT(-1, "banana"): ret=5 err=-
+  the parent received nothing
+listbox: done
+<<< exit code=0
+>>> listbox.exe multi
+== multi
+the parent: made yes
+CreateWindowExW("ListBox", LBS_NOTIFY | LBS_MULTIPLESEL), 6 items: non-NULL yes
+  LB_GETSELCOUNT 0, LB_GETSELITEMS ret=0 err=-:, LB_GETCARETINDEX 0
+LB_SETSEL(TRUE, 1): ret=0 err=-
+LB_SETSEL(TRUE, 3): ret=0 err=-
+LB_GETSEL(3): ret=0 err=-
+LB_GETSEL(2): ret=0 err=-
+LB_GETSEL(9): ret=-1 err=-
+  LB_GETSELCOUNT 2, LB_GETSELITEMS ret=2 err=-: 1 3, LB_GETCARETINDEX 3
+LB_SETSEL(TRUE, -1): ret=0 err=-
+  LB_GETSELCOUNT 6, LB_GETSELITEMS ret=6 err=-: 0 1 2 3 4 5, LB_GETCARETINDEX 3
+LB_SELITEMRANGE(FALSE, 0 to 2): ret=0 err=-
+  LB_GETSELCOUNT 3, LB_GETSELITEMS ret=3 err=-: 3 4 5, LB_GETCARETINDEX 3
+LB_SETSEL(FALSE, 9): ret=-1 err=87
+LB_SETCURSEL(1): ret=-1 err=-
+LB_GETCURSEL: ret=3 err=-
+LB_SETCARETINDEX(4): ret=0 err=-
+LB_GETCURSEL: ret=4 err=-
+LB_GETSELITEMS(2 slots), 3 selected: ret=2 err=-
+  the parent received nothing
+CreateWindowExW("ListBox", LBS_EXTENDEDSEL), 6 items: non-NULL yes
+LB_SELITEMRANGEEX(1, 3): ret=0 err=-
+  LB_GETSELCOUNT 3, LB_GETSELITEMS ret=3 err=-: 1 2 3, LB_GETCARETINDEX 0
+LB_SELITEMRANGEEX(3, 2): ret=0 err=-
+  LB_GETSELCOUNT 1, LB_GETSELITEMS ret=1 err=-: 1, LB_GETCARETINDEX 0
+LB_SETSEL(TRUE, 5): ret=0 err=-
+  LB_GETSELCOUNT 2, LB_GETSELITEMS ret=2 err=-: 1 5, LB_GETCARETINDEX 5
+CreateWindowExW("ListBox", LBS_NOTIFY, single selection), 6 items: non-NULL yes
+LB_SETSEL(TRUE, 1): ret=-1 err=87
+LB_GETSELCOUNT: ret=-1 err=-
+LB_GETSELITEMS: ret=-1 err=-
+LB_SELITEMRANGE(TRUE, 0 to 2): ret=-1 err=1413
+LB_SELITEMRANGEEX(0, 2): ret=-1 err=1432
+LB_SETCURSEL(2): ret=2 err=-
+LB_GETSEL(2): ret=1 err=-
+LB_GETCARETINDEX: ret=2 err=-
+  the parent received nothing
+listbox: done
+<<< exit code=0
+>>> listbox.exe ownerfix
+== ownerfix
+the parent: made yes
+CreateWindowExW("ListBox", LBS_OWNERDRAWFIXED), the parent answering 18: non-NULL yes
+  WM_MEASUREITEM CtlType=2 CtlID=300 itemID=1244756 itemData=0x0
+  WM_MEASUREITEM's itemHeight on entry is the System font's tmHeight: yes
+LB_ADDSTRING(0x1111): ret=0 err=-
+LB_ADDSTRING(0x2222): ret=1 err=-
+LB_INSERTSTRING(1, 0x3333): ret=1 err=-
+LB_GETITEMDATA(1): ret=13107 err=-
+LB_GETTEXTLEN(1): ret=4 err=-
+LB_GETTEXT(1): ret=4 err=- buffer 0x3333 0x77777777
+LB_FINDSTRING(-1, 0x2222): ret=2 err=-
+LB_GETITEMHEIGHT(0): ret=18 err=-
+LB_GETITEMRECT(2): ret=1 err=- rect=0 36 150 54
+  the parent received nothing
+InvalidateRect and UpdateWindow:
+  WM_DRAWITEM CtlType=2 CtlID=300 itemID=0 itemAction=0x1 itemState=0x0 rcItem=0 0 150 18 itemData=0x1111
+  WM_DRAWITEM CtlType=2 CtlID=300 itemID=1 itemAction=0x1 itemState=0x0 rcItem=0 18 150 36 itemData=0x3333
+  WM_DRAWITEM CtlType=2 CtlID=300 itemID=2 itemAction=0x1 itemState=0x0 rcItem=0 36 150 54 itemData=0x2222
+LB_SETCURSEL(1): ret=1 err=-
+  WM_DRAWITEM CtlType=2 CtlID=300 itemID=1 itemAction=0x2 itemState=0x1 rcItem=0 18 150 36 itemData=0x3333
+LB_SETCURSEL(2): ret=2 err=-
+  WM_DRAWITEM CtlType=2 CtlID=300 itemID=1 itemAction=0x2 itemState=0x0 rcItem=0 18 150 36 itemData=0x3333
+  WM_DRAWITEM CtlType=2 CtlID=300 itemID=2 itemAction=0x2 itemState=0x1 rcItem=0 36 150 54 itemData=0x2222
+LB_DELETESTRING(0): ret=2 err=-
+  WM_DELETEITEM CtlType=2 CtlID=300 itemID=0 itemData=0x1111
+  WM_DRAWITEM CtlType=2 CtlID=300 itemID=0 itemAction=0x1 itemState=0x0 rcItem=0 0 150 18 itemData=0x3333
+  WM_DRAWITEM CtlType=2 CtlID=300 itemID=1 itemAction=0x1 itemState=0x1 rcItem=0 18 150 36 itemData=0x2222
+DestroyWindow(the list box): ret=1 err=-
+  WM_DELETEITEM CtlType=2 CtlID=300 itemID=1 itemData=0x2222
+  WM_DELETEITEM CtlType=2 CtlID=300 itemID=0 itemData=0x3333
+listbox: done
+<<< exit code=0
+>>> listbox.exe ownervar
+== ownervar
+the parent: made yes
+CreateWindowExW("ListBox", LBS_OWNERDRAWVARIABLE | LBS_HASSTRINGS), the parent answering 10 + 5 * itemID: non-NULL yes
+  the parent received nothing
+LB_ADDSTRING("one"): ret=0 err=-
+  WM_MEASUREITEM CtlType=2 CtlID=300 itemID=0 itemData=0x1
+LB_ADDSTRING("two"): ret=1 err=-
+  WM_MEASUREITEM CtlType=2 CtlID=300 itemID=1 itemData=0x1
+LB_ADDSTRING("three"): ret=2 err=-
+  WM_MEASUREITEM CtlType=2 CtlID=300 itemID=2 itemData=0x1
+LB_ADDSTRING("four"): ret=3 err=-
+  WM_MEASUREITEM CtlType=2 CtlID=300 itemID=3 itemData=0x1
+LB_INSERTSTRING(1, "inserted"): ret=1 err=-
+  WM_MEASUREITEM CtlType=2 CtlID=300 itemID=1 itemData=0x1
+LB_GETITEMHEIGHT(0): ret=10 err=-
+  LB_GETITEMRECT(0): ret=1 err=- rect=0 0 150 10
+LB_GETITEMHEIGHT(1): ret=15 err=-
+  LB_GETITEMRECT(1): ret=1 err=- rect=0 10 150 25
+LB_GETITEMHEIGHT(2): ret=15 err=-
+  LB_GETITEMRECT(2): ret=1 err=- rect=0 25 150 40
+LB_GETITEMHEIGHT(3): ret=20 err=-
+  LB_GETITEMRECT(3): ret=1 err=- rect=0 40 150 60
+LB_GETITEMHEIGHT(4): ret=25 err=-
+  LB_GETITEMRECT(4): ret=1 err=- rect=0 60 150 85
+LB_SETITEMHEIGHT(2, 30): ret=0 err=-
+LB_GETITEMHEIGHT(2): ret=30 err=-
+LB_SETITEMHEIGHT(2, 300): ret=-1 err=87
+LB_GETITEMHEIGHT(2): ret=30 err=-
+LB_GETITEMRECT(3): ret=1 err=- rect=0 55 150 75
+  the parent received nothing
+  WM_DELETEITEM CtlType=2 CtlID=300 itemID=4 itemData=0x0
+  WM_DELETEITEM CtlType=2 CtlID=300 itemID=3 itemData=0x0
+  WM_DELETEITEM CtlType=2 CtlID=300 itemID=2 itemData=0x0
+  WM_DELETEITEM CtlType=2 CtlID=300 itemID=1 itemData=0x0
+  WM_DELETEITEM CtlType=2 CtlID=300 itemID=0 itemData=0x0
+listbox: done
+<<< exit code=0
+>>> listbox.exe notify
+== notify
+the parent: made yes
+the parent: foreground yes
+CreateWindowExW("ListBox", LBS_NOTIFY), 3 items 20 high: non-NULL yes
+SetFocus(the list box): the focus yes
+  WM_COMMAND id=300 LBN_SETFOCUS lParam is the control yes
+LB_SETCURSEL(1): ret=1 err=-
+  the parent received nothing
+WM_KEYDOWN(VK_DOWN): ret=0 err=-
+LB_GETCURSEL: ret=2 err=-
+  WM_COMMAND id=300 LBN_SELCHANGE lParam is the control yes
+a double click on item 1 (down, up, WM_LBUTTONDBLCLK, up posted at 5,25): LB_GETCURSEL 1
+  WM_COMMAND id=300 LBN_SELCHANGE lParam is the control yes
+  WM_COMMAND id=300 LBN_DBLCLK lParam is the control yes
+SetFocus(the parent):
+  WM_COMMAND id=300 LBN_KILLFOCUS lParam is the control yes
+CreateWindowExW("ListBox", no LBS_NOTIFY), 3 items 20 high: non-NULL yes
+SetFocus(the list box): the focus yes
+  WM_COMMAND id=300 LBN_SETFOCUS lParam is the control yes
+LB_SETCURSEL(1): ret=1 err=-
+  the parent received nothing
+WM_KEYDOWN(VK_DOWN): ret=0 err=-
+LB_GETCURSEL: ret=2 err=-
+  the parent received nothing
+a double click on item 1 (down, up, WM_LBUTTONDBLCLK, up posted at 5,25): LB_GETCURSEL 1
+  the parent received nothing
+SetFocus(the parent):
+  WM_COMMAND id=300 LBN_KILLFOCUS lParam is the control yes
+listbox: done
+<<< exit code=0
+>>> listbox.exe keys
+== keys
+the parent: made yes
+LBS_NOTIFY, 20 items 20 high, 5 showing: non-NULL yes, the focus yes
+Down, no selection: ret=0 err=-; caret 0, selection 0, top 0, LBN_SELCHANGE 1
+Down: ret=0 err=-; caret 1, selection 1, top 0, LBN_SELCHANGE 1
+Up: ret=0 err=-; caret 0, selection 0, top 0, LBN_SELCHANGE 1
+Up: ret=0 err=-; caret 0, selection 0, top 0, LBN_SELCHANGE 0
+Up at the first item: ret=0 err=-; caret 0, selection 0, top 0, LBN_SELCHANGE 0
+End: ret=0 err=-; caret 19, selection 19, top 15, LBN_SELCHANGE 1
+Down at the last item: ret=0 err=-; caret 19, selection 19, top 15, LBN_SELCHANGE 0
+Home: ret=0 err=-; caret 0, selection 0, top 0, LBN_SELCHANGE 1
+PgDn: ret=0 err=-; caret 4, selection 4, top 0, LBN_SELCHANGE 1
+PgDn: ret=0 err=-; caret 8, selection 8, top 4, LBN_SELCHANGE 1
+PgUp: ret=0 err=-; caret 4, selection 4, top 4, LBN_SELCHANGE 1
+PgUp: ret=0 err=-; caret 0, selection 0, top 0, LBN_SELCHANGE 1
+PgUp at the first item: ret=0 err=-; caret 0, selection 0, top 0, LBN_SELCHANGE 0
+Right: ret=0 err=-; caret 1, selection 1, top 0, LBN_SELCHANGE 1
+Left: ret=0 err=-; caret 0, selection 0, top 0, LBN_SELCHANGE 1
+a fresh list box at item 0, WM_CHAR 'd': ret=0 err=-; selection 3, LBN_SELCHANGE 1
+a fresh list box at item 3, WM_CHAR 'd': ret=0 err=-; selection 4, LBN_SELCHANGE 1
+a fresh list box at item 4, WM_CHAR 'D': ret=0 err=-; selection 3, LBN_SELCHANGE 1
+a fresh list box at item 4, WM_CHAR 'z': ret=0 err=-; selection 4, LBN_SELCHANGE 0
+LBS_NOTIFY | LBS_MULTIPLESEL: non-NULL yes
+Down: ret=0 err=-; caret 1, selection 1, top 0, LBN_SELCHANGE 1
+Down: ret=0 err=-; caret 2, selection 2, top 0, LBN_SELCHANGE 1
+Space: ret=0 err=-; caret 2, selection 2, top 0, LBN_SELCHANGE 1
+  LB_GETSELCOUNT 1, LB_GETSEL(2) 1
+Space: ret=0 err=-; caret 2, selection 2, top 0, LBN_SELCHANGE 1
+  LB_GETSELCOUNT 0
+listbox: done
+<<< exit code=0
+>>> listbox.exe dir
+== dir
+f2klbdir with a.txt, b.txt, c.dat, noext and sub made: yes
+the parent: made yes
+CreateWindowExW("ListBox", LBS_SORT): non-NULL yes
+LB_DIR(DDL_READWRITE, "f2klbdir\*.txt"): ret=1 err=18
+  2 items: "a.txt" "b.txt"
+LB_DIR(DDL_READWRITE, "f2klbdir\*"): ret=3 err=18
+  4 items: "a.txt" "b.txt" "c.dat" "noext"
+LB_DIR(DDL_DIRECTORY, "f2klbdir\*"): ret=5 err=18
+  6 items: "a.txt" "b.txt" "c.dat" "noext" "[..]" "[sub]"
+LB_DIR(DDL_DIRECTORY | DDL_EXCLUSIVE, "f2klbdir\*"): ret=1 err=18
+  2 items: "[..]" "[sub]"
+LB_DIR(DDL_DIRECTORY, "f2klbdir\*.txt"): ret=1 err=18
+  2 items: "a.txt" "b.txt"
+LB_DIR(DDL_READWRITE, a missing directory, "f2knone\*.*"): ret=-1 err=3
+  0 items: 
+LB_DIR(DDL_READWRITE, nothing matching, "f2klbdir\*.zzz"): ret=-1 err=2
+  0 items: 
+DlgDirListA("f2klbdir\*.txt", DDL_DIRECTORY): ret=1 err=18 buffer after "*.TXT"
+  4 items: "a.txt" "b.txt" "[..]" "[sub]"
+DlgDirSelectExA, "a.txt" selected: ret=0 err=- buffer "a.txt"
+DlgDirSelectExA, "[sub]" selected: ret=1 err=- buffer "sub\"
+DlgDirSelectExA, "[..]" selected: ret=1 err=- buffer "..\"
+  the current directory is f2klbdir now: yes; unchanged: no
+DlgDirListW("f2klbdir\*", DDL_READWRITE): ret=1 err=18 buffer after "*"
+  4 items: "a.txt" "b.txt" "c.dat" "noext"
+DlgDirSelectExW, "noext" selected: ret=0 err=- buffer "noext."
+DlgDirSelectExW, "c.dat" selected: ret=0 err=- buffer "c.dat"
+DlgDirSelectExW, "none" selected: ret=0 err=- buffer "untouched"
+DlgDirSelectExA, "none" selected: ret=0 err=- buffer ""
+  the current directory is f2klbdir now: yes; unchanged: no
+DlgDirListA("f2knone\*.*"), a missing directory: ret=0 err=2 buffer after "f2knone\*.*"
+  the current directory is f2klbdir now: no; unchanged: yes
+DlgDirListA("f2klbdir\*.txt"), no control 999: ret=1 err=1416
+  the current directory is f2klbdir now: yes; unchanged: no
+f2klbdir removed: yes
+listbox: done
+<<< exit code=0
+>>> listbox.exe info
+== info
+GetListBoxInfo exported: yes
+the parent: made yes
+a list box, 100 high: non-NULL yes
+LB_GETLISTBOXINFO, items 20 high: ret=0 err=-
+GetListBoxInfo(it): ret=0 err=-
+GetListBoxInfo(the parent, no list box): ret=0 err=87
+GetListBoxInfo(NULL): ret=0 err=1400
+LB_GETLISTBOXINFO, items 30 high: ret=0 err=-
+LB_INITSTORAGE(100 items, 2000 bytes): ret=100 err=-
+LB_GETCOUNT: ret=0 err=-
+LB_INITSTORAGE(0x10000000 items, 0x7FFFFFF0 bytes): ret=-2 err=8
+LB_ADDSTRING after it: ret=0 err=-
+listbox: done
+<<< exit code=0
+>>> listbox.exe dialog
+== dialog
+CreateDialogIndirectParamW, a list box by atom 0x0083 and one by name: non-NULL yes
+  item 401: found yes, class ListBox, WM_GETDLGCODE 0x81, LB_GETCOUNT 1, first "by atom"
+  item 402: found yes, class ListBox, WM_GETDLGCODE 0x81, LB_GETCOUNT 2, first "by name"
+DestroyWindow(the dialog): ret=1 err=-
+listbox: done
+<<< exit code=0

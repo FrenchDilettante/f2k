@@ -1,8 +1,8 @@
 # F2K capture of threads (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
-# date: Sat 21/11/2026  7:36:15.04
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:37:55.11
 threads F2KT-SOURCE-CRC=0x08B13495
 >>> threads.exe create
 == create
@@ -61,6 +61,7 @@ SetPriorityClass(high): ret=1 err=-, class now 0x80, thread priority 0
 SetPriorityClass(bogus): ret=1 err=-
 GetThreadPriorityBoost: ret=1 disabled 0
 after disabling: disabled 1
+join: wait WAIT_TIMEOUT
 SetThreadPriority of an exited thread: ret=1 err=-
 threads: done
 <<< exit code=0
@@ -108,8 +109,8 @@ threads: done
 == lateexit
 the waiter started: WAIT_OBJECT_0
 TerminateThread(7) ret=1 err=-
-at once: GetExitCodeThread ret=1 code=7 err=-
-at once: WaitForSingleObject(0) WAIT_OBJECT_0
+at once: GetExitCodeThread ret=1 code=259 err=-
+at once: WaitForSingleObject(0) WAIT_TIMEOUT
 after: WaitForSingleObject WAIT_OBJECT_0
 after: GetExitCodeThread ret=1 code=7 err=-
 threads: done
@@ -120,7 +121,7 @@ SuspendThread of a thread created suspended ret=1 err=-
 QueueUserAPC while suspended ret=1 err=-
 TerminateThread(9) ret=1 err=-
 WaitForSingleObject WAIT_OBJECT_0
-GetExitCodeThread ret=1 code=9 err=-
+GetExitCodeThread ret=1 code=3221225547 err=-
 the APC ran: no
 ResumeThread after its end ret=0 err=-
 SuspendThread after its end ret=-1 err=5
@@ -153,7 +154,7 @@ OpenThread(THREAD_QUERY_INFORMATION, FALSE, the ended child's id, every handle c
 OpenThread(THREAD_TERMINATE, FALSE, a second child's id): a handle yes err=-
   TerminateThread(it, 44): ret=1 err=-
   GetExitCodeThread through it: ret=0 code 0 err=5
-  the child's exit code through CreateThread's handle: 44
+  the child's exit code through CreateThread's handle: 3221225547
 OpenThread(THREAD_QUERY_INFORMATION, FALSE, 0): ret null yes err=87
 OpenThread(THREAD_QUERY_INFORMATION, FALSE, the process's id): ret null yes err=87
 threads: done

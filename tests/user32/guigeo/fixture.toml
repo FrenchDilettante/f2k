@@ -1,7 +1,10 @@
 # guigeo: one test per block of the real-machine capture (output.txt); see tests/README.md.
-description = "guigeo - window geometry and visibility in user32: ShowWindow/ShowWindowAsync return and IsWindowVisible, MoveWindow and SetWindowPos with GetWindowRect read back at explicit coordinates, UpdateWindow sending WM_PAINT synchronously, and the bogus-handle errors (1400); IsIconic and IsZoomed around ShowWindow SW_MINIMIZE, SW_MAXIMIZE and SW_RESTORE (the WM_SIZE each sends, the rects as relations to the normal one); GetWindowPlacement and SetWindowPlacement (length, flags, showCmd, WPF_RESTORETOMAXIMIZED, rcNormalPosition against the window rect); and BeginDeferWindowPos, DeferWindowPos and EndDeferWindowPos over three windows, one window twice, SWP_NOMOVE, a window and its child, and their errors; and WM_SIZE, WM_MOVE and WM_WINDOWPOSCHANGED through a show, SetWindowPos and MoveWindow (sizemsg); a procedure editing WM_NCCALCSIZE, WM_GETMINMAXINFO and WM_WINDOWPOSCHANGING (edits); WS_MAXIMIZE and WS_MINIMIZE given to CreateWindowEx (createmax); and SetWindowPos with SWP_SHOWWINDOW or SWP_HIDEWINDOW and a new rect (swpshow)."
+description = "guigeo - window geometry and visibility in user32: ShowWindow/ShowWindowAsync return and IsWindowVisible, MoveWindow and SetWindowPos with GetWindowRect read back at explicit coordinates, UpdateWindow sending WM_PAINT synchronously, and the bogus-handle errors (1400); IsIconic and IsZoomed around ShowWindow SW_MINIMIZE, SW_MAXIMIZE and SW_RESTORE (the WM_SIZE each sends, the rects as relations to the normal one); GetWindowPlacement and SetWindowPlacement (length, flags, showCmd, WPF_RESTORETOMAXIMIZED, rcNormalPosition against the window rect); and BeginDeferWindowPos, DeferWindowPos and EndDeferWindowPos over three windows, one window twice, SWP_NOMOVE, a window and its child, and their errors; and WM_SIZE, WM_MOVE and WM_WINDOWPOSCHANGED through a show, SetWindowPos and MoveWindow (sizemsg); a procedure editing WM_NCCALCSIZE, WM_GETMINMAXINFO and WM_WINDOWPOSCHANGING (edits); WS_MAXIMIZE and WS_MINIMIZE given to CreateWindowEx (createmax); SetWindowPos with SWP_SHOWWINDOW or SWP_HIDEWINDOW and a new rect (swpshow); WM_GETMINMAXINFO's defaults, order and counts with DefWindowProc's WM_WINDOWPOSCHANGING clamp (mmdefault); and the edits procedure on another thread's window under the main thread's SetWindowPos, MoveWindow and ShowWindow, sends back to the waiting main thread, and the window's thread ending inside WM_WINDOWPOSCHANGING (xedits)."
 kind = "sectioned"
 gate = true
+
+[pending]
+mmdefault = "WM_GETMINMAXINFO's ptReserved is 0,0 where Windows 2000 fills it (160,24), and its ptMaxSize is the work area's plus 8 by 8 where Windows 2000's adds 36 to the height"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
@@ -71,5 +74,21 @@ createmax = [
 swpshow = [
     "user32.SetWindowPos",
     "user32.IsWindowVisible",
+    "user32.GetWindowRect",
+]
+mmdefault = [
+    "user32.CreateWindowExA",
+    "user32.SetWindowPos",
+    "user32.ShowWindow",
+    "user32.DefWindowProcA",
+    "user32.GetSystemMetrics",
+    "user32.GetWindowRect",
+]
+xedits = [
+    "user32.SetWindowPos",
+    "user32.MoveWindow",
+    "user32.ShowWindow",
+    "user32.InSendMessage",
+    "user32.GetClientRect",
     "user32.GetWindowRect",
 ]

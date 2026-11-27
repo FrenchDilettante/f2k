@@ -1,0 +1,56 @@
+# F2K capture of focus2 (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:36.82
+focus2 F2KT-SOURCE-CRC=0xA40D82DA
+>>> focus2.exe attach
+== attach
+the main thread's window is the foreground window: yes
+before, on the second thread: GetFocus NULL, GetActiveWindow NULL, GetKeyState(VK_F12) not toggled
+  on the main thread: GetFocus the main thread's window, GetActiveWindow the main thread's window, GetKeyState(VK_F12) toggled
+the second thread's AttachThreadInput(itself, the main thread, TRUE): ret=1 err=-
+attached, on the second thread: GetFocus the main thread's window, GetActiveWindow the main thread's window, GetKeyState(VK_F12) not toggled
+  on the main thread: GetFocus the main thread's window, GetActiveWindow the main thread's window, GetKeyState(VK_F12) not toggled
+the second thread's SetFocus(its window): a window returned yes err=-
+then, on the second thread: GetFocus the second thread's window, GetActiveWindow the second thread's window, GetKeyState(VK_F12) not toggled
+  on the main thread: GetFocus the second thread's window, GetActiveWindow the second thread's window, GetKeyState(VK_F12) not toggled
+the second thread's AttachThreadInput(itself, the main thread, FALSE): ret=1 err=-
+detached, on the second thread: GetFocus the second thread's window, GetActiveWindow the second thread's window, GetKeyState(VK_F12) not toggled
+  on the main thread: GetFocus NULL, GetActiveWindow NULL, GetKeyState(VK_F12) not toggled
+the second thread's AttachThreadInput(..., FALSE) again: ret=0 err=-
+AttachThreadInput(this thread, itself, TRUE): ret=0 err=-
+AttachThreadInput(this thread, a thread id no thread has, TRUE): ret=0 err=-
+AttachThreadInput(a thread with no window or queue, this thread, TRUE): ret=0 err=-
+AttachThreadInput(this thread, a thread with no window or queue, TRUE): ret=0 err=-
+focus2: done
+<<< exit code=0
+>>> focus2.exe foreground
+== foreground
+GetProcAddress(user32, AllowSetForegroundWindow, LockSetForegroundWindow): yes yes
+SPI_GETFOREGROUNDLOCKTIMEOUT: non-zero
+the main window is the foreground window: yes
+nothing allowed: the child's SetForegroundWindow returned TRUE yes, its window became the foreground window yes
+  the main window is the foreground window again: yes
+AllowSetForegroundWindow(the child's process id): ret=0 err=87
+its process id allowed: the child's SetForegroundWindow returned TRUE yes, its window became the foreground window yes
+  the main window is the foreground window again: yes
+AllowSetForegroundWindow(ASFW_ANY): ret=1 err=-
+ASFW_ANY allowed: the child's SetForegroundWindow returned TRUE yes, its window became the foreground window yes
+  the main window is the foreground window again: yes
+AllowSetForegroundWindow(the program's own process id): ret=1 err=-
+AllowSetForegroundWindow(a process id no process has): ret=0 err=87
+LockSetForegroundWindow(LSFW_LOCK): ret=1 err=-
+locked: the child's SetForegroundWindow returned TRUE no, its window became the foreground window no
+  the main window is the foreground window again: yes
+AllowSetForegroundWindow(ASFW_ANY, locked): ret=1 err=-
+locked, ASFW_ANY allowed: the child's SetForegroundWindow returned TRUE no, its window became the foreground window no
+  the main window is the foreground window again: yes
+LockSetForegroundWindow(LSFW_LOCK again): ret=0 err=5
+LockSetForegroundWindow(LSFW_UNLOCK): ret=1 err=-
+LockSetForegroundWindow(LSFW_UNLOCK again): ret=0 err=5
+LockSetForegroundWindow(code 7): ret=0 err=87
+unlocked: the child's SetForegroundWindow returned TRUE yes, its window became the foreground window yes
+  the main window is the foreground window again: yes
+focus2: done
+<<< exit code=0

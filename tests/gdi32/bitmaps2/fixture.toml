@@ -1,0 +1,74 @@
+# bitmaps2: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat bitmaps2, tests\capture.bat bitmaps2).
+# Every blit goes into a 32-bit DIB section in a memory DC, read back as rows of letters or, for the
+# blends, hex values. In Windows 2000 the blends are gdi32's GdiAlphaBlend, GdiTransparentBlt and
+# GdiGradientFill, reached through GetProcAddress; msimg32.dll's AlphaBlend, TransparentBlt and
+# GradientFill are loaded only in the msimg32 block (F2K has no msimg32 spec to pin them in), and
+# print only as the same as gdi32's or not. No handle or address prints.
+description = "bitmaps2 - CreateBitmapIndirect, Get/SetBitmapBits, CreateDiscardableBitmap, Get/SetBitmapDimensionEx, Get/SetDIBColorTable on DIB sections, MaskBlt, PlgBlt, GdiAlphaBlend, GdiTransparentBlt and GdiGradientFill with msimg32's exports over them, and CreateDIBPatternBrush/CreateDIBPatternBrushPt, each read back from a DIB section."
+kind = "sectioned"
+gate = true
+
+[pending]
+# G2 of .scratch/plans/user32-gdi32-completeness.md: drop each entry once its block passes.
+indirect = "F2K's gdi32 has no CreateBitmapIndirect or Get/SetBitmapBits (stubs; plan G2)"
+discard = "F2K's gdi32 has no CreateDiscardableBitmap (plan G2)"
+dimension = "F2K's gdi32 has no Get/SetBitmapDimensionEx (plan G2)"
+colortable = "F2K's gdi32 has no Get/SetDIBColorTable (plan G2)"
+maskblt = "F2K's gdi32 has no MaskBlt (plan G2)"
+plgblt = "F2K's gdi32 has no PlgBlt (plan G2)"
+alpha = "F2K's gdi32 has no GdiAlphaBlend (plan G2)"
+transparent = "F2K's gdi32 has no GdiTransparentBlt (plan G2)"
+gradient = "F2K's gdi32 has no GdiGradientFill (plan G2)"
+msimg32 = "F2K has no msimg32.dll: LoadLibraryA fails with 126 (plan G2)"
+dibpattern = "F2K's gdi32 has no CreateDIBPatternBrush/CreateDIBPatternBrushPt (plan G2)"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. The canvas's helpers (CreateCompatibleDC, CreateDIBSection of 32 bits, SelectObject,
+# DeleteObject, DeleteDC, GdiFlush) are left out. msimg32's exports have no spec to pin.
+indirect = [
+    "gdi32.CreateBitmapIndirect",
+    "gdi32.GetBitmapBits",
+    "gdi32.SetBitmapBits",
+    "gdi32.GetObjectW",
+    "gdi32.GetCurrentObject",
+]
+discard = [
+    "gdi32.CreateDiscardableBitmap",
+    "gdi32.GetObjectW",
+    "gdi32.GetDeviceCaps",
+    "user32.GetDC",
+    "user32.ReleaseDC",
+]
+dimension = ["gdi32.GetBitmapDimensionEx", "gdi32.SetBitmapDimensionEx", "gdi32.CreateBitmap"]
+colortable = [
+    "gdi32.GetDIBColorTable",
+    "gdi32.SetDIBColorTable",
+    "gdi32.CreateDIBSection",
+    "gdi32.GetPixel",
+    "gdi32.CreateBitmap",
+]
+maskblt = ["gdi32.MaskBlt", "gdi32.CreateBitmap"]
+plgblt = ["gdi32.PlgBlt", "gdi32.CreateBitmap"]
+alpha = ["gdi32.GdiAlphaBlend", "kernel32.GetProcAddress", "kernel32.GetModuleHandleA"]
+transparent = ["gdi32.GdiTransparentBlt", "kernel32.GetProcAddress", "kernel32.GetModuleHandleA"]
+gradient = ["gdi32.GdiGradientFill", "kernel32.GetProcAddress", "kernel32.GetModuleHandleA"]
+msimg32 = [
+    "gdi32.GdiAlphaBlend",
+    "kernel32.LoadLibraryA",
+    "kernel32.FreeLibrary",
+    "kernel32.GetProcAddress",
+    "kernel32.GetModuleHandleA",
+]
+dibpattern = [
+    "gdi32.CreateDIBPatternBrush",
+    "gdi32.CreateDIBPatternBrushPt",
+    "gdi32.GetObjectW",
+    "gdi32.GetObjectType",
+    "gdi32.PatBlt",
+    "kernel32.GlobalAlloc",
+    "kernel32.GlobalLock",
+    "kernel32.GlobalUnlock",
+    "kernel32.GlobalFree",
+]

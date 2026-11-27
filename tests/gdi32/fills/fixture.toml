@@ -1,0 +1,55 @@
+# fills: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat fills, tests\capture.bat fills).
+# Every fill is drawn into a 32-bit DIB section in a memory DC and read back through its bits
+# pointer as rows of letters. PolyPatBlt, which no SDK header declares, is reached through
+# GetProcAddress. No handle or address prints.
+description = "fills - Chord and Pie in both arc directions, PolyPolygon under ALTERNATE and WINDING, FloodFill and ExtFloodFill, CreateHatchBrush's six styles in OPAQUE and TRANSPARENT background modes, CreateBrushIndirect, UnrealizeObject and FixBrushOrgEx, PolyPatBlt and SetPixelV, each drawing read back from a DIB section."
+kind = "sectioned"
+gate = true
+
+[pending]
+# G3 and G5 of .scratch/plans/user32-gdi32-completeness.md: drop each entry once its block passes.
+chordpie = "F2K's gdi32 has no Chord or Pie (stubs; plan G5, on G4's arc rasterizer)"
+polypoly = "F2K's gdi32 has no PolyPolygon (plan G5)"
+flood = "F2K's gdi32 has no FloodFill or ExtFloodFill (plan G5)"
+hatch = "F2K's gdi32 has no hatch brushes: CreateHatchBrush is a stub (plan G3)"
+brushind = "F2K's gdi32 has no CreateBrushIndirect (plan G3)"
+unrealize = "F2K's gdi32 has no UnrealizeObject or FixBrushOrgEx (plan G3)"
+polypat = "F2K's gdi32 has no PolyPatBlt (plan G5)"
+setpixelv = "F2K's gdi32 has no SetPixelV (plan G3)"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. The canvas's helpers (CreateCompatibleDC, CreateDIBSection, SelectObject, GetStockObject,
+# CreateSolidBrush, DeleteObject, DeleteDC, GdiFlush) are left out.
+chordpie = ["gdi32.Chord", "gdi32.Pie", "gdi32.SetArcDirection"]
+polypoly = ["gdi32.PolyPolygon", "gdi32.SetPolyFillMode"]
+flood = ["gdi32.FloodFill", "gdi32.ExtFloodFill", "gdi32.Rectangle"]
+hatch = [
+    "gdi32.CreateHatchBrush",
+    "gdi32.GetObjectW",
+    "gdi32.GetObjectType",
+    "gdi32.PatBlt",
+    "gdi32.Rectangle",
+    "gdi32.SetBkMode",
+    "gdi32.SetBkColor",
+]
+brushind = [
+    "gdi32.CreateBrushIndirect",
+    "gdi32.CreateBitmap",
+    "gdi32.GetObjectW",
+    "gdi32.GetObjectType",
+    "gdi32.PatBlt",
+]
+unrealize = [
+    "gdi32.UnrealizeObject",
+    "gdi32.FixBrushOrgEx",
+    "gdi32.GetBrushOrgEx",
+    "gdi32.SetBrushOrgEx",
+    "gdi32.CreatePatternBrush",
+    "gdi32.CreatePalette",
+    "gdi32.CreatePen",
+    "gdi32.PatBlt",
+]
+polypat = ["gdi32.PolyPatBlt", "kernel32.GetProcAddress", "kernel32.GetModuleHandleA"]
+setpixelv = ["gdi32.SetPixelV"]

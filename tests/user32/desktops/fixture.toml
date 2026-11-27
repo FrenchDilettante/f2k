@@ -1,0 +1,112 @@
+# desktops: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat desktops, tests\capture.bat desktops).
+#
+# The lines that show an access check (OpenDesktopA of Winlogon and Disconnect, EnumDesktops
+# listing them, CreateWindowStationA, the closes of the process's own station and desktop) answer
+# as the capture's account: the VM's usual interactive logon, assumed a member of Administrators.
+# A recapture under another account may change them; F2K, with one logon and no security, must
+# answer as that account does. Capture with the desktop left alone and no screen saver or lock
+# (input's SwitchDesktop of the input desktop fails while either shows).
+description = "desktops - window stations and desktops beyond the process's own: EnumWindowStationsA/W and EnumDesktopsA/W (whether WinSta0, Default, Winlogon and Disconnect are listed), OpenWindowStationA/W, OpenDesktopA/W and their closes (refusals, a closed handle, the process's own), OpenInputDesktop and SwitchDesktop to the input desktop, CreateDesktopA/W of F2KDesk1 and SetUserObjectInformationA/W of its UOI_FLAGS, SetThreadDesktop from a thread with a window and from a new thread making a window there, EnumDesktopWindows, CreateWindowStationA/W of F2KSta1 and SetProcessWindowStation to it and back, Get/SetUserObjectSecurity (a DACL and an owner present), and GetGuiResources around a window and a pen."
+kind = "sectioned"
+gate = true
+
+[pending]
+# F2K's user32 lacks every export these sections observe but GetGuiResources (catalogued only in
+# userland/user32/exports.toml): win32k has WinSta0 and Default alone, made at boot, and no service
+# to enumerate, open, create or switch them (kernel/src/win32k/winsta.rs). Each section prints
+# "<Name>: absent" and stops there on F2K.
+enumsta = "F2K's user32 lacks EnumWindowStationsA/W"
+enumdesk = "F2K's user32 lacks EnumDesktopsA/W"
+opensta = "F2K's user32 lacks OpenWindowStationA/W and CloseWindowStation"
+opendesk = "F2K's user32 lacks OpenDesktopA/W and CloseDesktop; win32k has no Winlogon or Disconnect desktop"
+input = "F2K's user32 lacks OpenInputDesktop and SwitchDesktop"
+create = "F2K's user32 lacks CreateDesktopA/W, SetUserObjectInformationA/W and EnumDesktopWindows; win32k makes no desktop after boot"
+thread = "F2K's user32 lacks SetThreadDesktop and EnumDesktopWindows: every thread is on its process's desktop (winsta.rs)"
+station = "F2K's user32 lacks CreateWindowStationA/W and SetProcessWindowStation: no process creates another window station (winsta.rs)"
+security = "F2K's user32 lacks Get/SetUserObjectSecurity: its window station and desktop carry no security descriptor"
+gui = "GetGuiResources(GR_GDIOBJECTS) answers 0 where Windows 2000's count is nonzero, and of a NULL process fails with ERROR_INVALID_HANDLE where Windows 2000 answers ERROR_INVALID_PARAMETER"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers around them (the hidden windows,
+# GetProcAddress).
+enumsta = [
+    "user32.EnumWindowStationsA",
+    "user32.EnumWindowStationsW",
+]
+enumdesk = [
+    "user32.EnumDesktopsA",
+    "user32.EnumDesktopsW",
+    "user32.GetProcessWindowStation",
+]
+opensta = [
+    "user32.OpenWindowStationA",
+    "user32.OpenWindowStationW",
+    "user32.CloseWindowStation",
+    "user32.GetProcessWindowStation",
+    "user32.GetUserObjectInformationA",
+    "user32.GetUserObjectInformationW",
+]
+opendesk = [
+    "user32.OpenDesktopA",
+    "user32.OpenDesktopW",
+    "user32.CloseDesktop",
+    "user32.GetThreadDesktop",
+    "user32.GetUserObjectInformationA",
+    "user32.GetUserObjectInformationW",
+]
+input = [
+    "user32.OpenInputDesktop",
+    "user32.SwitchDesktop",
+    "user32.CloseDesktop",
+    "user32.GetThreadDesktop",
+    "user32.GetUserObjectInformationA",
+]
+create = [
+    "user32.CreateDesktopA",
+    "user32.CreateDesktopW",
+    "user32.OpenDesktopA",
+    "user32.CloseDesktop",
+    "user32.EnumDesktopsA",
+    "user32.EnumDesktopWindows",
+    "user32.SetUserObjectInformationA",
+    "user32.SetUserObjectInformationW",
+    "user32.GetUserObjectInformationA",
+    "user32.GetUserObjectInformationW",
+]
+thread = [
+    "user32.CreateDesktopA",
+    "user32.CloseDesktop",
+    "user32.SetThreadDesktop",
+    "user32.GetThreadDesktop",
+    "user32.EnumDesktopWindows",
+    "user32.CreateWindowExA",
+    "user32.GetUserObjectInformationA",
+]
+station = [
+    "user32.CreateWindowStationA",
+    "user32.CreateWindowStationW",
+    "user32.CloseWindowStation",
+    "user32.EnumWindowStationsA",
+    "user32.SetProcessWindowStation",
+    "user32.GetProcessWindowStation",
+    "user32.CreateDesktopA",
+    "user32.CloseDesktop",
+    "user32.SetThreadDesktop",
+    "user32.GetUserObjectInformationA",
+    "user32.GetUserObjectInformationW",
+]
+security = [
+    "user32.GetUserObjectSecurity",
+    "user32.SetUserObjectSecurity",
+    "user32.CreateDesktopA",
+    "user32.CloseDesktop",
+]
+gui = [
+    "user32.GetGuiResources",
+    "user32.CreateWindowExA",
+    "user32.DestroyWindow",
+    "gdi32.CreatePen",
+    "gdi32.DeleteObject",
+]

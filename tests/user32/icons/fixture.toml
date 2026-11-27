@@ -1,0 +1,95 @@
+# icons: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat icons, tests\capture.bat icons).
+# The program's own icon and cursor (icons.rc, icons.ico, icons.cur) are the images drawn and
+# extracted; no handle value prints, and a colour bitmap's depth prints as "screen" when it is the
+# screen's. The lookup's and the copies' LR_DEFAULTCOLOR choices assume a screen of 8 bits a pixel
+# or more (the capture VM's is 32).
+description = "icons - icons and cursors as images: GetIconInfo of stock icons and cursors (stock); CreateIcon, CreateCursor and CreateIconIndirect, drawn back, DestroyIcon and DestroyCursor (create); LookupIconIdFromDirectory(Ex) over the program's own icon and cursor groups (lookup); CreateIconFromResource(Ex) of their RT_ICON and RT_CURSOR images (fromres); DrawIconEx's DI_* flags and DrawIcon, read back from a DIB section (draw); CopyImage of icons, a cursor and a bitmap, and CopyIcon (copy); PrivateExtractIconsA/W and PrivateExtractIconExA/W over the program's own file (extract); LoadCursorFromFileA/W, GetCursorFrameInfo and SetSystemCursor's refusal (cursors)."
+kind = "sectioned"
+gate = true
+
+[pending]
+# F2K's user32 lacks every export below but CopyIcon, CreateIconIndirect, DestroyIcon, LoadIconA/W,
+# LoadCursorA and LoadImageA (catalogued only in userland/user32/exports.toml; CreateCursor and
+# DestroyCursor are stubs), and win32k's
+# cursor/icon records hold no image yet (kernel/src/win32k/icon.rs; completeness plan U11). Drop
+# each entry once its block passes.
+stock = "GetIconInfo is absent from F2K's user32, and its icon records hold no bitmaps to describe"
+create = "CreateIcon, GetIconInfo and DrawIconEx are absent from F2K's user32 and CreateCursor and DestroyCursor are stubs; its icon records hold no image"
+lookup = "LookupIconIdFromDirectory and LookupIconIdFromDirectoryEx are absent from F2K's user32 (rtl::icon::best_entry holds their logic)"
+fromres = "CreateIconFromResource, CreateIconFromResourceEx, GetIconInfo and DrawIconEx are absent from F2K's user32"
+draw = "DrawIcon and DrawIconEx are absent from F2K's user32, and its icons hold no image to draw"
+copy = "CopyImage, GetIconInfo and DrawIconEx are absent from F2K's user32"
+extract = "PrivateExtractIconsA/W and PrivateExtractIconExA/W are absent from F2K's user32"
+cursors = "LoadCursorFromFileA/W, GetCursorFrameInfo and SetSystemCursor are absent from F2K's user32 and DestroyCursor is a stub"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers it calls around them (the canvas, the
+# resource lookups).
+stock = [
+    "user32.LoadIconA",
+    "user32.LoadIconW",
+    "user32.LoadCursorA",
+    "user32.GetIconInfo",
+]
+create = [
+    "user32.CreateIcon",
+    "user32.CreateCursor",
+    "user32.CreateIconIndirect",
+    "user32.GetIconInfo",
+    "user32.DrawIconEx",
+    "user32.DestroyIcon",
+    "user32.DestroyCursor",
+    "user32.LoadIconA",
+]
+lookup = [
+    "user32.LookupIconIdFromDirectory",
+    "user32.LookupIconIdFromDirectoryEx",
+    "kernel32.FindResourceA",
+    "kernel32.LoadResource",
+    "kernel32.LockResource",
+    "kernel32.SizeofResource",
+]
+fromres = [
+    "user32.CreateIconFromResource",
+    "user32.CreateIconFromResourceEx",
+    "user32.GetIconInfo",
+    "user32.DrawIconEx",
+    "user32.DestroyIcon",
+]
+draw = [
+    "user32.LoadImageA",
+    "user32.DrawIconEx",
+    "user32.DrawIcon",
+    "user32.DestroyIcon",
+    "user32.DestroyCursor",
+    "gdi32.CreateDIBSection",
+    "gdi32.CreateSolidBrush",
+    "gdi32.GdiFlush",
+]
+copy = [
+    "user32.LoadImageA",
+    "user32.CopyImage",
+    "user32.CopyIcon",
+    "user32.GetIconInfo",
+    "user32.DrawIconEx",
+    "gdi32.CreateBitmap",
+    "gdi32.GetObjectA",
+]
+extract = [
+    "user32.PrivateExtractIconsA",
+    "user32.PrivateExtractIconsW",
+    "user32.PrivateExtractIconExA",
+    "user32.PrivateExtractIconExW",
+    "user32.GetIconInfo",
+    "user32.DrawIconEx",
+]
+cursors = [
+    "user32.LoadCursorFromFileA",
+    "user32.LoadCursorFromFileW",
+    "user32.GetCursorFrameInfo",
+    "user32.SetSystemCursor",
+    "user32.DestroyCursor",
+    "user32.LoadCursorA",
+]

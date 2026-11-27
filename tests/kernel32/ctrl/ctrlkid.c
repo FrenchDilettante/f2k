@@ -14,9 +14,12 @@
  * A handler that records (listen, family, tally, lone) answers TRUE and
  * only counts: the events per type, whether any ran on the main thread.
  * The count is printed by the main thread once the Ctrl+Break the parent
- * sends last (the fence) has arrived, and a further 500 ms for any
- * event still on its way (the shortest safe bound for an event that
- * should not come).
+ * sends last (the fence) has arrived, and a further GRACE_MS (300 ms)
+ * for any event still on its way. The parent sends the fence 100 ms
+ * after the event (ctrl.c's FENCE_GAP_MS), so a child that took a first
+ * Ctrl+Break for the fence still counts the real one with 200 ms to
+ * spare; an event that comes at all comes within a few clock ticks of
+ * its GenerateConsoleCtrlEvent.
  *
  * Modes:
  *
@@ -79,7 +82,7 @@
 #define UNTOUCHED 0x0F2F2F2Fu
 
 #define WAIT_MS 5000
-#define GRACE_MS 500
+#define GRACE_MS 300
 #define READY "F2KCtrlReady"
 #define INNER "F2KCtrlInner"
 #define LONE_READY "F2KCtrlLoneReady"

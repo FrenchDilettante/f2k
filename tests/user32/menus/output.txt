@@ -1,9 +1,9 @@
 # F2K capture of menus (tests\capture.bat)
 
 Microsoft Windows 2000 [Version 5.00.2195]
-# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 2 CPU(s)
-# date: Sat 21/11/2026  7:37:43.79
-menus F2KT-SOURCE-CRC=0x00BABA15
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:48.91
+menus F2KT-SOURCE-CRC=0xE855BFEF
 >>> menus.exe load
 == load
 LoadMenuW(200): non-NULL yes err=-
@@ -329,6 +329,25 @@ IsWindow(the window's handle, high word one more): ret=0 err=-
 IsMenu(the menu's low word, high word 0): ret=1 err=-
 IsMenu(the menu's low word, high word 0xFFFF): ret=1 err=-
 IsMenu(the menu's handle, high word one more): ret=0 err=1401
+menus: done
+<<< exit code=0
+>>> menus.exe lifo
+== lifo
+RegisterClassW(F2KLifoWindow): atom nonzero yes err=2
+windows W0-W5 and menus M0-M5 made in turn: 12 of 12
+  windows with an even low word: 6 of 6; menus with an odd one: 6 of 6
+  pairs of the 12 with the same low word: 0
+W1 then W3 destroyed, windows X then Y made: X in W3's slot yes, in W1's no; Y in W1's slot yes, in W3's no
+  the high word, less the slot's previous one: X +1, Y +1
+M1 then M3 destroyed, menus X then Y made: X in M3's slot yes, in M1's no; Y in M1's slot yes, in M3's no
+  the high word, less the slot's previous one: X +1, Y +1
+W4, M4, M5, W5 destroyed in turn; a menu, a window, a menu, a window made:
+  the first menu in M5's slot yes (in W5's no); the first window in W5's yes
+  the second menu in M4's slot yes; the second window in W4's yes
+M0 destroyed, a table made: in M0's slot yes; it destroyed, an icon made: in its slot yes
+the icon destroyed, W0 destroyed, a menu made: in the icon's slot yes, in W0's no
+a window's or menu's slot taken again at once: the same low word, the high word one more: 10 of 10
+5000 menus alive at once: made 5000; the last 100 made with high word 1: 13
 menus: done
 <<< exit code=0
 >>> menus.exe bar
@@ -1132,5 +1151,21 @@ no class icon, WM_SETICON: non-NULL yes
   green (the small icon): none
   blue (WM_SETICON's): 256 pixels, rows 1..16, columns 2..17
   the title: first column 20
+menus: done
+<<< exit code=0
+>>> menus.exe endmenu
+== endmenu
+EndMenu exported: yes
+EndMenu(), no menu active: ret=1 err=-
+RegisterClassW(F2KMenusOwner): atom nonzero yes err=2
+CreateWindowExW(F2KMenusOwner, WS_POPUP | WS_CAPTION | WS_VISIBLE): non-NULL yes err=-
+SetForegroundWindow(it): the foreground yes
+TrackPopupMenu(the popup, TPM_RETURNCMD, the window), EndMenu from a 100 ms timer's TimerProc: ret=0 err=-, ended before the watcher acted
+  EndMenu: ret=1 err=-
+  the owner received WM_EXITMENULOOP 1, WM_CANCELMODE 0, WM_COMMAND 0
+TrackPopupMenu(the popup, TPM_RETURNCMD, the window), EndMenu from a second thread 200 ms in: ret=0 err=-, ended after WM_CANCELMODE
+  EndMenu: ret=1 err=-
+  the owner received WM_EXITMENULOOP 1, WM_CANCELMODE 1, WM_COMMAND 0
+EndMenu() once the menus have ended: ret=1 err=-
 menus: done
 <<< exit code=0

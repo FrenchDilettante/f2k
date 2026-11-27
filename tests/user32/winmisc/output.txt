@@ -1,0 +1,287 @@
+# F2K capture of winmisc (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Fri 11/27/2026 21:40:11.78
+winmisc F2KT-SOURCE-CRC=0x7333CE95
+>>> winmisc.exe setparent
+== setparent
+SetParent(C shown, P2): returned P1 err=-
+  C received 6 message(s)
+    WM_SHOWWINDOW wParam=0 lParam=0
+    WM_WINDOWPOSCHANGING
+    WM_CHILDACTIVATE
+    WM_WINDOWPOSCHANGED
+    WM_MOVE x=10 y=20
+    WM_SHOWWINDOW wParam=1 lParam=0
+  GetParent(C)=P2 IsChild(P2, C) yes IsChild(P1, C) no
+  C's WS_VISIBLE yes
+  C at 10,20 size 60x40
+SetParent(C, P1): returned P2 err=-
+  GetParent(C)=P1
+SetParent(C hidden, NULL): returned P1 err=87
+  C received 4 message(s)
+    WM_WINDOWPOSCHANGING
+    WM_CHILDACTIVATE
+    WM_WINDOWPOSCHANGED
+    WM_MOVE x=10 y=20
+  GetParent(C)=the desktop GetAncestor(C, GA_PARENT)=the desktop WS_CHILD yes
+SetParent(C, P1) again: returned the desktop err=87
+SetParent(popup Q, P1): returned the desktop err=-
+  GetParent(Q)=NULL GetAncestor(Q, GA_PARENT)=P1 IsChild(P1, Q) no
+SetParent(Q, NULL): returned P1 err=-
+  GetAncestor(Q, GA_PARENT)=the desktop
+SetParent(P1, its child C): returned NULL err=87
+  GetAncestor(P1, GA_PARENT)=the desktop GetParent(C)=P1
+SetParent(C, C): returned NULL err=87
+SetParent(destroyed, P1): returned NULL err=1400
+SetParent(C, destroyed): returned NULL err=1400
+  GetParent(C)=P1
+winmisc: done
+<<< exit code=0
+>>> winmisc.exe ancestor
+== ancestor
+message-only window made: yes
+P1: GA_PARENT=the desktop GA_ROOT=P1 GA_ROOTOWNER=P1 GetParent=NULL
+C: GA_PARENT=P1 GA_ROOT=P1 GA_ROOTOWNER=P1 GetParent=P1
+G: GA_PARENT=C GA_ROOT=P1 GA_ROOTOWNER=P1 GetParent=C
+O (owned by P1): GA_PARENT=the desktop GA_ROOT=O GA_ROOTOWNER=P1 GetParent=P1
+OO (owned by O): GA_PARENT=the desktop GA_ROOT=OO GA_ROOTOWNER=P1 GetParent=O
+M (message-only): GA_PARENT=another window GA_ROOT=M GA_ROOTOWNER=M GetParent=NULL
+M's parent's GA_PARENT=another window
+the desktop: GA_PARENT=NULL GA_ROOT=NULL GA_ROOTOWNER=NULL GetParent=NULL
+GetAncestor(G, 0)=NULL err=87
+GetAncestor(G, 4)=NULL err=87
+GetAncestor(destroyed, GA_PARENT)=NULL err=1400
+GetAncestor(NULL, GA_PARENT)=NULL err=1400
+winmisc: done
+<<< exit code=0
+>>> winmisc.exe findwin
+== findwin
+FindWindowExA(P1, NULL, class, NULL)=A(one) err=-
+FindWindowExA(P1, A(one), class, NULL)=B(two) err=-
+FindWindowExA(P1, B(two), class, NULL)=C(one) err=-
+FindWindowExA(P1, C(one), class, NULL)=NULL err=-
+FindWindowExW(P1, NULL, class, "one")=A(one) err=-
+FindWindowExW(P1, A(one), class, "one")=C(one) err=-
+FindWindowExW(P1, C(one), class, "one")=NULL err=-
+FindWindowExA(P1, NULL, NULL, "two")=B(two) err=-
+FindWindowExA(P1, NULL, NULL, "")=NULL err=-
+FindWindowExA(P1, NULL, class atom, "two")=B(two) err=-
+FindWindowExA(P1, NULL, an unregistered class, NULL)=NULL err=2
+FindWindowExA(NULL, NULL, top class, its title)=T err=-
+FindWindowExW(NULL, NULL, top class, NULL)=T err=-
+FindWindowExA(the desktop, NULL, top class, NULL)=T err=-
+FindWindowExA(NULL, NULL, top class, the message window's title)=M err=-
+FindWindowExA(HWND_MESSAGE, NULL, top class, NULL)=M err=-
+FindWindowExA(P1, B, NULL, NULL)=C(one) err=-
+FindWindowExA(P1, T (not its child), NULL, NULL)=NULL err=-
+FindWindowExA(destroyed, NULL, NULL, NULL)=NULL err=1400
+winmisc: done
+<<< exit code=0
+>>> winmisc.exe realclass
+== realclass
+windows made: yes
+own window (class F2KWinMisc): RealGetWindowClassA ret=10 err=- "F2KWinMisc"
+  RealGetWindowClassW ret=10 err=- "F2KWinMisc"
+  RealGetWindowClass ret=10 err=- "F2KWinMisc"
+Edit (class Edit): RealGetWindowClassA ret=4 err=- "Edit"
+  RealGetWindowClassW ret=4 err=- "Edit"
+  RealGetWindowClass ret=4 err=- "Edit"
+superclass of Button (class F2KWinMiscSuper): RealGetWindowClassA ret=6 err=- "Button"
+  RealGetWindowClassW ret=6 err=- "Button"
+  RealGetWindowClass ret=6 err=- "Button"
+Button subclassed (class Button): RealGetWindowClassA ret=6 err=- "Button"
+  RealGetWindowClassW ret=6 err=- "Button"
+  RealGetWindowClass ret=6 err=- "Button"
+RealGetWindowClassA(Edit, 4 units) ret=3 err=- "Edi"
+RealGetWindowClassW(Edit, 4 units) ret=3 err=- "Edi"
+RealChildWindowFromPoint(the push button 50,50)=the push button err=-
+  ChildWindowFromPointEx(CWP_SKIPINVISIBLE)=the group box
+RealChildWindowFromPoint(the group box's empty area 150,120)=the group box err=-
+  ChildWindowFromPointEx(CWP_SKIPINVISIBLE)=the group box
+RealChildWindowFromPoint(the group box's frame 10,80)=the group box err=-
+  ChildWindowFromPointEx(CWP_SKIPINVISIBLE)=the group box
+RealChildWindowFromPoint(the static 260,20)=the static err=-
+  ChildWindowFromPointEx(CWP_SKIPINVISIBLE)=the static
+RealChildWindowFromPoint(the hidden child 260,110)=P err=-
+  ChildWindowFromPointEx(CWP_SKIPINVISIBLE)=P
+RealChildWindowFromPoint(nothing 230,180)=NULL err=-
+  ChildWindowFromPointEx(CWP_SKIPINVISIBLE)=NULL
+RealChildWindowFromPoint(outside -5,-5)=NULL err=-
+  ChildWindowFromPointEx(CWP_SKIPINVISIBLE)=NULL
+winmisc: done
+<<< exit code=0
+>>> winmisc.exe info
+== info
+GetWindowInfo(overlapped): ret=1 err=-
+  rcWindow as GetWindowRect yes, rcClient as the client area on screen yes
+  dwStyle as GWL_STYLE yes, dwExStyle as GWL_EXSTYLE yes
+  dwWindowStatus=0x0 cxWindowBorders=4 cyWindowBorders=4
+  atomWindowType as the class atom yes, wCreatorVersion=0x0400
+GetWindowInfo(overlapped, cbSize 0): ret=1 err=87, cbSize after=0
+GetWindowInfo(popup): ret=1 err=-
+  rcWindow as GetWindowRect yes, rcClient as the client area on screen yes
+  dwStyle as GWL_STYLE yes, dwExStyle as GWL_EXSTYLE yes
+  dwWindowStatus=0x0 cxWindowBorders=1 cyWindowBorders=1
+  atomWindowType as the class atom yes, wCreatorVersion=0x0400
+GetWindowInfo(popup, cbSize 0): ret=1 err=87, cbSize after=0
+GetTitleBarInfo(overlapped): ret=1 err=-
+  rcTitleBar from the window's corner: 22,4 to 4 from the right, height 19
+  rgstate[0]=0x00100000
+  rgstate[1]=0x00008000
+  rgstate[2]=0x00000000
+  rgstate[3]=0x00000000
+  rgstate[4]=0x00008000
+  rgstate[5]=0x00000000
+GetTitleBarInfo(overlapped, cbSize 0): ret=0 err=87
+GetTitleBarInfo(popup): ret=1 err=-
+  rcTitleBar from the window's corner: 2,-60 to 160 from the right, height 63
+  rgstate[0]=0x00108000
+  rgstate[1]=0x00000000
+  rgstate[2]=0x00000000
+  rgstate[3]=0x00000000
+  rgstate[4]=0x00000000
+  rgstate[5]=0x00000000
+GetTitleBarInfo(popup, cbSize 0): ret=0 err=87
+GetWindowInfo(destroyed): ret=0 err=1400
+winmisc: done
+<<< exit code=0
+>>> winmisc.exe iconic
+== iconic
+  hidden: IsIconic no IsWindowVisible no IsZoomed no
+CloseWindow(hidden window): ret=1 err=-
+  after: IsIconic yes IsWindowVisible yes IsZoomed no
+CloseWindow(again): ret=1 err=-
+  after: IsIconic yes IsWindowVisible yes IsZoomed no
+OpenIcon: ret=1 err=-
+  after: IsIconic no IsWindowVisible yes IsZoomed no
+OpenIcon(again): ret=1 err=-
+  after: IsIconic no IsWindowVisible yes IsZoomed no
+CloseWindow(a child): ret=1 err=-
+  the child after: IsIconic yes IsWindowVisible yes IsZoomed no
+CloseWindow(destroyed): ret=0 err=1400
+OpenIcon(destroyed): ret=0 err=1400
+winmisc: done
+<<< exit code=0
+>>> winmisc.exe popups
+== popups
+the shown popup visible yes, the hidden one no
+AnyPopup with the shown popup up: ret=1 err=-
+ShowOwnedPopups(owner, FALSE): ret=1 err=-
+  the shown popup received 4 message(s)
+    WM_SHOWWINDOW wParam=0 lParam=1
+    WM_SHOWWINDOW wParam=0 lParam=0
+    WM_WINDOWPOSCHANGING
+    WM_WINDOWPOSCHANGED
+  shown popup visible no, hidden popup visible no
+ShowOwnedPopups(owner, TRUE): ret=1 err=-
+  the shown popup received 4 message(s)
+    WM_SHOWWINDOW wParam=1 lParam=3
+    WM_SHOWWINDOW wParam=1 lParam=0
+    WM_WINDOWPOSCHANGING
+    WM_WINDOWPOSCHANGED
+  shown popup visible yes, hidden popup visible no
+ShowOwnedPopups(owner, TRUE) again: ret=1 err=-
+  the shown popup received 0 message(s)
+ShowOwnedPopups(destroyed, FALSE): ret=0 err=1400
+winmisc: done
+<<< exit code=0
+>>> winmisc.exe enumthr
+== enumthr
+EnumThreadWindows(this thread): ret=1 err=-
+  a yes, b yes, c (owned popup) yes, the child no, the other thread's no
+EnumThreadWindows(this thread), stopped after one: ret=0 err=-, called 1 time(s)
+EnumThreadWindows(the other thread): ret=1 err=-, called 1 time(s), its window yes
+EnumThreadWindows(a thread with no window): ret=1 err=87, called 0 time(s)
+EnumThreadWindows(an ended thread): ret=1 err=87, called 0 time(s)
+winmisc: done
+<<< exit code=0
+>>> winmisc.exe flash
+== flash
+FlashWindow(hidden, TRUE): nonzero no err=-
+  the window received 1 message(s)
+    WM_NCACTIVATE wParam=1
+FlashWindow(hidden, TRUE) again: nonzero yes err=-
+  the window received 1 message(s)
+    WM_NCACTIVATE wParam=0
+FlashWindow(hidden, FALSE): nonzero no err=-
+  the window received 1 message(s)
+    WM_NCACTIVATE wParam=0
+FlashWindowEx(FLASHW_CAPTION, count 1): nonzero no err=-
+FlashWindowEx(FLASHW_STOP): nonzero yes err=-
+FlashWindowEx(cbSize 0): nonzero no err=87
+FlashWindow(destroyed): nonzero no err=87
+FlashWindowEx(destroyed): nonzero no err=87
+winmisc: done
+<<< exit code=0
+>>> winmisc.exe classword
+== classword
+SetClassWord(0, 0x1200): ret=0x0000 err=-
+  GetClassWord(0): 0x1200 err=-
+SetClassWord(1, 0x1201): ret=0x0012 err=-
+  GetClassWord(1): 0x1201 err=-
+SetClassWord(6, 0x1202): ret=0x0000 err=-
+  GetClassWord(6): 0x1202 err=-
+SetClassWord(7, 0x1203): ret=0x0000 err=1413
+  GetClassWord(7): 0x0000 err=1413
+SetClassWord(8, 0x1204): ret=0x0000 err=1413
+  GetClassWord(8): 0x0000 err=1413
+GetClassWord(GCW_ATOM): the class atom yes err=-
+GetClassWord(GCL_STYLE): 0x0000 err=1413
+SetClassWord(GCL_STYLE, CS_DBLCLKS|CS_HREDRAW): ret=0x0000 err=1413
+  GetClassLongA(GCL_STYLE) after: 0x00000008
+GetClassWord(-1): 0x0000 err=1413
+GetClassWord(destroyed, 0): 0x0000 err=1400
+SetClassWord(destroyed, 0, 1): 0x0000 err=1400
+winmisc: done
+<<< exit code=0
+>>> winmisc.exe modname
+== modname
+GetWindowModuleFileNameA(the program's window): ret=29 err=-, the program's path yes, ret its length yes
+GetWindowModuleFileName(the program's window): ret=29 err=-, the program's path yes
+GetWindowModuleFileNameW(the program's window): ret=29 err=-, the program's path yes, ret its length yes
+GetWindowModuleFileNameA(the desktop): ret=0 err=-, the program's path no, ret its length yes
+GetWindowModuleFileName(the desktop): ret=0 err=-, the program's path no
+GetWindowModuleFileNameW(the desktop): ret=0 err=-, the program's path no, ret its length yes
+GetWindowModuleFileNameA(0 units): ret=0 err=-, buffer untouched yes
+GetWindowModuleFileNameA(5 units): ret=5 err=-, terminated at 4 no, the path's first 5 yes
+GetWindowModuleFileNameW(5 units): ret=5 err=-, terminated at 4 no, the path's first 5 yes
+GetWindowModuleFileNameA(destroyed): ret=0 err=1400
+winmisc: done
+<<< exit code=0
+>>> winmisc.exe intpos
+== intpos
+GetInternalWindowPos(hidden window): ret=1 err=- rc 40 40 340 240 pt -1,-1
+  GetWindowPlacement: showCmd=1 rcNormal 40 40 340 240 ptMin -1,-1
+GetInternalWindowPos(NULL, NULL): ret=1 err=-
+SetInternalWindowPos(SW_HIDE, 50 60 250 210, 7,9): ret=1 err=-
+  IsWindowVisible no
+  GetWindowPlacement: showCmd=1 rcNormal 50 60 250 210 ptMin 7,9
+GetInternalWindowPos after: ret=1 err=- rc 50 60 250 210 pt 7,9
+  GetWindowRect 50 60 250 210
+GetInternalWindowPos(destroyed): ret=0 err=1400
+winmisc: done
+<<< exit code=0
+>>> winmisc.exe helpid
+== helpid
+GetWindowContextHelpId(fresh window): 0 err=-
+SetWindowContextHelpId(1234): ret=1 err=-
+GetWindowContextHelpId: 1234 err=-
+SetWindowContextHelpId(0xFFFFFFFF): ret=1 err=-
+GetWindowContextHelpId: 0xFFFFFFFF err=-
+SetWindowContextHelpId(0): ret=1 err=-
+GetWindowContextHelpId: 0 err=-
+SetWindowContextHelpId(destroyed, 5): ret=0 err=1400
+GetWindowContextHelpId(destroyed): 0 err=1400
+GetMenuContextHelpId(fresh menu): 0 err=-
+SetMenuContextHelpId(menu, 77): ret=1 err=-
+GetMenuContextHelpId(menu): 77 err=-
+SetMenuContextHelpId(popup menu, 88): ret=1 err=-
+GetMenuContextHelpId(popup menu): 88 err=-, the menu's still 77
+SetMenuContextHelpId(menu, 0): ret=1 err=-
+GetMenuContextHelpId(menu): 0 err=-
+SetMenuContextHelpId(destroyed menu, 5): ret=0 err=1401
+GetMenuContextHelpId(destroyed menu): 0 err=1401
+winmisc: done
+<<< exit code=0

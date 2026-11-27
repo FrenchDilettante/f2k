@@ -54,6 +54,12 @@
  *             returns TRUE, or returns FALSE
  *   errors    GetWindowLongW/SetWindowLongW on NULL and on a destroyed
  *             window
+ *   stylechg  a procedure editing WM_STYLECHANGING's styleNew:
+ *             SetWindowLongW of GWL_STYLE with a bit added and another
+ *             taken off, put back to styleOld (a veto), and left alone;
+ *             of GWL_EXSTYLE with a bit added; the previous value, the
+ *             value after, and the style messages (as the procedure was
+ *             handed them, before its edit)
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat wndlong):
  *   cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% wndlong.c user32.lib
@@ -704,6 +710,90 @@ static void sec_dialog(void)
     destroy(dlg);
 }
 
+/* --- stylechg ---------------------------------------------------------- */
+
+/* What the editing procedure does to WM_STYLECHANGING's styleNew: the
+ * bits it sets and clears, or styleOld put back (a veto). */
+static DWORD edit_set;
+static DWORD edit_clear;
+static int edit_veto;
+
+/* Records the style messages as the base procedure does (what it was
+ * handed), then edits WM_STYLECHANGING's styleNew. */
+static LRESULT CALLBACK edit_proc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam)
+{
+    STYLESTRUCT *ss;
+
+    if ((msg == WM_STYLECHANGING || msg == WM_STYLECHANGED) && style_count < MAX_STEPS) {
+        ss = (STYLESTRUCT *)lparam;
+        style_events[style_count].msg = msg;
+        style_events[style_count].wparam = wparam;
+        style_events[style_count].old_style = ss != NULL ? ss->styleOld : 0;
+        style_events[style_count].new_style = ss != NULL ? ss->styleNew : 0;
+        style_count++;
+        if (msg == WM_STYLECHANGING && ss != NULL) {
+            ss->styleNew = edit_veto ? ss->styleOld : (ss->styleNew | edit_set) & ~edit_clear;
+        }
+    }
+    return DefWindowProcW(hwnd, msg, wparam, lparam);
+}
+
+static void set_edited(HWND h, int index, const char *name, DWORD value, const char *edit)
+{
+    LONG r;
+
+    reset_records();
+    arm();
+    r = SetWindowLongW(h, index, (LONG)value);
+    line("SetWindowLongW(%s, 0x%08lX), the procedure %s: ret=0x%08lX err=%s", name,
+         (unsigned long)value, edit, (unsigned long)r, le());
+    edit_set = 0;
+    edit_clear = 0;
+    edit_veto = 0;
+    line("  GetWindowLongW after: 0x%08lX", (unsigned long)GetWindowLongW(h, index));
+    print_style_events();
+}
+
+static void sec_stylechg(void)
+{
+    WNDCLASSW wc;
+    ATOM a;
+    DWORD err;
+    HWND h;
+    LONG style;
+    LONG ex;
+
+    drain();
+    ZeroMemory(&wc, sizeof wc);
+    wc.lpfnWndProc = edit_proc;
+    wc.hInstance = instance();
+    wc.lpszClassName = L"F2KWndlongEdit";
+    arm();
+    a = RegisterClassW(&wc);
+    err = GetLastError();
+    line("RegisterClassW(F2KWndlongEdit, the editing procedure): atom nonzero %s err=%s",
+         yesno(a != 0), le_of(err));
+    h = make_w(L"F2KWndlongEdit", "F2KWndlongEdit", NULL, 0);
+    if (h == NULL) {
+        return;
+    }
+    style = GetWindowLongW(h, GWL_STYLE);
+    ex = GetWindowLongW(h, GWL_EXSTYLE);
+    line("GWL_STYLE 0x%08lX, GWL_EXSTYLE 0x%08lX", (unsigned long)style, (unsigned long)ex);
+    edit_set = WS_THICKFRAME;
+    edit_clear = WS_SYSMENU;
+    set_edited(h, GWL_STYLE, "GWL_STYLE", (DWORD)style | WS_SYSMENU,
+               "adding WS_THICKFRAME, taking WS_SYSMENU off");
+    edit_veto = 1;
+    set_edited(h, GWL_STYLE, "GWL_STYLE", (DWORD)style, "putting styleOld back");
+    set_edited(h, GWL_STYLE, "GWL_STYLE", (DWORD)style, "editing nothing");
+    edit_set = WS_EX_CLIENTEDGE;
+    set_edited(h, GWL_EXSTYLE, "GWL_EXSTYLE", (DWORD)ex | WS_EX_TOOLWINDOW,
+               "adding WS_EX_CLIENTEDGE");
+    set_edited(h, GWL_EXSTYLE, "GWL_EXSTYLE", (DWORD)ex, "editing nothing");
+    destroy(h);
+}
+
 /* --- errors ------------------------------------------------------------ */
 
 static void sec_errors(void)
@@ -740,6 +830,7 @@ static const section_t sections[] = {
     { "wndproc", sec_wndproc, F2KT_ALWAYS },
     { "dialog", sec_dialog, F2KT_ALWAYS },
     { "errors", sec_errors, F2KT_ALWAYS },
+    { "stylechg", sec_stylechg, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

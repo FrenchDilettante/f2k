@@ -11,7 +11,7 @@
 # The menu-editing sections (edit through track) print each menu's items after each step; itemrect
 # prints the items' places on the screen only as relations; track ends its menus without input (a
 # WM_CANCELMODE a watcher thread sends the owner), and prints how each ended.
-description = "menus - a MENU resource of the program's own (menus.rc): LoadMenuW/A, IsMenu and DestroyMenu; GetMenuItemCount, GetMenuItemID, GetSubMenu, GetMenuState and GetMenuStringA/W by position and by command, through the bar and a nested popup; CheckMenuItem's and EnableMenuItem's previous states; CheckMenuRadioItem by command and by position; GetMenu and SetMenu on a top-level and a child window, and the menu destroyed with its window. Then the handles of user objects of different kinds: a window, menus (CreateMenu, LoadMenuW), an accelerator table (CreateAcceleratorTableW), the stock cursor and icon and a CopyIcon copy; IsWindow, IsMenu, GetMenuItemCount, CopyAcceleratorTableW, GetWindowLongW and DestroyMenu, DestroyAcceleratorTable, DestroyIcon and DestroyWindow on each other kind's handles; 40 windows, menus and tables made and destroyed in turn against held ones; and the slots the handles' low words name, shared or not across kinds, and a reused slot's high word. Then a window's menu bar: its height in the non-client area with and without the menu (SetMenu), DrawMenuBar, and WM_NCHITTEST down the window; and the keyboard menu loop driven by SendInput into the program's own foreground window: the menu messages its procedure receives (WM_SYSCOMMAND, WM_ENTERMENULOOP, WM_INITMENU, WM_INITMENUPOPUP, WM_MENUSELECT, WM_MENUCHAR, WM_UNINITMENUPOPUP, WM_EXITMENULOOP, WM_COMMAND) for Alt, F10, mnemonics, the arrows, Enter and Esc. Then menu editing: AppendMenuW/A, InsertMenuW/A, ModifyMenuW/A, DeleteMenu and RemoveMenu by position and by command, a popup removed against one deleted; GetMenuItemInfoW/A and SetMenuItemInfoW/A of each MIIM_* mask, the string's length and cch, cbSize 44 and 48; InsertMenuItemW/A; SetMenuDefaultItem and GetMenuDefaultItem with the GMDI_* flags; GetSystemMenu's items and bRevert; GetMenuItemRect and GetMenuCheckMarkDimensions as relations; TrackPopupMenu and TrackPopupMenuEx ended by WM_CANCELMODE, and the menu messages the owner receives. Then the keyboard cues: SPI_GETKEYBOARDCUES, and WM_QUERYUISTATE of a window with a menu, its child, and a dialog, after WM_CHANGEUISTATE clears, sets and initializes UISF_HIDEACCEL."
+description = "menus - a MENU resource of the program's own (menus.rc): LoadMenuW/A, IsMenu and DestroyMenu; GetMenuItemCount, GetMenuItemID, GetSubMenu, GetMenuState and GetMenuStringA/W by position and by command, through the bar and a nested popup; CheckMenuItem's and EnableMenuItem's previous states; CheckMenuRadioItem by command and by position; GetMenu and SetMenu on a top-level and a child window, and the menu destroyed with its window. Then the handles of user objects of different kinds: a window, menus (CreateMenu, LoadMenuW), an accelerator table (CreateAcceleratorTableW), the stock cursor and icon and a CopyIcon copy; IsWindow, IsMenu, GetMenuItemCount, CopyAcceleratorTableW, GetWindowLongW and DestroyMenu, DestroyAcceleratorTable, DestroyIcon and DestroyWindow on each other kind's handles; 40 windows, menus and tables made and destroyed in turn against held ones; and the slots the handles' low words name, shared or not across kinds, and a reused slot's high word; and, from handles freed in a known order, whether the slots are a LIFO per parity (lifo). Then a window's menu bar: its height in the non-client area with and without the menu (SetMenu), DrawMenuBar, and WM_NCHITTEST down the window; and the keyboard menu loop driven by SendInput into the program's own foreground window: the menu messages its procedure receives (WM_SYSCOMMAND, WM_ENTERMENULOOP, WM_INITMENU, WM_INITMENUPOPUP, WM_MENUSELECT, WM_MENUCHAR, WM_UNINITMENUPOPUP, WM_EXITMENULOOP, WM_COMMAND) for Alt, F10, mnemonics, the arrows, Enter and Esc. Then menu editing: AppendMenuW/A, InsertMenuW/A, ModifyMenuW/A, DeleteMenu and RemoveMenu by position and by command, a popup removed against one deleted; GetMenuItemInfoW/A and SetMenuItemInfoW/A of each MIIM_* mask, the string's length and cch, cbSize 44 and 48; InsertMenuItemW/A; SetMenuDefaultItem and GetMenuDefaultItem with the GMDI_* flags; GetSystemMenu's items and bRevert; GetMenuItemRect and GetMenuCheckMarkDimensions as relations; TrackPopupMenu and TrackPopupMenuEx ended by WM_CANCELMODE, and the menu messages the owner receives. Then the keyboard cues: SPI_GETKEYBOARDCUES, and WM_QUERYUISTATE of a window with a menu, its child, and a dialog, after WM_CHANGEUISTATE clears, sets and initializes UISF_HIDEACCEL. Then EndMenu with no menu active, from a TimerProc inside the thread's own menu loop, and from a second thread while the loop runs (endmenu)."
 kind = "sectioned"
 gate = true
 # underline reads the menu bar's pixels: the batch boots under FiSH (boot_under), which sets the
@@ -19,6 +19,8 @@ gate = true
 boot_under = "WINNT\\system32\\fish.exe"
 
 [pending]
+endmenu = "EndMenu from a second thread ends the menu loop directly, where Windows 2000's sends the owner WM_CANCELMODE, which ends it"
+lifo = "F2K gives 5,000 menus made at once fresh slots (every one of the last 100 with high word 1), where Windows 2000 hands most of them slots freed before (13 of the last 100 fresh)"
 capicon = "its title line now scans the caption's rows above the bottom separator; F2K's icons hold no image: user32's CreateIconIndirect is a stub and LoadIcon keeps no bits, and the caption draws no icon (neither the class's small icon, nor the big one scaled, nor a default one; no GCL_HICONSM synthesized from hIcon)"
 
 [masks]
@@ -107,6 +109,16 @@ slots = [
     "user32.DestroyIcon",
     "user32.IsWindow",
     "user32.IsMenu",
+]
+lifo = [
+    "user32.CreateWindowExW",
+    "user32.CreateMenu",
+    "user32.CreateAcceleratorTableW",
+    "user32.CopyIcon",
+    "user32.DestroyWindow",
+    "user32.DestroyMenu",
+    "user32.DestroyAcceleratorTable",
+    "user32.DestroyIcon",
 ]
 # bar observes the menu bar in the frame (SetMenu, DrawMenuBar, the metrics), WM_NCHITTEST through
 # the default window procedure, and the menu destroyed with its window. The keyboard sections
@@ -221,3 +233,5 @@ underline = [
     "user32.GetWindowDC",
     "gdi32.GetPixel",
 ]
+# EndMenu is found with GetProcAddress (MSVC 6's headers declare it for WINVER 0x0500 only).
+endmenu = ["user32.EndMenu", "user32.TrackPopupMenu"]

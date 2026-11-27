@@ -1,0 +1,27 @@
+# manyproc: one test per block of the real-machine capture (output.txt); see tests/README.md. Built
+# with /MD. Its companion program, mpkid.exe (built beside manyproc.exe from mpkid.c, with no C
+# runtime and a 64 KiB stack reservation), is the child every section starts; it goes into \CORPUS
+# beside the program, as it sits beside it on the real machine. The slot-pool plan's process-cap fixture, captured on the
+# 2026-11-27 VM trip. The alive block starts 600 processes, hence the longer timeout.
+description = "manyproc - many processes alive at once (manyproc.c, with its companion program mpkid.c): 600 detached children each waiting on one event, their process and thread ids as relations (multiples of 4, distinct), their ends and exit codes (alive); an ended child's id by OpenProcess while its handles are open, and the ids of the next child once they are closed against the ended one's, Windows 2000's client-id reuse (reuse)."
+kind = "sectioned"
+timeout = 180
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only what a section calls itself and observes, not the helpers around it (the semaphore and
+# the event that pace the children).
+alive = [
+    "kernel32.CreateProcessA",
+    "kernel32.GetExitCodeProcess",
+    "kernel32.WaitForSingleObject",
+    "kernel32.GetCurrentProcessId",
+    "kernel32.GetCurrentThreadId",
+]
+reuse = [
+    "kernel32.CreateProcessA",
+    "kernel32.OpenProcess",
+    "kernel32.GetExitCodeProcess",
+    "kernel32.WaitForSingleObject",
+    "kernel32.CloseHandle",
+]

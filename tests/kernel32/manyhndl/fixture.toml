@@ -1,0 +1,15 @@
+# manyhndl: one test per block of the real-machine capture (output.txt); see tests/README.md. Built
+# with /MD (the slot-pool plan's "manyhandles": an 8.3 name, as every program in \CORPUS has).
+# The plan's handle-table fixture, captured on the 2026-11-27 VM trip.
+description = "manyhndl - many handles in one process: 100,000 DuplicateHandle copies of one event, their values as relations (multiples of 4, distinct), and the value a duplicate takes after one close and after two, Windows 2000's handle-table reuse (dup)."
+kind = "sectioned"
+timeout = 60
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only what a section calls itself and observes.
+dup = [
+    "kernel32.DuplicateHandle",
+    "kernel32.CloseHandle",
+    "kernel32.WaitForSingleObject",
+]

@@ -1,0 +1,68 @@
+# msgwait: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Built and captured on the 2026-11-27 VM trip (tests\build.bat msgwait, tests\capture.bat msgwait).
+# Its windows are hidden popups but for input's, a visible top-most one that injects Shift and a
+# mouse move with SendInput only while it is the foreground window (nobody touches the machine while
+# it captures). broadcast sends a message registered under the program's own name to every
+# top-level window (BSM_APPLICATIONS); idle runs msgwait.exe again as its child. Procedures and
+# callbacks log what they see; the log prints after the calls. Waits print as verdicts against
+# bands.
+description = "msgwait - MsgWaitForMultipleObjects (and Ex) against each QS_* mask and a posted, sent, timer, paint or peeked message, events with fWaitAll, MWMO_* flags; GetQueueStatus's current and new words step by step; GetInputState and QS_KEY/QS_MOUSEMOVE after SendInput; InSendMessage and InSendMessageEx's ISMEX_* flags for each kind of send; ReplyMessage; SendMessageCallbackW/A and when the callback runs; BroadcastSystemMessage(A/W) to the program's own window; Get/SetMessageExtraInfo; SetMessageQueue; WaitForInputIdle on children."
+kind = "sectioned"
+gate = true
+
+[pending]
+# U6 (.scratch/plans/user32-gdi32-completeness.md): msgwait.exe imports GetQueueStatus,
+# GetInputState, ReplyMessage, SendMessageCallbackA/W, GetMessageExtraInfo and WaitForInputIdle,
+# which F2K's user32 has as stubs only; drop each entry once its block passes.
+masks = "MsgWaitForMultipleObjects's QS_ALLPOSTMESSAGE does not wake on a posted message (a window's or the thread's), and a second thread's SendMessage to the window is not seen waiting (GetQueueStatus is a stub)"
+status = "GetQueueStatus is a stub"
+input = "GetInputState and GetQueueStatus are stubs: no input or posted-message state is reported"
+insend = "InSendMessageEx not yet implemented (catalogued only); SendMessageCallbackW and ReplyMessage are stubs"
+reply = "ReplyMessage is a stub: a sender waits for the procedure's return"
+callback = "SendMessageCallbackW and SendMessageCallbackA are stubs"
+broadcast = "BroadcastSystemMessage, A and W not yet implemented (catalogued only)"
+extra = "GetMessageExtraInfo is a stub and SetMessageExtraInfo not yet implemented (catalogued only)"
+queue = "SetMessageQueue not yet implemented (catalogued only)"
+idle = "WaitForInputIdle is a stub failing with ERROR_CALL_NOT_IMPLEMENTED, where Windows 2000's answers WAIT_FAILED and leaves the last error"
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only the exports a section observes, not the helpers around them (the class and window,
+# the message pump, the second thread's SendMessageW and SendNotifyMessageW, CreateProcessA).
+# MsgWaitForMultipleObjectsEx, InSendMessageEx, SetMessageExtraInfo, SetMessageQueue,
+# BroadcastSystemMessage(A/W) and SendInput are found with GetProcAddress (MSVC 6's headers lack
+# most of them).
+masks = [
+    "user32.MsgWaitForMultipleObjects",
+    "user32.MsgWaitForMultipleObjectsEx",
+    "user32.GetQueueStatus",
+]
+status = ["user32.GetQueueStatus", "user32.PostQuitMessage"]
+input = [
+    "user32.GetInputState",
+    "user32.GetQueueStatus",
+    "user32.MsgWaitForMultipleObjects",
+    "user32.GetMessageExtraInfo",
+    "user32.SendInput",
+]
+insend = [
+    "user32.InSendMessage",
+    "user32.InSendMessageEx",
+    "user32.ReplyMessage",
+    "user32.SendMessageCallbackW",
+]
+reply = ["user32.ReplyMessage"]
+callback = [
+    "user32.SendMessageCallbackW",
+    "user32.SendMessageCallbackA",
+    "user32.GetQueueStatus",
+]
+broadcast = [
+    "user32.BroadcastSystemMessage",
+    "user32.BroadcastSystemMessageA",
+    "user32.BroadcastSystemMessageW",
+    "user32.RegisterWindowMessageW",
+]
+extra = ["user32.GetMessageExtraInfo", "user32.SetMessageExtraInfo"]
+queue = ["user32.SetMessageQueue"]
+idle = ["user32.WaitForInputIdle"]

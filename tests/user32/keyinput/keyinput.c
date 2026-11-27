@@ -15,7 +15,8 @@
  * section says so and sends nothing (the check is made again before
  * every SendInput): no keystroke ever reaches another window. Every
  * key pressed is released in the same SendInput call, modifiers
- * included. Nobody types on the real machine while it runs.
+ * included, but in async, which releases Shift in the next one.
+ * Nobody types on the real machine while it runs.
  *
  * The procedure records the key and character messages it receives
  * (the message, wParam, lParam, and the down bit of GetKeyState for
@@ -84,6 +85,16 @@
  *              then one for WM_SYSKEYDOWN alone; the keystroke typed
  *              with no focus, then the focus given to A; and A, the
  *              focus, destroyed before the read
+ *   async      GetAsyncKeyState, the system's key state: of keys no one
+ *              presses ('A', Shift, Ctrl, Alt, Enter, Caps Lock, the
+ *              left button, F1, 0 and 255), whose low bit ("pressed
+ *              since the last call") is masked but on a second call
+ *              (another program's call or an earlier keystroke may have
+ *              left it either way), and of 256, -1 and 0x10041; then,
+ *              in the foreground, Shift's key-down sent alone and read
+ *              (VK_SHIFT twice, VK_LSHIFT, VK_RSHIFT, GetKeyState), its
+ *              key-up, and 'Q' pressed and released, read twice. Only
+ *              here is a key held between two SendInput calls
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat keyinput):
  *   cl /nologo /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% keyinput.c user32.lib
@@ -956,6 +967,115 @@ static void sec_typeahead(void)
     close_window(ta_top, 0, "F2KKeyinputTypeahead");
 }
 
+/* --- async --------------------------------------------------------- */
+
+/* GetAsyncKeyState's answer: the down bit and the rest but the low one
+ * (the "pressed since the last call" bit, which another program's call
+ * or an earlier keystroke may have left either way). */
+static void async_masked(const char *what, const char *note, int vk)
+{
+    SHORT r;
+
+    arm();
+    r = GetAsyncKeyState(vk);
+    line("GetAsyncKeyState(%s)%s: down %s, the other bits but the low one 0x%04X err=%s", what, note,
+         yesno((r & 0x8000) != 0), (unsigned)(r & 0x7FFE), le());
+}
+
+/* The whole answer, for a key whose low bit the section has settled. */
+static void async_exact(const char *what, const char *note, int vk)
+{
+    SHORT r;
+
+    arm();
+    r = GetAsyncKeyState(vk);
+    line("GetAsyncKeyState(%s)%s: 0x%04X err=%s", what, note, (unsigned)(USHORT)r, le());
+}
+
+/* One input event alone (a key-down held, or its key-up), then the
+ * queue pumped until the procedure has its key message, or 2 s pass. */
+static void send_one(HWND h, WORD vk, WORD scan, DWORD flags, const char *what)
+{
+    f2k_input in;
+    UINT sent;
+    DWORD start;
+    int arrived = 0;
+
+    ZeroMemory(&in, sizeof in);
+    in.type = INPUT_KEYBOARD;
+    in.u.ki.wVk = vk;
+    in.u.ki.wScan = scan;
+    in.u.ki.dwFlags = flags;
+    dispatch_queued(0);
+    reset_records(0);
+    arm();
+    sent = send_input(1, &in, (int)sizeof(f2k_input));
+    line("SendInput(1 event, %s): ret=%u err=%s", what, sent, le());
+    start = GetTickCount();
+    for (;;) {
+        dispatch_queued(0);
+        if (record_count > 0) {
+            arrived = 1;
+            break;
+        }
+        if (GetTickCount() - start >= 2000) {
+            break;
+        }
+        MsgWaitForMultipleObjects(0, NULL, FALSE, 100, QS_ALLINPUT);
+    }
+    line("  its key message arrived: %s", yesno(arrived && is_key_message(records[0].msg)));
+}
+
+static const stroke_t key_q[] = {
+    { 'Q', 0x10, DOWN }, { 'Q', 0x10, UP }
+};
+
+static void sec_async(void)
+{
+    HWND h;
+
+    h = open_window(0, "F2KKeyinputAsync");
+    line("-- keys no one presses");
+    async_masked("'A'", "", 'A');
+    async_exact("'A'", " again", 'A');
+    async_masked("VK_SHIFT", "", VK_SHIFT);
+    async_masked("VK_LSHIFT", "", VK_LSHIFT);
+    async_masked("VK_CONTROL", "", VK_CONTROL);
+    async_masked("VK_MENU", "", VK_MENU);
+    async_masked("VK_RETURN", "", VK_RETURN);
+    async_exact("VK_RETURN", " again", VK_RETURN);
+    async_masked("VK_CAPITAL", "", VK_CAPITAL);
+    async_masked("VK_LBUTTON", "", VK_LBUTTON);
+    async_masked("VK_F1", "", VK_F1);
+    async_masked("0", "", 0);
+    async_masked("255", "", 255);
+    line("-- invalid keys");
+    async_exact("256", "", 256);
+    async_exact("-1", "", -1);
+    async_exact("0x10041", "", 0x10041);
+
+    if (send_input == NULL || h == NULL || GetForegroundWindow() != h) {
+        line("the window is not the foreground window, or SendInput is missing: no input sent");
+        close_window(h, 0, "F2KKeyinputAsync");
+        return;
+    }
+    line("-- Shift held: its key-down alone, then its key-up");
+    async_masked("VK_SHIFT", " before", VK_SHIFT);
+    send_one(h, VK_SHIFT, 0x2A, DOWN, "Shift's key-down");
+    async_exact("VK_SHIFT", "", VK_SHIFT);
+    async_exact("VK_SHIFT", " again", VK_SHIFT);
+    async_exact("VK_LSHIFT", "", VK_LSHIFT);
+    async_masked("VK_RSHIFT", "", VK_RSHIFT);
+    line("  GetKeyState(VK_SHIFT) down: %s", yesno(down_bit(VK_SHIFT)));
+    send_one(h, VK_SHIFT, 0x2A, UP, "Shift's key-up");
+    async_exact("VK_SHIFT", "", VK_SHIFT);
+    async_exact("VK_LSHIFT", "", VK_LSHIFT);
+    type_keys(h, 0, "'Q' pressed and released", key_q, COUNT(key_q), 'Q');
+    async_exact("'Q'", "", 'Q');
+    async_exact("'Q'", " again", 'Q');
+    close_window(h, 0, "F2KKeyinputAsync");
+}
+
 static const section_t sections[] = {
     { "letters", sec_letters, F2KT_ALWAYS },
     { "symbols", sec_symbols, F2KT_ALWAYS },
@@ -966,6 +1086,7 @@ static const section_t sections[] = {
     { "repeat", sec_repeat, F2KT_ALWAYS },
     { "ansi", sec_ansi, F2KT_ALWAYS },
     { "typeahead", sec_typeahead, F2KT_ALWAYS },
+    { "async", sec_async, F2KT_ALWAYS },
     { NULL, NULL, 0 }
 };
 

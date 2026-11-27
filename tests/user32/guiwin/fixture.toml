@@ -1,7 +1,17 @@
 # guiwin: one test per block of the real-machine capture (output.txt); see tests/README.md.
-description = "guiwin - the window lifecycle in user32: CreateWindowExA/W (hwnd return, wndproc traffic WM_NCCREATE/WM_CREATE, unknown-class error 1407), GetDesktopWindow, IsWindow, DestroyWindow (WM_DESTROY, 1400 on a dead handle), LoadCursorA/W stock cursors; a creation refused by WM_NCCREATE answering 0 or WM_CREATE answering -1 (refuse), and a destroyed handle against the next window made (uniq)."
+description = "guiwin - the window lifecycle in user32: CreateWindowExA/W (hwnd return, wndproc traffic WM_NCCREATE/WM_CREATE, unknown-class error 1407), GetDesktopWindow, IsWindow, DestroyWindow (WM_DESTROY, 1400 on a dead handle), LoadCursorA/W stock cursors; a creation refused by WM_NCCREATE answering 0 or WM_CREATE answering -1 (refuse), a destroyed handle against the next window made (uniq); and creations nested 20 deep, each inside its parent's WM_CREATE, another thread's send received inside GetMessage, and a send alone during WaitMessage (nest); a procedure destroying its own window inside WM_NCCREATE or WM_CREATE (diecreate) and inside its WM_DESTROY (dienest); and which step of a process's first creation leaves the last error 183 (named-only err183pop, err183ovl)."
 kind = "sectioned"
 gate = true
+
+[pending]
+diecreate = "a window destroyed inside its own WM_NCCREATE or WM_CREATE: F2K's CreateWindowEx answers NULL and leaves the last error, where Windows 2000 answers the (dead) window's handle for WM_NCCREATE, NULL for WM_CREATE, both with ERROR_INVALID_PARAMETER"
+dienest = "a DestroyWindow nested in the window's own WM_DESTROY: F2K sends the inner call no WM_DESTROY or WM_NCDESTROY (the outer's WM_NCDESTROY comes after), where Windows 2000 sends both inside the outer WM_DESTROY"
+# err183pop and err183ovl were captured (2026-11-27) with a second input locale installed:
+# internat.exe's indicdll.dll (with imm32, advapi32 and rpcrt4) loaded at the first window and
+# set 183 there, so the blocks show that machine state, not a clean one. Kept pending until a
+# capture with one input locale.
+err183pop = "captured with internat.exe's indicdll.dll loaded at the first window (a second input locale): not the clean machine's first creation"
+err183ovl = "captured with internat.exe's indicdll.dll loaded at the first window (a second input locale): not the clean machine's first creation"
 
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
@@ -32,6 +42,38 @@ uniq = [
     "user32.CreateWindowExA",
     "user32.DestroyWindow",
     "user32.IsWindow",
+]
+nest = [
+    "user32.CreateWindowExA",
+    "user32.GetMessageA",
+    "user32.InSendMessage",
+    "user32.SendMessageA",
+    "user32.WaitMessage",
+]
+diecreate = [
+    "user32.CreateWindowExA",
+    "user32.CreateWindowExW",
+    "user32.DestroyWindow",
+    "user32.IsWindow",
+]
+dienest = [
+    "user32.CreateWindowExA",
+    "user32.DestroyWindow",
+    "user32.IsWindow",
+]
+err183pop = [
+    "user32.CreateWindowExA",
+    "user32.DefWindowProcA",
+    "user32.DestroyWindow",
+    "user32.GetDesktopWindow",
+    "user32.RegisterClassA",
+]
+err183ovl = [
+    "user32.CreateWindowExA",
+    "user32.DefWindowProcA",
+    "user32.DestroyWindow",
+    "user32.GetDesktopWindow",
+    "user32.RegisterClassA",
 ]
 
 [masks]

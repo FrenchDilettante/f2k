@@ -51,13 +51,13 @@
  *             AllocConsole again; FreeConsole; exit 23
  *   ctrl      (started with CREATE_NEW_CONSOLE) a handler counting the
  *             control events (answering TRUE), event F2KNewconReady set,
- *             a wait (5 s) for event F2KNewconGo, 500 ms more, the counts
+ *             a wait (5 s) for event F2KNewconGo, 200 ms more, the counts
  *             so far (what the parent's GenerateConsoleCtrlEvent into its
  *             id brought); then, only in a console that is not the
  *             parent's, GenerateConsoleCtrlEvent CTRL_C_EVENT and
  *             CTRL_BREAK_EVENT into group 0 (this console's processes:
- *             this one), and the counts once each came (1 s at most for
- *             Ctrl+C, 2 s for Ctrl+Break); exit 24
+ *             this one), and the counts once each came (300 ms at most
+ *             for Ctrl+C, 2 s for Ctrl+Break), 300 ms after; exit 24
  *   (anything else) that the mode is unknown; exit 100
  *
  * Build (real Windows 2000 machine, MSVC 6; tests\build.bat newcon):
@@ -330,6 +330,16 @@ static BOOL WINAPI counter(DWORD type)
     return TRUE;
 }
 
+/* The ctrl mode's waits for events that do not come on Windows 2000.
+ * After F2KNewconGo: the parent's GenerateConsoleCtrlEvent into this
+ * process's id was refused (ret=0 err=87) before it set the event, so
+ * nothing is on its way. Ctrl+C into group 0: a process of a new group
+ * ignores it, so that wait runs out; one that takes it counts it within
+ * a few clock ticks, and still before the counts print should it come
+ * later (the Ctrl+Break's wait and 300 ms follow). */
+#define AFTER_GO_MS 200
+#define CTRL_C_MS 300
+
 /* Wait up to `ms` for *count to be nonzero. */
 static void await_count(volatile LONG *count, DWORD ms)
 {
@@ -358,7 +368,7 @@ static void ctrl(void)
     if (WaitForSingleObject(go, 5000) != WAIT_OBJECT_0) {
         say("ctrl: no go in 5 s");
     }
-    Sleep(500);
+    Sleep(AFTER_GO_MS);
     say("before its own events: Ctrl+C %ld, Ctrl+Break %ld", ctrl_c, ctrl_break);
     h = CreateFileA("CONOUT$", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
                     OPEN_EXISTING, 0, NULL);
@@ -374,7 +384,7 @@ static void ctrl(void)
     r = GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0);
     e = GetLastError();
     say("GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0): ret=%d err=%s", r, le_of(e));
-    await_count(&ctrl_c, 1000);
+    await_count(&ctrl_c, CTRL_C_MS);
     SetLastError(UNTOUCHED);
     r = GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, 0);
     e = GetLastError();
