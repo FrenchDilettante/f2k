@@ -1,9 +1,13 @@
-//! The SID calls and the "am I an administrator" check: AllocateAndInitializeSid, EqualSid,
-//! FreeSid and CheckTokenMembership, as Windows 2000's advapi32 answers them.
+//! The SID calls and the "am I an administrator" check: AllocateAndInitializeSid, InitializeSid,
+//! GetLengthSid, IsValidSid, EqualSid, EqualPrefixSid, EqualDomainSid, CopySid,
+//! ConvertSidToStringSidA/W, CreateWellKnownSid, IsWellKnownSid, FreeSid and CheckTokenMembership,
+//! as Windows 2000's advapi32 answers them.
 //!
 //! A SID is winnt.h's: a revision (1), its sub-authorities' count, a six-byte identifier authority,
 //! then the sub-authorities, a dword each. AllocateAndInitializeSid's are blocks of the process
-//! heap, which FreeSid frees.
+//! heap, which FreeSid frees. The well-known SIDs (CreateWellKnownSid, IsWellKnownSid) are the
+//! public WELL_KNOWN_SID_TYPE kinds: a fixed authority and sub-authorities each, or a domain SID's
+//! prefix plus one RID for the domain kinds.
 //!
 //! CheckTokenMembership asks whether a SID is the token's user, or one of its groups enabled (and
 //! not for deny only), as the access check Windows 2000's makes with it answers: of an
@@ -22,17 +26,216 @@ use rtl::winerror::{
     ERROR_BAD_IMPERSONATION_LEVEL,
     ERROR_INVALID_PARAMETER,
     ERROR_INVALID_SID,
+    ERROR_INSUFFICIENT_BUFFER,
     ERROR_NOT_ENOUGH_MEMORY,
     ERROR_NO_IMPERSONATION_TOKEN,
 };
 
+// The Win32 errors the security calls report that rtl::winerror does not carry yet, by their
+// public values: ERROR_UNKNOWN_REVISION, ERROR_REVISION_MISMATCH, ERROR_INVALID_PRIMARY_GROUP
+// (ConvertSecurityDescriptorToAccess's answer), ERROR_NONE_MAPPED, ERROR_INVALID_ACL,
+// ERROR_INVALID_SECURITY_DESCR, ERROR_ALLOTTED_SPACE_EXCEEDED, and 1258, the error a pair of
+// SIDs in different domains gets from EqualDomainSid.
+pub(crate) const ERROR_UNKNOWN_REVISION: u32 = 1305;
+pub(crate) const ERROR_INVALID_PRIMARY_GROUP: u32 = 1308;
+pub(crate) const ERROR_NONE_MAPPED: u32 = 1332;
+pub(crate) const ERROR_INVALID_ACL: u32 = 1336;
+pub(crate) const ERROR_INVALID_SECURITY_DESCR: u32 = 1338;
+pub(crate) const ERROR_DOMAINS_DIFFER: u32 = 1258;
+
+// The statuses the security editors return that rtl::status does not carry yet, by their public
+// values: STATUS_UNKNOWN_REVISION, STATUS_INVALID_ACL, STATUS_INVALID_SID,
+// STATUS_INVALID_SECURITY_DESCR, STATUS_ALLOTTED_SPACE_EXCEEDED.
+pub(crate) const STATUS_INVALID_ACL: u32 = 0xC000_0077;
+pub(crate) const STATUS_INVALID_SID: u32 = 0xC000_0078;
+pub(crate) const STATUS_ALLOTTED_SPACE_EXCEEDED: u32 = 0xC000_0099;
+
 use crate::imports::{self as nt, HeapBlock, ProcessHeap};
-use crate::{caller_bytes, Out};
+use crate::{caller_bytes, caller_bytes_mut, Out};
 
 /// The most sub-authorities a SID has (SID_MAX_SUB_AUTHORITIES).
-const MAX_SUB_AUTHORITIES: usize = 15;
+pub(crate) const MAX_SUB_AUTHORITIES: usize = 15;
 /// AllocateAndInitializeSid's most.
 const MAX_ALLOCATED: usize = 8;
+/// A SID's revision (SID_REVISION).
+pub(crate) const SID_REVISION: u8 = 1;
+/// A SID's header's size: the revision, the count, the authority.
+pub(crate) const SID_HEADER: usize = 8;
+
+/// The bytes a SID of `count` sub-authorities takes.
+pub(crate) fn sid_len(count: usize) -> usize {
+    SID_HEADER + 4 * count
+}
+
+/// The width of a pointer field in a caller's structure: a dword on the target, a whole pointer
+/// on the host the tests run on.
+pub(crate) const PTR: usize = core::mem::size_of::<usize>();
+
+/// Read a pointer field at `at` of a caller's structure.
+pub(crate) fn ptr_field(bytes: &[u8], at: usize) -> Option<usize> {
+    usize::read_from(bytes, at)
+}
+
+/// Write a pointer field at `at` of a caller's structure.
+pub(crate) fn set_ptr_field(bytes: &mut [u8], at: usize, value: usize) {
+    if let Some(slot) = bytes.get_mut(at..at + PTR) {
+        slot.copy_from_slice(&value.to_le_bytes());
+    }
+}
+
+/// Whether the SID at the start of `bytes` is structurally valid: a revision whose low nibble is
+/// 1 and a count within the most (the bytes must hold the count's sub-authorities).
+pub(crate) fn valid_sid(bytes: &[u8]) -> bool {
+    match bytes.get(..SID_HEADER) {
+        Some(header) => {
+            header[0] & 0x0F == SID_REVISION && usize::from(header[1]) <= MAX_SUB_AUTHORITIES
+        }
+        None => false,
+    }
+}
+
+/// Whether two SID byte strings are the same: the same revision, the same count, the same bytes.
+pub(crate) fn sid_equal(first: &[u8], second: &[u8]) -> bool {
+    first == second
+}
+
+/// Whether two SID byte strings are the same but for the last sub-authority: the same revision,
+/// authority and count, and the same sub-authorities but for the last.
+pub(crate) fn sid_prefix_equal(first: &[u8], second: &[u8]) -> bool {
+    let (Some(a), Some(b)) = (first.get(..SID_HEADER), second.get(..SID_HEADER)) else {
+        return false;
+    };
+    if a[0] != b[0] || a[2..] != b[2..] || a[1] != b[1] {
+        return false;
+    }
+    let count = usize::from(a[1]);
+    if count == 0 {
+        return true;
+    }
+    let prefix = sid_len(count - 1);
+    first.get(..prefix) == second.get(..prefix)
+}
+
+/// A SID's fixed parts: its identifier authority and its sub-authorities, for the well-known
+/// kinds. The domain kinds take the domain SID's prefix and append their RID.
+pub(crate) struct SidParts {
+    pub(crate) authority: [u8; 6],
+    pub(crate) subs: [u32; MAX_SUB_AUTHORITIES],
+    pub(crate) count: usize,
+}
+
+/// The well-known SID of `kind` (a WELL_KNOWN_SID_TYPE), with `domain` the domain SID's bytes for
+/// the domain kinds (15 and 38..=50): none for an unknown kind or a missing domain.
+pub(crate) fn well_known_sid(kind: u32, domain: Option<&[u8]>) -> Option<SidParts> {
+    let nt: [u8; 6] = [0, 0, 0, 0, 0, 5];
+    let mut subs = [0u32; MAX_SUB_AUTHORITIES];
+    let (authority, count, rid): ([u8; 6], usize, Option<u32>) = match kind {
+        0 => ([0; 6], 1, Some(0)),
+        1 => ([0, 0, 0, 0, 0, 1], 1, Some(0)),
+        2 => ([0, 0, 0, 0, 0, 2], 1, Some(0)),
+        3 => ([0, 0, 0, 0, 0, 3], 1, Some(0)),
+        4 => ([0, 0, 0, 0, 0, 3], 1, Some(1)),
+        5 => ([0, 0, 0, 0, 0, 3], 1, Some(2)),
+        6 => ([0, 0, 0, 0, 0, 3], 1, Some(3)),
+        7 => (nt, 0, None),
+        8..=14 | 16..=37 => {
+            let rid = match kind {
+                8 => 1,
+                9 => 2,
+                10 => 3,
+                11 => 4,
+                12 => 6,
+                13 => 7,
+                14 => 8,
+                16 => 10,
+                17 => 11,
+                18 => 12,
+                19 => 13,
+                20 => 14,
+                21 => 5,
+                22 => 18,
+                23 => 19,
+                24 => 20,
+                25 => 32,
+                26..=37 => {
+                    subs[0] = 32;
+                    match kind {
+                        26 => 544,
+                        27 => 545,
+                        28 => 546,
+                        29 => 547,
+                        30 => 548,
+                        31 => 549,
+                        32 => 550,
+                        33 => 551,
+                        34 => 552,
+                        35 => 554,
+                        36 => 555,
+                        _ => 556,
+                    }
+                }
+                _ => return None,
+            };
+            subs[if kind >= 26 { 1 } else { 0 }] = rid;
+            (nt, if kind >= 26 { 2 } else { 1 }, None)
+        }
+        15 | 38..=50 => {
+            let domain = domain?;
+            let header = domain.get(..SID_HEADER)?;
+            let count = usize::from(header[1]);
+            if count >= MAX_SUB_AUTHORITIES || !valid_sid(domain) {
+                return None;
+            }
+            let rid = match kind {
+                15 => 9,
+                38 => 500,
+                39 => 501,
+                40 => 502,
+                41 => 512,
+                42 => 513,
+                43 => 514,
+                44 => 515,
+                45 => 516,
+                46 => 517,
+                47 => 518,
+                48 => 519,
+                49 => 520,
+                _ => 521,
+            };
+            let mut parts = SidParts {
+                authority: header[2..8].try_into().ok()?,
+                subs: [0; MAX_SUB_AUTHORITIES],
+                count: count + 1,
+            };
+            for index in 0..count {
+                parts.subs[index] =
+                    u32::from_le_bytes(domain.get(SID_HEADER + 4 * index..SID_HEADER + 4 * index + 4)?.try_into().ok()?);
+            }
+            parts.subs[count] = rid;
+            return Some(parts);
+        }
+        _ => return None,
+    };
+    if let Some(rid) = rid {
+        subs[0] = rid;
+    }
+    Some(SidParts {
+        authority,
+        subs,
+        count,
+    })
+}
+
+/// The SID parts' bytes in a buffer of at least `sid_len(count)` bytes.
+pub(crate) fn sid_parts_bytes(parts: &SidParts, out: &mut [u8]) {
+    out[0] = SID_REVISION;
+    out[1] = parts.count as u8;
+    out[2..8].copy_from_slice(&parts.authority);
+    for index in 0..parts.count {
+        out[SID_HEADER + 4 * index..SID_HEADER + 4 * index + 4]
+            .copy_from_slice(&parts.subs[index].to_le_bytes());
+    }
+}
 
 /// The token information classes the check reads, and the token rights it opens with.
 const TOKEN_USER: u32 = 1;
@@ -65,7 +268,7 @@ fn sid_of(bytes: &[u8]) -> Option<&[u8]> {
 /// # Safety
 ///
 /// `sid` is null or a SID the call may read (its count says how long).
-unsafe fn caller_sid<'a>(sid: *const u8) -> Option<&'a [u8]> {
+pub(crate) unsafe fn caller_sid<'a>(sid: *const u8) -> Option<&'a [u8]> {
     if sid.is_null() {
         return None;
     }
@@ -159,6 +362,389 @@ pub unsafe extern "system" fn free_sid(sid: *mut u8) -> *mut u8 {
     // SAFETY: the caller's contract: a block of the process heap, freed once.
     unsafe { ProcessHeap::free(sid) };
     core::ptr::null_mut()
+}
+
+/// InitializeSid: the SID at `sid` set to revision 1, the authority's six bytes and the count
+/// (more than 15 sub-authorities: ERROR_INVALID_PARAMETER); the sub-authorities are left alone.
+/// The last error is untouched on success.
+///
+/// # Safety
+///
+/// `sid` is a writable SID header of eight bytes at least; `authority` six readable bytes.
+#[unsafe(export_name = "f2k_export_InitializeSid")]
+pub unsafe extern "system" fn initialize_sid(
+    sid: *mut u8,
+    authority: *const u8,
+    count: u8,
+) -> u32 {
+    let count = count as usize;
+    // SAFETY: the caller's SID header and authority.
+    let (sid, authority) = unsafe { (caller_bytes_mut(sid, SID_HEADER), caller_bytes(authority, 6)) };
+    let (Some(sid), Some(authority)) = (sid, authority) else {
+        nt::set_last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    };
+    if count > MAX_SUB_AUTHORITIES {
+        nt::set_last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+    sid[0] = SID_REVISION;
+    sid[1] = count as u8;
+    sid[2..8].copy_from_slice(authority);
+    1
+}
+
+/// GetLengthSid: the bytes the SID at `sid` takes, its count saying; the last error ERROR_SUCCESS.
+///
+/// # Safety
+///
+/// `sid` is null or a SID the call may read (its header at least).
+#[unsafe(export_name = "f2k_export_GetLengthSid")]
+pub unsafe extern "system" fn get_length_sid(sid: *const u8) -> u32 {
+    // SAFETY: the caller's SID header.
+    let header = unsafe { caller_bytes(sid, 2) };
+    let Some(header) = header else {
+        nt::set_last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    };
+    nt::set_last_error(0);
+    sid_len(usize::from(header[1])) as u32
+}
+
+/// IsValidSid: whether the SID at `sid` is structurally valid; ERROR_INVALID_SID when not.
+///
+/// # Safety
+///
+/// `sid` is null or a SID the call may read.
+#[unsafe(export_name = "f2k_export_IsValidSid")]
+pub unsafe extern "system" fn is_valid_sid(sid: *const u8) -> u32 {
+    // SAFETY: the caller's SID.
+    let bytes = unsafe { caller_sid(sid) };
+    if bytes.is_some_and(valid_sid) {
+        1
+    } else {
+        nt::set_last_error(ERROR_INVALID_SID);
+        0
+    }
+}
+
+/// EqualPrefixSid: whether the two SIDs are the same but for the last sub-authority; the last
+/// error ERROR_SUCCESS whatever the answer.
+///
+/// # Safety
+///
+/// `first` and `second` are SIDs the call may read.
+#[unsafe(export_name = "f2k_export_EqualPrefixSid")]
+pub unsafe extern "system" fn equal_prefix_sid(first: *const u8, second: *const u8) -> u32 {
+    // SAFETY: the caller's SIDs.
+    let (first, second) = unsafe { (caller_sid(first), caller_sid(second)) };
+    nt::set_last_error(0);
+    u32::from(
+        first.is_some() && second.is_some() && sid_prefix_equal(first.unwrap(), second.unwrap()),
+    )
+}
+
+/// CopySid: the SID at `source` copied into `destination`, whose room `length` says;
+/// ERROR_INSUFFICIENT_BUFFER when the SID does not fit. The last error is untouched on success.
+///
+/// # Safety
+///
+/// `destination` is `length` writable bytes; `source` a SID the call may read.
+#[unsafe(export_name = "f2k_export_CopySid")]
+pub unsafe extern "system" fn copy_sid(length: u32, destination: *mut u8, source: *const u8) -> u32 {
+    // SAFETY: the caller's SID and destination.
+    let (source, destination) = unsafe { (caller_sid(source), caller_bytes_mut(destination, length as usize)) };
+    let (Some(source), Some(destination)) = (source, destination) else {
+        nt::set_last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    };
+    if source.len() > length as usize {
+        nt::set_last_error(ERROR_INSUFFICIENT_BUFFER);
+        return 0;
+    }
+    destination[..source.len()].copy_from_slice(source);
+    1
+}
+
+/// One unit into `units` at `at`, advancing it; false when the buffer is full.
+fn put_unit(units: &mut [u16], at: &mut usize, unit: u16) -> bool {
+    match units.get_mut(*at) {
+        Some(slot) => {
+            *slot = unit;
+            *at += 1;
+            true
+        }
+        None => false,
+    }
+}
+
+/// The number `value` in `base` (10 or 16, the digits upper-case) into `units` at `at`.
+fn put_number(units: &mut [u16], at: &mut usize, mut value: u64, base: u64) -> bool {
+    let mut digits = [0u16; 20];
+    let mut count = 0;
+    loop {
+        let digit = (value % base) as u16;
+        digits[count] = if digit > 9 {
+            digit - 10 + u16::from(b'A')
+        } else {
+            u16::from(b'0') + digit
+        };
+        count += 1;
+        value /= base;
+        if value == 0 {
+            break;
+        }
+    }
+    while count > 0 {
+        count -= 1;
+        if !put_unit(units, at, digits[count]) {
+            return false;
+        }
+    }
+    true
+}
+
+/// The SID's text into `units` at `at`: "S-1-" then the identifier authority — the 48-bit value in
+/// hexadecimal when its top two bytes are set, the low 32 bits in decimal otherwise — then each
+/// sub-authority after a '-', in decimal.
+fn put_sid_text(sid: &[u8], units: &mut [u16], at: &mut usize) -> bool {
+    if !b"S-1-".iter().all(|&b| put_unit(units, at, u16::from(b))) {
+        return false;
+    }
+    let authority = &sid[2..8];
+    if authority[0] != 0 || authority[1] != 0 {
+        let wide = u64::from(authority[0]) << 40
+            | u64::from(authority[1]) << 32
+            | u64::from(authority[2]) << 24
+            | u64::from(authority[3]) << 16
+            | u64::from(authority[4]) << 8
+            | u64::from(authority[5]);
+        if !put_number(units, at, wide, 16) {
+            return false;
+        }
+    } else {
+        let narrow = u32::from(authority[5])
+            | u32::from(authority[4]) << 8
+            | u32::from(authority[3]) << 16
+            | u32::from(authority[2]) << 24;
+        if !put_number(units, at, u64::from(narrow), 10) {
+            return false;
+        }
+    }
+    for index in 0..usize::from(sid[1]) {
+        if !put_unit(units, at, u16::from(b'-')) {
+            return false;
+        }
+        let Some(sub) = sid
+            .get(SID_HEADER + 4 * index..SID_HEADER + 4 * index + 4)
+            .and_then(|bytes| <[u8; 4]>::try_from(bytes).ok())
+        else {
+            return false;
+        };
+        if !put_number(units, at, u64::from(u32::from_le_bytes(sub)), 10) {
+            return false;
+        }
+    }
+    true
+}
+
+/// The SID at `sid` as its text in `units` (a terminator slot left): the units written, or none
+/// for an invalid SID.
+pub(crate) fn sid_to_units(sid: &[u8], units: &mut [u16]) -> Option<usize> {
+    if !valid_sid(sid) || sid[0] != SID_REVISION {
+        return None;
+    }
+    let mut at = 0;
+    if put_sid_text(sid, units, &mut at) {
+        Some(at)
+    } else {
+        None
+    }
+}
+
+/// ConvertSidToStringSidW: the SID at `sid` as its text in a process-heap block of UTF-16 units
+/// (the terminator included), its address into `string`. ERROR_INVALID_PARAMETER for a null
+/// argument, ERROR_INVALID_SID for an invalid SID; the last error ERROR_SUCCESS on success.
+///
+/// # Safety
+///
+/// `sid` is null or a SID the call may read; `string` the caller's place for the address.
+#[unsafe(export_name = "f2k_export_ConvertSidToStringSidW")]
+pub unsafe extern "system" fn convert_sid_to_string_sid_w(
+    sid: *const u8,
+    string: *mut *mut u16,
+) -> u32 {
+    // SAFETY: the caller's SID and place.
+    let (sid, mut place) = unsafe { (caller_sid(sid), Out::optional(string)) };
+    let (Some(sid), Some(place)) = (sid, place.as_mut()) else {
+        nt::set_last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    };
+    let mut units = [0u16; 256];
+    let Some(len) = sid_to_units(sid, &mut units) else {
+        nt::set_last_error(ERROR_INVALID_SID);
+        return 0;
+    };
+    let block = ProcessHeap::allocate(2 * (len + 1));
+    if block.is_null() {
+        nt::set_last_error(ERROR_NOT_ENOUGH_MEMORY);
+        return 0;
+    }
+    // SAFETY: the heap's new block of 2*(len+1) bytes, ours until the caller frees it.
+    let out = unsafe { core::slice::from_raw_parts_mut(block.cast::<u16>(), len + 1) };
+    out[..len].copy_from_slice(&units[..len]);
+    out[len] = 0;
+    place.set(block.cast());
+    nt::set_last_error(0);
+    1
+}
+
+/// ConvertSidToStringSidA: ConvertSidToStringSidW's text converted to the ANSI code page, in a
+/// process-heap block whose address goes into `string`.
+///
+/// # Safety
+///
+/// `sid` is null or a SID the call may read; `string` the caller's place for the address.
+#[unsafe(export_name = "f2k_export_ConvertSidToStringSidA")]
+pub unsafe extern "system" fn convert_sid_to_string_sid_a(
+    sid: *const u8,
+    string: *mut *mut u8,
+) -> u32 {
+    // SAFETY: the caller's SID and place.
+    let (sid, mut place) = unsafe { (caller_sid(sid), Out::optional(string)) };
+    let (Some(sid), Some(place)) = (sid, place.as_mut()) else {
+        nt::set_last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    };
+    let mut units = [0u16; 256];
+    let Some(len) = sid_to_units(sid, &mut units) else {
+        nt::set_last_error(ERROR_INVALID_SID);
+        return 0;
+    };
+    units[len] = 0;
+    let wide = &units[..len + 1];
+    let bytes = nt::unicode_to_multi_byte_size(wide) as usize;
+    let block = ProcessHeap::allocate(bytes);
+    if block.is_null() {
+        nt::set_last_error(ERROR_NOT_ENOUGH_MEMORY);
+        return 0;
+    }
+    // SAFETY: the heap's new block of `bytes` bytes, ours until the caller frees it.
+    let out = unsafe { core::slice::from_raw_parts_mut(block, bytes) };
+    nt::unicode_to_multi_byte(out, wide);
+    place.set(block);
+    nt::set_last_error(0);
+    1
+}
+
+/// CreateWellKnownSid: the well-known SID of `kind` (a WELL_KNOWN_SID_TYPE) into `sid`, the
+/// domain kinds taking `domain`'s prefix. The room `size` points at must hold the SID;
+/// otherwise it receives the size needed, the last error is ERROR_INSUFFICIENT_BUFFER and the
+/// answer is FALSE. An unknown kind, or a domain kind without a domain, is
+/// ERROR_INVALID_PARAMETER. The last error is untouched on success.
+///
+/// # Safety
+///
+/// `sid` is null or `*size` writable bytes; `domain` null or a SID the call may read; `size` the
+/// caller's place for the room.
+#[unsafe(export_name = "f2k_export_CreateWellKnownSid")]
+pub unsafe extern "system" fn create_well_known_sid(
+    kind: u32,
+    domain: *const u8,
+    sid: *mut u8,
+    size: *mut u32,
+) -> u32 {
+    // SAFETY: the caller's domain SID and place.
+    let (domain, mut room) = unsafe { (caller_sid(domain), Out::optional(size)) };
+    let Some(room) = room.as_mut() else {
+        nt::set_last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    };
+    let parts = well_known_sid(kind, domain);
+    let Some(parts) = parts else {
+        nt::set_last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    };
+    let needed = sid_len(parts.count) as u32;
+    if sid.is_null() || room.get() < needed {
+        room.set(needed);
+        nt::set_last_error(ERROR_INSUFFICIENT_BUFFER);
+        return 0;
+    }
+    // SAFETY: the caller's buffer of `needed` bytes.
+    let out = unsafe { caller_bytes_mut(sid, needed as usize) };
+    let Some(out) = out else {
+        nt::set_last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    };
+    sid_parts_bytes(&parts, out);
+    1
+}
+
+/// IsWellKnownSid: whether `sid` is the well-known SID of `kind`; the last error ERROR_SUCCESS
+/// whatever the answer.
+///
+/// # Safety
+///
+/// `sid` is null or a SID the call may read.
+#[unsafe(export_name = "f2k_export_IsWellKnownSid")]
+pub unsafe extern "system" fn is_well_known_sid(sid: *const u8, kind: u32) -> u32 {
+    // SAFETY: the caller's SID.
+    let sid = unsafe { caller_sid(sid) };
+    nt::set_last_error(0);
+    // The domain kinds have no fixed SID to compare against here.
+    if matches!(kind, 15 | 38..=50) {
+        return 0;
+    }
+    let Some(parts) = well_known_sid(kind, None) else {
+        return 0;
+    };
+    let mut bytes = [0u8; SID_HEADER + 4 * MAX_SUB_AUTHORITIES];
+    sid_parts_bytes(&parts, &mut bytes[..sid_len(parts.count)]);
+    u32::from(sid.is_some_and(|sid| sid == &bytes[..sid_len(parts.count)]))
+}
+
+/// EqualDomainSid: whether one of the two SIDs is the other's domain (all but its last
+/// sub-authority): *equal set to TRUE and the last error ERROR_SUCCESS when so, the last error
+/// 1258 and the answer FALSE otherwise (*equal untouched).
+///
+/// # Safety
+///
+/// `first` and `second` are SIDs the call may read; `equal` the caller's place for the answer.
+#[unsafe(export_name = "f2k_export_EqualDomainSid")]
+pub unsafe extern "system" fn equal_domain_sid(
+    first: *const u8,
+    second: *const u8,
+    equal: *mut u32,
+) -> u32 {
+    // SAFETY: the caller's SIDs and place.
+    let (first, second, mut place) =
+        unsafe { (caller_sid(first), caller_sid(second), Out::optional(equal)) };
+    let (Some(first), Some(second)) = (first, second) else {
+        nt::set_last_error(ERROR_INVALID_PARAMETER);
+        return 0;
+    };
+    // One SID is the other's domain when it is the other's bytes but for the last sub-authority.
+    // The domain: the SID's bytes but for the last sub-authority, with the count lowered.
+    fn domain_of(sid: &[u8]) -> Option<Vec<u8>> {
+        let count = usize::from(*sid.get(1)?);
+        let last = count.checked_sub(1)?;
+        let mut prefix = sid.get(..sid_len(last))?.to_vec();
+        prefix[1] = last as u8;
+        Some(prefix)
+    }
+    let same = domain_of(first).is_some_and(|prefix| prefix == second)
+        || domain_of(second).is_some_and(|prefix| prefix == first);
+    if same {
+        if let Some(place) = place.as_mut() {
+            place.set(1);
+        }
+        nt::set_last_error(0);
+        1
+    } else {
+        nt::set_last_error(ERROR_DOMAINS_DIFFER);
+        0
+    }
 }
 
 /// A token's information of `class`, read whole into a block of the process heap (asked for its
@@ -284,128 +870,4 @@ pub unsafe extern "system" fn check_token_membership(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::imports::host::LAST_ERROR;
-
-    const NT_AUTHORITY: [u8; 6] = [0, 0, 0, 0, 0, 5];
-
-    fn last_error() -> u32 {
-        LAST_ERROR.with(|error| error.get())
-    }
-
-    fn arm() {
-        LAST_ERROR.with(|error| error.set(0xF2F2));
-    }
-
-    fn sid(authority: u8, subs: &[u32]) -> Vec<u8> {
-        let mut bytes = vec![1, subs.len() as u8, 0, 0, 0, 0, 0, authority];
-        for sub in subs {
-            bytes.extend(sub.to_le_bytes());
-        }
-        bytes
-    }
-
-    /// AllocateAndInitializeSid builds S-1-5-32-544 byte for byte, leaving the last error;
-    /// EqualSid compares, the last error ERROR_SUCCESS either way; FreeSid answers NULL. Nine
-    /// sub-authorities are ERROR_INVALID_SID.
-    #[test]
-    fn a_sid_is_made_compared_and_freed() {
-        let mut admins: *mut u8 = core::ptr::null_mut();
-        arm();
-        let ok = unsafe {
-            allocate_and_initialize_sid(
-                NT_AUTHORITY.as_ptr(),
-                2,
-                32,
-                544,
-                0,
-                0,
-                0,
-                0,
-                0,
-                0,
-                &mut admins,
-            )
-        };
-        assert_eq!((ok, last_error()), (1, 0xF2F2));
-        let made = unsafe { core::slice::from_raw_parts(admins, 16) };
-        assert_eq!(made, sid(5, &[32, 544]).as_slice());
-        let users = sid(5, &[32, 545]);
-        let same = sid(5, &[32, 544]);
-        arm();
-        assert_eq!(
-            (unsafe { equal_sid(admins, same.as_ptr()) }, last_error()),
-            (1, 0)
-        );
-        arm();
-        assert_eq!(
-            (unsafe { equal_sid(admins, users.as_ptr()) }, last_error()),
-            (0, 0)
-        );
-        assert_eq!(unsafe { equal_sid(admins, sid(1, &[0]).as_ptr()) }, 0);
-        arm();
-        assert!(unsafe { free_sid(admins) }.is_null());
-        assert_eq!(last_error(), 0xF2F2);
-        let mut none: *mut u8 = core::ptr::null_mut();
-        let ok = unsafe {
-            allocate_and_initialize_sid(NT_AUTHORITY.as_ptr(), 9, 0, 0, 0, 0, 0, 0, 0, 0, &mut none)
-        };
-        assert_eq!((ok, last_error(), none.is_null()), (0, 1337, true));
-    }
-
-    /// A TOKEN_USER and a TOKEN_GROUPS as the kernel answers them, read at `base`.
-    fn answers(base: usize) -> (Vec<u8>, Vec<u8>) {
-        let user_sid = sid(5, &[21, 1, 2, 3, 1000]);
-        let mut user = Vec::new();
-        user.extend(((base + 8) as u32).to_le_bytes());
-        user.extend(0u32.to_le_bytes());
-        user.extend(&user_sid);
-        let groups_of = [
-            (sid(1, &[0]), 7u32),
-            (sid(5, &[32, 544]), 0xF),
-            (sid(5, &[32, 545]), 0x10 | 0x4),
-            (sid(5, &[32, 547]), 0x3),
-        ];
-        let mut groups = Vec::new();
-        groups.extend((groups_of.len() as u32).to_le_bytes());
-        let mut at = base + 4 + 8 * groups_of.len();
-        for (group, attributes) in &groups_of {
-            groups.extend((at as u32).to_le_bytes());
-            groups.extend(attributes.to_le_bytes());
-            at += group.len();
-        }
-        for (group, _) in &groups_of {
-            groups.extend(group);
-        }
-        (user, groups)
-    }
-
-    /// The user and the enabled groups are members; a group for deny only, one not enabled, and
-    /// one the token does not hold are not.
-    #[test]
-    fn members_are_the_user_and_the_enabled_groups() {
-        let (user, groups) = answers(0x1000);
-        let member = |sid: &[u8]| is_member(sid, &user, 0x1000, &groups, 0x1000);
-        assert!(member(&sid(5, &[21, 1, 2, 3, 1000])));
-        assert!(member(&sid(1, &[0])));
-        assert!(member(&sid(5, &[32, 544])));
-        assert!(!member(&sid(5, &[32, 545])), "for deny only");
-        assert!(!member(&sid(5, &[32, 547])), "not enabled");
-        assert!(!member(&sid(5, &[32, 546])), "not held");
-        assert!(!member(&sid(5, &[18])));
-    }
-
-    /// CheckTokenMembership writes IsMember FALSE before it fails; no place for it is
-    /// ERROR_INVALID_PARAMETER, no SID ERROR_INVALID_SID.
-    #[test]
-    fn is_member_is_false_before_the_check() {
-        let mut is = 0xF2F2;
-        arm();
-        let ok = unsafe { check_token_membership(0x58, core::ptr::null(), &mut is) };
-        assert_eq!((ok, last_error(), is), (0, 1337, 0));
-        let admins = sid(5, &[32, 544]);
-        let ok = unsafe { check_token_membership(0x58, admins.as_ptr(), core::ptr::null_mut()) };
-        assert_eq!((ok, last_error()), (0, 87));
-    }
-}
+mod tests;
