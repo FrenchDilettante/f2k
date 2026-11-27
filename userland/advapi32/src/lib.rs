@@ -26,6 +26,7 @@ pub mod registry;
 pub mod sid;
 pub mod stub;
 pub mod token;
+pub mod trustee;
 
 /// A caller's out parameter and buffers, as every system DLL's exports take them.
 pub use rtl::edge::{caller_bytes, caller_bytes_mut, Out};
