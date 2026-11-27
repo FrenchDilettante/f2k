@@ -411,9 +411,10 @@ pub const KERNEL_HALF_START: usize = directory_index(KERNEL_BASE);
 /// page *table*.
 pub const DIRECTORY_ENTRY_VA: u32 = self_map_table(SELF_MAP_SLOT);
 /// The ring-0 gate stacks' window: the kernel stack region ([`layout::KERNEL_STACKS`], entries
-/// 656-659), its tables made at boot and shared by every directory, sub-allocated into per-thread
-/// slots numbered across the whole region (one ledger for the system, [`crate::mem::kstacks`]),
-/// each a guard page plus the 32 KiB stack. Slot 0's top is [`GATE_STACK_TOP`].
+/// 656-767), its tables made on demand and installed in every directory
+/// ([`ensure_kernel_tables`]), sub-allocated into per-thread slots numbered across the whole region
+/// (one ledger for the system, [`crate::mem::kstacks`]), each a guard page plus the 32 KiB stack.
+/// Slot 0's top is [`GATE_STACK_TOP`].
 pub const GATE_STACK_WINDOW: u32 = layout::KERNEL_STACKS.start;
 /// Gate stack pages, one frame each (32 KiB): room for the file system's walks under the debug
 /// build's frames.
@@ -436,8 +437,8 @@ const _: () = assert!(
 pub const GATE_STACK_TOP: u32 = gate_slot_top(0);
 /// One thread's slot: a guard page plus the stack pages.
 pub const GATE_SLOT_STRIDE: u32 = ((GATE_STACK_PAGES + 1) as u32) * PAGE_SIZE;
-/// How many slots the region (four directory entries, 16 MiB) holds: the system's capacity for
-/// kernel stacks. A slot may straddle two of the region's page tables.
+/// How many slots the region (112 directory entries, 448 MiB) holds: the system's capacity for
+/// kernel stacks, 12,743. A slot may straddle two of the region's page tables.
 pub const GATE_SLOT_CAPACITY: usize = (layout::KERNEL_STACKS.size() / GATE_SLOT_STRIDE) as usize;
 
 /// Slot `index`'s base: its guard page, never mapped.
@@ -538,27 +539,6 @@ mod self_map {
     }
 }
 
-/// Make the kernel stack region's page tables, once, at boot, after [`init_table_access`] and
-/// before the first process directory: zeroed frames installed in the boot directory, which every
-/// process directory inherits with the rest of the kernel half. The tables are then shared: a gate
-/// stack mapped in them ([`map_gate_pages`]) is mapped in every address space. They are never
-/// released.
-#[cfg(target_arch = "x86")]
-pub fn init_kernel_stack_tables() {
-    assert!(
-        !KERNEL_HALF_FROZEN.load(Ordering::Relaxed),
-        "the kernel stack tables made after the first process directory"
-    );
-    with_database(|database| {
-        let Parts {
-            frames, scratch, ..
-        } = database.parts();
-        for window in layout::KERNEL_STACKS.first_entry()..layout::KERNEL_STACKS.end_entry() {
-            install_kernel_table(window, new_table_in(frames, scratch));
-        }
-    });
-}
-
 /// Make the framebuffer region's page tables, shared by every address space like the MMIO region's:
 /// the display's linear framebuffer is mapped into them when the graphics mode is set (its frames
 /// come from the VBE mode information, not from here).
@@ -578,8 +558,8 @@ pub fn init_framebuffer_tables() {
     });
 }
 
-/// Make the MMIO region's page tables, once, at boot, as [`init_kernel_stack_tables`] makes the
-/// kernel stacks': zeroed frames installed in the boot directory, which every process directory
+/// Make the MMIO region's page tables, once, at boot, as [`init_framebuffer_tables`] makes the
+/// framebuffer's: zeroed frames installed in the boot directory, which every process directory
 /// inherits, so a device range mapped in them ([`map_mmio_page`]) is mapped in every address space.
 /// They are never released.
 #[cfg(target_arch = "x86")]
@@ -598,8 +578,8 @@ pub fn init_mmio_tables() {
     });
 }
 
-/// Make the modules region's page tables, once, at boot, as [`init_kernel_stack_tables`] makes the
-/// kernel stacks': zeroed frames installed in the boot directory, which every process directory
+/// Make the modules region's page tables, once, at boot, as [`init_framebuffer_tables`] makes the
+/// framebuffer's: zeroed frames installed in the boot directory, which every process directory
 /// inherits, so a driver image mapped in them ([`crate::dev::loader`]) is mapped in every address
 /// space. They are never released.
 #[cfg(target_arch = "x86")]
@@ -655,9 +635,10 @@ fn install_kernel_table(window: usize, table_phys: PhysAddr) {
 /// Set once the first process directory is assembled: from then on the kernel half is frozen, every
 /// directory holding its own copy of the kernel-half directory entries. A table created afterwards
 /// by [`map_kernel_page`] would map its pages in one directory and leave them missing from the
-/// others: the kernel half's tables are created at boot (the shared data page's, the kernel stack
-/// region's), but for the regions whose tables are made on demand ([`ensure_kernel_tables`]),
-/// which installs each in every directory.
+/// others: the kernel half's tables are created at boot (the shared data page's, the framebuffer's,
+/// the MMIO and modules regions'), but for the regions whose tables are made on demand (the kernel
+/// stacks' and the nonpaged pool's, [`ensure_kernel_tables`]), which installs each in every
+/// directory.
 #[cfg(target_arch = "x86")]
 static KERNEL_HALF_FROZEN: AtomicBool = AtomicBool::new(false);
 
@@ -985,6 +966,23 @@ pub fn create_address_space() -> PhysAddr {
             directories,
             ..
         } = database.parts();
+        // The kernel half is copied from the current directory: the master or a linked one, which
+        // every table made on demand reached (a retired one could miss a later table, a kernel
+        // stack's among them, and the new directory with it).
+        debug_assert!(
+            {
+                let current = current_directory_phys();
+                current == boot_directory_phys()
+                    || directories.is_linked(
+                        &mut Live {
+                            frames: &mut *frames,
+                            scratch: &mut *scratch,
+                        },
+                        current,
+                    )
+            },
+            "a directory copied from one no kernel table reaches"
+        );
         // Allocated first: exhaustion fails before any write.
         let dir_phys = allocate_in(frames);
         // The directory is assembled in its own frame, through the scratch window: every entry is
@@ -1353,8 +1351,8 @@ pub fn unmap_gate_pages(top: u32, count: usize) -> [PhysAddr; LARGE_STACK_PAGES]
 ///
 /// # Panics
 ///
-/// The pages lie outside the region, or the region's tables are not made yet
-/// ([`init_kernel_stack_tables`]).
+/// The pages lie outside the region, or their windows' tables are not made yet
+/// ([`ensure_kernel_tables`], which the stack's creation calls for its slots' range first).
 #[cfg(target_arch = "x86")]
 pub fn map_gate_pages(
     frames: &mut FrameDb,
@@ -1371,8 +1369,8 @@ pub fn map_gate_pages(
         "gate-stack pages outside the region"
     );
     assert!(
-        kernel_stack_tables_installed(),
-        "a gate stack mapped before the kernel stack tables are made"
+        kernel_tables_installed(top - (to as u32) * PAGE_SIZE..top),
+        "a gate stack mapped before its tables are made (ensure_kernel_tables)"
     );
     for (i, slot) in into.iter_mut().enumerate().take(to).skip(from) {
         let frame = allocate_in(frames);
@@ -1501,10 +1499,10 @@ pub fn translate_kernel_address(vaddr: u32) -> Option<PhysAddr> {
     Some(pte.frame() + (vaddr & (PAGE_SIZE - 1)))
 }
 
-/// Whether the current directory holds every table of the kernel stack region.
+/// Whether the current directory holds every table of the kernel addresses `range` (not empty).
 #[cfg(target_arch = "x86")]
-fn kernel_stack_tables_installed() -> bool {
-    (layout::KERNEL_STACKS.first_entry()..layout::KERNEL_STACKS.end_entry())
+fn kernel_tables_installed(range: core::ops::Range<u32>) -> bool {
+    (directory_index(range.start)..=directory_index(range.end - 1))
         .all(|window| self_map::pde(window).present())
 }
 
@@ -1978,8 +1976,9 @@ mod tests {
         }
     }
 
-    /// The kernel stack region's tables, made at boot in the base, are every directory's: two
-    /// processes' directories assembled from it name the same four tables, so a stack mapped for a
+    /// The kernel stack region's tables, present in the base (the master, which every table made on
+    /// demand reaches), are every directory's: two processes' directories assembled from it name
+    /// the same tables, so a stack mapped for a
     /// thread of the first is mapped in the second — a slot straddling two tables included.
     #[test]
     fn every_directory_inherits_the_kernel_stack_tables() {
@@ -2025,7 +2024,7 @@ mod tests {
         assert_eq!(directory_cr3(PhysAddr::new(0)), 0);
     }
 
-    /// The gate stack window: the kernel stack region (entries 656-659, from 0xA4000000: clear of
+    /// The gate stack window: the kernel stack region (entries 656-767, from 0xA4000000: clear of
     /// the image window and the runtime access slots), with an unmapped guard page at each slot's
     /// base and the 32 KiB stack above it — a gate-stack overflow faults into the guard instead of
     /// corrupting whatever lies below.
@@ -2044,8 +2043,10 @@ mod tests {
         assert_eq!(GATE_STACK_PAGES, 8);
         assert_eq!(GATE_STACK_TOP, GATE_STACK_WINDOW + 9 * PAGE_SIZE);
         assert_eq!(GATE_STACK_TOP, 0xA400_9000);
-        // Every thread record of the system fits.
+        // Every thread record of the system fits, and the region's whole span is slots.
         assert!(GATE_SLOT_CAPACITY > crate::ob::THREADS);
+        assert_eq!(GATE_SLOT_CAPACITY, 12_743);
+        assert!(GATE_SLOT_CAPACITY < crate::sched::thread::NO_GATE_SLOT as usize);
         // Everything (guard + stack) stays inside the region.
         assert!(gate_slot_top(GATE_SLOT_CAPACITY as u32 - 1) as u64 <= layout::KERNEL_STACKS.end());
     }

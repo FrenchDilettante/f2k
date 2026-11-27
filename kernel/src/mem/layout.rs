@@ -8,7 +8,7 @@
 //! | Region              | Address      | Entries  | Windows 2000 there                         |
 //! |---------------------|--------------|----------|--------------------------------------------|
 //! | [`KERNEL_IMAGE`]    | `0x80000000` | 512-515  | system code (the kernel, the HAL)          |
-//! | [`KERNEL_STACKS`]   | `0xA4000000` | 656-659  | additional system PTEs                     |
+//! | [`KERNEL_STACKS`]   | `0xA4000000` | 656-767  | additional system PTEs                     |
 //! | [`PAGE_TABLES`]     | `0xC0000000` | 768      | the process page tables (self-map)         |
 //! | [`HYPERSPACE`]      | `0xC0400000` | 769      | hyperspace                                 |
 //! | [`FRAMEBUFFER`]     | `0xC0800000` | 770-777  | the display's linear framebuffer           |
@@ -31,10 +31,13 @@
 //! Kernel stacks sit in a region of their own, as Windows 2000's do: it takes them from its system
 //! PTEs, the pool of kernel address space for mappings that come and go, and its published x86 map
 //! places a range of those ("additional system PTEs") at `0xA4000000`, between session space and
-//! the page tables. F2K's region takes the start of that range. It is sized for every thread record
-//! ([`crate::ob::THREADS`]) at the slot stride of a 32 KiB stack plus its guard page (36 KiB: 4.5
-//! MiB, two entries), with as much again to grow into: four entries, 16 MiB. It sits far from the
-//! image window, so the image can keep growing without meeting it.
+//! the page tables. F2K's region is that whole range, 112 entries (448 MiB) up to the page tables:
+//! 12,743 slots at the stride of a 32 KiB stack plus its guard page (36 KiB). No thread cap hides
+//! there: 12,743 stacks would take 398 MiB of frames, more than F2K's 256 MiB of memory, so frames
+//! run out first. Its page tables are made on demand, as a stack first reaches a 4 MiB window, and
+//! installed in every directory before the stack is handed out ([`crate::mem::ktables`]); a table
+//! once made is kept. It sits far from the image window, so the image can keep growing without
+//! meeting it.
 //!
 //! The nonpaged pool: kernel memory that comes and goes with what holds it (a pipe's data queues,
 //! the slot pools' chunks), shared by every address space as the kernel stacks are, its frames
@@ -130,11 +133,13 @@ pub const KERNEL_IMAGE: Region = Region {
 /// span, as Windows 2000's kernel sits at `0x80400000`. The linker script's `__ImageBase`.
 pub const NTOSKRNL_BASE: u32 = KERNEL_IMAGE.start + ENTRY_SPAN;
 
-/// The kernel stacks: each thread's ring-0 stack, a guard page below every one. Each process maps
-/// its own threads' stacks at the region's start, in a table of its own.
+/// The kernel stacks: each thread's ring-0 stack, a guard page below every one, numbered across the
+/// region and mapped in every address space ([`crate::mem::kstacks`]). 112 entries, 448 MiB, from
+/// Windows 2000's additional system PTEs' start up to the page tables; its page tables are made as
+/// stacks first reach each entry's window ([`crate::mem::ktables`]).
 pub const KERNEL_STACKS: Region = Region {
     start: 0xA400_0000,
-    entries: 4,
+    entries: 112,
 };
 
 /// The page tables: the directory maps itself here, so the current directory's page tables (and the
@@ -216,6 +221,7 @@ const _: () = {
     assert!(KERNEL_IMAGE.holds(NTOSKRNL_BASE) && NTOSKRNL_BASE.is_multiple_of(ENTRY_SPAN));
     assert!(NTOSKRNL_BASE / ENTRY_SPAN == KERNEL_IMAGE.first_entry() as u32 + 1);
     assert!(KERNEL_STACKS.start as u64 >= KERNEL_IMAGE.end());
+    assert!(KERNEL_STACKS.end() == PAGE_TABLES.start as u64);
     assert!(
         crate::mem::frame::PHYSICAL_FRAME_LIMIT * crate::mem::frame::FRAME_ENTRY_BYTES
             <= FRAME_DATABASE.size() as usize
@@ -251,9 +257,10 @@ mod tests {
         assert_eq!(KERNEL_IMAGE.end(), 0x8100_0000);
         assert_eq!(
             (KERNEL_STACKS.first_entry(), KERNEL_STACKS.end_entry()),
-            (656, 660)
+            (656, 768)
         );
-        assert_eq!(KERNEL_STACKS.end(), 0xA500_0000);
+        assert_eq!(KERNEL_STACKS.end(), 0xC000_0000);
+        assert_eq!(KERNEL_STACKS.end(), PAGE_TABLES.start as u64);
         assert_eq!(PAGE_TABLES.first_entry(), 768);
         assert_eq!(HYPERSPACE.first_entry(), 769);
         assert_eq!(
@@ -334,20 +341,23 @@ mod tests {
         assert_eq!(NTOSKRNL_BASE - KERNEL_IMAGE.start, 0x40_0000);
     }
 
-    /// The stack region holds a slot for every thread record at today's stride, with room to
-    /// spare, and stays clear of the image window above which the image grows.
+    /// The stack region spans Windows 2000's additional system PTEs up to the page tables: 448 MiB,
+    /// 12,743 slots at today's stride, a slot for every thread record many times over, its frames
+    /// more than the machine's memory; it stays clear of the image window above which the image
+    /// grows.
     #[test]
-    fn the_stack_region_holds_every_thread_record() {
+    fn the_stack_region_spans_up_to_the_page_tables() {
         let stride = crate::mem::paging::GATE_SLOT_STRIDE;
-        let needed = crate::ob::THREADS as u32 * stride;
-        assert!(
-            needed > ENTRY_SPAN,
-            "one entry would do: revisit the region's size"
-        );
-        assert!(needed <= 2 * ENTRY_SPAN);
+        assert_eq!(KERNEL_STACKS.size(), 448 * 0x10_0000);
+        assert_eq!(KERNEL_STACKS.size() / stride, 12_743);
         assert!(KERNEL_STACKS.size() / stride >= 2 * crate::ob::THREADS as u32);
+        // Every slot's stack pages backed: more frames than 256 MiB of memory holds.
+        let frames = (KERNEL_STACKS.size() / stride) as u64
+            * crate::mem::paging::GATE_STACK_PAGES as u64
+            * crate::mem::paging::PAGE_SIZE as u64;
+        assert!(frames > 256 * 0x10_0000);
         assert!(KERNEL_STACKS.start as u64 > KERNEL_IMAGE.end());
-        assert!(KERNEL_STACKS.end() <= PAGE_TABLES.start as u64);
+        assert_eq!(KERNEL_STACKS.end(), PAGE_TABLES.start as u64);
     }
 
     /// The shared data page's kernel view lies in its region.

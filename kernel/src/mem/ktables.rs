@@ -2,11 +2,14 @@
 //!
 //! Most of the kernel half's page tables are made at boot, before the first process directory, and
 //! every directory copies them with the rest of the kernel half when it is made
-//! ([`super::paging::assemble_process_directory`]). A region that grows on demand cannot do that:
-//! the nonpaged pool spans 256 MiB, 64 tables, and makes a table only when a block first reaches
-//! its 4 MiB window ([`ON_DEMAND`]). The new table must then be seen by every address space at
-//! once, because the pool is reached from any thread, at any level, with interrupts masked: a
-//! missing directory entry cannot be repaired at a fault there.
+//! ([`super::paging::assemble_process_directory`]). A region that grows on demand cannot do that
+//! ([`ON_DEMAND`]): the nonpaged pool spans 256 MiB, 64 tables, and makes a table only when a block
+//! first reaches its 4 MiB window; the kernel stack region spans 448 MiB, 112 tables, and makes one
+//! only when a stack first reaches its window. The new table must then be seen by every address
+//! space at once, because the pool is reached from any thread, at any level, with interrupts
+//! masked, and a thread's stack from every address space it runs or attaches in: a missing
+//! directory entry cannot be repaired at a fault there (the processor switching onto a stack, or
+//! entering a gate on it, has no stack to take the fault on).
 //!
 //! So a table made on demand is installed, before anything is mapped through it, in the master
 //! directory and in every live process directory, as Windows 2000 keeps a master copy of the system
@@ -30,7 +33,10 @@
 //! The interface the rest of the kernel uses is [`DirectoryList::ensure`] over a virtual address
 //! range, so a later PAE build, whose directory entries are 8 bytes and 2 MiB each (and whose
 //! kernel-half directory pages could be shared outright), implements the same call over its own
-//! entries. The kernel stack region (slot-pool slice 17) is the next user.
+//! entries. The kernel stack region's stacks ([`super::kstacks`]) ensure their slot's range before
+//! mapping it, inside the same database borrow, so a thread never exists before its stack's table
+//! is in every directory: the context switch loads the thread's directory before it touches the
+//! stack, and that directory was either linked when the table was made or copied afterwards.
 
 use core::ops::Range;
 
@@ -41,7 +47,7 @@ use super::pte::Pte;
 
 /// The regions whose page tables are made on demand: a range [`DirectoryList::ensure`] is asked
 /// for lies in one of them. Their tables are made nowhere else.
-pub const ON_DEMAND: [Region; 1] = [layout::NONPAGED_POOL];
+pub const ON_DEMAND: [Region; 2] = [layout::KERNEL_STACKS, layout::NONPAGED_POOL];
 
 /// The directory entry holding a directory's next link.
 const NEXT: usize = DIRECTORY_LINKS.first_entry();
@@ -178,6 +184,16 @@ impl DirectoryList {
             machine.with_directory(next, |entries| entries[PREV] = encode(prev));
         }
         self.live -= 1;
+    }
+
+    /// Whether the directory at `dir` is linked: the list's head, or a directory with a previous
+    /// link. A directory a new one's kernel half is copied from must be linked (or the master), or
+    /// the copy could miss a table made after it left the list.
+    pub fn is_linked(&self, machine: &mut impl Directories, dir: PhysAddr) -> bool {
+        self.head == Some(dir)
+            || machine
+                .with_directory(dir, |entries| decode(entries[PREV]))
+                .is_some()
     }
 
     /// Run `step` on every linked directory's entries, the most recently linked first.
@@ -604,6 +620,125 @@ mod tests {
             decode(encode(Some(PhysAddr::new(0xFFFF_F000)))),
             Some(PhysAddr::new(0xFFFF_F000))
         );
+    }
+
+    const STACKS: Region = layout::KERNEL_STACKS;
+
+    /// A new stack's slot past the made windows gets its table, in the master and every linked
+    /// directory, before the stack is mapped: one table for a slot inside a window, the second
+    /// window's alone for a slot straddling into it, none for a slot in made windows (no directory
+    /// read), and a large stack's whole run at once. A directory made afterwards copies them.
+    #[test]
+    fn a_new_stack_range_gets_its_tables_everywhere() {
+        use crate::mem::kstacks::stack_range;
+        let mut fake = Fake::new(100);
+        let master = fake.frame();
+        let mut list = DirectoryList::empty();
+        let a = fake.directory_from(master);
+        list.link(&mut fake, a);
+        let b = fake.directory_from(a);
+        list.link(&mut fake, b);
+
+        // Slot 0: the region's first window only.
+        list.ensure(&mut fake, master, stack_range(0, 1)).unwrap();
+        assert_eq!(list.tables_made(), 1);
+        assert!(list.is_made(STACKS.first_entry()));
+
+        // Slot 455, the first past the old 16 MiB region: its fifth window, none between.
+        list.ensure(&mut fake, master, stack_range(455, 1)).unwrap();
+        assert_eq!(list.tables_made(), 2);
+        assert!(list.is_made(STACKS.first_entry() + 4));
+        assert!(!list.is_made(STACKS.first_entry() + 3));
+        for dir in [master, a, b] {
+            assert!(Pte::from_raw(fake.entry(dir, STACKS.first_entry() + 4)).present());
+        }
+
+        // Slot 568 straddles the fifth window into the sixth: only the sixth is new.
+        list.ensure(&mut fake, master, stack_range(568, 1)).unwrap();
+        assert_eq!(list.tables_made(), 3);
+        assert!(list.is_made(STACKS.first_entry() + 5));
+        assert!(list.in_step(&mut fake, master));
+
+        // Slot 456, in a made window: nothing read.
+        let before = fake.accesses;
+        list.ensure(&mut fake, master, stack_range(456, 1)).unwrap();
+        assert_eq!(fake.accesses, before);
+
+        // A large stack's run across the sixth window's end into the seventh.
+        let run = (0..crate::mem::kstacks::SLOTS as u16 - 3)
+            .find(|&slot| {
+                let range = stack_range(slot, 3);
+                directory_index(range.start) == STACKS.first_entry() + 5
+                    && directory_index(range.end - 1) == STACKS.first_entry() + 6
+            })
+            .unwrap();
+        list.ensure(&mut fake, master, stack_range(run, 3)).unwrap();
+        assert_eq!(list.tables_made(), 4);
+
+        let c = fake.directory_from(b);
+        list.link(&mut fake, c);
+        assert!(list.in_step(&mut fake, master));
+        for window in STACKS.first_entry() + 4..STACKS.first_entry() + 7 {
+            assert_eq!(fake.entry(c, window), fake.entry(master, window));
+        }
+    }
+
+    /// The stack region's 112 tables, the pool's beside them: every window of both, over several
+    /// passes, in every directory; the last slot's range reaches the region's last window, under
+    /// the page tables.
+    #[test]
+    fn the_whole_stack_region_beside_the_pool() {
+        let mut fake = Fake::new(200);
+        let master = fake.frame();
+        let mut list = DirectoryList::empty();
+        let a = fake.directory_from(master);
+        list.link(&mut fake, a);
+        let last = crate::mem::kstacks::stack_range(crate::mem::kstacks::SLOTS as u16 - 1, 1);
+        assert_eq!(directory_index(last.end - 1), STACKS.end_entry() - 1);
+        list.ensure(
+            &mut fake,
+            master,
+            STACKS.start..STACKS.start + STACKS.size(),
+        )
+        .unwrap();
+        assert_eq!(list.tables_made(), 112);
+        list.ensure(&mut fake, master, POOL.start..POOL.start + POOL.size())
+            .unwrap();
+        assert_eq!(list.tables_made(), 176);
+        for window in
+            (STACKS.first_entry()..STACKS.end_entry()).chain(POOL.first_entry()..POOL.end_entry())
+        {
+            assert!(Pte::from_raw(fake.entry(a, window)).present(), "{window}");
+        }
+        assert!(list.in_step(&mut fake, master));
+        // A range across the region's end, into the page tables, is refused.
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            list.ensure(
+                &mut fake,
+                master,
+                STACKS.start + STACKS.size() - 1..STACKS.start + STACKS.size() + 1,
+            )
+        }));
+        assert!(refused.is_err());
+    }
+
+    /// A directory is linked while in the list, the head or not, and not once it leaves it.
+    #[test]
+    fn linked_directories_are_known() {
+        let mut fake = Fake::new(1);
+        let master = fake.frame();
+        let mut list = DirectoryList::empty();
+        let a = fake.directory_from(master);
+        assert!(!list.is_linked(&mut fake, a));
+        list.link(&mut fake, a);
+        let b = fake.directory_from(a);
+        list.link(&mut fake, b);
+        assert!(list.is_linked(&mut fake, a) && list.is_linked(&mut fake, b));
+        list.unlink(&mut fake, a);
+        assert!(!list.is_linked(&mut fake, a));
+        assert!(list.is_linked(&mut fake, b));
+        list.unlink(&mut fake, b);
+        assert!(!list.is_linked(&mut fake, b));
     }
 
     /// Only the on-demand regions' tables are made here.

@@ -480,6 +480,8 @@ RAW_ACCESS_ALLOWED = {
     " framebuffer, through the kernel window",
     "kernel/src/hw/vga.rs": "the text screen's cells, device memory through the kernel window",
     "kernel/src/mem/bootmem.rs": "the boot memory map and the frame database, before any process",
+    "kernel/src/mem/kstacks.rs": "(pool-smoke builds only) a fresh kernel stack's words, read"
+    " through a directory made before its table",
     "kernel/src/mem/paging.rs": "the page tables and frames, through the kernel's own windows",
     "kernel/src/mem/pool.rs": "the nonpaged pool's blocks, kernel memory mapped in the shared"
     " tables",

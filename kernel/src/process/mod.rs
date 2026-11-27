@@ -1495,7 +1495,8 @@ fn release_record(process: &Process) {
 static BASELINE_FRAMES: crate::sync::InitOnce<u32> = crate::sync::InitOnce::new();
 
 /// The free frames as the teardown audits count them: the frame database's, with the page tables
-/// made on demand for the nonpaged pool (kept once made, see [`crate::mem::ktables`]), the frames
+/// made on demand for the nonpaged pool and the kernel stacks (kept once made, see
+/// [`crate::mem::ktables`]), the frames
 /// the slot pools' chunks and directory pages hold — permanent allocations made as the pools grow,
 /// kept at their peak, which no process's end gives back: the process records among them (see
 /// [`pool`] and [`crate::slots::chunk_frames`]) — the registry's storage's, which outlive the

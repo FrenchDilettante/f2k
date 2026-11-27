@@ -325,10 +325,8 @@ fn memory(magic: u32, multiboot_info: u32) {
     );
     // Install the runtime table access (self-map, scratch table).
     crate::mem::paging::init_table_access();
-    // The kernel stack region's tables, shared by every address space from the first on.
-    crate::mem::paging::init_kernel_stack_tables();
-    // The nonpaged pool's tables are made on demand, as blocks first reach each window, and
-    // installed in every directory then (`mem::ktables`).
+    // The kernel stack region's and the nonpaged pool's tables are made on demand, as stacks and
+    // blocks first reach each window, and installed in every directory then (`mem::ktables`).
     // The framebuffer region's tables, shared alike: the display's linear framebuffer is mapped
     // into them when the graphics mode is set.
     crate::mem::paging::init_framebuffer_tables();

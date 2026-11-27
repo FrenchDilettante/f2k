@@ -98,11 +98,15 @@ pub fn interrupts() {
 }
 
 /// The diagnostic boots once every subsystem is up, before the first process: the nonpaged pool's
-/// growth past its old region, with directories made before and after it.
+/// growth past its old region, with directories made before and after it, then the kernel stack
+/// region's.
 #[cfg(target_arch = "x86")]
 pub fn late() {
     #[cfg(feature = "pool-smoke")]
-    crate::mem::pool::smoke();
+    {
+        crate::mem::pool::smoke();
+        crate::mem::kstacks::smoke();
+    }
 }
 
 /// The device diagnostic boots, once the boot volume is mounted: the disk's (read the drive's

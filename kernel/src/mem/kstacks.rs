@@ -3,11 +3,24 @@
 //!
 //! Every thread's gate stack is a slot of the kernel stack region ([`layout::KERNEL_STACKS`]): a
 //! guard page, never mapped, under the stack's [`paging::GATE_STACK_PAGES`]. The region's page
-//! tables are made at boot and shared by every directory, as Windows keeps its kernel stacks in
-//! system space: a stack is mapped in every address space from its creation to its release, so a
-//! thread can build or enter another process's address space on its own stack. Slots are numbered
-//! across the whole region, the lowest free first; the ledger records occupancy, and each slot's
-//! frames are recorded by the thread that owns it, released exactly once.
+//! tables are shared by every directory, as Windows keeps its kernel stacks in system space: a
+//! stack is mapped in every address space from its creation to its release, so a thread can build
+//! or enter another process's address space on its own stack. Slots are numbered across the whole
+//! region (448 MiB, 12,743 slots), the lowest free first; the ledger records occupancy, and each
+//! slot's frames are recorded by the thread that owns it, released exactly once.
+//!
+//! The region's tables are made on demand, not at boot: a stack's creation asks for the tables of
+//! its slots' range ([`stack_range`], one or two, a slot straddling a window's end) through
+//! [`paging::ensure_kernel_tables`], which makes the missing ones and installs them in the master
+//! directory and every live process directory before the stack is mapped, all in one borrow of the
+//! memory manager's database. So no thread exists before its stack is in every address space: the
+//! context switch loads the new thread's directory before it touches the stack, and that directory
+//! was either live when the table was made or made since (its kernel half copied from one that
+//! holds it). Never repaired at a fault: nothing could take a fault on a stack it cannot reach.
+//! The tables are kept once made, as the pool's are; a run of slots wholly in made windows costs
+//! no directory access. Windows 2000 takes its kernel stacks from its system PTEs, whose page
+//! tables are all in place from its initialisation (from memory); F2K's span is larger than what it
+//! backs, so it makes them as stacks reach them.
 //!
 //! A GUI thread trades its stack for a large one at its first win32k service (Windows 2000's
 //! PsConvertToGuiThread, [`create_large`]): a run of [`paging::LARGE_STACK_SLOTS`] consecutive
@@ -16,7 +29,8 @@
 //! to [`paging::LARGE_STACK_PAGES`], as the user-mode callbacks nesting on it need room ([`grow`],
 //! Windows 2000's MmGrowKernelStack); the run's lowest guard page is never mapped. The slot-pool
 //! plan's slice 17 (the region grown to its whole span, tables made on demand) leaves this as it
-//! is: a run is consecutive slots wherever the ledger finds them.
+//! is: a run is consecutive slots wherever the ledger finds them, and its whole range's tables are
+//! made at its creation, so growing it makes none.
 //!
 //! A thread cannot release the stack it runs on, so its exit parks it instead, as its last act
 //! before the switch away, and whoever next runs on another stack releases it: the next exit (which
@@ -32,11 +46,19 @@ use super::phys::PhysAddr;
 use super::{frame::FrameDb, with_database, Parts};
 use super::{layout, paging};
 
-/// How many slots the ledger tracks: every slot of the region.
+/// How many slots the ledger tracks: every slot of the region (12,743).
 pub const SLOTS: usize = paging::GATE_SLOT_CAPACITY;
 
-/// How many occupancy words the ledger holds.
+/// How many occupancy words the ledger holds (200).
 const SLOT_WORDS: usize = SLOTS.div_ceil(64);
+
+/// The addresses a stack on the run of `slots` slots from `slot` may ever map: from above the
+/// run's lowest guard page to its top (an ordinary stack's pages, or a large one's room to grow).
+/// Its page tables are made at the stack's creation.
+pub const fn stack_range(slot: u16, slots: u8) -> core::ops::Range<u32> {
+    paging::gate_slot_base(slot as u32) + paging::PAGE_SIZE
+        ..paging::gate_slot_top(slot as u32 + slots as u32 - 1)
+}
 
 /// One gate stack: the lowest slot of its run and how many slots the run spans (1, or
 /// [`paging::LARGE_STACK_SLOTS`] for a GUI thread's large stack), how many pages are mapped down
@@ -170,9 +192,29 @@ impl GateSlots {
         self.occupied[(index / 64) as usize] & (1 << bit) != 0
     }
 
-    /// The taken slots, lowest first.
+    /// The taken slots, lowest first (an empty word costs one test).
     pub fn taken(&self) -> impl Iterator<Item = u16> + '_ {
-        (0..SLOTS as u16).filter(|&index| self.is_taken(index))
+        self.occupied
+            .iter()
+            .enumerate()
+            .filter(|(_, word)| **word != 0)
+            .flat_map(|(word_index, &word)| {
+                (0..64u16)
+                    .filter(move |bit| word & (1 << bit) != 0)
+                    .map(move |bit| word_index as u16 * 64 + bit)
+            })
+    }
+
+    /// Take every free slot below `end` for good, unmapped, marked as a run's lower slots are (no
+    /// page sure to be mapped): the growth diagnostic's fence, so the next stack lies past it.
+    #[cfg(any(test, feature = "pool-smoke"))]
+    pub fn fence_below(&mut self, end: u16) {
+        for index in 0..end {
+            if !self.is_taken(index) {
+                self.occupied[(index / 64) as usize] |= 1 << (index % 64);
+                self.lower[(index / 64) as usize] |= 1 << (index % 64);
+            }
+        }
     }
 
     /// Whether every slot is free.
@@ -211,9 +253,13 @@ impl KernelStacks {
     }
 }
 
-// Every slot lies inside the region, and a slot index fits the thread record's field.
+// Every slot lies inside the region, the region spans up to the page tables, the ledger is its 200
+// words, and a slot index fits the thread record's field.
 const _: () = {
     assert!(paging::gate_slot_top(SLOTS as u32 - 1) as u64 <= layout::KERNEL_STACKS.end());
+    assert!(paging::gate_slot_top(SLOTS as u32) as u64 > layout::KERNEL_STACKS.end());
+    assert!(layout::KERNEL_STACKS.end() == layout::PAGE_TABLES.start as u64);
+    assert!(SLOTS == 12_743 && SLOT_WORDS == 200);
     assert!(SLOTS < crate::sched::thread::NO_GATE_SLOT as usize);
 };
 
@@ -224,10 +270,10 @@ const _: () = {
 // (interrupts masked), so the ledger and the shared tables agree wherever anything else can look:
 // a taken slot is mapped, a free one is not.
 
-/// A fresh gate stack: the system's lowest free slot, mapped in the shared tables (in every address
-/// space at once); none when the region is full, or when the frame database has not the stack's
-/// frames left (the tables the slots map through are all made at boot): a thread's creation fails
-/// then, rather than the kernel.
+/// A fresh gate stack: the system's lowest free slot, its tables made if it is the first to reach
+/// them and installed in every directory, then mapped in the shared tables (in every address space
+/// at once); none when the region is full, or when the frame database has not the frames left for
+/// a table or the stack: a thread's creation fails then, rather than the kernel.
 #[cfg(target_arch = "x86")]
 pub fn create() -> Option<GateStack> {
     create_spanning(1)
@@ -245,17 +291,26 @@ pub fn create_large() -> Option<GateStack> {
 /// [`create`]'s work, over a run of `slots` slots.
 #[cfg(target_arch = "x86")]
 fn create_spanning(slots: u8) -> Option<GateStack> {
-    with_database(|database| {
+    let (stack, _made) = with_database(|database| {
         let Parts {
             frames,
             stacks,
             scratch,
+            directories,
             ..
         } = database.parts();
-        if frames.available() < paging::GATE_STACK_PAGES as u32 {
+        let slot = stacks.slots.allocate_run(slots as u16)?;
+        // The run's tables first, in every directory: before a page is mapped through them, and
+        // before any thread can run on the stack. Made tables are kept, whatever follows.
+        let tables = directories.tables_made();
+        let ready =
+            paging::ensure_kernel_tables(frames, scratch, directories, stack_range(slot, slots))
+                .is_ok();
+        let made = directories.tables_made() - tables;
+        if !ready || frames.available() < paging::GATE_STACK_PAGES as u32 {
+            stacks.slots.release_run(slot, slots as u16);
             return None;
         }
-        let slot = stacks.slots.allocate_run(slots as u16)?;
         let mut stack = GateStack {
             slot,
             slots,
@@ -271,8 +326,14 @@ fn create_spanning(slots: u8) -> Option<GateStack> {
             paging::GATE_STACK_PAGES,
             &mut stack.frames,
         );
-        Some(stack)
+        Some((stack, made))
     })
+    .unzip();
+    #[cfg(feature = "pool-smoke")]
+    if let (Some(stack), Some(made)) = (stack, _made) {
+        smoke_report(stack, made);
+    }
+    stack
 }
 
 /// Grow `stack` (a large one's; the running thread's own) down until `low` is mapped: the pages
@@ -354,6 +415,134 @@ pub fn every_stack_mapped_here() -> bool {
     })
 }
 
+/// The end of the kernel stack region before it grew to its whole span (four entries, 16 MiB).
+#[cfg(any(test, feature = "pool-smoke"))]
+const OLD_END: u32 = layout::KERNEL_STACKS.start + 4 * layout::ENTRY_SPAN;
+
+/// The first slot whose stack lies wholly past the old region's end: its tables were never made at
+/// boot.
+#[cfg(any(test, feature = "pool-smoke"))]
+const fn first_slot_past_old_end() -> u16 {
+    let mut slot = 0;
+    while stack_range(slot, 1).start < OLD_END {
+        slot += 1;
+    }
+    slot
+}
+
+/// The first slot whose stack reaches the region's window `window` (counted from 0): the slot that
+/// straddles the end of the window before it into it.
+#[cfg(any(test, feature = "pool-smoke"))]
+const fn first_slot_into_window(window: u32) -> u16 {
+    let mut slot = 0;
+    while stack_range(slot, 1).end <= layout::KERNEL_STACKS.start + window * layout::ENTRY_SPAN {
+        slot += 1;
+    }
+    slot
+}
+
+/// The region's window the next fence reaches into, once [`smoke`] armed the reports; 0 when
+/// disarmed. The first two stacks whose creation makes a table report it, each moving the fence on
+/// into the next window.
+#[cfg(all(target_arch = "x86", feature = "pool-smoke"))]
+static SMOKE_WINDOW: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+/// The last window [`smoke`]'s reports fence into: two reports, into windows 5 and 6.
+#[cfg(all(target_arch = "x86", feature = "pool-smoke"))]
+const SMOKE_LAST_WINDOW: u32 = 6;
+
+/// The kernel stack region's growth diagnostic (the `pool-smoke` boot), after the pool's, before
+/// the first process. A directory is made first; every free slot below the first one past the old
+/// 16 MiB region is fenced off, so the next stack lies past it, in a window whose table was never
+/// made; that stack's creation must make the table and install it in every live directory, and the
+/// directory made before it must read and write the stack through its own entry. Then the fence
+/// moves up to the slot that straddles into the next window, and stays: the next thread the boot
+/// creates (the console control thread, in the System process) takes that slot, its table made at
+/// its creation, and runs on it; the fence moves on into the window after, so the thread after it
+/// (the first process's main thread, its directory live) does the same ([`smoke_report`]).
+/// Reported on COM1; nothing is left behind but the tables and the fence (no frames).
+#[cfg(all(target_arch = "x86", feature = "pool-smoke"))]
+pub fn smoke() {
+    use crate::level::{raised, High};
+    let yes = |ok: bool| if ok { "yes" } else { "no" };
+
+    let early = paging::create_address_space();
+    let past = first_slot_past_old_end();
+    with_database(|database| database.stacks.slots.fence_below(past));
+    let tables = paging::kernel_table_frames();
+    let stack = create().expect("the diagnostic's stack");
+    crate::serial_println!(
+        "F2K: pool-smoke: a kernel stack past the old 16 MiB region (slot {}): {}",
+        stack.slot,
+        yes(stack.slot == past && stack.limit() >= OLD_END)
+    );
+    crate::serial_println!(
+        "F2K: pool-smoke: a table made for the stack: {}",
+        yes(paging::kernel_table_frames() == tables + 1)
+    );
+    crate::serial_println!(
+        "F2K: pool-smoke: every directory holds the stack's table: {}",
+        yes(paging::directories_in_step())
+    );
+
+    // Write the stack's lowest and highest words here, read them in the directory made before the
+    // table: the processor walks that directory's own entry for the stack's window.
+    let (low, high) = (stack.limit() as *mut u32, (stack.top() - 4) as *mut u32);
+    let seen = raised::<High, _>(|_| {
+        // SAFETY: the stack is mapped in every directory (the check above) and no thread runs on
+        // it; interrupts are masked, so nothing runs in the early directory but these accesses.
+        unsafe {
+            low.write_volatile(0xF2C5_0000);
+            high.write_volatile(0xF2C5_FFFF);
+            let home = paging::current_directory_phys();
+            paging::activate_address_space(early);
+            let words = (low.read_volatile(), high.read_volatile());
+            high.write_volatile(0xF2C5_1111);
+            paging::activate_address_space(home);
+            (words, high.read_volatile())
+        }
+    });
+    crate::serial_println!(
+        "F2K: pool-smoke: a directory made before the table runs the stack's pages: {}",
+        yes(seen == ((0xF2C5_0000, 0xF2C5_FFFF), 0xF2C5_1111))
+    );
+
+    release(stack);
+    paging::retire_address_space(early);
+    paging::release_frame_phys(early);
+    let straddling = first_slot_into_window(5);
+    with_database(|database| database.stacks.slots.fence_below(straddling));
+    crate::serial_println!(
+        "F2K: pool-smoke: stack released, table kept, slots fenced below {straddling}: {}",
+        yes(paging::kernel_table_frames() == tables + 1)
+    );
+    SMOKE_WINDOW.store(6, core::sync::atomic::Ordering::Relaxed);
+}
+
+/// The armed diagnostic's report of a stack whose creation made a table: the slot, the tables
+/// made, and how many process directories were live to receive them; then the fence moves on, so
+/// the next stack reaches the next window.
+#[cfg(all(target_arch = "x86", feature = "pool-smoke"))]
+fn smoke_report(stack: GateStack, made: u32) {
+    use core::sync::atomic::Ordering;
+    let window = SMOKE_WINDOW.load(Ordering::Relaxed);
+    if made == 0 || window == 0 {
+        return;
+    }
+    crate::serial_println!(
+        "F2K: pool-smoke: a thread's stack at slot {} made {made} table(s), {} directories live",
+        stack.slot,
+        paging::live_directories()
+    );
+    if window > SMOKE_LAST_WINDOW {
+        SMOKE_WINDOW.store(0, Ordering::Relaxed);
+        return;
+    }
+    let end = first_slot_into_window(window);
+    with_database(|database| database.stacks.slots.fence_below(end));
+    SMOKE_WINDOW.store(window + 1, Ordering::Relaxed);
+}
+
 /// [`release`]'s work, on the stacks and the frame database the caller holds.
 #[cfg(target_arch = "x86")]
 fn release_in(stacks: &mut KernelStacks, frames: &mut FrameDb, stack: GateStack) {
@@ -422,18 +611,110 @@ mod tests {
         assert_eq!(ledger.allocate(), None);
     }
 
-    /// The region holds 455 slots (16 MiB at the 36 KiB stride), more than every thread record of
-    /// the object manager, each a GUI thread's large stack, needs: the ledger fills only once a
-    /// slot outlives its thread.
+    /// The region holds 12,743 slots (448 MiB at the 36 KiB stride) in a ledger of 200 words, far
+    /// more than every thread record of the object manager, each a GUI thread's large stack, needs;
+    /// backing them all would take more frames than the 256 MiB machine's memory, so frames run
+    /// out first there.
     #[test]
     fn the_ledger_is_sized_to_the_region() {
         assert!(SLOTS > crate::ob::THREADS * paging::LARGE_STACK_SLOTS as usize);
-        assert_eq!(SLOTS, 455);
+        assert_eq!(SLOTS, 12_743);
+        assert_eq!(SLOT_WORDS, 200);
+        assert_eq!(
+            core::mem::size_of::<GateSlots>(),
+            2 * SLOT_WORDS * 8,
+            "occupancy and lower bits"
+        );
         assert_eq!(
             SLOTS,
             (layout::KERNEL_STACKS.size() / GATE_SLOT_STRIDE) as usize
         );
-        assert!(SLOTS > crate::ob::THREADS);
+        assert!(
+            SLOTS as u64 * paging::GATE_STACK_PAGES as u64 * PAGE_SIZE as u64 > 256 * 0x10_0000
+        );
+    }
+
+    /// The ledger's last word is partial: its slots past the region are never handed out, and the
+    /// taken slots are listed across every word, the last one's included.
+    #[test]
+    fn the_last_word_ends_at_the_region() {
+        let mut ledger = GateSlots::empty();
+        let last = SLOTS as u16 - 1;
+        assert_eq!(last / 64, SLOT_WORDS as u16 - 1);
+        assert_eq!(ledger.allocate_run(1), Some(0));
+        assert_eq!(ledger.allocate_run(3), Some(1));
+        ledger.fence_below(last);
+        assert_eq!(ledger.allocate(), Some(last));
+        assert_eq!(ledger.allocate(), None, "no slot past the region's end");
+        assert_eq!(ledger.allocate_run(2), None);
+        assert_eq!(ledger.taken().count(), SLOTS);
+        assert_eq!(ledger.taken().last(), Some(last));
+        ledger.release(4000);
+        assert!(ledger.taken().all(|slot| slot != 4000));
+        assert_eq!(ledger.taken().count(), SLOTS - 1);
+    }
+
+    /// A fence takes every free slot below its end, unmapped and marked lower (no page sure to be
+    /// mapped), and leaves the taken ones as they are: the next stack lies past it.
+    #[test]
+    fn a_fence_puts_the_next_stack_past_it() {
+        let mut ledger = GateSlots::empty();
+        ledger.allocate();
+        ledger.allocate();
+        ledger.fence_below(500);
+        assert!(!ledger.is_lower(0) && !ledger.is_lower(1));
+        assert!((2..500).all(|slot| ledger.is_taken(slot) && ledger.is_lower(slot)));
+        assert_eq!(ledger.allocate(), Some(500));
+    }
+
+    /// A stack's range runs from above its run's lowest guard page to its top: an ordinary stack's
+    /// eight pages, a large one's 26. The old region's end falls inside slot 455's guard page, so
+    /// slot 455 is the first wholly past it; slot 568 straddles the fifth window's end.
+    #[test]
+    fn a_stack_range_is_what_it_may_map() {
+        let ordinary = stack_range(3, 1);
+        assert_eq!(ordinary.start, gate_slot_base(3) + PAGE_SIZE);
+        assert_eq!(ordinary.end, gate_slot_top(3));
+        assert_eq!(
+            ordinary.len() as u32,
+            paging::GATE_STACK_PAGES as u32 * PAGE_SIZE
+        );
+        let large = stack_range(6, paging::LARGE_STACK_SLOTS as u8);
+        assert_eq!(large.end, gate_slot_top(8));
+        assert_eq!(
+            large.len() as u32,
+            paging::LARGE_STACK_PAGES as u32 * PAGE_SIZE
+        );
+        let grown = GateStack {
+            slot: 6,
+            slots: paging::LARGE_STACK_SLOTS as u8,
+            pages: paging::LARGE_STACK_PAGES as u8,
+            ..stack(6, 0)
+        };
+        assert_eq!(grown.limit()..grown.top(), large);
+
+        assert_eq!(OLD_END, 0xA500_0000);
+        assert_eq!(first_slot_past_old_end(), 455);
+        assert_eq!(
+            gate_slot_base(455),
+            0xA4FF_F000,
+            "the guard page is the old region's last"
+        );
+        assert_eq!(stack_range(455, 1).start, OLD_END);
+        assert_eq!(first_slot_into_window(5), 568);
+        assert_eq!(first_slot_into_window(6), 682);
+        let straddling = stack_range(568, 1);
+        assert_eq!(
+            paging::directory_index(straddling.start) + 1,
+            paging::directory_index(straddling.end - 1)
+        );
+        assert_eq!(
+            paging::directory_index(straddling.end - 1),
+            layout::KERNEL_STACKS.first_entry() + 5
+        );
+        let last = stack_range(SLOTS as u16 - 1, 1);
+        assert!(last.end as u64 <= layout::KERNEL_STACKS.end());
+        assert!(layout::KERNEL_STACKS.holds(last.start));
     }
 
     /// Slot addresses are unique in the system: every slot lies inside the region, its guard page

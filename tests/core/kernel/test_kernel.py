@@ -724,11 +724,17 @@ CASES = (
     # windows): before the first process, the pool-smoke diagnostic makes a directory, takes blocks
     # of 1 MiB until they run past the old 16 MiB region, then makes a second directory. Every
     # live directory holds the new tables, the directory made before the growth reads a new page
-    # through its own entry, and the tables stay when the blocks go. Then the default image runs
-    # and its teardown audit balances, the tables counted.
+    # through its own entry, and the tables stay when the blocks go. Then the kernel stack region
+    # (448 MiB, 112 tables made as stacks first reach their windows): a stack past the old 16 MiB
+    # region makes its table, installed in a directory made before it, which reaches the stack's
+    # pages through its own entry; the slots below the one straddling into the next window are
+    # fenced for good, so the console control thread takes that slot, its table made at its
+    # creation, and runs on it; the fence moves on a window, and the first process's main thread
+    # does the same with the process's directory live. Then the default image runs and
+    # its teardown audit balances, the tables counted.
     Case(
         name="pool-smoke",
-        description="the nonpaged pool grows past its old 16 MiB region, each new page table installed in every directory (one made before the growth reads the new pages), then the default image exits 0",
+        description="the nonpaged pool and the kernel stack region grow past their old 16 MiB, each new page table installed in every directory (one made before the growth reads the new pages), the first process's main thread runs on a stack whose table its creation made, then the default image exits 0",
         image="kernel",
         features=("pool-smoke",),
         ordered=True,
@@ -739,6 +745,13 @@ CASES = (
             "F2K: pool-smoke: every directory holds the new tables: yes",
             "F2K: pool-smoke: a directory made before the growth reads the new pages: yes",
             "F2K: pool-smoke: blocks given back, tables kept, directories retired: yes",
+            "F2K: pool-smoke: a kernel stack past the old 16 MiB region (slot 455): yes",
+            "F2K: pool-smoke: a table made for the stack: yes",
+            "F2K: pool-smoke: every directory holds the stack's table: yes",
+            "F2K: pool-smoke: a directory made before the table runs the stack's pages: yes",
+            "F2K: pool-smoke: stack released, table kept, slots fenced below 568: yes",
+            "F2K: pool-smoke: a thread's stack at slot 568 made 1 table(s), 0 directories live",
+            "F2K: pool-smoke: a thread's stack at slot 682 made 1 table(s), 1 directories live",
             "F2K: image loaded",
             "F2K: entering ring 3",
             *EXITED_CLEAN,

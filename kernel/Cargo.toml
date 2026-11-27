@@ -85,8 +85,11 @@ nest-smoke = []
 # of 1 MiB are taken until they run past the old 16 MiB region, each window's
 # page table made on demand; every live directory must hold the new tables,
 # a directory made before the growth must read the new pages, and the tables
-# must stay when the blocks go. Then the normal boot proceeds. The
-# tests/core/kernel pool-smoke case pins the COM1 lines.
+# must stay when the blocks go. Then the kernel stack region's: a stack
+# past its old 16 MiB, its table made on demand and read through a directory
+# made before it; slots fenced so the first process's main thread takes a
+# stack whose table is made at its creation. Then the normal boot proceeds.
+# The tests/core/kernel pool-smoke case pins the COM1 lines.
 pool-smoke = []
 # The user-mode callback diagnostic boot: the first win32k service of a
 # process whose callback table user32 set issues callbacks through
