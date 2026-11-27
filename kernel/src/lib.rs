@@ -126,6 +126,9 @@ mod sec_priv; // the privilege model's primitives: LUIDs, the well-known privile
 // The SID primitives: the byte layout, the well-known SIDs, and the operations on the bytes
 mod sec_sid;
 
+// The access control lists: the ACL and ACE layouts, and the editors over them in a byte buffer
+mod sec_acl;
+
 // Wall-clock time and the performance counter: the boot's real-time clock reading, the FILETIME
 // the system services and the shared data page report
 mod time;
