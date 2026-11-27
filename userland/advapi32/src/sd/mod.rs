@@ -18,19 +18,17 @@ mod tests;
 
 use rtl::heap::ProcessHeap as _;
 use rtl::pod::Pod;
-use rtl::winerror::{ERROR_INSUFFICIENT_BUFFER, ERROR_INVALID_DATA, ERROR_INVALID_PARAMETER};
+use rtl::stub::Memory as _;
+use rtl::winerror::{
+    ERROR_INVALID_DATA, ERROR_INVALID_PARAMETER, ERROR_INSUFFICIENT_BUFFER,
+};
 
-use crate::acl::edit::valid_acl;
 use crate::acl::{caller_acl, ACL_HEADER};
-use crate::imports::{self as nt, ProcessHeap};
+use crate::acl::edit::valid_acl;
+use crate::imports::{self as nt, ProcessHeap, Probed};
 use crate::sid::{
-    caller_sid,
-    ptr_field,
-    set_ptr_field,
-    valid_sid,
-    ERROR_INVALID_SECURITY_DESCR,
-    ERROR_UNKNOWN_REVISION,
-    PTR,
+    caller_sid, ptr_field, set_ptr_field, valid_sid, ERROR_INVALID_SECURITY_DESCR,
+    ERROR_UNKNOWN_REVISION, PTR, SID_HEADER,
 };
 use crate::{caller_bytes, caller_bytes_mut, Out};
 
@@ -137,7 +135,7 @@ pub(crate) unsafe fn caller_sd_mut<'a>(sd: *mut u8) -> Option<&'a mut [u8]> {
 /// The address of the `index`th component: the field's value when the descriptor is absolute,
 /// the descriptor's own address plus the offset when self-relative; none when the field is zero
 /// or — for the ACL fields — the PRESENT flag is clear.
-fn component_addr(base: usize, sd: &[u8], index: usize) -> Option<usize> {
+pub(crate) fn component_addr(base: usize, sd: &[u8], index: usize) -> Option<usize> {
     let present_bit = match index {
         FIELD_SACL => SE_SACL_PRESENT,
         FIELD_DACL => SE_DACL_PRESENT,
@@ -155,6 +153,72 @@ fn component_addr(base: usize, sd: &[u8], index: usize) -> Option<usize> {
     } else {
         field
     })
+}
+
+/// Whether the `len` bytes at `at` are readable: probed at both ends (the probe answers for the
+/// whole page range in practice; the lowest 64 KiB are never mapped).
+fn readable(at: usize, len: usize) -> bool {
+    len == 0 || (Probed.readable(at) && Probed.readable(at + len - 1))
+}
+
+/// The SID at `at`, probed first: none when its bytes cannot be read. The validity check reads
+/// the descriptor's components under a guard on the platform, answering "not valid" where a read
+/// faults, so the probe stands in for the guard here.
+///
+/// # Safety
+///
+/// The component's address resolves into memory the call may read.
+pub(crate) unsafe fn guarded_sid<'a>(at: usize) -> Option<&'a [u8]> {
+    if !readable(at, SID_HEADER) {
+        return None;
+    }
+    // SAFETY: the probe found the header readable.
+    let sid = unsafe { caller_sid(at as *const u8) }?;
+    if !readable(at, sid.len()) {
+        return None;
+    }
+    Some(sid)
+}
+
+/// The ACL at `at`, probed first, as [`guarded_sid`].
+///
+/// # Safety
+///
+/// As [`guarded_sid`]'s.
+unsafe fn guarded_acl<'a>(at: usize) -> Option<&'a [u8]> {
+    if !readable(at, ACL_HEADER) {
+        return None;
+    }
+    // SAFETY: the probe found the header readable.
+    let acl = unsafe { caller_acl(at as *const u8) }?;
+    if !readable(at, acl.len()) {
+        return None;
+    }
+    Some(acl)
+}
+
+/// The SID component `index` of the descriptor at `base`, read whole (its count says how long),
+/// probed first as [`guarded_sid`].
+///
+/// # Safety
+///
+/// The descriptor and its component are readable.
+unsafe fn guarded_component_sid<'a>(base: usize, sd: &[u8], index: usize) -> Option<&'a [u8]> {
+    let at = component_addr(base, sd, index)?;
+    // SAFETY: the component's address resolves into memory the call may read.
+    unsafe { guarded_sid(at) }
+}
+
+/// The ACL component `index` of the descriptor at `base`, read whole, probed first as
+/// [`guarded_acl`].
+///
+/// # Safety
+///
+/// As [`guarded_component_sid`]'s.
+unsafe fn guarded_component_acl<'a>(base: usize, sd: &[u8], index: usize) -> Option<&'a [u8]> {
+    let at = component_addr(base, sd, index)?;
+    // SAFETY: the component's address resolves into memory the call may read.
+    unsafe { guarded_acl(at) }
 }
 
 /// The SID component `index` of the descriptor at `base`, read whole (its count says how long).
@@ -182,31 +246,32 @@ unsafe fn component_acl<'a>(base: usize, sd: &[u8], index: usize) -> Option<&'a 
 
 /// Whether the descriptor at `base` is valid: revision 1, and every component it names (owner
 /// and group when their fields are non-zero, the ACLs when their PRESENT flag is set) well
-/// formed.
+/// formed. The components are read probed, as the platform's validity check reads them under a
+/// guard: one whose bytes cannot be read makes the descriptor invalid, not a fault.
 pub(crate) fn valid_sd(base: usize, sd: &[u8]) -> bool {
-    if sd.first() != Some(&SD_REVISION) {
+    if !readable(base, SD_TARGET_HEADER) || sd.first() != Some(&SD_REVISION) {
         return false;
     }
-    // SAFETY: the descriptor's components are read as it names them.
+    // SAFETY: the descriptor's components are read as it names them, probed.
     unsafe {
-        if let Some(owner) = component_sid(base, sd, FIELD_OWNER) {
+        if let Some(owner) = guarded_component_sid(base, sd, FIELD_OWNER) {
             if !valid_sid(owner) {
                 return false;
             }
         }
-        if let Some(group) = component_sid(base, sd, FIELD_GROUP) {
+        if let Some(group) = guarded_component_sid(base, sd, FIELD_GROUP) {
             if !valid_sid(group) {
                 return false;
             }
         }
         if control(sd) & SE_DACL_PRESENT != 0 {
-            match component_acl(base, sd, FIELD_DACL) {
+            match guarded_component_acl(base, sd, FIELD_DACL) {
                 Some(dacl) if valid_acl(dacl) => {}
                 _ => return false,
             }
         }
         if control(sd) & SE_SACL_PRESENT != 0 {
-            match component_acl(base, sd, FIELD_SACL) {
+            match guarded_component_acl(base, sd, FIELD_SACL) {
                 Some(sacl) if valid_acl(sacl) => {}
                 _ => return false,
             }
@@ -411,13 +476,17 @@ impl<T: Copy> core::ops::DerefMut for HeapVec<T> {
 // --- The exports --------------------------------------------------------------------------------
 
 /// InitializeSecurityDescriptor: the descriptor at `sd` zeroed, its revision set to 1
-/// (another revision: ERROR_UNKNOWN_REVISION); the last error untouched on success.
+/// (another revision: ERROR_UNKNOWN_REVISION); the last error untouched on success. A null
+/// descriptor faults where the zeroing writes, as the platform's unprobed write does.
 ///
 /// # Safety
 ///
 /// `sd` is null or a writable security descriptor's header.
 #[unsafe(export_name = "f2k_export_InitializeSecurityDescriptor")]
-pub unsafe extern "system" fn initialize_security_descriptor(sd: *mut u8, revision: u32) -> u32 {
+pub unsafe extern "system" fn initialize_security_descriptor(
+    sd: *mut u8,
+    revision: u32,
+) -> u32 {
     if revision != u32::from(SD_REVISION) {
         nt::set_last_error(ERROR_UNKNOWN_REVISION);
         return 0;
@@ -425,8 +494,9 @@ pub unsafe extern "system" fn initialize_security_descriptor(sd: *mut u8, revisi
     // SAFETY: the caller's descriptor.
     let buffer = unsafe { caller_bytes_mut(sd, SD_HEADER) };
     let Some(buffer) = buffer else {
-        nt::set_last_error(ERROR_INVALID_PARAMETER);
-        return 0;
+        // A null descriptor: the header's write faults the caller.
+        unsafe { sd.write(0) };
+        unreachable!("the write above faults")
     };
     buffer.fill(0);
     buffer[SD_REV] = SD_REVISION;
@@ -452,6 +522,7 @@ pub unsafe extern "system" fn is_valid_security_descriptor(sd: *const u8) -> u32
 }
 
 /// GetSecurityDescriptorLength: the bytes the descriptor at `sd` takes, its components included.
+/// A null descriptor faults where the revision is read.
 ///
 /// # Safety
 ///
@@ -461,8 +532,9 @@ pub unsafe extern "system" fn get_security_descriptor_length(sd: *const u8) -> u
     // SAFETY: the caller's descriptor.
     let buffer = unsafe { caller_sd(sd) };
     let Some(buffer) = buffer else {
-        nt::set_last_error(ERROR_INVALID_PARAMETER);
-        return 0;
+        // A null descriptor: the revision's read faults the caller.
+        unsafe { sd.read() };
+        unreachable!("the read above faults")
     };
     // SAFETY: the descriptor's components are read as it names them.
     let length = unsafe { sd_length(sd as usize, buffer) };
@@ -471,6 +543,7 @@ pub unsafe extern "system" fn get_security_descriptor_length(sd: *const u8) -> u
 
 /// GetSecurityDescriptorControl: the descriptor's control word into `control` and its revision
 /// into `revision` (the revision always written; another revision: ERROR_UNKNOWN_REVISION).
+/// A null descriptor faults where its header is read.
 ///
 /// # Safety
 ///
@@ -491,8 +564,9 @@ pub unsafe extern "system" fn get_security_descriptor_control(
         )
     };
     let Some(buffer) = buffer else {
-        nt::set_last_error(ERROR_INVALID_PARAMETER);
-        return 0;
+        // A null descriptor: the revision's read faults the caller.
+        unsafe { sd.read() };
+        unreachable!("the read above faults")
     };
     if let Some(revision) = revision.as_mut() {
         revision.set(u32::from(buffer[SD_REV]));
@@ -895,12 +969,7 @@ pub unsafe extern "system" fn make_self_relative_sd(
     }
     // The storage is the header plus the components; on the host the header's fields take more
     // room than on the target, so the buffer read covers the whole of it.
-    let used = SD_HEADER
-        + components
-            .iter()
-            .flatten()
-            .map(|c| long_align(c.len()))
-            .sum::<usize>();
+    let used = SD_HEADER + components.iter().flatten().map(|c| long_align(c.len())).sum::<usize>();
     // SAFETY: the caller's buffer of `used` bytes at least.
     let out = unsafe { caller_bytes_mut(relative, used.max(needed)) };
     let Some(out) = out else {

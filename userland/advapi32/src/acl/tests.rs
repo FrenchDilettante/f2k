@@ -423,17 +423,70 @@ fn audited_permissions_are_walked() {
         )
     };
     assert_eq!((ret, last_error()), (87, 87));
-    // SetEntriesInAuditList is the silent no-op.
+    // SetEntriesInAuditList with no place for the list: ERROR_INVALID_PARAMETER.
     arm();
     let ret = unsafe {
         set_entries_in_audit_list_a(
             1,
-            core::ptr::null(),
+            trustee.as_ptr(),
             5,
             core::ptr::null(),
             core::ptr::null(),
             core::ptr::null_mut(),
         )
     };
-    assert_eq!((ret, last_error()), (0, 0xF2F2));
+    assert_eq!((ret, last_error()), (87, 0xF2F2));
+}
+
+/// SetEntriesInAuditListA/W build a fresh accctrl list on the process heap from the caller's
+/// entries: the count in its first word, the entries' pointer at its second, the entries copied
+/// verbatim; the answer is 0 (ERROR_SUCCESS) with the last error left at ERROR_IO_PENDING.
+#[test]
+fn the_audit_list_is_built_and_left_pending() {
+    use rtl::heap::ProcessHeap as _;
+
+    use crate::imports::ProcessHeap;
+    use crate::sid::PTR;
+
+    let name = b"Everyone\0";
+    let mut entry = vec![0xCCu8; ENTRY_SIZE];
+    set_dword(&mut entry, TRUSTEE_FORM, FORM_NAME);
+    set_ptr_field(&mut entry, TRUSTEE_NAME, name.as_ptr() as usize);
+    set_dword(&mut entry, TRUSTEE_SIZE, 0x000F01FF);
+    set_dword(&mut entry, TRUSTEE_SIZE + 4, 0x000F01FF);
+    let mut new_list: *mut u8 = core::ptr::null_mut();
+    arm();
+    let ret = unsafe {
+        set_entries_in_audit_list_a(1, entry.as_ptr(), 5, name.as_ptr(), core::ptr::null(), &mut new_list)
+    };
+    assert_eq!((ret, last_error()), (0, 997));
+    assert!(!new_list.is_null(), "the new list set");
+    // SAFETY: the heap block the call built.
+    let list = unsafe { core::slice::from_raw_parts(new_list, LIST_SIZE) };
+    assert_eq!(u32::from_le_bytes(list[..4].try_into().unwrap()), 1, "its cEntries");
+    let entries_at = usize::from_le_bytes(list[4..4 + PTR].try_into().unwrap());
+    assert_eq!(entries_at, new_list as usize + LIST_SIZE);
+    // SAFETY: the entries the list points at.
+    let copied = unsafe { core::slice::from_raw_parts(entries_at as *const u8, ENTRY_SIZE) };
+    assert_eq!(copied, &entry[..], "the entry copied verbatim");
+    // SAFETY: the heap block, freed once.
+    unsafe { ProcessHeap::free(new_list) };
+    // The W form builds the same list.
+    let mut new_list: *mut u8 = core::ptr::null_mut();
+    arm();
+    let ret = unsafe {
+        set_entries_in_audit_list_w(1, entry.as_ptr(), 5, core::ptr::null(), core::ptr::null(), &mut new_list)
+    };
+    assert_eq!((ret, last_error()), (0, 997));
+    assert!(!new_list.is_null());
+    // SAFETY: the heap block, freed once.
+    unsafe { ProcessHeap::free(new_list) };
+    // A null list with entries: ERROR_INVALID_PARAMETER, nothing built.
+    let mut new_list: *mut u8 = core::ptr::null_mut();
+    arm();
+    let ret = unsafe {
+        set_entries_in_audit_list_a(1, core::ptr::null(), 5, core::ptr::null(), core::ptr::null(), &mut new_list)
+    };
+    assert_eq!((ret, last_error()), (87, 0xF2F2));
+    assert!(new_list.is_null());
 }

@@ -60,7 +60,7 @@ pub(crate) const FAILED_ACCESS_ACE_FLAG: u32 = 0x80;
 
 /// The ACL revisions: the current one, the most (ACL_REVISION_DS).
 pub(crate) const ACL_REVISION: u32 = 2;
-const MIN_ACL_REVISION: u32 = 2;
+pub(crate) const MIN_ACL_REVISION: u32 = 2;
 pub(crate) const MAX_ACL_REVISION: u32 = 4;
 pub(crate) const ACL_REVISION_DS: u32 = 4;
 

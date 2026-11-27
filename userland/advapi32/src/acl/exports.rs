@@ -1,20 +1,20 @@
 //! The ACL exports: InitializeAcl, IsValidAcl, AddAce and the Add*ACE family, GetAce, DeleteAce,
-//! FindFirstFreeAce, and the audit pair (GetAuditedPermissionsFromAclA/W,
-//! SetEntriesInAuditListA/W).
+//! FindFirstFreeAce, and the audit pair (GetAuditedPermissionsFromAclA/W, SetEntriesInAuditListA/W).
 
-use rtl::status::{NtStatus, STATUS_INVALID_PARAMETER, STATUS_SUCCESS};
+use rtl::status::{NtStatus, STATUS_BUFFER_TOO_SMALL, STATUS_INVALID_PARAMETER, STATUS_SUCCESS};
+use rtl::heap::ProcessHeap as _;
 use rtl::winerror::{
-    ERROR_ENVVAR_NOT_FOUND,
-    ERROR_INVALID_FLAGS,
-    ERROR_INVALID_PARAMETER,
-    ERROR_INVALID_SID,
+    ERROR_ENVVAR_NOT_FOUND, ERROR_INVALID_FLAGS, ERROR_INVALID_PARAMETER, ERROR_INVALID_SID,
+    ERROR_IO_PENDING, ERROR_NOT_ENOUGH_MEMORY,
 };
+
+use crate::imports::{self as nt, ProcessHeap};
+use crate::sid::{caller_sid, set_ptr_field, sid_equal, ERROR_INVALID_ACL, PTR};
+use crate::trustee::TRUSTEE_SIZE;
+use crate::{caller_bytes, Out};
 
 use super::edit::*;
 use super::*;
-use crate::imports::{self as nt};
-use crate::sid::{caller_sid, sid_equal, ERROR_INVALID_ACL};
-use crate::{caller_bytes, Out};
 
 /// Map an editor's status to the Win32 error, set it, and answer FALSE.
 fn fail(status: NtStatus) -> u32 {
@@ -70,8 +70,7 @@ unsafe fn add_ace_call(
     fn to_guid(bytes: Option<&[u8]>) -> Option<&[u8; GUID_SIZE]> {
         bytes.and_then(|b| <&[u8; GUID_SIZE]>::try_from(b).ok())
     }
-    let (object_type, inherited_object_type) =
-        (to_guid(object_type), to_guid(inherited_object_type));
+    let (object_type, inherited_object_type) = (to_guid(object_type), to_guid(inherited_object_type));
     let (Some(buffer), Some(sid)) = (buffer, sid) else {
         nt::set_last_error(ERROR_INVALID_PARAMETER);
         return 0;
@@ -99,26 +98,33 @@ unsafe fn add_ace_call(
     }
 }
 
+
 // --- The exports -------------------------------------------------------------------------------
 
 /// InitializeAcl: an empty ACL of `length` bytes and `revision` in the caller's buffer; the size
 /// is rounded down to a dword. ERROR_INSUFFICIENT_BUFFER for a buffer shorter than the header,
-/// ERROR_INVALID_PARAMETER for a revision outside 2..=4.
+/// ERROR_INVALID_PARAMETER for a revision outside 2..=4. A null ACL faults where the header is
+/// written, as the platform's unprobed write does.
 ///
 /// # Safety
 ///
 /// `acl` is null or `length` writable bytes.
 #[unsafe(export_name = "f2k_export_InitializeAcl")]
 pub unsafe extern "system" fn initialize_acl(acl: *mut u8, length: u32, revision: u32) -> u32 {
-    if acl.is_null() {
-        nt::set_last_error(ERROR_INVALID_PARAMETER);
-        return 0;
+    // The checks the editor makes before any write: a buffer shorter than the header, a
+    // revision outside 2..=4, a size past a word.
+    if (length as usize) < ACL_HEADER {
+        return fail(NtStatus(STATUS_BUFFER_TOO_SMALL));
+    }
+    if !(MIN_ACL_REVISION..=MAX_ACL_REVISION).contains(&revision) || length > u32::from(u16::MAX) {
+        return fail(NtStatus(STATUS_INVALID_PARAMETER));
     }
     // SAFETY: the caller's buffer of `length` bytes.
     let buffer = unsafe { caller_bytes_mut(acl, length as usize) };
     let Some(buffer) = buffer else {
-        nt::set_last_error(ERROR_INVALID_PARAMETER);
-        return 0;
+        // A null ACL: the header's write faults the caller.
+        unsafe { acl.write(revision as u8) };
+        unreachable!("the write above faults")
     };
     match create_acl(buffer, length, revision) {
         NtStatus(STATUS_SUCCESS) => 1,
@@ -159,12 +165,8 @@ pub unsafe extern "system" fn add_ace(
     list_length: u32,
 ) -> u32 {
     // SAFETY: the caller's ACL and ACE list.
-    let (buffer, list) = unsafe {
-        (
-            caller_acl_mut(acl),
-            caller_bytes(list, list_length as usize),
-        )
-    };
+    let (buffer, list) =
+        unsafe { (caller_acl_mut(acl), caller_bytes(list, list_length as usize)) };
     let (Some(buffer), Some(list)) = (buffer, list) else {
         nt::set_last_error(ERROR_INVALID_PARAMETER);
         return 0;
@@ -232,9 +234,7 @@ pub unsafe extern "system" fn find_first_free_ace(acl: *const u8, ace: *mut *mut
     };
     match first_free(buffer) {
         Ok(free) => {
-            place.set(free.map_or(::core::ptr::null_mut(), |at| {
-                unsafe { acl.add(at) }.cast_mut()
-            }));
+            place.set(free.map_or(::core::ptr::null_mut(), |at| unsafe { acl.add(at) }.cast_mut()));
             1
         }
         Err(()) => {
@@ -549,8 +549,89 @@ unsafe fn audit_ace_call(
     )
 }
 
+
 // --- The audit pair ----------------------------------------------------------------------------
 
+/// An accctrl access entry's size: its trustee, then the four dwords and the property pointer
+/// (accctrl.h's ACTRL_ACCESS_ENTRY).
+pub(crate) const ENTRY_SIZE: usize = TRUSTEE_SIZE + 16 + PTR;
+/// An accctrl access list's size: the count and the entries' pointer (ACTRL_LIST).
+pub(crate) const LIST_SIZE: usize = 4 + PTR;
+
+/// SetEntriesInAuditListA/W's body: the caller's `entries` entries copied into a fresh accctrl
+/// list on the process heap, its address into `new_list`. The answer is the error code
+/// ERROR_SUCCESS (0), with the last error left at ERROR_IO_PENDING, as the platform's audit-list
+/// build leaves it; F2K keeps no audit, so the list is the call's whole answer.
+///
+/// # Safety
+///
+/// `list` is null (for a zero count) or `entries` entries the call may read; `new_list` the
+/// caller's place for the list's address.
+unsafe fn set_entries_in_audit_list(entries: u32, list: *const u8, new_list: *mut *mut u8) -> u32 {
+    // SAFETY: the caller's place.
+    let mut place = unsafe { Out::optional(new_list) };
+    let Some(place) = place.as_mut() else {
+        return ERROR_INVALID_PARAMETER;
+    };
+    let count = entries as usize;
+    // SAFETY: the caller's entries.
+    let source = if count == 0 {
+        &[][..]
+    } else {
+        match unsafe { caller_bytes(list, count * ENTRY_SIZE) } {
+            Some(bytes) => bytes,
+            None => return ERROR_INVALID_PARAMETER,
+        }
+    };
+    let size = LIST_SIZE + count * ENTRY_SIZE;
+    let block = ProcessHeap::allocate(size);
+    if block.is_null() {
+        nt::set_last_error(ERROR_NOT_ENOUGH_MEMORY);
+        return ERROR_NOT_ENOUGH_MEMORY;
+    }
+    // SAFETY: the heap's new block of `size` bytes, ours to write.
+    let out = unsafe { core::slice::from_raw_parts_mut(block, size) };
+    out[..4].copy_from_slice(&entries.to_le_bytes());
+    set_ptr_field(out, 4, block as usize + LIST_SIZE);
+    out[LIST_SIZE..LIST_SIZE + source.len()].copy_from_slice(source);
+    place.set(block);
+    nt::set_last_error(ERROR_IO_PENDING);
+    0
+}
+
+/// SetEntriesInAuditListA: as [`set_entries_in_audit_list`], an ANSI trustee name in the entries.
+///
+/// # Safety
+///
+/// As [`set_entries_in_audit_list`]'s; `name` a string the call does not read.
+#[unsafe(export_name = "f2k_export_SetEntriesInAuditListA")]
+pub unsafe extern "system" fn set_entries_in_audit_list_a(
+    entries: u32,
+    list: *const u8,
+    _mode: u32,
+    _name: *const u8,
+    _old_list: *const u8,
+    new_list: *mut *mut u8,
+) -> u32 {
+    unsafe { set_entries_in_audit_list(entries, list, new_list) }
+}
+
+/// SetEntriesInAuditListW: as the A form, a wide trustee name in the entries.
+///
+/// # Safety
+///
+/// As [`set_entries_in_audit_list`]'s; `name` a wide string the call does not read.
+#[unsafe(export_name = "f2k_export_SetEntriesInAuditListW")]
+pub unsafe extern "system" fn set_entries_in_audit_list_w(
+    entries: u32,
+    list: *const u8,
+    _mode: u32,
+    _name: *const u16,
+    _old_list: *const u8,
+    new_list: *mut *mut u8,
+) -> u32 {
+    unsafe { set_entries_in_audit_list(entries, list, new_list) }
+}
 /// GetAuditedPermissionsFromAclA/W: the accesses the ACL's audit ACEs say are audited for the
 /// trustee: OR'd into `success` (the success-flag ACEs) and `failure` (the failure-flag ones).
 /// A trustee by name has no answer without an account database (ERROR_ENVVAR_NOT_FOUND, the
@@ -647,40 +728,5 @@ unsafe fn audited_permissions(
         }
         at += word(buffer, at + ACE_SIZE_OFF).unwrap_or(0) as usize;
     }
-    0
-}
-
-/// SetEntriesInAuditListA: the audit list built from `entries`. Audit is a silent stub in F2K:
-/// the call answers ERROR_SUCCESS and builds nothing.
-///
-/// # Safety
-///
-/// The arguments are the caller's, unused.
-#[unsafe(export_name = "f2k_export_SetEntriesInAuditListA")]
-pub unsafe extern "system" fn set_entries_in_audit_list_a(
-    _entries: u32,
-    _list: *const u8,
-    _mode: u32,
-    _name: *const u8,
-    _old_list: *const u8,
-    _new_list: *mut *mut u8,
-) -> u32 {
-    0
-}
-
-/// SetEntriesInAuditListW: as the A form.
-///
-/// # Safety
-///
-/// As the A form's.
-#[unsafe(export_name = "f2k_export_SetEntriesInAuditListW")]
-pub unsafe extern "system" fn set_entries_in_audit_list_w(
-    _entries: u32,
-    _list: *const u8,
-    _mode: u32,
-    _name: *const u16,
-    _old_list: *const u8,
-    _new_list: *mut *mut u8,
-) -> u32 {
     0
 }
