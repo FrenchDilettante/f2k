@@ -95,6 +95,10 @@ title = "F2K-internal entry points"
 
 # --- system services (the kernel's NT service table, kernel/src/nt) ------------------------------
 
+[[group]]
+key = "security"
+title = "security descriptors, ACLs, SIDs and access checks"
+
 [[export]]
 name = "NtClose"
 group = "nt"
@@ -2443,6 +2447,9 @@ ordinal = 313
 
 [[export]]
 name = "RtlAbsoluteToSelfRelativeSD"
+group = "security"
+args = ["ptr AbsoluteSecurityDescriptor", "ptr SelfRelativeSecurityDescriptor", "ptr<u32> BufferLength"]
+impl = { native = "RtlAbsoluteToSelfRelativeSD" }
 ordinal = 314
 
 [[export]]
@@ -2455,30 +2462,51 @@ ordinal = 317
 
 [[export]]
 name = "RtlAddAccessAllowedAce"
+group = "security"
+args = ["ptr Acl", "u32 AceRevision", "u32 AccessMask", "ptr Sid"]
+impl = { native = "RtlAddAccessAllowedAce" }
 ordinal = 318
 
 [[export]]
 name = "RtlAddAccessAllowedAceEx"
+group = "security"
+args = ["ptr Acl", "u32 AceRevision", "u32 AceFlags", "u32 AccessMask", "ptr Sid"]
+impl = { native = "RtlAddAccessAllowedAceEx" }
 ordinal = 319
 
 [[export]]
 name = "RtlAddAccessAllowedObjectAce"
+group = "security"
+args = ["ptr Acl", "u32 AceRevision", "u32 AceFlags", "u32 AccessMask", "ptr ObjectTypeGuid", "ptr InheritedObjectTypeGuid", "ptr Sid"]
+impl = { native = "RtlAddAccessAllowedObjectAce" }
 ordinal = 320
 
 [[export]]
 name = "RtlAddAccessDeniedAce"
+group = "security"
+args = ["ptr Acl", "u32 AceRevision", "u32 AccessMask", "ptr Sid"]
+impl = { native = "RtlAddAccessDeniedAce" }
 ordinal = 321
 
 [[export]]
 name = "RtlAddAccessDeniedAceEx"
+group = "security"
+args = ["ptr Acl", "u32 AceRevision", "u32 AceFlags", "u32 AccessMask", "ptr Sid"]
+impl = { native = "RtlAddAccessDeniedAceEx" }
 ordinal = 322
 
 [[export]]
 name = "RtlAddAccessDeniedObjectAce"
+group = "security"
+args = ["ptr Acl", "u32 AceRevision", "u32 AceFlags", "u32 AccessMask", "ptr ObjectTypeGuid", "ptr InheritedObjectTypeGuid", "ptr Sid"]
+impl = { native = "RtlAddAccessDeniedObjectAce" }
 ordinal = 323
 
 [[export]]
 name = "RtlAddAce"
+group = "security"
+args = ["ptr Acl", "u32 AceRevision", "u32 StartingAceIndex", "ptr AceList", "u32 AceListLength"]
+impl = { native = "RtlAddAce" }
 ordinal = 324
 
 [[export]]
@@ -2495,18 +2523,30 @@ ordinal = 327
 
 [[export]]
 name = "RtlAddAuditAccessAce"
+group = "security"
+args = ["ptr Acl", "u32 AceRevision", "u32 AccessMask", "ptr Sid", "boolean AuditSuccess", "boolean AuditFailure"]
+impl = { native = "RtlAddAuditAccessAce" }
 ordinal = 328
 
 [[export]]
 name = "RtlAddAuditAccessAceEx"
+group = "security"
+args = ["ptr Acl", "u32 AceRevision", "u32 AceFlags", "u32 AccessMask", "ptr Sid", "boolean AuditSuccess", "boolean AuditFailure"]
+impl = { native = "RtlAddAuditAccessAceEx" }
 ordinal = 329
 
 [[export]]
 name = "RtlAddAuditAccessObjectAce"
+group = "security"
+args = ["ptr Acl", "u32 AceRevision", "u32 AceFlags", "u32 AccessMask", "ptr ObjectTypeGuid", "ptr InheritedObjectTypeGuid", "ptr Sid", "boolean AuditSuccess", "boolean AuditFailure"]
+impl = { native = "RtlAddAuditAccessObjectAce" }
 ordinal = 330
 
 [[export]]
 name = "RtlAddCompoundAce"
+group = "security"
+args = ["ptr Acl", "u32 AceRevision", "u32 CompoundAceType", "u32 AccessMask", "ptr ServerSid", "ptr ClientSid"]
+impl = { native = "RtlAddCompoundAce" }
 ordinal = 331
 
 [[export]]
@@ -2515,10 +2555,16 @@ ordinal = 332
 
 [[export]]
 name = "RtlAdjustPrivilege"
+group = "security"
+args = ["u32 Privilege", "boolean Enable", "boolean Client", "ptr<u32> WasEnabled"]
+impl = { native = "RtlAdjustPrivilege" }
 ordinal = 333
 
 [[export]]
 name = "RtlAllocateAndInitializeSid"
+group = "security"
+args = ["ptr IdentifierAuthority", "u32 SubAuthorityCount", "u32 SubAuthority0", "u32 SubAuthority1", "u32 SubAuthority2", "u32 SubAuthority3", "u32 SubAuthority4", "u32 SubAuthority5", "u32 SubAuthority6", "u32 SubAuthority7", "ptr Sid"]
+impl = { native = "RtlAllocateAndInitializeSid" }
 ordinal = 334
 
 [[export]]
@@ -2555,10 +2601,16 @@ ordinal = 345
 
 [[export]]
 name = "RtlAreAllAccessesGranted"
+group = "security"
+args = ["u32 GrantedAccess", "u32 DesiredAccess"]
+impl = { native = "RtlAreAllAccessesGranted" }
 ordinal = 346
 
 [[export]]
 name = "RtlAreAnyAccessesGranted"
+group = "security"
+args = ["u32 GrantedAccess", "u32 DesiredAccess"]
+impl = { native = "RtlAreAnyAccessesGranted" }
 ordinal = 347
 
 [[export]]
@@ -2635,6 +2687,9 @@ ordinal = 368
 
 [[export]]
 name = "RtlConvertSidToUnicodeString"
+group = "security"
+args = ["ptr String", "ptr Sid", "boolean Allocate"]
+impl = { native = "RtlConvertSidToUnicodeString" }
 ordinal = 369
 
 [[export]]
@@ -2663,14 +2718,23 @@ ordinal = 375
 
 [[export]]
 name = "RtlCopySecurityDescriptor"
+group = "security"
+args = ["ptr InputSecurityDescriptor", "ptr OutputSecurityDescriptor"]
+impl = { native = "RtlCopySecurityDescriptor" }
 ordinal = 376
 
 [[export]]
 name = "RtlCopySid"
+group = "security"
+args = ["u32 Length", "ptr Destination", "ptr Source"]
+impl = { native = "RtlCopySid" }
 ordinal = 377
 
 [[export]]
 name = "RtlCopySidAndAttributesArray"
+group = "security"
+args = ["u32 Count", "ptr Source", "u32 TargetBufferSize", "ptr TargetArray", "ptr TargetSid", "ptr NextTargetSid", "ptr<u32> Remaining"]
+impl = { native = "RtlCopySidAndAttributesArray" }
 ordinal = 378
 
 [[export]]
@@ -2683,10 +2747,16 @@ ordinal = 380
 
 [[export]]
 name = "RtlCreateAcl"
+group = "security"
+args = ["ptr Acl", "u32 AclLength", "u32 AclRevision"]
+impl = { native = "RtlCreateAcl" }
 ordinal = 381
 
 [[export]]
 name = "RtlCreateAndSetSD"
+group = "security"
+args = ["ptr AceData", "u32 AceCount", "ptr Owner", "ptr Group", "ptr NewSecurityDescriptor"]
+impl = { native = "RtlCreateAndSetSD" }
 ordinal = 382
 
 [[export]]
@@ -2707,6 +2777,9 @@ ordinal = 389
 
 [[export]]
 name = "RtlCreateSecurityDescriptor"
+group = "security"
+args = ["ptr SecurityDescriptor", "u32 Revision"]
+impl = { native = "RtlCreateSecurityDescriptor" }
 ordinal = 390
 
 [[export]]
@@ -2763,6 +2836,9 @@ ordinal = 404
 
 [[export]]
 name = "RtlDefaultNpAcl"
+group = "security"
+args = ["ptr Acl"]
+impl = { native = "RtlDefaultNpAcl" }
 ordinal = 405
 
 [[export]]
@@ -2771,6 +2847,9 @@ ordinal = 406
 
 [[export]]
 name = "RtlDeleteAce"
+group = "security"
+args = ["ptr Acl", "u32 AceIndex"]
+impl = { native = "RtlDeleteAce" }
 ordinal = 407
 
 [[export]]
@@ -2899,10 +2978,16 @@ ordinal = 446
 
 [[export]]
 name = "RtlEqualPrefixSid"
+group = "security"
+args = ["ptr Sid1", "ptr Sid2"]
+impl = { native = "RtlEqualPrefixSid" }
 ordinal = 447
 
 [[export]]
 name = "RtlEqualSid"
+group = "security"
+args = ["ptr Sid1", "ptr Sid2"]
+impl = { native = "RtlEqualSid" }
 ordinal = 448
 
 [[export]]
@@ -2979,6 +3064,9 @@ ordinal = 469
 
 [[export]]
 name = "RtlFirstFreeAce"
+group = "security"
+args = ["ptr Acl", "ptr Ace"]
+impl = { native = "RtlFirstFreeAce" }
 ordinal = 470
 
 [[export]]
@@ -2999,6 +3087,9 @@ ordinal = 477
 
 [[export]]
 name = "RtlFreeSid"
+group = "security"
+args = ["ptr Sid"]
+impl = { native = "RtlFreeSid" }
 ordinal = 478
 
 [[export]]
@@ -3015,6 +3106,9 @@ ordinal = 482
 
 [[export]]
 name = "RtlGetAce"
+group = "security"
+args = ["ptr Acl", "u32 AceIndex", "ptr Ace"]
+impl = { native = "RtlGetAce" }
 ordinal = 483
 
 [[export]]
@@ -3027,10 +3121,16 @@ ordinal = 485
 
 [[export]]
 name = "RtlGetControlSecurityDescriptor"
+group = "security"
+args = ["ptr SecurityDescriptor", "ptr<u16> Control", "ptr<u32> Revision"]
+impl = { native = "RtlGetControlSecurityDescriptor" }
 ordinal = 486
 
 [[export]]
 name = "RtlGetDaclSecurityDescriptor"
+group = "security"
+args = ["ptr SecurityDescriptor", "ptr<u32> DaclPresent", "ptr Dacl", "ptr<u32> DaclDefaulted"]
+impl = { native = "RtlGetDaclSecurityDescriptor" }
 ordinal = 488
 
 [[export]]
@@ -3043,6 +3143,9 @@ ordinal = 490
 
 [[export]]
 name = "RtlGetGroupSecurityDescriptor"
+group = "security"
+args = ["ptr SecurityDescriptor", "ptr Group", "ptr<u32> GroupDefaulted"]
+impl = { native = "RtlGetGroupSecurityDescriptor" }
 ordinal = 492
 
 [[export]]
@@ -3063,6 +3166,9 @@ ordinal = 496
 
 [[export]]
 name = "RtlGetOwnerSecurityDescriptor"
+group = "security"
+args = ["ptr SecurityDescriptor", "ptr Owner", "ptr<u32> OwnerDefaulted"]
+impl = { native = "RtlGetOwnerSecurityDescriptor" }
 ordinal = 497
 
 [[export]]
@@ -3071,10 +3177,16 @@ ordinal = 498
 
 [[export]]
 name = "RtlGetSaclSecurityDescriptor"
+group = "security"
+args = ["ptr SecurityDescriptor", "ptr<u32> SaclPresent", "ptr Sacl", "ptr<u32> SaclDefaulted"]
+impl = { native = "RtlGetSaclSecurityDescriptor" }
 ordinal = 499
 
 [[export]]
 name = "RtlGetSecurityDescriptorRMControl"
+group = "security"
+args = ["ptr SecurityDescriptor", "ptr RMControl"]
+impl = { native = "RtlGetSecurityDescriptorRMControl" }
 ordinal = 500
 
 [[export]]
@@ -3087,6 +3199,9 @@ ordinal = 502
 
 [[export]]
 name = "RtlIdentifierAuthoritySid"
+group = "security"
+args = ["ptr Sid"]
+impl = { native = "RtlIdentifierAuthoritySid" }
 ordinal = 503
 
 [[export]]
@@ -3147,6 +3262,9 @@ ordinal = 524
 
 [[export]]
 name = "RtlInitializeSid"
+group = "security"
+args = ["ptr Sid", "ptr IdentifierAuthority", "u32 SubAuthorityCount"]
+impl = { native = "RtlInitializeSid" }
 ordinal = 525
 
 [[export]]
@@ -3227,14 +3345,23 @@ ordinal = 545
 
 [[export]]
 name = "RtlLengthRequiredSid"
+group = "security"
+args = ["u32 SubAuthorityCount"]
+impl = { native = "RtlLengthRequiredSid" }
 ordinal = 547
 
 [[export]]
 name = "RtlLengthSecurityDescriptor"
+group = "security"
+args = ["ptr SecurityDescriptor"]
+impl = { native = "RtlLengthSecurityDescriptor" }
 ordinal = 548
 
 [[export]]
 name = "RtlLengthSid"
+group = "security"
+args = ["ptr Sid"]
+impl = { native = "RtlLengthSid" }
 ordinal = 549
 
 [[export]]
@@ -3251,6 +3378,9 @@ ordinal = 553
 
 [[export]]
 name = "RtlMakeSelfRelativeSD"
+group = "security"
+args = ["ptr SecurityDescriptor", "ptr SelfRelativeSecurityDescriptor", "ptr<u32> BufferLength"]
+impl = { native = "RtlMakeSelfRelativeSD" }
 ordinal = 554
 
 [[export]]
@@ -3275,6 +3405,9 @@ ordinal = 560
 
 [[export]]
 name = "RtlNewSecurityGrantedAccess"
+group = "security"
+args = ["u32 DesiredAccess", "ptr Privileges", "ptr<u32> PrivilegesLength", "handle TokenHandle", "ptr Mapping", "ptr<u32> Remaining"]
+impl = { native = "RtlNewSecurityGrantedAccess" }
 ordinal = 561
 
 [[export]]
@@ -3335,6 +3468,9 @@ ordinal = 578
 
 [[export]]
 name = "RtlQueryInformationAcl"
+group = "security"
+args = ["ptr Acl", "ptr AclInformation", "u32 AclInformationLength", "u32 AclInformationClass"]
+impl = { native = "RtlQueryInformationAcl" }
 ordinal = 580
 
 [[export]]
@@ -3419,10 +3555,16 @@ ordinal = 604
 
 [[export]]
 name = "RtlSelfRelativeToAbsoluteSD2"
+group = "security"
+args = ["ptr Buffer", "ptr<u32> BufferSize"]
+impl = { native = "RtlSelfRelativeToAbsoluteSD2" }
 ordinal = 605
 
 [[export]]
 name = "RtlSelfRelativeToAbsoluteSD"
+group = "security"
+args = ["ptr SelfRelativeSecurityDescriptor", "ptr AbsoluteSecurityDescriptor", "ptr<u32> AbsoluteSecurityDescriptorSize", "ptr Dacl", "ptr<u32> DaclSize", "ptr Sacl", "ptr<u32> SaclSize", "ptr Owner", "ptr<u32> OwnerSize", "ptr Group", "ptr<u32> GroupSize"]
+impl = { native = "RtlSelfRelativeToAbsoluteSD" }
 ordinal = 606
 
 [[export]]
@@ -3431,6 +3573,9 @@ ordinal = 607
 
 [[export]]
 name = "RtlSetAttributesSecurityDescriptor"
+group = "security"
+args = ["ptr SecurityDescriptor", "u32 Control", "ptr<u32> Revision"]
+impl = { native = "RtlSetAttributesSecurityDescriptor" }
 ordinal = 608
 
 [[export]]
@@ -3439,6 +3584,9 @@ ordinal = 609
 
 [[export]]
 name = "RtlSetControlSecurityDescriptor"
+group = "security"
+args = ["ptr SecurityDescriptor", "u32 ControlBitsOfInterest", "u32 ControlBitsToSet"]
+impl = { native = "RtlSetControlSecurityDescriptor" }
 ordinal = 610
 
 [[export]]
@@ -3447,14 +3595,23 @@ ordinal = 613
 
 [[export]]
 name = "RtlSetDaclSecurityDescriptor"
+group = "security"
+args = ["ptr SecurityDescriptor", "boolean DaclPresent", "ptr Dacl", "boolean DaclDefaulted"]
+impl = { native = "RtlSetDaclSecurityDescriptor" }
 ordinal = 614
 
 [[export]]
 name = "RtlSetGroupSecurityDescriptor"
+group = "security"
+args = ["ptr SecurityDescriptor", "ptr Group", "boolean GroupDefaulted"]
+impl = { native = "RtlSetGroupSecurityDescriptor" }
 ordinal = 616
 
 [[export]]
 name = "RtlSetInformationAcl"
+group = "security"
+args = ["ptr Acl", "ptr AclInformation", "u32 AclInformationLength", "u32 AclInformationClass"]
+impl = { native = "RtlSetInformationAcl" }
 ordinal = 617
 
 [[export]]
@@ -3463,14 +3620,23 @@ ordinal = 618
 
 [[export]]
 name = "RtlSetOwnerSecurityDescriptor"
+group = "security"
+args = ["ptr SecurityDescriptor", "ptr Owner", "boolean OwnerDefaulted"]
+impl = { native = "RtlSetOwnerSecurityDescriptor" }
 ordinal = 619
 
 [[export]]
 name = "RtlSetSaclSecurityDescriptor"
+group = "security"
+args = ["ptr SecurityDescriptor", "boolean SaclPresent", "ptr Sacl", "boolean SaclDefaulted"]
+impl = { native = "RtlSetSaclSecurityDescriptor" }
 ordinal = 620
 
 [[export]]
 name = "RtlSetSecurityDescriptorRMControl"
+group = "security"
+args = ["ptr SecurityDescriptor", "ptr RMControl"]
+impl = { native = "RtlSetSecurityDescriptorRMControl" }
 ordinal = 621
 
 [[export]]
@@ -3523,10 +3689,16 @@ ordinal = 634
 
 [[export]]
 name = "RtlSubAuthorityCountSid"
+group = "security"
+args = ["ptr Sid"]
+impl = { native = "RtlSubAuthorityCountSid" }
 ordinal = 635
 
 [[export]]
 name = "RtlSubAuthoritySid"
+group = "security"
+args = ["ptr Sid", "u32 SubAuthorityIndex"]
+impl = { native = "RtlSubAuthoritySid" }
 ordinal = 636
 
 [[export]]
@@ -3659,18 +3831,30 @@ ordinal = 678
 
 [[export]]
 name = "RtlValidAcl"
+group = "security"
+args = ["ptr Acl"]
+impl = { native = "RtlValidAcl" }
 ordinal = 679
 
 [[export]]
 name = "RtlValidRelativeSecurityDescriptor"
+group = "security"
+args = ["ptr SecurityDescriptor", "u32 Length", "u32 RequiredLength"]
+impl = { native = "RtlValidRelativeSecurityDescriptor" }
 ordinal = 680
 
 [[export]]
 name = "RtlValidSecurityDescriptor"
+group = "security"
+args = ["ptr SecurityDescriptor"]
+impl = { native = "RtlValidSecurityDescriptor" }
 ordinal = 681
 
 [[export]]
 name = "RtlValidSid"
+group = "security"
+args = ["ptr Sid"]
+impl = { native = "RtlValidSid" }
 ordinal = 682
 
 [[export]]
