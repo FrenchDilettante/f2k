@@ -16,6 +16,7 @@ pub(crate) mod sddl;
 #[cfg(test)]
 mod tests;
 
+use rtl::heap::ProcessHeap as _;
 use rtl::pod::Pod;
 use rtl::winerror::{
     ERROR_INVALID_DATA, ERROR_INVALID_PARAMETER, ERROR_INSUFFICIENT_BUFFER,
@@ -23,7 +24,7 @@ use rtl::winerror::{
 
 use crate::acl::{caller_acl, ACL_HEADER};
 use crate::acl::edit::valid_acl;
-use crate::imports::{self as nt};
+use crate::imports::{self as nt, ProcessHeap};
 use crate::sid::{
     caller_sid, ptr_field, set_ptr_field, valid_sid, ERROR_INVALID_SECURITY_DESCR,
     ERROR_UNKNOWN_REVISION, PTR,
@@ -261,6 +262,147 @@ pub(crate) fn packed_size(components: &[Option<&[u8]>; 4]) -> usize {
         sum += long_align(component.len());
     }
     sum
+}
+
+/// A growable buffer of `T` on the process heap (the DLL's code has no allocator): doubled when
+/// it runs out of room, freed when dropped. Its methods answer none when the heap has no room.
+struct HeapVec<T: Copy> {
+    block: *mut T,
+    len: usize,
+    cap: usize,
+}
+
+impl<T: Copy> HeapVec<T> {
+    /// An empty buffer.
+    fn new() -> Self {
+        Self {
+            block: core::ptr::null_mut(),
+            len: 0,
+            cap: 0,
+        }
+    }
+
+    /// A buffer of `len` zeroed values (the heap's blocks come zeroed).
+    fn zeroed(len: usize) -> Option<Self> {
+        let mut buffer = Self::new();
+        buffer.reserve(len)?;
+        buffer.len = len;
+        Some(buffer)
+    }
+
+    /// The values it holds.
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    /// Whether it holds none.
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// The values, as a slice.
+    fn as_slice(&self) -> &[T] {
+        if self.len == 0 {
+            &[]
+        } else {
+            // SAFETY: the block holds `len` values, ours until dropped.
+            unsafe { core::slice::from_raw_parts(self.block, self.len) }
+        }
+    }
+
+    /// The values, as a writable slice.
+    fn as_mut_slice(&mut self) -> &mut [T] {
+        if self.len == 0 {
+            &mut []
+        } else {
+            // SAFETY: as `as_slice`'s, writable.
+            unsafe { core::slice::from_raw_parts_mut(self.block, self.len) }
+        }
+    }
+
+    /// Room for `extra` more values.
+    fn reserve(&mut self, extra: usize) -> Option<()> {
+        let needed = self.len.checked_add(extra)?;
+        if needed <= self.cap {
+            return Some(());
+        }
+        let mut cap = self.cap.max(16);
+        while cap < needed {
+            cap = cap.checked_mul(2)?;
+        }
+        let block = ProcessHeap::allocate(cap * core::mem::size_of::<T>());
+        if block.is_null() {
+            return None;
+        }
+        if !self.block.is_null() {
+            // SAFETY: the old block's `len` values copied into the new one; both ours, the old
+            // freed once.
+            unsafe {
+                core::ptr::copy_nonoverlapping(self.block, block.cast::<T>(), self.len);
+                ProcessHeap::free(self.block.cast());
+            }
+        }
+        self.block = block.cast();
+        self.cap = cap;
+        Some(())
+    }
+
+    /// `value` added at the end.
+    fn push(&mut self, value: T) -> Option<()> {
+        self.reserve(1)?;
+        // SAFETY: the block has room for one more.
+        unsafe { self.block.add(self.len).write(value) };
+        self.len += 1;
+        Some(())
+    }
+
+    /// `values` added at the end.
+    fn extend_from_slice(&mut self, values: &[T]) -> Option<()> {
+        self.reserve(values.len())?;
+        // SAFETY: room for all of them in the block.
+        unsafe {
+            core::ptr::copy_nonoverlapping(values.as_ptr(), self.block.add(self.len), values.len())
+        };
+        self.len += values.len();
+        Some(())
+    }
+
+    /// The values of `iter` added at the end.
+    fn extend<I: IntoIterator<Item = T>>(&mut self, iter: I) -> Option<()> {
+        for value in iter {
+            self.push(value)?;
+        }
+        Some(())
+    }
+}
+
+impl<T: Copy> Default for HeapVec<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Copy> Drop for HeapVec<T> {
+    fn drop(&mut self) {
+        if !self.block.is_null() {
+            // SAFETY: the block is one `allocate` answered, not freed since.
+            unsafe { ProcessHeap::free(self.block.cast()) };
+        }
+    }
+}
+
+impl<T: Copy> core::ops::Deref for HeapVec<T> {
+    type Target = [T];
+
+    fn deref(&self) -> &[T] {
+        self.as_slice()
+    }
+}
+
+impl<T: Copy> core::ops::DerefMut for HeapVec<T> {
+    fn deref_mut(&mut self) -> &mut [T] {
+        self.as_mut_slice()
+    }
 }
 
 // --- The exports --------------------------------------------------------------------------------

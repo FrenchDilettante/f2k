@@ -5,7 +5,7 @@
 //! the information bits ask for it and the descriptor carries it. An ACE is
 //! `(type;flags;rights;object guid;inherited guid;sid)`; a SID prints as its two-letter moniker
 //! when it is a well-known one, else as `S-1-...`. The conversions allocate from the process
-//! heap, which the caller frees.
+//! heap, which the caller frees; their scratch buffers are heap blocks too ([`HeapVec`]).
 
 use rtl::edge::{InStr, InWStr};
 use rtl::heap::ProcessHeap as _;
@@ -22,18 +22,27 @@ use crate::acl::{
 };
 use crate::imports::{self as nt, ProcessHeap};
 use crate::sid::{
-    sid_len, sid_parts_bytes, sid_to_units, well_known_sid, ERROR_UNKNOWN_REVISION, SID_HEADER,
+    sid_len, sid_parts_bytes, sid_to_units, well_known_sid, ERROR_UNKNOWN_REVISION,
+    MAX_SUB_AUTHORITIES, SID_HEADER,
 };
 use crate::Out;
 
 use super::{
-    caller_sd, control, long_align, set_control, set_sd_field_value, FIELD_DACL, FIELD_GROUP,
+    caller_sd, control, long_align, set_control, set_sd_field_value, HeapVec, FIELD_DACL, FIELD_GROUP,
     FIELD_OWNER, FIELD_SACL, SD_HEADER, SD_REVISION, SE_DACL_AUTO_INHERITED,
     SE_DACL_AUTO_INHERIT_REQ, SE_DACL_PRESENT, SE_DACL_PROTECTED, SE_SACL_AUTO_INHERITED,
     SE_SACL_AUTO_INHERIT_REQ, SE_SACL_PRESENT, SE_SACL_PROTECTED, SE_SELF_RELATIVE,
     DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
     SACL_SECURITY_INFORMATION,
 };
+
+/// The most bytes a SID takes: its header and the most sub-authorities.
+const SID_BYTES_MAX: usize = SID_HEADER + 4 * MAX_SUB_AUTHORITIES;
+
+/// The string being built, in UTF-16 units.
+type Units = HeapVec<u16>;
+/// A byte string being built.
+type Bytes = HeapVec<u8>;
 
 // --- The lookup tables ---------------------------------------------------------------------------
 
@@ -116,15 +125,15 @@ const MONIKERS: &[(&str, u32)] = &[
 
 // --- Small UTF-16 helpers ------------------------------------------------------------------------
 
-fn push_str(units: &mut Vec<u16>, text: &str) {
-    units.extend(text.encode_utf16());
+fn push_str(units: &mut Units, text: &str) -> Option<()> {
+    units.extend(text.encode_utf16())
 }
 
-fn push_unit(units: &mut Vec<u16>, unit: u16) {
-    units.push(unit);
+fn push_unit(units: &mut Units, unit: u16) -> Option<()> {
+    units.push(unit)
 }
 
-fn push_number(units: &mut Vec<u16>, mut value: u64, base: u64) {
+fn push_number(units: &mut Units, mut value: u64, base: u64) -> Option<()> {
     let mut digits = [0u16; 20];
     let mut count = 0;
     loop {
@@ -142,85 +151,88 @@ fn push_number(units: &mut Vec<u16>, mut value: u64, base: u64) {
     }
     while count > 0 {
         count -= 1;
-        push_unit(units, digits[count]);
+        push_unit(units, digits[count])?;
     }
+    Some(())
 }
 
 /// The SID's text (its `S-1-...` form) into `units`.
-fn push_sid_text(units: &mut Vec<u16>, sid: &[u8]) {
+fn push_sid_text(units: &mut Units, sid: &[u8]) -> Option<()> {
     let mut buffer = [0u16; 256];
     if let Some(len) = sid_to_units(sid, &mut buffer) {
-        units.extend_from_slice(&buffer[..len]);
+        units.extend_from_slice(&buffer[..len])?;
     }
+    Some(())
 }
 
 /// The SID as a moniker when it is a well-known one, else its `S-1-...` text.
-fn push_sid(units: &mut Vec<u16>, sid: &[u8]) {
+fn push_sid(units: &mut Units, sid: &[u8]) -> Option<()> {
     for (tag, kind) in MONIKERS {
         if let Some(parts) = well_known_sid(*kind, None) {
-            let mut bytes = vec![0u8; sid_len(parts.count)];
-            sid_parts_bytes(&parts, &mut bytes);
-            if bytes == sid {
-                push_str(units, tag);
-                return;
+            let mut bytes = [0u8; SID_BYTES_MAX];
+            let len = sid_len(parts.count);
+            sid_parts_bytes(&parts, &mut bytes[..len]);
+            if &bytes[..len] == sid {
+                return push_str(units, tag);
             }
         }
     }
-    push_sid_text(units, sid);
+    push_sid_text(units, sid)
 }
 
 /// A GUID's `{...}` text into `units`.
-fn push_guid(units: &mut Vec<u16>, guid: &[u8]) {
-    push_unit(units, u16::from(b'{'));
+fn push_guid(units: &mut Units, guid: &[u8]) -> Option<()> {
+    push_unit(units, u16::from(b'{'))?;
     let d1 = u32::from_le_bytes(guid[0..4].try_into().unwrap_or([0; 4]));
     let d2 = u16::from_le_bytes(guid[4..6].try_into().unwrap_or([0; 2]));
     let d3 = u16::from_le_bytes(guid[6..8].try_into().unwrap_or([0; 2]));
-    push_number(units, u64::from(d1), 16);
-    push_unit(units, u16::from(b'-'));
-    push_number(units, u64::from(d2), 16);
-    push_unit(units, u16::from(b'-'));
-    push_number(units, u64::from(d3), 16);
-    push_unit(units, u16::from(b'-'));
+    push_number(units, u64::from(d1), 16)?;
+    push_unit(units, u16::from(b'-'))?;
+    push_number(units, u64::from(d2), 16)?;
+    push_unit(units, u16::from(b'-'))?;
+    push_number(units, u64::from(d3), 16)?;
+    push_unit(units, u16::from(b'-'))?;
     for byte in &guid[8..10] {
-        push_number(units, u64::from(*byte), 16);
+        push_number(units, u64::from(*byte), 16)?;
     }
-    push_unit(units, u16::from(b'-'));
+    push_unit(units, u16::from(b'-'))?;
     for byte in &guid[10..16] {
-        push_number(units, u64::from(*byte), 16);
+        push_number(units, u64::from(*byte), 16)?;
     }
-    push_unit(units, u16::from(b'}'));
+    push_unit(units, u16::from(b'}'))?;
+    Some(())
 }
 
 /// The access mask's text into `units`: the exact named right, else the named bits, else hex.
-fn push_rights(units: &mut Vec<u16>, mask: u32) {
+fn push_rights(units: &mut Units, mask: u32) -> Option<()> {
     if let Some((tag, _)) = RIGHTS.iter().find(|(_, value)| *value == mask) {
-        push_str(units, tag);
-        return;
+        return push_str(units, tag);
     }
     let mut remaining = mask;
-    // The named bits, widest first.
-    let mut entries: Vec<&(&str, u32)> = RIGHTS.iter().collect();
-    entries.sort_by_key(|(_, value)| !value.count_ones());
-    for (tag, value) in entries {
-        if *value != 0 && remaining & value == *value {
-            push_str(units, tag);
-            remaining &= !value;
+    // The named bits, widest first (a stable sort by the bit count, descending).
+    for bits in (1..=32u32).rev() {
+        for (tag, value) in RIGHTS {
+            if *value != 0 && value.count_ones() == bits && remaining & value == *value {
+                push_str(units, tag)?;
+                remaining &= !value;
+            }
         }
     }
     if remaining != 0 {
-        push_str(units, "0x");
-        push_number(units, u64::from(remaining), 16);
+        push_str(units, "0x")?;
+        push_number(units, u64::from(remaining), 16)?;
     }
+    Some(())
 }
 
 // --- The descriptor to string --------------------------------------------------------------------
 
 /// One ACE's `(type;flags;rights;object guid;inherited guid;sid)` text.
-fn push_ace(units: &mut Vec<u16>, acl: &[u8], at: usize, sacl: bool) {
+fn push_ace(units: &mut Units, acl: &[u8], at: usize, sacl: bool) -> Option<()> {
     let kind = acl[at + ACE_TYPE_OFF];
     let flags = u32::from(acl[at + ACE_FLAGS_OFF]);
     let mask = dword(acl, at + ACE_MASK_OFF).unwrap_or(0);
-    push_unit(units, u16::from(b'('));
+    push_unit(units, u16::from(b'('))?;
     push_str(
         units,
         ACE_TYPES
@@ -228,17 +240,17 @@ fn push_ace(units: &mut Vec<u16>, acl: &[u8], at: usize, sacl: bool) {
             .find(|(value, _)| *value == kind)
             .map(|(_, tag)| *tag)
             .unwrap_or("?"),
-    );
-    push_unit(units, u16::from(b';'));
+    )?;
+    push_unit(units, u16::from(b';'))?;
     for (bit, tag) in ACE_FLAG_LETTERS {
         if flags & bit != 0 && (sacl || *bit & (SUCCESSFUL_ACCESS_ACE_FLAG | FAILED_ACCESS_ACE_FLAG) == 0)
         {
-            push_str(units, tag);
+            push_str(units, tag)?;
         }
     }
-    push_unit(units, u16::from(b';'));
-    push_rights(units, mask);
-    push_unit(units, u16::from(b';'));
+    push_unit(units, u16::from(b';'))?;
+    push_rights(units, mask)?;
+    push_unit(units, u16::from(b';'))?;
     let object = matches!(
         kind,
         ACCESS_ALLOWED_OBJECT_ACE_TYPE..=SYSTEM_ALARM_OBJECT_ACE_TYPE
@@ -247,55 +259,57 @@ fn push_ace(units: &mut Vec<u16>, acl: &[u8], at: usize, sacl: bool) {
         let object_flags = dword(acl, at + 8).unwrap_or(0);
         let mut guid_at = at + OBJECT_ACE_FIXED;
         if object_flags & ACE_OBJECT_TYPE_PRESENT != 0 {
-            push_guid(units, &acl[guid_at..guid_at + GUID_SIZE]);
+            push_guid(units, &acl[guid_at..guid_at + GUID_SIZE])?;
             guid_at += GUID_SIZE;
         }
-        push_unit(units, u16::from(b';'));
+        push_unit(units, u16::from(b';'))?;
         if object_flags & ACE_INHERITED_OBJECT_TYPE_PRESENT != 0 {
-            push_guid(units, &acl[guid_at..guid_at + GUID_SIZE]);
+            push_guid(units, &acl[guid_at..guid_at + GUID_SIZE])?;
         }
-        push_unit(units, u16::from(b';'));
+        push_unit(units, u16::from(b';'))?;
         if let Some(sid) = sid_at(acl, at + object_ace_sid_offset(object_flags)) {
-            push_sid(units, sid);
+            push_sid(units, sid)?;
         }
     } else {
-        push_unit(units, u16::from(b';'));
-        push_unit(units, u16::from(b';'));
+        push_unit(units, u16::from(b';'))?;
+        push_unit(units, u16::from(b';'))?;
         if let Some(sid) = sid_at(acl, at + KNOWN_ACE_FIXED) {
-            push_sid(units, sid);
+            push_sid(units, sid)?;
         }
     }
-    push_unit(units, u16::from(b')'));
+    push_unit(units, u16::from(b')'))?;
+    Some(())
 }
 
 /// One ACL's section text: the control letters then the ACEs.
-fn push_acl(units: &mut Vec<u16>, acl: &[u8], sacl: bool, control_bits: u16) {
+fn push_acl(units: &mut Units, acl: &[u8], sacl: bool, control_bits: u16) -> Option<()> {
     if sacl {
         if control_bits & SE_SACL_PROTECTED != 0 {
-            push_str(units, "P");
+            push_str(units, "P")?;
         }
         if control_bits & SE_SACL_AUTO_INHERIT_REQ != 0 {
-            push_str(units, "AR");
+            push_str(units, "AR")?;
         }
         if control_bits & SE_SACL_AUTO_INHERITED != 0 {
-            push_str(units, "AI");
+            push_str(units, "AI")?;
         }
     } else {
         if control_bits & SE_DACL_PROTECTED != 0 {
-            push_str(units, "P");
+            push_str(units, "P")?;
         }
         if control_bits & SE_DACL_AUTO_INHERIT_REQ != 0 {
-            push_str(units, "AR");
+            push_str(units, "AR")?;
         }
         if control_bits & SE_DACL_AUTO_INHERITED != 0 {
-            push_str(units, "AI");
+            push_str(units, "AI")?;
         }
     }
     let mut at = ACL_HEADER;
     for _ in 0..ace_count(acl) {
-        push_ace(units, acl, at, sacl);
+        push_ace(units, acl, at, sacl)?;
         at += word(acl, at + ACE_SIZE_OFF).unwrap_or(0) as usize;
     }
+    Some(())
 }
 
 /// The descriptor at `base` as its revision-1 string for the information bits `info`.
@@ -303,33 +317,33 @@ fn push_acl(units: &mut Vec<u16>, acl: &[u8], sacl: bool, control_bits: u16) {
 /// # Safety
 ///
 /// The descriptor's components are read as it names them.
-unsafe fn sd_to_string(base: usize, sd: &[u8], info: u32) -> Option<Vec<u16>> {
-    let mut units = Vec::new();
+unsafe fn sd_to_string(base: usize, sd: &[u8], info: u32) -> Option<Units> {
+    let mut units = Units::new();
     let current = control(sd);
     // SAFETY: the components are read as the descriptor names them.
     unsafe {
         if info & OWNER_SECURITY_INFORMATION != 0 {
             if let Some(owner) = component_sid(base, sd, FIELD_OWNER) {
-                push_str(&mut units, "O:");
-                push_sid(&mut units, owner);
+                push_str(&mut units, "O:")?;
+                push_sid(&mut units, owner)?;
             }
         }
         if info & GROUP_SECURITY_INFORMATION != 0 {
             if let Some(group) = component_sid(base, sd, FIELD_GROUP) {
-                push_str(&mut units, "G:");
-                push_sid(&mut units, group);
+                push_str(&mut units, "G:")?;
+                push_sid(&mut units, group)?;
             }
         }
         if info & DACL_SECURITY_INFORMATION != 0 && current & SE_DACL_PRESENT != 0 {
             if let Some(dacl) = component_acl(base, sd, FIELD_DACL) {
-                push_str(&mut units, "D:");
-                push_acl(&mut units, dacl, false, current);
+                push_str(&mut units, "D:")?;
+                push_acl(&mut units, dacl, false, current)?;
             }
         }
         if info & SACL_SECURITY_INFORMATION != 0 && current & SE_SACL_PRESENT != 0 {
             if let Some(sacl) = component_acl(base, sd, FIELD_SACL) {
-                push_str(&mut units, "S:");
-                push_acl(&mut units, sacl, true, current);
+                push_str(&mut units, "S:")?;
+                push_acl(&mut units, sacl, true, current)?;
             }
         }
     }
@@ -381,34 +395,64 @@ impl<'a> Cursor<'a> {
     }
 }
 
+/// One unit as the char a collected string would read it ('?' for a lone surrogate).
+fn unit_char(unit: u16) -> char {
+    char::from_u32(u32::from(unit)).unwrap_or('?')
+}
+
+/// The units with the leading and trailing whitespace left out.
+fn trimmed(units: &[u16]) -> &[u16] {
+    let space = |unit: &u16| unit_char(*unit).is_whitespace();
+    let start = units.iter().position(|unit| !space(unit)).unwrap_or(units.len());
+    let end = units.iter().rposition(|unit| !space(unit)).map_or(start, |at| at + 1);
+    &units[start..end]
+}
+
+/// The units as a number in `base` (a leading '+' reads, as `from_str_radix` allows).
+fn parse_radix(units: &[u16], base: u32) -> Option<u64> {
+    let digits = match units.first() {
+        Some(&first) if first == u16::from(b'+') => &units[1..],
+        _ => units,
+    };
+    if digits.is_empty() {
+        return None;
+    }
+    let mut value = 0u64;
+    for &unit in digits {
+        let digit = unit_char(unit).to_digit(base)?;
+        value = value.checked_mul(u64::from(base))?.checked_add(u64::from(digit))?;
+    }
+    Some(value)
+}
+
 /// Parse a number: `0x` hex, else decimal.
 fn parse_number(units: &[u16]) -> Option<u64> {
-    let text: String = units
-        .iter()
-        .map(|&unit| char::from_u32(u32::from(unit)).unwrap_or('?'))
-        .collect();
-    let text = text.trim();
-    if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
-        u64::from_str_radix(hex, 16).ok()
+    let text = trimmed(units);
+    if text.len() >= 2 && text[0] == u16::from(b'0') && (text[1] | 0x20) == u16::from(b'x') {
+        parse_radix(&text[2..], 16)
     } else {
-        text.parse().ok()
+        parse_radix(text, 10)
     }
 }
 
+/// Whether the units read `text` in upper case.
+fn upper_eq(units: &[u16], text: &str) -> bool {
+    text.len() == units.len()
+        && text
+            .bytes()
+            .zip(units)
+            .all(|(byte, &unit)| unit_char(unit).to_ascii_uppercase() == byte as char)
+}
+
 /// Parse a SID: a moniker, or the `S-1-...` form.
-fn parse_sid(units: &[u16]) -> Option<Vec<u8>> {
-    let text: String = units
-        .iter()
-        .map(|&unit| char::from_u32(u32::from(unit)).unwrap_or('?'))
-        .collect();
-    let upper = text.to_ascii_uppercase();
-    if let Some((_, kind)) = MONIKERS.iter().find(|(tag, _)| *tag == upper) {
+fn parse_sid(units: &[u16]) -> Option<Bytes> {
+    if let Some((_, kind)) = MONIKERS.iter().find(|(tag, _)| upper_eq(units, tag)) {
         let parts = well_known_sid(*kind, None)?;
-        let mut bytes = vec![0u8; sid_len(parts.count)];
+        let mut bytes = Bytes::zeroed(sid_len(parts.count))?;
         sid_parts_bytes(&parts, &mut bytes);
         return Some(bytes);
     }
-    if !upper.starts_with("S-") {
+    if !(units.len() >= 2 && (units[0] | 0x20) == u16::from(b's') && units[1] == u16::from(b'-')) {
         return None;
     }
     let mut cursor = Cursor::new(units);
@@ -421,21 +465,23 @@ fn parse_sid(units: &[u16]) -> Option<Vec<u8>> {
     cursor.expect(u16::from(b'-'))?;
     let authority_units = cursor.until(u16::from(b'-'));
     let authority = parse_number(authority_units)?;
-    let mut subs = Vec::new();
+    let mut subs = [0u32; MAX_SUB_AUTHORITIES];
+    let mut count = 0usize;
     while cursor.peek() == Some(u16::from(b'-')) {
         cursor.bump();
         let sub = parse_number(cursor.until(u16::from(b'-')))?;
-        if sub > u32::MAX as u64 {
+        if sub > u32::MAX as u64 || count == subs.len() {
             return None;
         }
-        subs.push(sub as u32);
+        subs[count] = sub as u32;
+        count += 1;
     }
-    if subs.is_empty() || subs.len() > 15 {
+    if count == 0 {
         return None;
     }
-    let mut sid = vec![0u8; SID_HEADER + 4 * subs.len()];
+    let mut sid = Bytes::zeroed(SID_HEADER + 4 * count)?;
     sid[0] = 1;
-    sid[1] = subs.len() as u8;
+    sid[1] = count as u8;
     if authority_units.len() >= 2
         && authority_units[0] == u16::from(b'0')
         && (authority_units[1] == u16::from(b'x') || authority_units[1] == u16::from(b'X'))
@@ -452,8 +498,9 @@ fn parse_sid(units: &[u16]) -> Option<Vec<u8>> {
         // The low 32 bits, big-endian in the authority's low four bytes.
         sid[4..8].copy_from_slice(&(authority as u32).to_be_bytes());
     }
-    for (index, sub) in subs.iter().enumerate() {
-        sid[SID_HEADER + 4 * index..SID_HEADER + 4 * index + 4].copy_from_slice(&sub.to_le_bytes());
+    for index in 0..count {
+        sid[SID_HEADER + 4 * index..SID_HEADER + 4 * index + 4]
+            .copy_from_slice(&subs[index].to_le_bytes());
     }
     Some(sid)
 }
@@ -463,18 +510,28 @@ fn parse_guid(units: &[u16]) -> Option<Option<[u8; GUID_SIZE]>> {
     if units.is_empty() {
         return Some(None);
     }
-    let text: String = units
-        .iter()
-        .map(|&unit| char::from_u32(u32::from(unit)).unwrap_or('?'))
-        .collect();
-    let inner = text.strip_prefix('{')?.strip_suffix('}')?;
-    let hex: String = inner.chars().filter(|c| *c != '-').collect();
-    if hex.len() != 32 || !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+    if units.first() != Some(&u16::from(b'{')) || units.last() != Some(&u16::from(b'}')) {
+        return None;
+    }
+    let mut digits = [0u16; 32];
+    let mut count = 0usize;
+    for &unit in &units[1..units.len() - 1] {
+        if unit == u16::from(b'-') {
+            continue;
+        }
+        let digit = unit_char(unit).to_digit(16)?;
+        if count == digits.len() {
+            return None;
+        }
+        digits[count] = digit as u16;
+        count += 1;
+    }
+    if count != digits.len() {
         return None;
     }
     let mut guid = [0u8; GUID_SIZE];
     for (index, byte) in guid.iter_mut().enumerate() {
-        *byte = u8::from_str_radix(&hex[2 * index..2 * index + 2], 16).ok()?;
+        *byte = (digits[2 * index] * 16 + digits[2 * index + 1]) as u8;
     }
     // The first three fields are little-endian in the structure.
     guid[0..4].reverse();
@@ -485,81 +542,69 @@ fn parse_guid(units: &[u16]) -> Option<Option<[u8; GUID_SIZE]>> {
 
 /// Parse the access rights field: named tags, `0x` hex, or decimal.
 fn parse_rights(units: &[u16]) -> Option<u32> {
-    let text: String = units
-        .iter()
-        .map(|&unit| char::from_u32(u32::from(unit)).unwrap_or('?'))
-        .collect();
-    let text = text.trim();
+    let text = trimmed(units);
     if text.is_empty() {
         return Some(0);
     }
-    if text.starts_with("0x") || text.starts_with("0X") {
-        return u32::try_from(parse_number(units)?).ok();
+    if text.len() >= 2 && text[0] == u16::from(b'0') && (text[1] | 0x20) == u16::from(b'x') {
+        return u32::try_from(parse_number(text)?).ok();
     }
-    if text.chars().all(|c| c.is_ascii_digit()) {
+    if text.iter().all(|&unit| unit_char(unit).is_ascii_digit()) {
         return u32::try_from(parse_number(units)?).ok();
     }
     // The named tags, two letters at a time.
-    let upper = text.to_ascii_uppercase();
-    let bytes = upper.as_bytes();
-    let named = !bytes.is_empty()
-        && bytes.len() % 2 == 0
-        && (0..bytes.len())
+    let named = text.len().is_multiple_of(2)
+        && (0..text.len())
             .step_by(2)
-            .all(|at| RIGHTS.iter().any(|(known, _)| known.as_bytes() == &bytes[at..at + 2]));
+            .all(|at| RIGHTS.iter().any(|(known, _)| upper_eq(&text[at..at + 2], known)));
     if named {
         let mut mask = 0u32;
-        for at in (0..bytes.len()).step_by(2) {
+        for at in (0..text.len()).step_by(2) {
             mask |= RIGHTS
                 .iter()
-                .find(|(known, _)| known.as_bytes() == &bytes[at..at + 2])
+                .find(|(known, _)| upper_eq(&text[at..at + 2], known))
                 .map(|(_, value)| *value)?;
         }
         return Some(mask);
     }
     // A bare hex mask.
-    if !text.is_empty() && text.chars().all(|c| c.is_ascii_hexdigit()) {
-        return u32::try_from(u64::from_str_radix(text, 16).ok()?).ok();
+    if text.iter().all(|&unit| unit_char(unit).is_ascii_hexdigit()) {
+        return u32::try_from(parse_radix(text, 16)?).ok();
     }
     None
 }
 
 /// Parse one ACE's `(...)` into its bytes.
-fn parse_ace(cursor: &mut Cursor) -> Option<Vec<u8>> {
+fn parse_ace(cursor: &mut Cursor) -> Option<Bytes> {
     cursor.expect(u16::from(b'('))?;
     let type_units = cursor.until(u16::from(b';'));
     cursor.expect(u16::from(b';'))?;
-    let type_text: String = type_units
-        .iter()
-        .map(|&u| char::from_u32(u32::from(u)).unwrap_or('?'))
-        .collect::<String>()
-        .to_ascii_uppercase();
-    let plain = match type_text.as_str() {
-        "A" => ACCESS_ALLOWED_ACE_TYPE,
-        "D" => ACCESS_DENIED_ACE_TYPE,
-        "AU" => SYSTEM_AUDIT_ACE_TYPE,
-        "AL" => SYSTEM_ALARM_ACE_TYPE,
-        "OA" => ACCESS_ALLOWED_OBJECT_ACE_TYPE,
-        "OD" => ACCESS_DENIED_OBJECT_ACE_TYPE,
-        _ => return None,
+    let plain = if upper_eq(type_units, "A") {
+        ACCESS_ALLOWED_ACE_TYPE
+    } else if upper_eq(type_units, "D") {
+        ACCESS_DENIED_ACE_TYPE
+    } else if upper_eq(type_units, "AU") {
+        SYSTEM_AUDIT_ACE_TYPE
+    } else if upper_eq(type_units, "AL") {
+        SYSTEM_ALARM_ACE_TYPE
+    } else if upper_eq(type_units, "OA") {
+        ACCESS_ALLOWED_OBJECT_ACE_TYPE
+    } else if upper_eq(type_units, "OD") {
+        ACCESS_DENIED_OBJECT_ACE_TYPE
+    } else {
+        return None;
     };
     let flag_units = cursor.until(u16::from(b';'));
     cursor.expect(u16::from(b';'))?;
     let mut flags = 0u32;
-    {
-        let text: String = flag_units
+    let mut at = 0;
+    while at < flag_units.len() {
+        let end = (at + 2).min(flag_units.len());
+        let (bit, _) = ACE_FLAG_LETTERS
             .iter()
-            .map(|&u| char::from_u32(u32::from(u)).unwrap_or('?'))
-            .collect::<String>()
-            .to_ascii_uppercase();
-        let bytes = text.as_bytes();
-        let mut at = 0;
-        while at < bytes.len() {
-            let tag = &text[at..(at + 2).min(bytes.len())];
-            let (bit, _) = ACE_FLAG_LETTERS.iter().find(|(_, known)| *known == tag)?;
-            flags |= bit;
-            at += 2;
-        }
+            .find(|(_, known)| upper_eq(&flag_units[at..end], known))?;
+        flags |= bit;
+        at += 2;
     }
     let rights = parse_rights(cursor.until(u16::from(b';')))?;
     cursor.expect(u16::from(b';'))?;
@@ -596,7 +641,7 @@ fn parse_ace(cursor: &mut Cursor) -> Option<Vec<u8>> {
     } else {
         KNOWN_ACE_FIXED + sid.len()
     };
-    let mut ace = vec![0u8; ace_size];
+    let mut ace = Bytes::zeroed(ace_size)?;
     ace[ACE_TYPE_OFF] = kind;
     ace[ACE_FLAGS_OFF] = flags as u8;
     ace[ACE_SIZE_OFF..ACE_SIZE_OFF + 2].copy_from_slice(&(ace_size as u16).to_le_bytes());
@@ -655,13 +700,13 @@ fn parse_control_letters(cursor: &mut Cursor, sacl: bool) -> u16 {
 
 /// Parse the whole string into a self-relative descriptor image: the header, the components
 /// packed SACL, DACL, owner, group, the fields their offsets.
-fn parse_sd(units: &[u16]) -> Option<Vec<u8>> {
+fn parse_sd(units: &[u16]) -> Option<Bytes> {
     let mut cursor = Cursor::new(units);
     let mut control_bits = 0u16;
-    let mut owner = Vec::new();
-    let mut group = Vec::new();
-    let mut dacl = Vec::new();
-    let mut sacl = Vec::new();
+    let mut owner = Bytes::new();
+    let mut group = Bytes::new();
+    let mut dacl = Bytes::new();
+    let mut sacl = Bytes::new();
     while let Some(unit) = cursor.peek() {
         let section = (unit as u8 as char).to_ascii_uppercase();
         cursor.bump();
@@ -686,14 +731,14 @@ fn parse_sd(units: &[u16]) -> Option<Vec<u8>> {
             _ => return None,
         }
     }
-    let components: [Option<Vec<u8>>; 4] = [
+    let components: [Option<Bytes>; 4] = [
         if owner.is_empty() { None } else { Some(owner) },
         if group.is_empty() { None } else { Some(group) },
         if sacl.is_empty() { None } else { Some(sacl) },
         if dacl.is_empty() { None } else { Some(dacl) },
     ];
     let sum: usize = components.iter().flatten().map(|c| long_align(c.len())).sum();
-    let mut image = vec![0u8; SD_HEADER + sum];
+    let mut image = Bytes::zeroed(SD_HEADER + sum)?;
     image[0] = SD_REVISION;
     set_control(&mut image, control_bits | SE_SELF_RELATIVE);
     let mut running = SD_HEADER;
@@ -725,8 +770,8 @@ impl<'a> Cursor<'a> {
 }
 
 /// Parse the ACEs of a D:/S: section into an ACL image.
-fn parse_aces(cursor: &mut Cursor) -> Option<Vec<u8>> {
-    let mut body = Vec::new();
+fn parse_aces(cursor: &mut Cursor) -> Option<Bytes> {
+    let mut body = Bytes::new();
     let mut count = 0u16;
     let mut object = false;
     while cursor.peek() == Some(u16::from(b'(')) {
@@ -734,17 +779,18 @@ fn parse_aces(cursor: &mut Cursor) -> Option<Vec<u8>> {
         if ace[ACE_TYPE_OFF] >= ACCESS_ALLOWED_OBJECT_ACE_TYPE {
             object = true;
         }
-        body.extend(ace);
+        body.extend_from_slice(&ace)?;
         count += 1;
     }
     if count == 0 {
-        return Some(Vec::new());
+        return Some(Bytes::new());
     }
-    let mut acl = vec![0u8; ACL_HEADER];
+    let mut acl = Bytes::zeroed(ACL_HEADER)?;
     acl[ACL_REV_OFF] = if object { ACL_REVISION_DS as u8 } else { ACL_REVISION as u8 };
-    acl[ACL_SIZE_OFF..ACL_SIZE_OFF + 2].copy_from_slice(&((ACL_HEADER + body.len()) as u16).to_le_bytes());
+    acl[ACL_SIZE_OFF..ACL_SIZE_OFF + 2]
+        .copy_from_slice(&((ACL_HEADER + body.len()) as u16).to_le_bytes());
     acl[ACL_COUNT_OFF..ACL_COUNT_OFF + 2].copy_from_slice(&count.to_le_bytes());
-    acl.extend(body);
+    acl.extend_from_slice(&body)?;
     Some(acl)
 }
 
@@ -787,7 +833,7 @@ pub unsafe extern "system" fn convert_sd_to_string_sd_w(
     }
     // SAFETY: the components are read as the descriptor names them.
     let Some(units) = (unsafe { sd_to_string(sd as usize, buffer, info) }) else {
-        nt::set_last_error(ERROR_INVALID_PARAMETER);
+        nt::set_last_error(ERROR_NOT_ENOUGH_MEMORY);
         return 0;
     };
     let block = ProcessHeap::allocate(2 * (units.len() + 1));
@@ -840,13 +886,15 @@ pub unsafe extern "system" fn convert_sd_to_string_sd_a(
         return 0;
     }
     // SAFETY: the components are read as the descriptor names them.
-    let Some(units) = (unsafe { sd_to_string(sd as usize, buffer, info) }) else {
-        nt::set_last_error(ERROR_INVALID_PARAMETER);
+    let Some(mut units) = (unsafe { sd_to_string(sd as usize, buffer, info) }) else {
+        nt::set_last_error(ERROR_NOT_ENOUGH_MEMORY);
         return 0;
     };
-    let mut wide = units;
-    wide.push(0);
-    let bytes = nt::unicode_to_multi_byte_size(&wide) as usize;
+    if units.push(0).is_none() {
+        nt::set_last_error(ERROR_NOT_ENOUGH_MEMORY);
+        return 0;
+    }
+    let bytes = nt::unicode_to_multi_byte_size(&units) as usize;
     let block = ProcessHeap::allocate(bytes);
     if block.is_null() {
         nt::set_last_error(ERROR_NOT_ENOUGH_MEMORY);
@@ -854,7 +902,7 @@ pub unsafe extern "system" fn convert_sd_to_string_sd_a(
     }
     // SAFETY: the heap's new block, ours until the caller frees it.
     let out = unsafe { core::slice::from_raw_parts_mut(block, bytes) };
-    let written = nt::unicode_to_multi_byte(out, &wide);
+    let written = nt::unicode_to_multi_byte(out, &units);
     string.set(block);
     length.set(written as u32);
     nt::set_last_error(0);
@@ -912,8 +960,12 @@ pub unsafe extern "system" fn convert_string_sd_to_sd_w(
         nt::set_last_error(ERROR_INVALID_PARAMETER);
         return 0;
     };
-    let units = string.units();
-    let units: Vec<u16> = (0..units.len()).map(|at| units.get(at)).collect();
+    let source = string.units();
+    let mut units = Units::new();
+    if units.extend(source.iter()).is_none() {
+        nt::set_last_error(ERROR_NOT_ENOUGH_MEMORY);
+        return 0;
+    }
     string_to_sd(&units, revision, sd, size)
 }
 
@@ -938,7 +990,5 @@ pub unsafe extern "system" fn convert_string_sd_to_sd_a(
         nt::set_last_error(ERROR_INVALID_PARAMETER);
         return 0;
     };
-    let units = wide.counted().units();
-    string_to_sd(units, revision, sd, size)
+    string_to_sd(wide.counted().units(), revision, sd, size)
 }
-
