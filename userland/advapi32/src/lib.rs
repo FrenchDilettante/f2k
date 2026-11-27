@@ -15,6 +15,7 @@
 
 #![cfg_attr(not(test), no_std)]
 
+pub mod accesscheck;
 pub mod imports;
 pub mod regenum;
 pub mod registry;
