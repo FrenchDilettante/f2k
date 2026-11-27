@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sun 22/11/2026  1:13:43.23
-acccheck F2KT-SOURCE-CRC=0xCD9444C2
+# date: Sun 22/11/2026  1:23:50.04
+acccheck F2KT-SOURCE-CRC=0x1552B475
 >>> acccheck.exe allowed
 == allowed
 AllocateAndInitializeSid(S-1-1-0): ret=1 err=-; S-1-5-0
@@ -28,7 +28,7 @@ acccheck: done
 >>> acccheck.exe owner
 == owner
 OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY): ret=1 err=-, a handle
-TokenUser: S-1-5-21-602162358-1085031214-839522115-1000
+TokenUser: S-1-5-21-…-…-…-1000
 AllocateAndInitializeSid(S-1-5-32-544): ret=1 err=-
 EqualSid(it, the hand-built): ret=1 err=0
 owner is the token's user, empty DACL, requested READ_CONTROL|WRITE_DAC: ret=0 err=1309 status=0x00000000 granted=0x00000000

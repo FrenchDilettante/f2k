@@ -8,7 +8,7 @@ gate = true
 
 [pending]
 lookupdisp = "[LookupPrivilegeDisplayNameA(room): ret=1 err=997"
-threadtok = "[OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, OpenAsSelf=FALSE): ret=1 err=-, a handle], expected [OpenThreadToken(GetCurrentThread(), TOKEN_QUERY, OpenAsSelf=FALSE): ret=0 err=1008, no handle]"
+threadtok = "same no-impersonation design: OpenThreadToken succeeds in F2K"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

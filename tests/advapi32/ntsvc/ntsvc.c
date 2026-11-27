@@ -48,7 +48,8 @@
  *                  with a 4-byte buffer, TokenType (a read-only class)
  *   ntcreatefilter NtCreateToken with no object attributes (refused), and
  *                  NtFilterToken with nothing disabled (a copy)
- *   ntthreadtok    NtOpenThreadToken on the current thread (no token)
+ *   ntthreadtok    NtOpenThreadToken on the current thread, OpenAsSelf
+ *                  FALSE (no token) and TRUE
  *   ntrtlpriv      RtlAdjustPrivilege enabling and disabling
  *                  SeShutdownPrivilege (status, previous value)
  *
@@ -788,6 +789,14 @@ static void sec_ntthreadtok(void)
     arm();
     st = p_nt_open_thread_token(GetCurrentThread(), TOKEN_QUERY, FALSE, &tt);
     line("NtOpenThreadToken(GetCurrentThread(), TOKEN_QUERY, OpenAsSelf=FALSE): status=0x%08lX err=%s, %s",
+         (unsigned long)st, le(), st >= 0 && tt != NULL ? "a handle" : "no handle");
+    if (st >= 0 && tt != NULL) {
+        CloseHandle(tt);
+    }
+    tt = NULL;
+    arm();
+    st = p_nt_open_thread_token(GetCurrentThread(), TOKEN_QUERY, TRUE, &tt);
+    line("NtOpenThreadToken(GetCurrentThread(), TOKEN_QUERY, OpenAsSelf=TRUE): status=0x%08lX err=%s, %s",
          (unsigned long)st, le(), st >= 0 && tt != NULL ? "a handle" : "no handle");
     if (st >= 0 && tt != NULL) {
         CloseHandle(tt);

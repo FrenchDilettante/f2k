@@ -6,6 +6,7 @@ description = "acccheck - the AccessCheck family over the process handle, with a
 kind = "sectioned"
 gate = true
 
+# owner awaits the next VM re-capture: its .c changed (the TokenUser line now prints the SID's shape only, the domain numbers masked).
 [pending]
 allowed = "[AccessCheck(requested 1, allow 0x000F01FF): ret=0 err=998 status=0x00000000 granted=0x00000000], expected [AccessCheck(requested 1, allow 0x000F01FF): ret=0 err=1309 status=0x00000000 granted=0x00000"
 areall = "[AccessCheck(requested 1): ret=0 err=998 granted=0x00000000], expected [AccessCheck(requested 1): ret=0 err=1309 granted=0x00000000]"

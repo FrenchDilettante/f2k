@@ -24,7 +24,7 @@ if not "%~1"=="" goto some
 set F2KT_ALL=yes
 call :srcsum
 if errorlevel 1 exit /b 1
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe newcon screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge vmdemand startup lcid ntquery locale atom winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont bitmaps mapmode shapes regions guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl registry token sdacl acccheck filesec keysec privchk ntsvc hellomd crt seh fd wide strings process msvcrt cxxeh wmain drvload) do (
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe newcon screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge vmdemand startup lcid ntquery locale atom winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont bitmaps mapmode shapes regions guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl registry token sdacl acccheck filesec keysec privchk ntsvc rtlsec hellomd crt seh fd wide strings process msvcrt cxxeh wmain drvload) do (
     call :%%F
     if errorlevel 1 exit /b 1
 )
@@ -53,7 +53,7 @@ exit /b 0
 rem Whether %1 names a fixture: an unknown name fails, saying so.
 :known
 set F2KT_ONE=
-for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe newcon screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge vmdemand startup lcid ntquery locale atom winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont bitmaps mapmode shapes regions guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl registry token sdacl acccheck filesec keysec privchk ntsvc hellomd crt seh fd wide strings process msvcrt cxxeh wmain drvload) do if /I "%%F"=="%~1" set F2KT_ONE=yes
+for %%F in (exit0 ret0 hello hellogui bare runtime memory threads sync sched files fswrite dll dllmain msgtable console spawn pipe newcon screen lineedit ctrl lstr utility toolhelp batspawn shutparm resource profile threx vmedge vmdemand startup lcid ntquery locale atom winsta guiclass guiwin guigeo guimsg guipaint guidc gditext ttfont bitmaps mapmode shapes regions guidisp exitwin endsess dialog wndlong wintext focus controls menus accel coords keyinput mousein clipbrd wsprintf rects chars props wintree scroll caret editctl registry token sdacl acccheck filesec keysec privchk ntsvc rtlsec hellomd crt seh fd wide strings process msvcrt cxxeh wmain drvload) do if /I "%%F"=="%~1" set F2KT_ONE=yes
 if not defined F2KT_ONE (
     echo build.bat: no such fixture %~1
     exit /b 1
@@ -921,6 +921,16 @@ call :stamp ntsvc.c
 cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% ntsvc.c advapi32.lib
 if errorlevel 1 (echo build.bat: ntsvc failed & exit /b 1)
 del ntsvc.obj
+cd ..\..
+goto :eof
+
+:rtlsec
+echo === rtlsec
+cd advapi32\rtlsec
+call :stamp rtlsec.c
+cl /nologo /MD /I .. /DF2KT_SOURCE_CRC=0x%F2KT_CRC% rtlsec.c advapi32.lib
+if errorlevel 1 (echo build.bat: rtlsec failed & exit /b 1)
+del rtlsec.obj
 cd ..\..
 goto :eof
 

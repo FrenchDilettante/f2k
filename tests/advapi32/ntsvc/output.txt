@@ -2,8 +2,8 @@
 
 Microsoft Windows 2000 [Version 5.00.2195]
 # machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
-# date: Sun 22/11/2026  1:13:43.90
-ntsvc F2KT-SOURCE-CRC=0x5F959B80
+# date: Sun 22/11/2026  1:23:50.23
+ntsvc F2KT-SOURCE-CRC=0xF7A1BDDE
 >>> ntsvc.exe ntaccesscheck
 == ntaccesscheck
 NtOpenProcessToken(GetCurrentProcess(), TOKEN_QUERY): status=0x00000000, a handle
@@ -98,6 +98,7 @@ ntsvc: done
 >>> ntsvc.exe ntthreadtok
 == ntthreadtok
 NtOpenThreadToken(GetCurrentThread(), TOKEN_QUERY, OpenAsSelf=FALSE): status=0xC000007C err=-, no handle
+NtOpenThreadToken(GetCurrentThread(), TOKEN_QUERY, OpenAsSelf=TRUE): status=0xC000007C err=-, no handle
 ntsvc: done
 <<< exit code=0
 >>> ntsvc.exe ntrtlpriv

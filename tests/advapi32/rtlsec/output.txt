@@ -1,0 +1,185 @@
+# F2K capture of rtlsec (tests\capture.bat)
+
+Microsoft Windows 2000 [Version 5.00.2195]
+# machine: CLANKER-783DCB2, x86 Family 15 Model 1 Stepping 2, AuthenticAMD, 1 CPU(s)
+# date: Sun 22/11/2026  1:23:49.87
+rtlsec F2KT-SOURCE-CRC=0x70D66555
+>>> rtlsec.exe rtlsd
+== rtlsd
+RtlCreateSecurityDescriptor(sd, REVISION): status=0x00000000 err=-; control 0x0000
+RtlLengthSecurityDescriptor(the initialized SD): ret=20 err=-
+RtlValidSecurityDescriptor(the absolute SD): ret=1 err=-
+RtlValidSecurityDescriptor(a bad revision): ret=1244928 err=-
+RtlGetControlSecurityDescriptor: ret=0 err=-; control 0x0000, revision 1
+RtlSetControlSecurityDescriptor(SE_DACL_PROTECTED, set): ret=0 err=-; control now 0x1000
+RtlSetControlSecurityDescriptor(SE_DACL_PROTECTED, clear): ret=0 err=-; control now 0x0000
+RtlSetAttributesSecurityDescriptor(SE_DACL_PRESENT, &revision): ret=0 err=-; control now 0x0000, revision 1
+RtlSetControlSecurityDescriptor(all bits, clear): ret=-1073741811 err=-; control now 0x0000
+RtlGetSecurityDescriptorRMControl: ret=1244672 err=-; byte 0x00
+RtlSetSecurityDescriptorRMControl(0): ret=4237888 err=-
+RtlGetSecurityDescriptorRMControl again: ret=4237825 err=-; byte 0x00
+RtlSetOwnerSecurityDescriptor(S-1-5-32-544, not defaulted): ret=0 err=-
+RtlGetOwnerSecurityDescriptor: ret=0 err=-; owner S-1-5-32-544, defaulted 254750464
+RtlSetGroupSecurityDescriptor(S-1-1-0, defaulted): ret=0 err=-
+RtlGetGroupSecurityDescriptor: ret=0 err=-; group S-1-1-0, defaulted 254750465
+RtlSetDaclSecurityDescriptor(present, one allowed ACE): ret=0 err=-; control 0x4006
+RtlGetDaclSecurityDescriptor: ret=0 err=-; present 254750465, the ACL set, defaulted 254750464
+  the DACL: revision 2, size 28, AceCount 1
+RtlSetDaclSecurityDescriptor(not present, NULL): ret=0 err=-; control 0x4002
+RtlGetDaclSecurityDescriptor after the clear: ret=0 err=-; present 254750464, the ACL NULL
+RtlSetDaclSecurityDescriptor(back): ret=0 err=-
+RtlSetSaclSecurityDescriptor(present, one audit ACE): ret=0 err=-; control 0x4016
+RtlGetSaclSecurityDescriptor: ret=0 err=-; present 254750465, the ACL set, defaulted 254750464
+RtlMakeSelfRelativeSD(size query): status=0xC0000023 err=-; the length needed 104
+RtlMakeSelfRelativeSD(the length asked for): status=0x00000000 err=-; length 104, control 0xC016
+RtlLengthSecurityDescriptor(the self-relative SD): ret=104 err=-
+RtlValidSecurityDescriptor(the self-relative SD): ret=1 err=-
+RtlValidRelativeSecurityDescriptor(len, len): ret=1 err=-
+RtlValidRelativeSecurityDescriptor(a byte short): ret=0 err=-
+RtlValidRelativeSecurityDescriptor(a longer requirement): ret=1 err=-
+RtlAbsoluteToSelfRelativeSD(size query): status=0xC0000023 err=-; the length needed 104
+RtlAbsoluteToSelfRelativeSD(the length asked for): status=0x00000000 err=-; length 104, control 0xC016
+RtlSelfRelativeToAbsoluteSD(the size query): status=0xC0000023 err=-; abs 20, DACL 28, SACL 28, owner 16, group 12
+RtlSelfRelativeToAbsoluteSD(the sizes asked for): status=0x00000000 err=-
+  the absolute SD: revision 1, control 0x4016; owner yes, group yes, SACL yes, DACL yes
+RtlSelfRelativeToAbsoluteSD2(a 4 KiB buffer): status=0x00000000 err=-; the size now 4096
+  the SD2 result: revision 1, control 0x4016; owner yes, group yes, SACL yes, DACL yes
+RtlSelfRelativeToAbsoluteSD2(an 8-byte buffer): status=0x00000000 err=-; the size now 8
+rtlsec: done
+<<< exit code=0
+>>> rtlsec.exe rtlsid
+== rtlsid
+RtlAllocateAndInitializeSid(S-1-5-32-544): status=0x00000000 err=-; S-1-5-32-544
+RtlLengthSid: ret=16 err=-; 16: yes
+RtlValidSid: ret=513 err=-
+RtlEqualSid(it, the hand-built S-1-5-32-544): ret=1 err=-
+RtlEqualSid(it, Everyone): ret=1254912 err=-
+RtlEqualPrefixSid(it, S-1-5-32): ret=1254912 err=-
+RtlEqualPrefixSid(S-1-5-32, it): ret=4219136 err=-
+RtlEqualPrefixSid(it, itself): ret=1 err=-
+RtlSubAuthorityCountSid: the count 2
+RtlSubAuthoritySid(0): 32
+RtlSubAuthoritySid(1): 544
+RtlSubAuthoritySid(5, past the end): 7209065
+RtlIdentifierAuthoritySid: the authority 000000000005
+RtlCopySid(256, ...): ret=0 err=-; the copy S-1-5-32-544
+RtlCopySid(4, ...): ret=3221225507 err=-
+RtlConvertSidToUnicodeString(room, Allocate=FALSE): status=0x00000000 err=-; string S-1-5-32-544, length 24
+RtlConvertSidToUnicodeString(a 4-byte buffer): status=0x80000005 err=-; length 0
+RtlConvertSidToUnicodeString(Allocate=TRUE): status=0x00000000 err=-; string S-1-5-32-544, length 24
+RtlConvertSidToUnicodeString(NULL sid): status=0xC0000078 err=-
+RtlCopySidAndAttributesArray(1 entry): status=0x00000000 err=-; remaining 56, the SID S-1-5-32-544, the next SID 16 bytes on
+RtlFreeSid(it): returned NULL: yes err=-
+RtlAllocateAndInitializeSid(S-1-5): status=0x00000000 err=-; S-1-5
+RtlFreeSid(S-1-5): returned NULL: yes err=-
+RtlInitializeSid(sid, the NT authority, 2): status=0x00000000 err=-; the count 2
+  after writing the sub-authorities: S-1-5-32-544
+RtlLengthSid(the hand-initialized): ret=16 err=-
+RtlValidSid(the hand-initialized): ret=513 err=-
+RtlEqualSid(it, the hand-built admins): ret=1 err=-
+RtlLengthRequiredSid(0): ret=8 err=-
+RtlLengthRequiredSid(1): ret=12 err=-
+RtlLengthRequiredSid(2): ret=16 err=-
+RtlLengthRequiredSid(15): ret=68 err=-
+rtlsec: done
+<<< exit code=0
+>>> rtlsec.exe rtlacl
+== rtlacl
+RtlCreateAcl(1024, ACL_REVISION): ret=0 err=-; revision 2, size 1024, AceCount 0
+RtlCreateAcl(8, ACL_REVISION): ret=0 err=-
+RtlCreateAcl(1024, ACL_REVISION) again: ret=0 err=-
+RtlValidAcl: ret=1 err=-
+RtlValidAcl(a bad revision): ret=1244928 err=-
+RtlQueryInformationAcl(AclRevisionInformation): ret=0 err=-; the revision 2
+RtlQueryInformationAcl(AclSizeInformation): ret=0 err=-; AceCount 0, in use 8, free 1016
+RtlQueryInformationAcl(a 4-byte buffer): ret=-1073741789 err=-
+RtlQueryInformationAcl(an unknown class): ret=-1073741821 err=-
+RtlSetInformationAcl(AclRevisionInformation, ACL_REVISION): ret=0 err=-
+RtlQueryInformationAcl(read back): ret=0 err=-; the revision 2
+RtlSetInformationAcl(a bad revision): ret=0 err=-
+RtlSetInformationAcl(AclSizeInformation, read-only): ret=-1073741811 err=-
+RtlAddAce(ACL_REVISION, index 0, one allowed ACE): ret=-1073741811 err=-; AceCount 0, AclSize 1024
+RtlAddAce(again at index 0): ret=-1073741811 err=-; AceCount 0
+RtlAddAce(index 99, past the end): ret=-1073741811 err=-; AceCount 0
+RtlGetAce(0): ret=-1073741811 err=-
+RtlGetAce(1): ret=-1073741811 err=-
+RtlGetAce(2): ret=-1073741811 err=-
+RtlFirstFreeAce: ret=4246017 err=-; the ACE set, 8 bytes into the ACL
+RtlDeleteAce(0): ret=-1073741811 err=-; AceCount 0, AclSize 1024
+RtlDeleteAce(99, past the end): ret=-1073741811 err=-; AceCount 0
+RtlValidAcl after the deletes: ret=1244928 err=-
+rtlsec: done
+<<< exit code=0
+>>> rtlsec.exe rtlace
+== rtlace
+RtlAddAccessAllowedAce(Everyone, 0x000F01FF): ret=0 err=-; AceCount 1
+RtlAddAccessAllowedAceEx(Everyone, 8): ret=0 err=-; AceCount 2
+RtlAddAccessAllowedObjectAce(Everyone, 0x10, no GUIDs): ret=0 err=-; AceCount 3
+RtlAddAccessAllowedObjectAce(SYSTEM, 0x20, one GUID): ret=-1073741735 err=-; AceCount 3
+RtlAddAccessDeniedAce(Everyone, 1): ret=0 err=-; AceCount 4
+RtlAddAccessDeniedAceEx(Everyone, 2): ret=0 err=-; AceCount 5
+RtlAddAccessDeniedObjectAce(Everyone, 4, no GUIDs): ret=0 err=-; AceCount 6
+RtlAddAuditAccessAce(Everyone, 0x40, success and failure): ret=0 err=-; AceCount 7
+RtlAddAuditAccessAceEx(Everyone, 0x80, success only): ret=0 err=-; AceCount 8
+RtlAddAuditAccessObjectAce(Everyone, 0x100, no GUIDs): ret=0 err=-; AceCount 9
+RtlAddCompoundAce(compound, 0x200, SYSTEM and Everyone): ret=-1073741735 err=-; AceCount 9
+the ACEs as added: revision 2, size 1024, AceCount 9
+  ACE 0: type 0, flags 0x0, size 20, mask 0x000F01FF
+  ACE 1: type 0, flags 0x0, size 20, mask 0x00000008
+  ACE 2: type 0, flags 0x0, size 20, mask 0x00000010
+  ACE 3: type 1, flags 0x0, size 20, mask 0x00000001
+  ACE 4: type 1, flags 0x0, size 20, mask 0x00000002
+  ACE 5: type 1, flags 0x0, size 20, mask 0x00000004
+  ACE 6: type 2, flags 0xC0, size 20, mask 0x00000040
+  ACE 7: type 2, flags 0x40, size 20, mask 0x00000080
+  ACE 8: type 2, flags 0xC0, size 20, mask 0x00000100
+rtlsec: done
+<<< exit code=0
+>>> rtlsec.exe rtlluid
+== rtlluid
+RtlEqualLuid(19, 19): ret=1 err=-
+RtlEqualLuid(19, 20): ret=0 err=-
+RtlCopyLuid(19): low=19 high=0 err=-
+RtlCopyLuidAndAttributesArray(2): dst0 low=19 attr=3, dst1 low=20 attr=5 err=-
+RtlCopyLuidAndAttributesArray(1): dst0 low=19 attr=3 err=-
+rtlsec: done
+<<< exit code=0
+>>> rtlsec.exe rtlcheck
+== rtlcheck
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY): ret=1 err=-, a handle
+RtlAreAllAccessesGranted(0x000F01FF, 0x1): ret=1 err=-
+RtlAreAllAccessesGranted(0x1, 0x000F01FF): ret=0 err=-
+RtlAreAllAccessesGranted(0x000F01FF, 0x000F01FF): ret=1 err=-
+RtlAreAnyAccessesGranted(0x1, 0x2): ret=0 err=-
+RtlAreAnyAccessesGranted(0x4, 0x2): ret=0 err=-
+RtlNewSecurityGrantedAccess(desired 0, the process token): status=0x00000000 err=-; PrivilegesLength 20, remaining 0
+RtlNewSecurityGrantedAccess(desired 0, no privileges buffer): faulted 0xC0000005
+CloseHandle(the token): ret=1 err=-
+rtlsec: done
+<<< exit code=0
+>>> rtlsec.exe rtlobj
+== rtlobj
+OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY): ret=1 err=-, a handle
+RtlNewSecurityObject(no parent, the creator SD): status=0x00000000 err=-; the new SD set
+  it: revision 1, control 0x8004; owner yes, group yes, SACL no, DACL yes
+RtlNewSecurityObjectEx(no parent, one GUID, flags 0): status=0x00000000 err=-; the new SD set
+  it: revision 1, control 0x8004; owner yes, group yes, SACL no, DACL yes
+RtlNewInstanceSecurityObject(creator changed, no parent): faulted 0xC0000005
+RtlCreateUserSecurityObject(no ACEs, owner admins, group Everyone): status=0x00000000 err=-; the new SD set
+  it: revision 1, control 0x8004; owner yes, group yes, SACL no, DACL no
+RtlDeleteSecurityObject(the SD RtlNewSecurityObject allocated): status=0x00000000 err=87
+RtlConvertToAutoInheritSecurityObject(no parent, the hand-built SD): status=0x00000000 err=87; the new SD set
+  it: revision 1, control 0x8C04; owner yes, group no, SACL no, DACL yes
+RtlCreateAndSetSD(no ACEs, owner admins, group Everyone): status=0x00000000 err=87; the new SD set
+  it: revision 1, control 0x0004; owner yes, group yes, SACL no, DACL no
+RtlDefaultNpAcl(a 1 KiB buffer): ret=0 err=-; revision 248, size 19, AceCount 0
+CreateFileA(rtlsec.tmp, CREATE_ALWAYS): a handle err=0
+RtlQuerySecurityObject(the file handle, no buffer): faulted 0xC0000005
+<<< exit code=-1073741819
+>>> rtlsec.exe rtlself
+== rtlself
+RtlImpersonateSelf(SecurityImpersonation): status=0x00000000 err=-
+RtlImpersonateSelf(SecurityAnonymous): status=0x00000000 err=-
+RtlImpersonateSelf(SecurityDelegation): status=0xC00000A5 err=-
+rtlsec: done
+<<< exit code=0

@@ -1,0 +1,139 @@
+# rtlsec: one test per block of the real-machine capture (output.txt); see tests/README.md.
+# Declared ahead of its real-machine files: tests\build.bat rtlsec and tests\capture.bat rtlsec
+# land rtlsec.exe and output.txt together on the VM trip; until then the suite skips the
+# fixture (f2kboot.awaited).
+description = "rtlsec - ntdll's Rtl* security exports, called directly through GetProcAddress on GetModuleHandleA(\"ntdll.dll\") (the prototypes are declared in rtlsec.c; the fixture sits in advapi32's group because that DLL's behavior the Rtl* calls stand behind): the security descriptor calls - create, length, validity, control and attributes, the RM control, the owner/group/DACL/SACL get and set round trips, and the self-relative conversions in both directions (rtlsd); the SID calls - allocate and initialize, initialize, the length and validity queries, the equality and prefix checks, the sub-authority and identifier-authority queries, copy, copy the attributes array, the string form and free (rtlsid); the ACL calls - create, valid, the information queries and set, GetAce, FirstFreeAce, DeleteAce and AddAce (rtlacl); the ACE builders, allowed, denied, audit, their Ex and object forms and the compound ACE (rtlace); the LUID calls (rtlluid); the access-granted checks and RtlNewSecurityGrantedAccess over the process token (rtlcheck); the object security calls - NewSecurityObject(Ex), NewInstanceSecurityObject, CreateUserSecurityObject, DeleteSecurityObject, ConvertToAutoInheritSecurityObject, CreateAndSetSD, DefaultNpAcl, and Query/SetSecurityObject(Ex) on a temp file's handle (rtlobj); and RtlImpersonateSelf, last because it gives the thread a token (rtlself). Only well-known SIDs are built and printed; an SD the system built prints its shape only. advapi32's OpenProcessToken is called directly."
+kind = "sectioned"
+gate = true
+
+[pins]
+# The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
+# them. Only what a section calls itself, through its own helpers too, never what the C runtime's
+# startup calls.
+rtlsd = [
+    "ntdll.RtlCreateSecurityDescriptor",
+    "ntdll.RtlLengthSecurityDescriptor",
+    "ntdll.RtlValidSecurityDescriptor",
+    "ntdll.RtlValidRelativeSecurityDescriptor",
+    "ntdll.RtlGetControlSecurityDescriptor",
+    "ntdll.RtlSetControlSecurityDescriptor",
+    "ntdll.RtlSetAttributesSecurityDescriptor",
+    "ntdll.RtlGetSecurityDescriptorRMControl",
+    "ntdll.RtlSetSecurityDescriptorRMControl",
+    "ntdll.RtlGetOwnerSecurityDescriptor",
+    "ntdll.RtlSetOwnerSecurityDescriptor",
+    "ntdll.RtlGetGroupSecurityDescriptor",
+    "ntdll.RtlSetGroupSecurityDescriptor",
+    "ntdll.RtlGetDaclSecurityDescriptor",
+    "ntdll.RtlSetDaclSecurityDescriptor",
+    "ntdll.RtlGetSaclSecurityDescriptor",
+    "ntdll.RtlSetSaclSecurityDescriptor",
+    "ntdll.RtlMakeSelfRelativeSD",
+    "ntdll.RtlAbsoluteToSelfRelativeSD",
+    "ntdll.RtlSelfRelativeToAbsoluteSD",
+    "ntdll.RtlSelfRelativeToAbsoluteSD2",
+    "kernel32.GetModuleHandleA",
+    "kernel32.GetProcAddress",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]
+rtlsid = [
+    "ntdll.RtlInitializeSid",
+    "ntdll.RtlLengthRequiredSid",
+    "ntdll.RtlLengthSid",
+    "ntdll.RtlValidSid",
+    "ntdll.RtlEqualSid",
+    "ntdll.RtlEqualPrefixSid",
+    "ntdll.RtlSubAuthorityCountSid",
+    "ntdll.RtlSubAuthoritySid",
+    "ntdll.RtlIdentifierAuthoritySid",
+    "ntdll.RtlAllocateAndInitializeSid",
+    "ntdll.RtlCopySid",
+    "ntdll.RtlCopySidAndAttributesArray",
+    "ntdll.RtlConvertSidToUnicodeString",
+    "ntdll.RtlFreeSid",
+    "kernel32.GetModuleHandleA",
+    "kernel32.GetProcAddress",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]
+rtlacl = [
+    "ntdll.RtlCreateAcl",
+    "ntdll.RtlValidAcl",
+    "ntdll.RtlQueryInformationAcl",
+    "ntdll.RtlSetInformationAcl",
+    "ntdll.RtlGetAce",
+    "ntdll.RtlFirstFreeAce",
+    "ntdll.RtlDeleteAce",
+    "ntdll.RtlAddAce",
+    "kernel32.GetModuleHandleA",
+    "kernel32.GetProcAddress",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]
+rtlace = [
+    "ntdll.RtlAddAccessAllowedAce",
+    "ntdll.RtlAddAccessAllowedAceEx",
+    "ntdll.RtlAddAccessAllowedObjectAce",
+    "ntdll.RtlAddAccessDeniedAce",
+    "ntdll.RtlAddAccessDeniedAceEx",
+    "ntdll.RtlAddAccessDeniedObjectAce",
+    "ntdll.RtlAddAuditAccessAce",
+    "ntdll.RtlAddAuditAccessAceEx",
+    "ntdll.RtlAddAuditAccessObjectAce",
+    "ntdll.RtlAddCompoundAce",
+    "kernel32.GetModuleHandleA",
+    "kernel32.GetProcAddress",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]
+rtlluid = [
+    "ntdll.RtlEqualLuid",
+    "ntdll.RtlCopyLuid",
+    "ntdll.RtlCopyLuidAndAttributesArray",
+    "kernel32.GetModuleHandleA",
+    "kernel32.GetProcAddress",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]
+rtlcheck = [
+    "ntdll.RtlAreAllAccessesGranted",
+    "ntdll.RtlAreAnyAccessesGranted",
+    "ntdll.RtlNewSecurityGrantedAccess",
+    "kernel32.GetModuleHandleA",
+    "kernel32.GetProcAddress",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "advapi32.OpenProcessToken",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+]
+rtlobj = [
+    "ntdll.RtlNewSecurityObject",
+    "ntdll.RtlNewSecurityObjectEx",
+    "ntdll.RtlNewInstanceSecurityObject",
+    "ntdll.RtlCreateUserSecurityObject",
+    "ntdll.RtlDeleteSecurityObject",
+    "ntdll.RtlSetSecurityObject",
+    "ntdll.RtlSetSecurityObjectEx",
+    "ntdll.RtlQuerySecurityObject",
+    "ntdll.RtlConvertToAutoInheritSecurityObject",
+    "ntdll.RtlCreateAndSetSD",
+    "ntdll.RtlDefaultNpAcl",
+    "kernel32.GetModuleHandleA",
+    "kernel32.GetProcAddress",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+    "advapi32.OpenProcessToken",
+    "kernel32.GetCurrentProcess",
+    "kernel32.CloseHandle",
+    "kernel32.CreateFileA",
+    "kernel32.DeleteFileA",
+]
+rtlself = [
+    "ntdll.RtlImpersonateSelf",
+    "kernel32.GetModuleHandleA",
+    "kernel32.GetProcAddress",
+    "kernel32.GetLastError",
+    "kernel32.SetLastError",
+]

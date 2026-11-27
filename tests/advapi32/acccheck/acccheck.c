@@ -17,9 +17,11 @@
  * SeSecurityPrivilege and SeTakeOwnershipPrivilege disabled; the
  * privileges are named by their public LUIDs (winnt.h's SE_*_PRIVILEGE
  * values): SeSecurityPrivilege 8, SeTakeOwnershipPrivilege 9. A SID
- * prints in its string form (every SID here is well-known); a mask
- * prints in hex; a status prints as 0x%08lX. Nothing machine-specific
- * prints.
+ * prints in its string form (every SID here is well-known), except the
+ * token's user, which prints its shape only: the revision, the authority
+ * and the RID stay, the domain numbers between them print as ellipses.
+ * A mask prints in hex; a status prints as 0x%08lX. Nothing
+ * machine-specific prints.
  *
  * Sections (run all with no argument, or one by name):
  *
@@ -157,6 +159,37 @@ static const char *sid_text(const void *sid)
         n += sprintf(b + n, "-%lu", v);
     }
     return b;
+}
+
+/* The shape of a SID only, for one whose middle sub-authorities are the
+ * capture machine's own (a domain SID): the revision, the authority, the
+ * first sub-authority and the last one (the RID) print, each sub-authority
+ * between them prints as an ellipsis. */
+static const char *sid_shape(const void *sid)
+{
+    static char buf[96];
+    const BYTE *p = (const BYTE *)sid;
+    DWORD auth, v;
+    int n, i, count;
+
+    if (sid == NULL) {
+        return "NULL";
+    }
+    count = p[1];
+    if (p[0] != 1 || count > 15) {
+        return "not a SID";
+    }
+    auth = ((DWORD)p[4] << 24) | ((DWORD)p[5] << 16) | ((DWORD)p[6] << 8) | p[7];
+    n = sprintf(buf, "S-%lu-%lu", (unsigned long)p[0], auth);
+    for (i = 0; i < count && n < (int)sizeof buf - 12; i++) {
+        if (i > 0 && i < count - 1) {
+            n += sprintf(buf + n, "-…");
+        } else {
+            memcpy(&v, p + 8 + 4 * i, sizeof v);
+            n += sprintf(buf + n, "-%lu", v);
+        }
+    }
+    return buf;
 }
 
 /* The SD's control word at offset 2: PSECURITY_DESCRIPTOR is opaque in
@@ -460,7 +493,7 @@ static void sec_owner(void)
         CloseHandle(token);
         return;
     }
-    line("TokenUser: %s", sid_text(user_sid));
+    line("TokenUser: %s", sid_shape(user_sid));
     arm();
     r = p_alloc_sid(&nt, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS,
                     0, 0, 0, 0, 0, 0, &admins);
