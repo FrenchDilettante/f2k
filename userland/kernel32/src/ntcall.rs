@@ -2140,6 +2140,16 @@ pub fn unicode_to_multi_byte(out: &mut OutBuf<'_, u8>, at: usize, units: &[u16])
         at <= out.len() && units.len() <= out.len() - at,
         "a write past the caller's buffer"
     );
+    if out.is_null() {
+        // A null buffer given a size: the platform's conversion writes through it and faults the
+        // caller (ExpandEnvironmentStringsA with a NULL buffer, the runtime capture's envnull);
+        // ntdll's takes a null buffer for none, so the fault is the edge's own write. The address
+        // goes through black_box: a store the compiler sees is to null it may drop as unreachable.
+        let address = core::hint::black_box(out.as_mut_ptr());
+        // SAFETY: the caller's buffer (the edge's contract: an address it cannot reach faults it,
+        // as on the platform).
+        unsafe { address.wrapping_add(at).write_volatile(0) };
+    }
     // SAFETY: ntdll's export, over the units and into the caller's buffer (the edge's contract),
     // `units.len()` bytes from `at`, inside it (checked above).
     unsafe {

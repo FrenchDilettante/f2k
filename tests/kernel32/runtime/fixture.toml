@@ -4,8 +4,6 @@ description = "runtime - the process environment a C program starts into (runtim
 kind = "sectioned"
 gate = true
 
-[pending]
-envnull = "F2K's GetEnvironmentVariableW, SetEnvironmentVariableW and ExpandEnvironmentStringsW read a NULL name or source (a fault), where Windows 2000 answers an error; the A forms take NULL as an empty string"
 [masks]
 # The breakpoint record's second parameter is a stack address.
 seh = ["int 3: handled yes code 0x80000003 flags 0 params 3 info 0 *"]

@@ -227,7 +227,10 @@ pub unsafe extern "system" fn set_environment_variable_w(
 }
 
 /// ExpandEnvironmentStringsW's work: the expansion and its terminator into the caller's buffer
-/// when it fits; the size it needs (terminator included) either way.
+/// when it fits; the size it needs (terminator included) either way. A buffer too small answers
+/// that size as ntdll counts it, in bytes of UTF-16 for the A form too (Windows 2000's kernel32
+/// hands RtlExpandEnvironmentStrings_U's count back unconverted: the runtime capture's envnull
+/// block, 2 for an empty source and no room); one that fits answers it in characters.
 fn expand(source: &UnicodeString, mut buffer: Text<'_>) -> Result<u32, Failure> {
     let mut needed = 0u32;
     let mut probe = UnicodeString::empty();
@@ -238,7 +241,10 @@ fn expand(source: &UnicodeString, mut buffer: Text<'_>) -> Result<u32, Failure> 
     }
     let units = needed as usize / 2;
     if buffer.len() < units {
-        return Ok(units as u32);
+        return Ok(match buffer {
+            Text::Ansi(_) => needed,
+            Text::Wide(_) => units as u32,
+        });
     }
     let (out, mut out_string) =
         value_buffer(units).ok_or(Failure::Error(ERROR_NOT_ENOUGH_MEMORY))?;

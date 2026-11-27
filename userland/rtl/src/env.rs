@@ -15,11 +15,15 @@ use crate::cp1252::map_case;
 const EQUALS: u16 = b'=' as u16;
 const PERCENT: u16 = b'%' as u16;
 
-/// Why a set is refused: the name is not one, or the block has no room (the caller grows it).
+/// Why a set is refused: the name is not one, a deleted name is not set, or the block has no room
+/// (the caller grows it).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EnvError {
     /// Empty, or an `=` past its first character.
     InvalidName,
+    /// A delete of a name that is not set (Windows 2000's STATUS_VARIABLE_NOT_FOUND: the runtime
+    /// capture's envnull block, SetEnvironmentVariable of an unset name to NULL).
+    NotFound,
     /// The edited block needs this many units, its final NUL included.
     NeedsRoom(usize),
 }
@@ -89,8 +93,8 @@ pub fn query<'b>(block: &'b [u16], name: &[u16]) -> Option<&'b [u16]> {
 }
 
 /// Set `name` to `value` in `block` (its room: `block.len()` units), or delete it for none
-/// (deleting an unset name succeeds). The block is edited in place; NeedsRoom when it does not fit,
-/// the block unchanged.
+/// (deleting an unset name is NotFound, the block unchanged). The block is edited in place;
+/// NeedsRoom when it does not fit, the block unchanged.
 pub fn set(block: &mut [u16], name: &[u16], value: Option<&[u16]>) -> Result<(), EnvError> {
     if !valid_name(name) {
         return Err(EnvError::InvalidName);
@@ -109,13 +113,14 @@ pub fn set(block: &mut [u16], name: &[u16], value: Option<&[u16]>) -> Result<(),
         }
     };
     let Some(value) = value else {
-        if removed != 0 {
-            block.copy_within(at + removed..used, at);
-            // An emptied block keeps its two NULs.
-            if used - removed < 2 {
-                block[0] = 0;
-                block[1] = 0;
-            }
+        if removed == 0 {
+            return Err(EnvError::NotFound);
+        }
+        block.copy_within(at + removed..used, at);
+        // An emptied block keeps its two NULs.
+        if used - removed < 2 {
+            block[0] = 0;
+            block[1] = 0;
         }
         return Ok(());
     };
@@ -237,7 +242,12 @@ mod tests {
         set(&mut env, &wide("F2KTEST"), Some(&wide("second value"))).unwrap();
         set(&mut env, &wide("F2KTEST"), None).unwrap();
         assert_eq!(listed(&env), ["A=1", "OTHER=x"]);
-        set(&mut env, &wide("NOSUCH"), None).unwrap();
+        assert_eq!(
+            set(&mut env, &wide("NOSUCH"), None),
+            Err(EnvError::NotFound),
+            "an unset name's delete"
+        );
+        assert_eq!(listed(&env), ["A=1", "OTHER=x"]);
         set(&mut env, &wide("A"), None).unwrap();
         set(&mut env, &wide("OTHER"), None).unwrap();
         assert_eq!(block_length(&env), 2, "emptied: two NULs");

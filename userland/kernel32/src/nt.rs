@@ -1478,6 +1478,7 @@ pub mod host {
             match rtl::env::set(&mut block.borrow_mut(), name, value) {
                 Ok(()) => 0,
                 Err(rtl::env::EnvError::InvalidName) => rtl::status::STATUS_INVALID_PARAMETER,
+                Err(rtl::env::EnvError::NotFound) => rtl::status::STATUS_VARIABLE_NOT_FOUND,
                 Err(rtl::env::EnvError::NeedsRoom(_)) => rtl::status::STATUS_NO_MEMORY,
             }
         })

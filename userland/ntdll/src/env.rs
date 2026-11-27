@@ -129,7 +129,8 @@ pub unsafe extern "system" fn rtl_query_environment_variable_u(
 
 /// RtlSetEnvironmentVariable: set `name` to `value` in the environment `*environment` names (the
 /// process's for a null pointer), or delete it for a null value. STATUS_INVALID_PARAMETER for a
-/// name that is not one; STATUS_NO_MEMORY when the block cannot grow.
+/// name that is not one; STATUS_VARIABLE_NOT_FOUND for a delete of an unset name (Windows 2000's
+/// answer, the block unchanged); STATUS_NO_MEMORY when the block cannot grow.
 ///
 /// # Safety
 ///
@@ -172,6 +173,7 @@ unsafe fn set_in(slot: &mut *mut u16, name: &[u16], value: Option<&[u16]>) -> u3
     let set = |block: &mut [u16], allocation: usize| match env::set(block, name, value) {
         Ok(()) => STATUS_SUCCESS,
         Err(EnvError::InvalidName) => STATUS_INVALID_PARAMETER,
+        Err(EnvError::NotFound) => STATUS_VARIABLE_NOT_FOUND,
         Err(EnvError::NeedsRoom(needed)) => {
             let size = (2 * needed).next_multiple_of(GRANULARITY);
             let Ok(base) =

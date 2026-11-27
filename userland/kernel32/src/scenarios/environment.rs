@@ -76,7 +76,9 @@ fn names_are_validated_and_the_wide_set_agrees() {
 }
 
 /// The capture's expansion: a set reference expands, an unset one stays; the count includes the
-/// terminator, and a short buffer asks the size.
+/// terminator, and a short buffer asks the size — in bytes of UTF-16, as Windows 2000's A form
+/// hands ntdll's count back (the runtime capture's envnull block: 2 for an empty source and no
+/// room).
 ///
 /// Pins: kernel32.ExpandEnvironmentStringsA
 #[test]
@@ -94,7 +96,12 @@ fn references_expand_through_the_environment() {
     assert_eq!(&buffer[..26], b"[crt value] [%F2KNOSUCH%]\0");
     assert_eq!(
         unsafe { expand_environment_strings_a(source.as_ptr(), buffer.as_mut_ptr(), 4) },
-        26
+        52
+    );
+    assert_eq!(
+        unsafe { expand_environment_strings_a(core::ptr::null(), core::ptr::null_mut(), 0) },
+        2,
+        "a null source is the empty one"
     );
 }
 
