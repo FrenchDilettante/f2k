@@ -5,6 +5,7 @@
 //! IsWellKnownSid, CreateWellKnownSid and AllocateLocallyUniqueId.
 //!
 //! - [`parts`]: the field pointers, the length, the copy and the prefix comparison.
+//! - [`string`]: the printed form "S-1-..." and its parse, A and W.
 //!
 //! The printed form is made by ntdll's conversion (RtlConvertSidToUnicodeString, through the
 //! [`services`] seam, which allocates the wide string on the process heap), copied into a fresh
@@ -27,6 +28,7 @@ use crate::imports::{self as nt};
 use crate::{caller_bytes, Out};
 
 pub mod parts;
+pub mod string;
 
 /// A SID's header: revision, sub-authority count, the six-byte identifier authority; then a
 /// dword per sub-authority.
