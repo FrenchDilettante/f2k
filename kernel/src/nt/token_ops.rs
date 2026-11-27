@@ -41,7 +41,10 @@ const fn align4(x: u32) -> u32 {
 
 /// Whether a groups adjustment has the NewState it needs: STATUS_INVALID_PARAMETER when
 /// ResetToDefault is false and NewState is absent — answered before the handle is looked at.
-pub(crate) fn new_state_required(reset_to_default: bool, new_state_present: bool) -> Result<(), NtStatus> {
+pub(crate) fn new_state_required(
+    reset_to_default: bool,
+    new_state_present: bool,
+) -> Result<(), NtStatus> {
     if !reset_to_default && !new_state_present {
         return Err(STATUS_INVALID_PARAMETER);
     }
@@ -724,7 +727,11 @@ mod tests {
     #[test]
     fn the_first_entry_naming_a_group_decides() {
         let groups = [(se::EVERYONE, se::SE_GROUP_ENABLED)];
-        let plan = plan_of(&groups, &[(&se::EVERYONE, 0), (&se::EVERYONE, se::SE_GROUP_ENABLED)], 2);
+        let plan = plan_of(
+            &groups,
+            &[(&se::EVERYONE, 0), (&se::EVERYONE, se::SE_GROUP_ENABLED)],
+            2,
+        );
         assert!(plan.not_all_assigned(), "the second entry matches no group");
         // The group is asked disabled, but it is not mandatory here, so it changes.
         let adjustment = plan_groups(false, &groups, &plan);
@@ -749,7 +756,11 @@ mod tests {
         let entries: Vec<_> = adjustment.entries(BASE).collect();
         assert_eq!(entries.len(), 1);
         let (at, attributes, sid) = entries[0];
-        assert_eq!(at, BASE + 4 + 8, "the SID is packed right after the entries");
+        assert_eq!(
+            at,
+            BASE + 4 + 8,
+            "the SID is packed right after the entries"
+        );
         assert_eq!(attributes, se::SE_GROUP_ENABLED, "the old attributes");
         assert!(se::USERS.matches(sid.as_slice()));
     }
@@ -760,13 +771,20 @@ mod tests {
     #[test]
     fn reset_to_default_restores_the_defaults() {
         let groups = [
-            (se::EVERYONE, se::SE_GROUP_ENABLED_BY_DEFAULT | se::SE_GROUP_ENABLED),
+            (
+                se::EVERYONE,
+                se::SE_GROUP_ENABLED_BY_DEFAULT | se::SE_GROUP_ENABLED,
+            ),
             (se::USERS, se::SE_GROUP_ENABLED),
             (se::LOCAL, se::SE_GROUP_ENABLED_BY_DEFAULT),
         ];
         let adjustment = plan_groups(true, &groups, &GroupsPlan::new());
         assert!(adjustment.status().is_ok());
-        assert_eq!(adjustment.changed(), 2, "the first group is already at its default");
+        assert_eq!(
+            adjustment.changed(),
+            2,
+            "the first group is already at its default"
+        );
         assert_eq!(
             adjustment.report_size(),
             4 + 2 * 8 + align4(se::USERS.size() as u32) + align4(se::LOCAL.size() as u32)
@@ -774,7 +792,11 @@ mod tests {
         let entries: Vec<_> = adjustment.entries(BASE).collect();
         assert_eq!(entries[0].1, se::SE_GROUP_ENABLED, "USERS was enabled");
         assert!(se::USERS.matches(entries[0].2.as_slice()));
-        assert_eq!(entries[1].1, se::SE_GROUP_ENABLED_BY_DEFAULT, "LOCAL was disabled");
+        assert_eq!(
+            entries[1].1,
+            se::SE_GROUP_ENABLED_BY_DEFAULT,
+            "LOCAL was disabled"
+        );
         assert!(se::LOCAL.matches(entries[1].2.as_slice()));
         // The SIDs are packed dword-aligned, in the report's order.
         let usiders = se::USERS.size() as u32;
@@ -801,11 +823,18 @@ mod tests {
         assert_eq!(made.kind, se::TOKEN_PRIMARY);
         assert_eq!(made.owner, None);
         let answer = |body: &se::TokenBody, class| body.information(class, BASE).unwrap();
-        assert_eq!(answer(&made, se::Class::Type).as_slice(), 1u32.to_le_bytes());
+        assert_eq!(
+            answer(&made, se::Class::Type).as_slice(),
+            1u32.to_le_bytes()
+        );
         let made_stats = answer(&made, se::Class::Statistics);
         let source_stats = answer(&source, se::Class::Statistics);
         assert_ne!(&made_stats[..4], &source_stats[..4], "a new TokenId");
-        assert_eq!(&made_stats[8..12], &source_stats[8..12], "the same logon id");
+        assert_eq!(
+            &made_stats[8..12],
+            &source_stats[8..12],
+            "the same logon id"
+        );
         assert_eq!(
             created_body(&source, 3, None).err(),
             Some(STATUS_INVALID_PARAMETER)
@@ -818,7 +847,12 @@ mod tests {
             created_body(&source, se::TOKEN_IMPERSONATION, Some(4)).err(),
             Some(se::STATUS_BAD_IMPERSONATION_LEVEL)
         );
-        let imp = created_body(&source, se::TOKEN_IMPERSONATION, Some(se::SECURITY_IMPERSONATION)).unwrap();
+        let imp = created_body(
+            &source,
+            se::TOKEN_IMPERSONATION,
+            Some(se::SECURITY_IMPERSONATION),
+        )
+        .unwrap();
         assert_eq!(imp.kind, se::TOKEN_IMPERSONATION);
         assert_eq!(
             answer(&imp, se::Class::ImpersonationLevel).as_slice(),
