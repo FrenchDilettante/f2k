@@ -457,7 +457,7 @@ fn access_conversions() {
             &mut newsd,
         )
     };
-    assert_eq!((ret, last_error()), (0, 0xF2F2), "the last error untouched");
+    assert_eq!((ret, last_error()), (0, 997), "ERROR_IO_PENDING left");
     assert!(!newsd.is_null());
     let used = SD_HEADER + 12 + 12 + ACL_HEADER;
     let sd = unsafe { core::slice::from_raw_parts(newsd, used) };
@@ -468,6 +468,7 @@ fn access_conversions() {
     unsafe { ProcessHeap::free(newsd) };
     let wname = wide("Everyone");
     let mut newsd: *mut u8 = core::ptr::null_mut();
+    arm();
     let ret = unsafe {
         convert_access_to_security_descriptor_w(
             list.as_ptr(),
@@ -477,7 +478,7 @@ fn access_conversions() {
             &mut newsd,
         )
     };
-    assert_eq!(ret, 0);
+    assert_eq!((ret, last_error()), (0, 997));
     assert!(!newsd.is_null());
     unsafe { ProcessHeap::free(newsd) };
     // The to-access family: the constant answer, nothing touched.

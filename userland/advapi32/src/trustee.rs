@@ -163,7 +163,8 @@ unsafe fn build_objects_and_sid(
     sid: *const u8,
 ) {
     // SAFETY: the caller's structures and GUIDs.
-    let (trustee, objects) = unsafe { (trustee_mut(trustee), caller_bytes_mut(objects, OAS_SIZE)) };
+    let (trustee, objects) =
+        unsafe { (trustee_mut(trustee), caller_bytes_mut(objects, OAS_SIZE)) };
     let (Some(trustee), Some(objects)) = (trustee, objects) else {
         return;
     };
@@ -172,11 +173,7 @@ unsafe fn build_objects_and_sid(
     // SAFETY: the caller's GUIDs.
     for (guid, bit, at) in [
         (object_type, OBJECT_TYPE_PRESENT, 4),
-        (
-            inherited_object_type,
-            INHERITED_OBJECT_TYPE_PRESENT,
-            4 + GUID,
-        ),
+        (inherited_object_type, INHERITED_OBJECT_TYPE_PRESENT, 4 + GUID),
     ] {
         // SAFETY: the caller's GUID.
         if let Some(bytes) = unsafe { caller_bytes(guid, GUID) } {
@@ -186,12 +183,7 @@ unsafe fn build_objects_and_sid(
     }
     set_dword(objects, 0, present);
     set_ptr_field(objects, OAS_SID, sid as usize);
-    fill_trustee(
-        trustee,
-        OP_NONE,
-        FORM_OBJECTS_AND_SID,
-        objects.as_ptr() as usize,
-    );
+    fill_trustee(trustee, OP_NONE, FORM_OBJECTS_AND_SID, objects.as_ptr() as usize);
 }
 
 /// BuildTrusteeWithObjectsAndSidA: as [`build_objects_and_sid`], ANSI names.
@@ -207,7 +199,9 @@ pub unsafe extern "system" fn build_trustee_with_objects_and_sid_a(
     inherited_object_type: *const u8,
     sid: *const u8,
 ) {
-    unsafe { build_objects_and_sid(trustee, objects, object_type, inherited_object_type, sid) }
+    unsafe {
+        build_objects_and_sid(trustee, objects, object_type, inherited_object_type, sid)
+    }
 }
 
 /// BuildTrusteeWithObjectsAndSidW: as the A form.
@@ -223,7 +217,9 @@ pub unsafe extern "system" fn build_trustee_with_objects_and_sid_w(
     inherited_object_type: *const u8,
     sid: *const u8,
 ) {
-    unsafe { build_objects_and_sid(trustee, objects, object_type, inherited_object_type, sid) }
+    unsafe {
+        build_objects_and_sid(trustee, objects, object_type, inherited_object_type, sid)
+    }
 }
 
 /// BuildTrusteeWithObjectsAndNameA/W's body: the objects-and-name structure filled (the names
@@ -241,7 +237,8 @@ unsafe fn build_objects_and_name(
     name: *const u8,
 ) {
     // SAFETY: the caller's structures.
-    let (trustee, objects) = unsafe { (trustee_mut(trustee), caller_bytes_mut(objects, OAN_SIZE)) };
+    let (trustee, objects) =
+        unsafe { (trustee_mut(trustee), caller_bytes_mut(objects, OAN_SIZE)) };
     let (Some(trustee), Some(objects)) = (trustee, objects) else {
         return;
     };
@@ -256,22 +253,14 @@ unsafe fn build_objects_and_name(
         }
     }
     // The ObjectsPresent bits name the object type and inherited object type only.
-    let bits = (if !object_type_name.is_null() {
-        OBJECT_TYPE_PRESENT
-    } else {
-        0
-    }) | (if !inherited_object_type_name.is_null() {
-        INHERITED_OBJECT_TYPE_PRESENT
-    } else {
-        0
-    });
+    let bits = (if !object_type_name.is_null() { OBJECT_TYPE_PRESENT } else { 0 })
+        | (if !inherited_object_type_name.is_null() {
+            INHERITED_OBJECT_TYPE_PRESENT
+        } else {
+            0
+        });
     set_dword(objects, 0, bits);
-    fill_trustee(
-        trustee,
-        OP_NONE,
-        FORM_OBJECTS_AND_NAME,
-        objects.as_ptr() as usize,
-    );
+    fill_trustee(trustee, OP_NONE, FORM_OBJECTS_AND_NAME, objects.as_ptr() as usize);
 }
 
 /// BuildTrusteeWithObjectsAndNameA: as [`build_objects_and_name`], ANSI names.
@@ -324,16 +313,18 @@ pub unsafe extern "system" fn build_trustee_with_objects_and_name_w(
     }
 }
 
-/// BuildImpersonateTrusteeA/W: the source trustee copied into `trustee`, its multiple trustee
-/// operation set to impersonate.
+/// BuildImpersonateTrusteeA/W's body: the trustee `source` names copied into `trustee` (the
+/// second argument, the one the call fills in), its multiple trustee operation set to
+/// impersonate.
 ///
 /// # Safety
 ///
 /// Both are TRUSTEEs the call may read and write.
-unsafe fn build_impersonate_trustee(trustee: *mut u8, multiple: *const u8) {
+unsafe fn build_impersonate_trustee(source: *const u8, trustee: *mut u8) {
     // SAFETY: the caller's trustees.
-    let (dest, source) = unsafe { (trustee_mut(trustee), caller_bytes(multiple, TRUSTEE_SIZE)) };
-    let (Some(dest), Some(source)) = (dest, source) else {
+    let (source, dest) =
+        unsafe { (caller_bytes(source, TRUSTEE_SIZE), trustee_mut(trustee)) };
+    let (Some(source), Some(dest)) = (source, dest) else {
         return;
     };
     dest.copy_from_slice(source);
@@ -346,18 +337,24 @@ unsafe fn build_impersonate_trustee(trustee: *mut u8, multiple: *const u8) {
 ///
 /// As [`build_impersonate_trustee`]'s.
 #[unsafe(export_name = "f2k_export_BuildImpersonateTrusteeA")]
-pub unsafe extern "system" fn build_impersonate_trustee_a(trustee: *mut u8, multiple: *const u8) {
-    unsafe { build_impersonate_trustee(trustee, multiple) }
+pub unsafe extern "system" fn build_impersonate_trustee_a(
+    trustee: *const u8,
+    impersonate: *mut u8,
+) {
+    unsafe { build_impersonate_trustee(trustee, impersonate) }
 }
 
 /// BuildImpersonateTrusteeW: as the A form.
 ///
 /// # Safety
 ///
-/// As the A form's.
+/// As [`build_impersonate_trustee`]'s.
 #[unsafe(export_name = "f2k_export_BuildImpersonateTrusteeW")]
-pub unsafe extern "system" fn build_impersonate_trustee_w(trustee: *mut u8, multiple: *const u8) {
-    unsafe { build_impersonate_trustee(trustee, multiple) }
+pub unsafe extern "system" fn build_impersonate_trustee_w(
+    trustee: *const u8,
+    impersonate: *mut u8,
+) {
+    unsafe { build_impersonate_trustee(trustee, impersonate) }
 }
 
 /// BuildImpersonateExplicitAccessWithNameA/W's body: the entry filled (permissions, mode,
@@ -405,7 +402,9 @@ pub unsafe extern "system" fn build_impersonate_explicit_access_with_name_a(
     mode: u32,
     inheritance: u32,
 ) {
-    unsafe { build_impersonate_explicit_access(ea, name, multiple, permissions, mode, inheritance) }
+    unsafe {
+        build_impersonate_explicit_access(ea, name, multiple, permissions, mode, inheritance)
+    }
 }
 
 /// BuildImpersonateExplicitAccessWithNameW: as the A form, wide name.
@@ -423,7 +422,14 @@ pub unsafe extern "system" fn build_impersonate_explicit_access_with_name_w(
     inheritance: u32,
 ) {
     unsafe {
-        build_impersonate_explicit_access(ea, name.cast(), multiple, permissions, mode, inheritance)
+        build_impersonate_explicit_access(
+            ea,
+            name.cast(),
+            multiple,
+            permissions,
+            mode,
+            inheritance,
+        )
     }
 }
 
@@ -550,20 +556,14 @@ mod tests {
         assert_eq!(ptr_field(&tr, TRUSTEE_MULTIPLE), Some(0));
         assert_eq!(ptr_field(&tr, TRUSTEE_NAME), Some(name.as_ptr() as usize));
         assert_eq!(unsafe { get_trustee_form_a(tr.as_ptr()) }, FORM_NAME);
-        assert_eq!(
-            unsafe { get_trustee_name_a(tr.as_ptr()) },
-            name.as_ptr() as *mut u8
-        );
+        assert_eq!(unsafe { get_trustee_name_a(tr.as_ptr()) }, name.as_ptr() as *mut u8);
         assert_eq!(unsafe { get_trustee_type_a(tr.as_ptr()) }, TYPE_UNKNOWN);
         // The W form.
         let wname = wide("Everyone");
         let mut tr = vec![0xCCu8; TRUSTEE_SIZE];
         unsafe { build_trustee_with_name_w(tr.as_mut_ptr(), wname.as_ptr()) };
         assert_eq!(dword(&tr, TRUSTEE_FORM), Some(FORM_NAME));
-        assert_eq!(
-            unsafe { get_trustee_name_w(tr.as_ptr()) },
-            wname.as_ptr() as *mut u8
-        );
+        assert_eq!(unsafe { get_trustee_name_w(tr.as_ptr()) }, wname.as_ptr() as *mut u8);
         // The SID form: the name is the SID's address.
         let admins = sid(5, &[32, 544]);
         let mut tr = vec![0xCCu8; TRUSTEE_SIZE];
@@ -571,10 +571,7 @@ mod tests {
         unsafe { build_trustee_with_sid_a(tr.as_mut_ptr(), admins.as_ptr()) };
         assert_eq!(last_error(), 0xF2F2);
         assert_eq!(dword(&tr, TRUSTEE_FORM), Some(FORM_SID));
-        assert_eq!(
-            unsafe { get_trustee_name_a(tr.as_ptr()) },
-            admins.as_ptr() as *mut u8
-        );
+        assert_eq!(unsafe { get_trustee_name_a(tr.as_ptr()) }, admins.as_ptr() as *mut u8);
         let mut tr = vec![0xCCu8; TRUSTEE_SIZE];
         unsafe { build_trustee_with_sid_w(tr.as_mut_ptr(), admins.as_ptr()) };
         assert_eq!(dword(&tr, TRUSTEE_FORM), Some(FORM_SID));
@@ -591,11 +588,7 @@ mod tests {
         let admins = sid(5, &[32, 544]);
         let guid = [0xF2u8; GUID];
         let mut os = vec![0u8; OAS_SIZE];
-        set_dword(
-            &mut os,
-            0,
-            OBJECT_TYPE_PRESENT | INHERITED_OBJECT_TYPE_PRESENT,
-        );
+        set_dword(&mut os, 0, OBJECT_TYPE_PRESENT | INHERITED_OBJECT_TYPE_PRESENT);
         let mut tr = vec![0xCCu8; TRUSTEE_SIZE];
         unsafe {
             build_trustee_with_objects_and_sid_a(
@@ -608,11 +601,7 @@ mod tests {
         };
         assert_eq!(dword(&tr, TRUSTEE_FORM), Some(FORM_OBJECTS_AND_SID));
         assert_eq!(ptr_field(&tr, TRUSTEE_NAME), Some(os.as_ptr() as usize));
-        assert_eq!(
-            dword(&os, 0),
-            Some(OBJECT_TYPE_PRESENT),
-            "only the GUID bits"
-        );
+        assert_eq!(dword(&os, 0), Some(OBJECT_TYPE_PRESENT), "only the GUID bits");
         assert_eq!(&os[4..4 + GUID], &guid);
         assert_eq!(ptr_field(&os, OAS_SID), Some(admins.as_ptr() as usize));
         // No GUIDs: the bits are 0.
@@ -657,10 +646,7 @@ mod tests {
         assert_eq!(dword(&on, 0), Some(OBJECT_TYPE_PRESENT));
         assert_eq!(ptr_field(&on, OAN_NAMES), Some(objtype.as_ptr() as usize));
         assert_eq!(ptr_field(&on, OAN_NAMES + PTR), Some(0));
-        assert_eq!(
-            ptr_field(&on, OAN_NAMES + 2 * PTR),
-            Some(name.as_ptr() as usize)
-        );
+        assert_eq!(ptr_field(&on, OAN_NAMES + 2 * PTR), Some(name.as_ptr() as usize));
         // GetTrusteeName answers the structure's address verbatim (the first byte is the
         // ObjectsPresent low byte).
         let named = unsafe { get_trustee_name_a(tr.as_ptr()) };
@@ -681,10 +667,7 @@ mod tests {
             )
         };
         assert_eq!(dword(&tr, TRUSTEE_FORM), Some(FORM_OBJECTS_AND_NAME));
-        assert_eq!(
-            ptr_field(&on, OAN_NAMES + 2 * PTR),
-            Some(wname.as_ptr() as usize)
-        );
+        assert_eq!(ptr_field(&on, OAN_NAMES + 2 * PTR), Some(wname.as_ptr() as usize));
     }
 
     /// BuildImpersonateTrustee copies the source and sets the impersonate operation;
@@ -697,13 +680,14 @@ mod tests {
         unsafe { build_trustee_with_name_a(tr.as_mut_ptr(), name.as_ptr()) };
         let mut imp = vec![0xCCu8; TRUSTEE_SIZE];
         arm();
-        unsafe { build_impersonate_trustee_a(imp.as_mut_ptr(), tr.as_ptr()) };
+        // The first argument is the trustee impersonated, the second the one filled in.
+        unsafe { build_impersonate_trustee_a(tr.as_ptr(), imp.as_mut_ptr()) };
         assert_eq!(last_error(), 0xF2F2);
         assert_eq!(dword(&imp, TRUSTEE_OP), Some(OP_IMPERSONATE));
         assert_eq!(dword(&imp, TRUSTEE_FORM), Some(FORM_NAME));
         assert_eq!(ptr_field(&imp, TRUSTEE_NAME), Some(name.as_ptr() as usize));
         let mut imp = vec![0xCCu8; TRUSTEE_SIZE];
-        unsafe { build_impersonate_trustee_w(imp.as_mut_ptr(), tr.as_ptr()) };
+        unsafe { build_impersonate_trustee_w(tr.as_ptr(), imp.as_mut_ptr()) };
         assert_eq!(dword(&imp, TRUSTEE_OP), Some(OP_IMPERSONATE));
         // The explicit access entry.
         let mut ea = vec![0xCCu8; EA_SIZE];
@@ -724,18 +708,9 @@ mod tests {
         let trustee = &ea[EA_TRUSTEE..EA_TRUSTEE + TRUSTEE_SIZE];
         assert_eq!(dword(trustee, TRUSTEE_OP), Some(OP_IMPERSONATE));
         assert_eq!(dword(trustee, TRUSTEE_FORM), Some(FORM_NAME));
-        assert_eq!(
-            ptr_field(trustee, TRUSTEE_MULTIPLE),
-            Some(src.as_ptr() as usize)
-        );
-        assert_eq!(
-            ptr_field(trustee, TRUSTEE_NAME),
-            Some(name.as_ptr() as usize)
-        );
-        assert_eq!(
-            unsafe { get_trustee_form_a(ea[EA_TRUSTEE..].as_ptr()) },
-            FORM_NAME
-        );
+        assert_eq!(ptr_field(trustee, TRUSTEE_MULTIPLE), Some(src.as_ptr() as usize));
+        assert_eq!(ptr_field(trustee, TRUSTEE_NAME), Some(name.as_ptr() as usize));
+        assert_eq!(unsafe { get_trustee_form_a(ea[EA_TRUSTEE..].as_ptr()) }, FORM_NAME);
         // The W form.
         let wname = wide("Everyone");
         let mut ea = vec![0xCCu8; EA_SIZE];
@@ -751,9 +726,6 @@ mod tests {
         };
         assert_eq!(dword(&ea, EA_PERMS), Some(0x000F01FF));
         let trustee = &ea[EA_TRUSTEE..EA_TRUSTEE + TRUSTEE_SIZE];
-        assert_eq!(
-            ptr_field(trustee, TRUSTEE_NAME),
-            Some(wname.as_ptr() as usize)
-        );
+        assert_eq!(ptr_field(trustee, TRUSTEE_NAME), Some(wname.as_ptr() as usize));
     }
 }
