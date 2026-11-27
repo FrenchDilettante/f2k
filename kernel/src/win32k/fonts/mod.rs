@@ -1115,6 +1115,7 @@ mod target {
     /// The boot's load (see the module notes): each face of [`BOOT_FONTS`] the volume has, public;
     /// a file the volume lacks is passed over without a word.
     pub fn load_boot_fonts() {
+        use core::sync::atomic::Ordering;
         for path in BOOT_FONTS {
             let found = crate::fs::fat32::volume::with_boot_volume(|volume| {
                 crate::fs::fat32::lookup::lookup(volume, path.as_bytes())
@@ -1126,6 +1127,8 @@ mod target {
                 read_whole(&file).and_then(|block| add(block, identity(&file), Owner::Public));
             match loaded {
                 Ok(_) => {
+                    let frames = pool::pages_for(file.size as usize) as u32;
+                    BOOT_FRAMES.fetch_add(frames, Ordering::Relaxed);
                     crate::serial_println!("F2K: win32k: font loaded: \\{}", path);
                 }
                 Err(status) => {
@@ -1139,6 +1142,17 @@ mod target {
         }
     }
 
+    /// The frames the boot's fonts hold: their files' blocks, kept for the system's life.
+    static BOOT_FRAMES: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+
+    /// The frames the boot's fonts ([`load_boot_fonts`]) hold, for the teardown audits: the fonts
+    /// load at the first win32k service (a start on demand), inside a process and after the
+    /// audits' baseline, and keep their frames for the system's life, so the audits count them
+    /// with the free frames, whenever they were taken.
+    pub fn boot_frames() -> u32 {
+        BOOT_FRAMES.load(core::sync::atomic::Ordering::Relaxed)
+    }
+
     /// The process whose object's index is `process` ended: its private faces go.
     pub fn end_process(process: u16) {
         with_table(|table| table.end_process(process));
@@ -1148,7 +1162,7 @@ mod target {
 #[cfg(target_arch = "x86")]
 use target::*;
 #[cfg(target_arch = "x86")]
-pub use target::{end_process, load_boot_fonts};
+pub use target::{boot_frames, end_process, load_boot_fonts};
 
 // The host builds have no table, no objects and no files: the services' helpers answer none (the
 // host tests drive the table, the mapper and the text runs directly).

@@ -551,8 +551,8 @@ SUBSYS_RS = f2kboot.REPO_ROOT / "kernel" / "src" / "boot" / "subsys.rs"
 
 
 def test_the_optional_subsystems_are_the_kernel_tables():
-    """The rows a boot can leave out are the kernel table's System and Auto rows, and the alias is
-    the kernel's (kernel/src/boot/subsys.rs)."""
+    """The rows a boot can leave out are the kernel table's System, Auto and Demand rows, and the
+    alias is the kernel's (kernel/src/boot/subsys.rs)."""
     source = SUBSYS_RS.read_text()
     rows = re.findall(r'subsystem\(\s*S::\w+,\s*"(\w+)",\s*T::(\w+),', source)
     assert len(rows) == 20

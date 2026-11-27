@@ -88,8 +88,15 @@ pub fn run() -> ! {
     // win32k's raw input thread, which takes the keyboard's keystrokes to the windows while a GUI
     // program is in the foreground: a permanent allocation too. Part of win32k: a boot whose
     // `subsys=` left the window station out has no GUI program to give keys to (its win32k
-    // services are refused), and no thread (the keyboard's hand-over to it checks).
-    if crate::boot::subsys::started(crate::boot::subsys::Subsystem::WinSta) {
+    // services are refused), and no thread (the keyboard's hand-over to it checks). Started here,
+    // at the boot, when the boot selected the window station, though the window station itself
+    // waits for the first win32k service (a Demand row): Windows 2000's csrss starts the thread
+    // at the session's start, whether or not a GUI program ever runs, and programs see it (the
+    // System process's threads: the toolhelp fixture counts more than one, the console control
+    // thread and this one). Nothing reaches it before the window station starts: its keystrokes
+    // come only while a connected GUI program is in the foreground.
+    if crate::boot::subsys::STATE.selected_set() & crate::boot::subsys::Subsystem::WinSta.bit() != 0
+    {
         crate::win32k::input::start();
     }
     // The baseline for the per-process teardown audits: recorded once the boot's permanent

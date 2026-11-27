@@ -37,10 +37,11 @@ static HANDOFF: [core::sync::atomic::AtomicU32; 2] = [
 ];
 
 /// Start the boot's subsystems, phase by phase, each phase's diagnostic boot at its end: the boot
-/// up to its first process. Every Boot row starts; the others when the selection holds them
-/// ([`selection`]: all of them unless the kernel command line says `subsys=`). The started set is
-/// reported on COM1 at the end. `magic` and `multiboot_info` are the Multiboot loader's EAX and
-/// EBX.
+/// up to its first process. Every Boot row starts; the System and Auto rows when the selection
+/// holds them ([`selection`]: all of them unless the kernel command line says `subsys=`); the
+/// selected Demand rows wait for their first use ([`start_on_demand`]). The started set, and the
+/// set left for later, are reported on COM1 at the end. `magic` and `multiboot_info` are the
+/// Multiboot loader's EAX and EBX.
 #[cfg(target_arch = "x86")]
 pub fn start_subsystems(magic: u32, multiboot_info: u32) {
     use core::sync::atomic::Ordering;
@@ -50,10 +51,15 @@ pub fn start_subsystems(magic: u32, multiboot_info: u32) {
     // up to it is a Boot row, which starts whatever the selection (a host test holds the table to
     // that).
     let mut selected = None;
+    let mut select = || {
+        let set = selection();
+        subsys::STATE.select(set);
+        subsys::boot_starts(&subsys::SUBSYSTEMS, set)
+    };
     for phase in subsys::Phase::ALL {
         for descriptor in subsys::SUBSYSTEMS.iter().filter(|d| d.phase == phase) {
             if descriptor.start != subsys::StartType::Boot
-                && *selected.get_or_insert_with(selection) & descriptor.id.bit() == 0
+                && *selected.get_or_insert_with(&mut select) & descriptor.id.bit() == 0
             {
                 continue;
             }
@@ -61,7 +67,52 @@ pub fn start_subsystems(magic: u32, multiboot_info: u32) {
         }
         diagnostics::after(phase);
     }
-    report_subsystems(subsys::STATE.started_set());
+    DEMAND_LOCK.init();
+    report_subsystems(
+        subsys::STATE.started_set(),
+        subsys::STATE.selected_set() & !subsys::STATE.started_set(),
+    );
+}
+
+/// The lock a start on demand holds ([`start_on_demand`]): one start at a time, held across its
+/// disk reads (the fonts'), which a short lock may not be.
+#[cfg(target_arch = "x86")]
+static DEMAND_LOCK: crate::block::lock::DeviceLock = crate::block::lock::DeviceLock::new(());
+
+/// Start the subsystems of `needs` that are not started yet, at their first use (the selected
+/// Demand rows: win32k's window station and fonts, at the first win32k service), as Windows 2000's
+/// service controller starts a SERVICE_DEMAND_START service when it is first asked for. Once
+/// started, a subsystem stays started: the check is one load of the started flags. Two threads
+/// making their first use at once start each subsystem once, under [`DEMAND_LOCK`]; the other
+/// waits for the start to be done, and returns with the subsystems started. A start is reported on
+/// COM1.
+///
+/// # Errors
+///
+/// `needs`' subsystems the boot's `subsys=` left out, which never start: nothing is started.
+#[cfg(target_arch = "x86")]
+pub fn start_on_demand(needs: u32) -> Result<(), u32> {
+    let state = &subsys::STATE;
+    if state.started_set() & needs == needs {
+        return Ok(());
+    }
+    // Left out stays left out: refused without the lock.
+    let left_out = needs & !state.selected_set();
+    if left_out != 0 {
+        return Err(left_out);
+    }
+    let started = crate::process::threads::critical_region(|| {
+        DEMAND_LOCK.with(|()| state.start_on_demand(&subsys::SUBSYSTEMS, needs, &mut init))
+    })?;
+    if started != 0 {
+        crate::serial_println!(
+            "F2K: subsystems started on demand: {} ({} of {})",
+            subsys::Names(&subsys::SUBSYSTEMS, started),
+            state.started_set().count_ones(),
+            subsys::Subsystem::COUNT
+        );
+    }
+    Ok(())
 }
 
 /// The subsystems the boot starts: with `subsys=a,b` on the kernel command line, the base profile
@@ -88,15 +139,18 @@ fn selection() -> u32 {
 }
 
 /// Report the started subsystems on COM1, one line: their names in the boot's order, and how many
-/// of the table's they are.
+/// of the table's they are; then, when there are any, the selected subsystems left for their first
+/// use (`, on demand: winsta,fonts`).
 #[cfg(target_arch = "x86")]
-fn report_subsystems(set: u32) {
-    crate::serial_println!(
-        "F2K: subsystems: {} ({} of {})",
-        subsys::Names(&subsys::SUBSYSTEMS, set),
-        set.count_ones(),
-        subsys::Subsystem::COUNT
-    );
+fn report_subsystems(started: u32, on_demand: u32) {
+    let names = subsys::Names(&subsys::SUBSYSTEMS, started);
+    let (count, of) = (started.count_ones(), subsys::Subsystem::COUNT);
+    if on_demand == 0 {
+        crate::serial_println!("F2K: subsystems: {names} ({count} of {of})");
+    } else {
+        let later = subsys::Names(&subsys::SUBSYSTEMS, on_demand);
+        crate::serial_println!("F2K: subsystems: {names} ({count} of {of}), on demand: {later}");
+    }
 }
 
 /// Start one subsystem: the descriptor's init. [`subsys::State::start`] calls it once, its
