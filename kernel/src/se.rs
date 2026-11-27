@@ -39,8 +39,8 @@ use crate::status::{NtStatus, STATUS_INVALID_PARAMETER};
 
 // The privilege side — the attributes, the well-known LUIDs and their public names, the
 // name<->LUID lookups, the single-privilege check, the adjustment and the default set — lives in
-// `sec_priv`; re-exported here where the token reads it.
-pub use crate::sec_priv::*;
+// `sec`; re-exported here where the token reads it.
+pub use crate::sec::*;
 
 /// A token's type (TOKEN_TYPE): a process's primary token, or a copy a thread impersonates with.
 pub const TOKEN_PRIMARY: u32 = 1;
@@ -289,7 +289,7 @@ impl TokenBody {
     /// Whether the token holds the privilege of public LUID `luid` and has it enabled: what a
     /// privilege check (SeSinglePrivilegeCheck) asks.
     pub fn enabled(&self, luid: u32) -> bool {
-        crate::sec_priv::held_enabled(&self.privileges, crate::sec_priv::luid(luid))
+        crate::sec::held_enabled(&self.privileges, crate::sec::luid(luid))
     }
 
     /// Apply `change` to the privileges, as NtAdjustPrivilegesToken does: each privilege whose
@@ -298,7 +298,7 @@ impl TokenBody {
     /// a change whose report would not fit makes no change at all: the error is the size the
     /// report takes. A change that changes something gives the token a new ModifiedId.
     pub fn adjust(&mut self, change: &Change, room: Option<u32>) -> Result<Adjusted, u32> {
-        let adjusted = crate::sec_priv::adjust(&mut self.privileges, change, room)?;
+        let adjusted = crate::sec::adjust(&mut self.privileges, change, room)?;
         if !adjusted.previous.is_empty() {
             self.modified = new_luid();
         }
