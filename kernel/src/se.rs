@@ -10,6 +10,11 @@
 //! the well-known ones an interactive administrator's logon holds and the logon's own SID, the
 //! default owner BUILTIN\Administrators, the default DACL granting it and SYSTEM everything
 //! ([`TokenBody::information`]). The machine's domain numbers are F2K's own (no SID prints them).
+//! The owner, the primary group and the default DACL are settable (a set of TokenOwner,
+//! TokenPrimaryGroup or TokenDefaultDacl, as is the session id with the TCB privilege held), each
+//! refused as Windows 2000 refuses it: STATUS_INVALID_OWNER, STATUS_INVALID_PRIMARY_GROUP,
+//! STATUS_INVALID_SID, STATUS_INVALID_ACL, STATUS_ALLOTTED_SPACE_EXCEEDED,
+//! STATUS_PRIVILEGE_NOT_HELD (see [`TokenBody`]'s set methods).
 //!
 //! The privileges are kept so that the calls a program makes before it shuts the machine down
 //! (OpenProcessToken, AdjustTokenPrivileges enabling SeShutdownPrivilege, GetTokenInformation)
@@ -27,7 +32,9 @@
 //! with the process; F2K makes it on demand, since nothing reads it before it is opened). The
 //! token names its process (see [`TokenBody::owner`]), as EPROCESS.Token names the token; the
 //! process's reference on it goes at the process's end (see `crate::ob`). NtDuplicateToken makes
-//! tokens of no process: a copy, primary or impersonation, of another ([`TokenBody::duplicate`]).
+//! tokens of no process: a copy, primary or impersonation, of another ([`TokenBody::duplicate`]) —
+//! an impersonation copy never at a level above its source's, a primary copy of an impersonation
+//! source only from impersonation level up (STATUS_BAD_IMPERSONATION_LEVEL otherwise).
 
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -35,12 +42,30 @@ use rtl::array_vec::ArrayVec;
 use rtl::nt::LuidAndAttributes;
 
 use crate::ob::ObjectId;
-use crate::status::{NtStatus, STATUS_INVALID_PARAMETER};
+use crate::status::{
+    NtStatus,
+    STATUS_BUFFER_TOO_SMALL,
+    STATUS_INFO_LENGTH_MISMATCH,
+    STATUS_INVALID_PARAMETER,
+};
 
 // The privilege side — the attributes, the well-known LUIDs and their public names, the
 // name<->LUID lookups, the single-privilege check, the adjustment and the default set — lives in
 // `sec`; re-exported here where the token reads it.
 pub use crate::sec::*;
+
+/// The token-set error codes the shared status table does not name (documented NTSTATUS values).
+pub const STATUS_INVALID_OWNER: NtStatus = NtStatus(0xC000_005A);
+/// An owner or primary group the token does not name, or may not name.
+pub const STATUS_INVALID_PRIMARY_GROUP: NtStatus = NtStatus(0xC000_005B);
+/// A malformed ACL.
+pub const STATUS_INVALID_ACL: NtStatus = NtStatus(0xC000_0077);
+/// A malformed SID.
+pub const STATUS_INVALID_SID: NtStatus = NtStatus(0xC000_0078);
+/// What a set asks for does not fit the token's dynamic part.
+pub const STATUS_ALLOTTED_SPACE_EXCEEDED: NtStatus = NtStatus(0xC000_0099);
+/// A duplicate's impersonation level the source token's does not allow.
+pub const STATUS_BAD_IMPERSONATION_LEVEL: NtStatus = NtStatus(0xC000_00A5);
 
 /// A token's type (TOKEN_TYPE): a process's primary token, or a copy a thread impersonates with.
 pub const TOKEN_PRIMARY: u32 = 1;
@@ -49,6 +74,9 @@ pub const TOKEN_IMPERSONATION: u32 = 2;
 /// The impersonation levels (SECURITY_IMPERSONATION_LEVEL), SecurityAnonymous to
 /// SecurityDelegation.
 pub const SECURITY_ANONYMOUS: u32 = 0;
+#[cfg_attr(not(test), allow(dead_code))]
+pub const SECURITY_IDENTIFICATION: u32 = 1;
+pub const SECURITY_IMPERSONATION: u32 = 2;
 pub const SECURITY_DELEGATION: u32 = 3;
 
 /// The locally unique ids F2K hands out (ExAllocateLocallyUniqueId's): from past the ones Windows
@@ -84,7 +112,7 @@ impl Sid {
     }
 
     /// Its bytes, onto `out`.
-    fn put(&self, out: &mut Reply) {
+    fn put(&self, out: &mut impl Put) {
         out.bytes(&[1, self.sub.len() as u8, 0, 0, 0, 0, 0, self.authority]);
         for &sub in self.sub {
             out.word(sub);
@@ -98,6 +126,13 @@ impl Sid {
         self.put(&mut mine);
         bytes.get(..self.size()) == Some(mine.as_slice())
     }
+}
+
+/// A SID's bytes, in a fresh buffer.
+pub(crate) fn sid_bytes(sid: &Sid) -> SidBytes {
+    let mut out = SidBytes::new();
+    sid.put(&mut out);
+    out
 }
 
 /// The machine's account domain (S-1-5-21-a-b-c), F2K's own numbers.
@@ -181,9 +216,26 @@ const fn dacl_size() -> usize {
     8 + (8 + ADMINISTRATORS.size()) + (8 + LOCAL_SYSTEM.size())
 }
 
-/// What a token's statistics say it is charged for its dynamic part, and how much of it the
-/// primary group and the default DACL leave.
-const DYNAMIC_CHARGED: u32 = 500;
+/// The default DACL a new token is made with, as bytes: an ACL of revision 2 holding two
+/// GENERIC_ALL allow ACEs, BUILTIN\Administrators' and SYSTEM's.
+fn default_dacl_bytes() -> AclBytes {
+    let mut out = AclBytes::new();
+    out.bytes(&[2, 0]);
+    out.bytes(&(dacl_size() as u16).to_le_bytes());
+    out.bytes(&(DEFAULT_DACL.len() as u16).to_le_bytes());
+    out.bytes(&[0, 0]);
+    for sid in DEFAULT_DACL {
+        out.bytes(&[0, 0]);
+        out.bytes(&((8 + sid.size()) as u16).to_le_bytes());
+        out.word(GENERIC_ALL);
+        sid.put(&mut out);
+    }
+    out
+}
+
+/// What a token's statistics say it is charged for its dynamic part (its default DACL and
+/// primary group live in it), and how much of it they leave.
+pub(crate) const DYNAMIC_CHARGED: u32 = 500;
 
 /// The token information classes F2K answers (TOKEN_INFORMATION_CLASS's).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -206,21 +258,41 @@ pub enum Class {
 /// pointers absolute (the buffer's address added), then what they point at.
 pub type Reply = ArrayVec<u8, 512>;
 
+/// A SID's bytes as a token holds one: up to the longest SID (its header and 15 sub-authorities).
+pub type SidBytes = ArrayVec<u8, { crate::sec::MAX_LENGTH }>;
+
+/// The default DACL's bytes as a token holds one: within the token's dynamic part.
+pub type AclBytes = ArrayVec<u8, { DYNAMIC_CHARGED as usize }>;
+
 /// Writing an answer's parts.
 trait Put {
     fn bytes(&mut self, bytes: &[u8]);
     fn word(&mut self, word: u32);
 }
 
-impl Put for Reply {
+impl<const N: usize> Put for ArrayVec<u8, N> {
     fn bytes(&mut self, bytes: &[u8]) {
         self.try_extend_from_slice(bytes)
-            .expect("a token's answer fits its reply");
+            .expect("the bytes fit their buffer");
     }
 
     fn word(&mut self, word: u32) {
         self.bytes(&word.to_le_bytes());
     }
+}
+
+/// The size-then-buffer protocol over an answer of `size` bytes of `class` into a buffer of
+/// `buffer_length` bytes: TokenSessionId wants exactly its size (STATUS_INFO_LENGTH_MISMATCH, the
+/// caller's ReturnLength untouched); a shorter buffer is STATUS_BUFFER_TOO_SMALL and the caller
+/// reports `size` in ReturnLength, nothing written.
+pub fn fits(class: Class, size: u32, buffer_length: u32) -> Result<(), NtStatus> {
+    if class == Class::SessionId && buffer_length != size {
+        return Err(STATUS_INFO_LENGTH_MISMATCH);
+    }
+    if buffer_length < size {
+        return Err(STATUS_BUFFER_TOO_SMALL);
+    }
+    Ok(())
 }
 
 /// A token object's body.
@@ -238,11 +310,20 @@ pub struct TokenBody {
     /// Its TokenId, and its ModifiedId: a new one at each change of its privileges.
     id: u32,
     modified: u32,
+    /// Its session id (TokenSessionId): the console's 0 until a set with the TCB privilege.
+    pub(crate) session: u32,
+    /// Its user, its default owner and its primary group, as SID bytes (the owner and the
+    /// primary group are settable).
+    pub(crate) user: SidBytes,
+    pub(crate) owner_sid: SidBytes,
+    pub(crate) primary_group: SidBytes,
+    /// Its default DACL, as bytes; empty when it has none (a NULL DACL).
+    pub(crate) default_dacl: AclBytes,
 }
 
 impl TokenBody {
     /// A record holding no token yet (a pool's fresh record).
-    pub const fn none() -> Self {
+    pub fn none() -> Self {
         TokenBody {
             owner: None,
             privileges: DEFAULT_PRIVILEGES,
@@ -250,24 +331,51 @@ impl TokenBody {
             level: SECURITY_ANONYMOUS,
             id: 0,
             modified: 0,
+            session: 0,
+            user: SidBytes::new(),
+            owner_sid: SidBytes::new(),
+            primary_group: SidBytes::new(),
+            default_dacl: AclBytes::new(),
         }
     }
 
-    /// A new primary token for the process `owner`, its privileges in their default state.
+    /// A new primary token for the process `owner`, its privileges in their default state and
+    /// its defaults the logon's (the user, BUILTIN\Administrators as owner, the account domain's
+    /// "None" as primary group, the Administrators-and-SYSTEM DACL).
     pub fn of(owner: ObjectId) -> Self {
         let id = new_luid();
         TokenBody {
             owner: Some(owner),
             id,
             modified: id,
+            user: sid_bytes(&USER),
+            owner_sid: sid_bytes(&ADMINISTRATORS),
+            primary_group: sid_bytes(&PRIMARY_GROUP),
+            default_dacl: default_dacl_bytes(),
             ..TokenBody::none()
         }
     }
 
     /// A copy of this token (NtDuplicateToken's), of type `kind` (an impersonation token at
-    /// `level`): a new TokenId, of no process, the rest as this one's.
-    pub fn duplicate(&self, kind: u32, level: u32) -> Self {
-        TokenBody {
+    /// `level`): a new TokenId, of no process, the rest — the logon id, the ModifiedId, the
+    /// defaults, the session — as this one's. The level rules: an impersonation copy's level is
+    /// one of the four, and never above an impersonation source's own; a primary copy of an
+    /// impersonation source needs the source at impersonation level or above
+    /// (STATUS_BAD_IMPERSONATION_LEVEL otherwise). A primary copy has no level.
+    pub fn duplicate(&self, kind: u32, level: u32) -> Result<Self, NtStatus> {
+        if kind == TOKEN_IMPERSONATION && level > SECURITY_DELEGATION {
+            return Err(STATUS_BAD_IMPERSONATION_LEVEL);
+        }
+        if self.kind == TOKEN_IMPERSONATION && level > self.level {
+            return Err(STATUS_BAD_IMPERSONATION_LEVEL);
+        }
+        if self.kind == TOKEN_IMPERSONATION
+            && kind == TOKEN_PRIMARY
+            && self.level < SECURITY_IMPERSONATION
+        {
+            return Err(STATUS_BAD_IMPERSONATION_LEVEL);
+        }
+        Ok(TokenBody {
             owner: None,
             kind,
             level: if kind == TOKEN_IMPERSONATION {
@@ -277,7 +385,7 @@ impl TokenBody {
             },
             id: new_luid(),
             ..*self
-        }
+        })
     }
 
     /// The privileges and their state, in the token's order.
@@ -315,7 +423,7 @@ impl TokenBody {
             Class::User => {
                 out.word(base + 8);
                 out.word(0);
-                USER.put(&mut out);
+                out.bytes(self.user.as_slice());
             }
             // TOKEN_GROUPS: the count, a SID_AND_ATTRIBUTES each, the SIDs in their order.
             Class::Groups => {
@@ -343,24 +451,19 @@ impl TokenBody {
             Class::Owner | Class::PrimaryGroup => {
                 out.word(base + 4);
                 let sid = if class == Class::Owner {
-                    ADMINISTRATORS
+                    &self.owner_sid
                 } else {
-                    PRIMARY_GROUP
+                    &self.primary_group
                 };
-                sid.put(&mut out);
+                out.bytes(sid.as_slice());
             }
-            // TOKEN_DEFAULT_DACL: the ACL's address, the ACL (revision 2) and its ACEs.
+            // TOKEN_DEFAULT_DACL: the ACL's address, the ACL; a NULL DACL's pointer is 0.
             Class::DefaultDacl => {
-                out.word(base + 4);
-                out.bytes(&[2, 0]);
-                out.bytes(&(dacl_size() as u16).to_le_bytes());
-                out.bytes(&(DEFAULT_DACL.len() as u16).to_le_bytes());
-                out.bytes(&[0, 0]);
-                for sid in DEFAULT_DACL {
-                    out.bytes(&[0, 0]);
-                    out.bytes(&((8 + sid.size()) as u16).to_le_bytes());
-                    out.word(GENERIC_ALL);
-                    sid.put(&mut out);
+                if self.default_dacl.is_empty() {
+                    out.word(0);
+                } else {
+                    out.word(base + 4);
+                    out.bytes(self.default_dacl.as_slice());
                 }
             }
             // TOKEN_SOURCE: the source's name and id.
@@ -387,7 +490,7 @@ impl TokenBody {
                 out.word(self.kind);
                 out.word(self.level);
                 out.word(DYNAMIC_CHARGED);
-                out.word(DYNAMIC_CHARGED - (dacl_size() + PRIMARY_GROUP.size()) as u32);
+                out.word(self.dynamic_available() as u32);
                 out.word(GROUPS.len() as u32);
                 out.word(HELD as u32);
                 out.word(self.modified);
@@ -395,8 +498,8 @@ impl TokenBody {
             }
             // TOKEN_GROUPS of no group: the token is not restricted.
             Class::RestrictedSids => out.word(0),
-            // The session: the console's, 0.
-            Class::SessionId => out.word(0),
+            // The session id.
+            Class::SessionId => out.word(self.session),
         }
         Ok(out)
     }
@@ -723,7 +826,7 @@ mod tests {
         let after = answer(&token, Class::Statistics);
         assert_eq!(word(&before, 0), word(&after, 0));
         assert_ne!(word(&before, 48), word(&after, 48));
-        let copy = token.duplicate(TOKEN_IMPERSONATION, 2);
+        let copy = token.duplicate(TOKEN_IMPERSONATION, 2).unwrap();
         assert_eq!(answer(&copy, Class::Type).as_slice(), 2u32.to_le_bytes());
         assert_eq!(
             answer(&copy, Class::ImpersonationLevel).as_slice(),
@@ -750,5 +853,117 @@ mod tests {
             .adjust(&set(&[(SE_CHANGE_NOTIFY_PRIVILEGE, 0)]), None)
             .unwrap();
         assert_eq!(attributes_of(&token, SE_CHANGE_NOTIFY_PRIVILEGE), Some(1));
+    }
+
+    /// The size-then-buffer protocol over every class: an answer's size fits exactly and with room
+    /// to spare, a byte short is STATUS_BUFFER_TOO_SMALL (TokenSessionId instead wants its size
+    /// exactly, STATUS_INFO_LENGTH_MISMATCH either way), and the impersonation level of a primary
+    /// token is refused before any size is asked.
+    #[test]
+    fn the_size_then_buffer_protocol() {
+        let token = token();
+        for class in [
+            Class::User,
+            Class::Groups,
+            Class::Privileges,
+            Class::Owner,
+            Class::PrimaryGroup,
+            Class::DefaultDacl,
+            Class::Source,
+            Class::Type,
+            Class::Statistics,
+            Class::RestrictedSids,
+            Class::SessionId,
+        ] {
+            let size = answer(&token, class).len() as u32;
+            assert!(fits(class, size, size).is_ok(), "{class:?}");
+            if class == Class::SessionId {
+                assert_eq!(fits(class, size, size - 1), Err(STATUS_INFO_LENGTH_MISMATCH));
+                assert_eq!(fits(class, size, size + 1), Err(STATUS_INFO_LENGTH_MISMATCH));
+            } else {
+                assert!(fits(class, size, size + 64).is_ok(), "{class:?}");
+                assert_eq!(
+                    fits(class, size, size - 1),
+                    Err(STATUS_BUFFER_TOO_SMALL),
+                    "{class:?}"
+                );
+            }
+        }
+        assert_eq!(
+            token.information(Class::ImpersonationLevel, BASE),
+            Err(STATUS_INVALID_PARAMETER)
+        );
+        let copy = token
+            .duplicate(TOKEN_IMPERSONATION, SECURITY_IMPERSONATION)
+            .unwrap();
+        assert_eq!(
+            answer(&copy, Class::ImpersonationLevel).as_slice(),
+            SECURITY_IMPERSONATION.to_le_bytes()
+        );
+        assert!(fits(Class::ImpersonationLevel, 4, 4).is_ok());
+        assert_eq!(
+            fits(Class::ImpersonationLevel, 4, 3),
+            Err(STATUS_BUFFER_TOO_SMALL)
+        );
+    }
+
+    /// The duplicate's rules: an impersonation copy's level is one of the four, and never above an
+    /// impersonation source's own; a primary copy of an impersonation source needs the source at
+    /// impersonation level or above; the copy gets a new TokenId and keeps the source's
+    /// ModifiedId, logon id and defaults.
+    #[test]
+    fn the_duplicate_rules() {
+        let mut token = token();
+        token
+            .adjust(&set(&[(SE_SHUTDOWN_PRIVILEGE, SE_PRIVILEGE_ENABLED)]), None)
+            .unwrap();
+        let source = answer(&token, Class::Statistics);
+        assert_eq!(
+            token.duplicate(TOKEN_IMPERSONATION, 4).err(),
+            Some(STATUS_BAD_IMPERSONATION_LEVEL)
+        );
+        let copy = token
+            .duplicate(TOKEN_IMPERSONATION, SECURITY_DELEGATION)
+            .unwrap();
+        assert_eq!(
+            answer(&copy, Class::Type).as_slice(),
+            TOKEN_IMPERSONATION.to_le_bytes()
+        );
+        assert_eq!(
+            answer(&copy, Class::ImpersonationLevel).as_slice(),
+            SECURITY_DELEGATION.to_le_bytes()
+        );
+        let stats = answer(&copy, Class::Statistics);
+        assert_ne!(word(&stats, 0), word(&source, 0), "a new TokenId");
+        assert_eq!(word(&stats, 8), LOGON_ID, "the logon id copied");
+        assert_eq!(word(&stats, 48), word(&source, 48), "the ModifiedId copied");
+        let anon = token
+            .duplicate(TOKEN_IMPERSONATION, SECURITY_ANONYMOUS)
+            .unwrap();
+        assert_eq!(
+            anon.duplicate(TOKEN_IMPERSONATION, SECURITY_IMPERSONATION).err(),
+            Some(STATUS_BAD_IMPERSONATION_LEVEL)
+        );
+        assert_eq!(
+            anon.duplicate(TOKEN_PRIMARY, SECURITY_ANONYMOUS).err(),
+            Some(STATUS_BAD_IMPERSONATION_LEVEL),
+            "a primary copy of an identification-level source"
+        );
+        let imp = token
+            .duplicate(TOKEN_IMPERSONATION, SECURITY_IMPERSONATION)
+            .unwrap();
+        assert_eq!(
+            imp.duplicate(TOKEN_IMPERSONATION, SECURITY_DELEGATION).err(),
+            Some(STATUS_BAD_IMPERSONATION_LEVEL)
+        );
+        let primary = imp.duplicate(TOKEN_PRIMARY, SECURITY_ANONYMOUS).unwrap();
+        assert_eq!(
+            answer(&primary, Class::Type).as_slice(),
+            TOKEN_PRIMARY.to_le_bytes()
+        );
+        assert_eq!(
+            primary.information(Class::ImpersonationLevel, BASE),
+            Err(STATUS_INVALID_PARAMETER)
+        );
     }
 }
