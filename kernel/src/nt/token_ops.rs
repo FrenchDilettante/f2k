@@ -18,35 +18,29 @@ use crate::status::*;
 
 /// The right a groups adjustment needs (a specific right, carried by TOKEN_WRITE and
 /// TOKEN_ALL_ACCESS).
-#[cfg_attr(not(test), allow(dead_code))] // wired to its service's export when that lands
 pub const TOKEN_ADJUST_GROUPS: u32 = 0x0040;
 
 /// NtFilterToken's flags: disable every group, and delete every privilege but the traverse one.
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)] // read with the lists when the filter's flags are honoured
 pub const DISABLE_ALL_GROUPS: u32 = 0x0001;
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 pub const DISABLE_MAX_PRIVILEGE: u32 = 0x0002;
 
 /// An attempt to disable a mandatory group (the whole adjustment is refused, nothing changes).
-#[cfg_attr(not(test), allow(dead_code))]
 pub const STATUS_CANT_DISABLE_MANDATORY: NtStatus = NtStatus(0xC000_005D);
 /// An attempt to enable a deny-only group.
-#[cfg_attr(not(test), allow(dead_code))]
 pub const STATUS_CANT_ENABLE_DENY_ONLY: NtStatus = NtStatus(0xC000_02B3);
 
 /// The token's group list's slots: one plan entry per group.
-#[cfg_attr(not(test), allow(dead_code))]
 const GROUP_SLOTS: usize = se::GROUPS.len();
 
 /// Round `x` up to a dword.
-#[cfg_attr(not(test), allow(dead_code))]
 const fn align4(x: u32) -> u32 {
     (x + 3) & !3
 }
 
 /// Whether a groups adjustment has the NewState it needs: STATUS_INVALID_PARAMETER when
 /// ResetToDefault is false and NewState is absent — answered before the handle is looked at.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn new_state_required(reset_to_default: bool, new_state_present: bool) -> Result<(), NtStatus> {
     if !reset_to_default && !new_state_present {
         return Err(STATUS_INVALID_PARAMETER);
@@ -57,7 +51,6 @@ pub(crate) fn new_state_required(reset_to_default: bool, new_state_present: bool
 /// A TOKEN_GROUPS list (a NewState) folded against the token's group list: for each group, the
 /// enabled bit the first entry naming it asks for (None when no entry names it), how many of
 /// the token's groups the entries name, and the list's own count.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug)]
 pub(crate) struct GroupsPlan {
     wanted: [Option<bool>; GROUP_SLOTS],
@@ -65,7 +58,6 @@ pub(crate) struct GroupsPlan {
     count: u32,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl GroupsPlan {
     /// An empty plan, its count set once the list has been read.
     pub fn new() -> Self {
@@ -105,7 +97,6 @@ impl GroupsPlan {
 /// attributes before the change), in the token's group order, whether the list named a group
 /// the token does not hold, and the refusal that stops the walk (a mandatory or deny-only
 /// group being changed), if any.
-#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Clone, Debug)]
 pub(crate) struct GroupAdjustment {
     previous: [Option<(se::SidBytes, u32)>; GROUP_SLOTS],
@@ -114,7 +105,6 @@ pub(crate) struct GroupAdjustment {
     error: Option<NtStatus>,
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 impl GroupAdjustment {
     fn empty(not_all_assigned: bool) -> Self {
         GroupAdjustment {
@@ -177,7 +167,6 @@ impl GroupAdjustment {
 /// to the enabled bit that entry asks for. A change to a mandatory group is refused
 /// (STATUS_CANT_DISABLE_MANDATORY), to a deny-only group STATUS_CANT_ENABLE_DENY_ONLY, the walk
 /// stopping at the first refusal.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn plan_groups(
     reset_to_default: bool,
     groups: &[(se::Sid, u32)],
@@ -214,7 +203,6 @@ pub(crate) fn plan_groups(
 /// The token NtCreateToken makes: a copy of the process's token `source`, of type `kind` at
 /// `level` (an impersonation token needs a level; one past SecurityDelegation, or another
 /// type than the two, is refused before anything is made).
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn created_body(
     source: &se::TokenBody,
     kind: u32,
@@ -237,18 +225,392 @@ pub(crate) fn created_body(
 /// no process, a new TokenId. F2K's token body carries no per-token group or restricted-SID
 /// state to remove and holds a fixed privilege set, so the flags and the lists (validated as
 /// they are read) leave the copy as the source's.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn filtered_body(source: &se::TokenBody) -> Result<se::TokenBody, NtStatus> {
     source.duplicate(source.kind, source.level)
 }
 
 /// A RestrictedSids entry's attributes must be zero (STATUS_INVALID_PARAMETER otherwise).
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn restricted_attributes_ok(attributes: u32) -> Result<(), NtStatus> {
     if attributes == 0 {
         Ok(())
     } else {
         Err(STATUS_INVALID_PARAMETER)
+    }
+}
+
+// Wired to the services' exports when ntdll's spec flips them to syscall impls.
+#[cfg(target_arch = "x86")]
+#[allow(unused_imports)]
+pub use services::*;
+
+/// The services themselves, on the calling process's handles and the processes' tokens.
+#[cfg(target_arch = "x86")]
+mod services {
+    use rtl::nt::access::{TOKEN_DUPLICATE, TOKEN_QUERY};
+    use rtl::nt::LuidAndAttributes;
+    use rtl::pod::Pod;
+
+    use super::super::call::{calling_process, Handle, NtCall, NtResult, UserAddr, UserPtr};
+    use super::super::object::{
+        is_console_handle,
+        CURRENT_PROCESS,
+        CURRENT_THREAD,
+        THREAD_QUERY_INFORMATION,
+    };
+    use super::super::thread::thread_of;
+    use super::super::token::granted;
+    use super::*;
+    use crate::level::Dispatch;
+    use crate::ob::{self, ObRef, ObjectType};
+    use crate::sched::DISPATCHER;
+    use crate::sec::sid::is_valid;
+
+    /// A caller's list copied in at a time, through a buffer on the stack (32 entries).
+    const CHUNK: usize = 32;
+
+    /// The token `handle` names in the calling process, its open granted `needed`, referenced
+    /// for the service's scope, with the handle's granted access: STATUS_INVALID_HANDLE for a
+    /// handle naming nothing (a console handle included), STATUS_OBJECT_TYPE_MISMATCH for
+    /// another kind of object (the process and thread pseudo-handles among them),
+    /// STATUS_ACCESS_DENIED for an open without the rights.
+    fn token_of(handle: u32, needed: u32) -> Result<(ObRef, u32), NtStatus> {
+        if handle == CURRENT_PROCESS || handle == CURRENT_THREAD {
+            return Err(STATUS_OBJECT_TYPE_MISMATCH);
+        }
+        if is_console_handle(handle) {
+            return Err(STATUS_INVALID_HANDLE);
+        }
+        let entry = calling_process()
+            .lookup_handle(handle)
+            .ok_or(STATUS_INVALID_HANDLE)?;
+        let id = entry.object_id().ok_or(STATUS_INVALID_HANDLE)?;
+        if id.kind != ObjectType::Token {
+            return Err(STATUS_OBJECT_TYPE_MISMATCH);
+        }
+        if entry.access & needed != needed {
+            return Err(STATUS_ACCESS_DENIED);
+        }
+        let access = entry.access;
+        Ok((ob::reference(id).ok_or(STATUS_INVALID_HANDLE)?, access))
+    }
+
+    /// The SID at the caller's address `ptr` (a list entry's SID pointer), read and validated:
+    /// a null or unmapped one faults (STATUS_ACCESS_VIOLATION), a malformed one is
+    /// STATUS_INVALID_SID.
+    fn read_sid(ptr: u32) -> Result<se::SidBytes, NtStatus> {
+        if ptr == 0 {
+            return Err(STATUS_ACCESS_VIOLATION);
+        }
+        let at = UserAddr(ptr);
+        let mut header = [0u8; 2];
+        at.read(&mut header)?;
+        if header[0] & 0x0F != crate::sec::REVISION
+            || usize::from(header[1]) > crate::sec::MAX_SUB_AUTHORITIES
+        {
+            return Err(se::STATUS_INVALID_SID);
+        }
+        let mut sid = se::SidBytes::new();
+        let length = crate::sec::length_required(usize::from(header[1]));
+        sid.try_extend_default(length)
+            .map_err(|_| se::STATUS_INVALID_SID)?;
+        at.read(sid.as_mut_slice())?;
+        if !is_valid(sid.as_slice()) {
+            return Err(se::STATUS_INVALID_SID);
+        }
+        Ok(sid)
+    }
+
+    /// A TOKEN_GROUPS at the caller's address `at` read whole: its count, then its entries (a
+    /// SID pointer and attributes each) in chunks, each SID read and validated, each entry
+    /// handed to `each` (which may refuse it). The count it took.
+    fn read_group_entries(
+        at: UserAddr,
+        mut each: impl FnMut(se::SidBytes, u32) -> Result<(), NtStatus>,
+    ) -> Result<u32, NtStatus> {
+        let count = at.cast::<u32>().read()?;
+        let mut buffer = [0u8; CHUNK * 8];
+        let mut cursor = at.offset(4);
+        let mut left = count as usize;
+        while left > 0 {
+            let take = left.min(CHUNK);
+            cursor.read(&mut buffer[..take * 8])?;
+            cursor = cursor.offset((take * 8) as u32);
+            for entry in buffer[..take * 8].chunks_exact(8) {
+                let sid = read_sid(u32::from_le_bytes(entry[..4].try_into().unwrap()))?;
+                each(sid, u32::from_le_bytes(entry[4..8].try_into().unwrap()))?;
+            }
+            left -= take;
+        }
+        Ok(count)
+    }
+
+    /// A TOKEN_PRIVILEGES at the caller's address `at` read whole (its count, then its entries
+    /// in chunks): the copy is the capture, there is nothing to validate in a LUID. The count.
+    fn read_privilege_entries(at: UserAddr) -> Result<u32, NtStatus> {
+        let count = at.cast::<u32>().read()?;
+        let mut buffer = [LuidAndAttributes::default(); CHUNK];
+        let mut cursor = at.offset(4);
+        let mut left = count as usize;
+        while left > 0 {
+            let take = left.min(CHUNK);
+            let bytes =
+                &mut buffer.as_bytes_mut()[..take * core::mem::size_of::<LuidAndAttributes>()];
+            cursor.read(bytes)?;
+            cursor = cursor.offset(bytes.len() as u32);
+            left -= take;
+        }
+        Ok(count)
+    }
+
+    /// An OBJECT_ATTRIBUTES' impersonation level (its SECURITY_QUALITY_OF_SERVICE's dword at
+    /// offset 4; None for no attributes, no quality of service, or one whose length is neither
+    /// the plain nor the advanced one — that length is STATUS_INVALID_PARAMETER) and whether it
+    /// asks for an inheritable handle.
+    fn quality_of_service(attributes: UserAddr) -> Result<(Option<u32>, bool), NtStatus> {
+        if attributes.is_null() {
+            return Ok((None, false));
+        }
+        let header = attributes.cast::<rtl::nt::ObjectAttributes<u32>>().read()?;
+        let inherit = header.attributes & super::super::attributes::OBJ_INHERIT != 0;
+        let quality = UserAddr(header.security_quality_of_service);
+        if quality.is_null() {
+            return Ok((None, inherit));
+        }
+        // The plain and the advanced quality of service's length, on the target's 32 bits.
+        const QOS: u32 = 12;
+        const ADVANCED_QOS: u32 = 20;
+        let length = quality.cast::<u32>().read()?;
+        if length != QOS && length != ADVANCED_QOS {
+            return Err(STATUS_INVALID_PARAMETER);
+        }
+        Ok((Some(quality.offset(4).cast::<u32>().read()?), inherit))
+    }
+
+    /// NtAdjustGroupsToken: the token's groups moved as NewState says, or all reset to their
+    /// defaults (ResetToDefault, NewState then ignored). A NULL NewState without ResetToDefault
+    /// is STATUS_INVALID_PARAMETER, before the handle is looked at. The token's groups are the
+    /// logon's fixed set, so the adjustment validates the list and reports what it would change
+    /// — with PreviousState, the previous state of each changed group (a TOKEN_GROUPS) and its
+    /// size in ReturnLength, written even when the call then fails; a PreviousState of
+    /// BufferLength bytes too short changes nothing: STATUS_BUFFER_TOO_SMALL, the size it takes
+    /// in ReturnLength. Changing a mandatory group is STATUS_CANT_DISABLE_MANDATORY, a deny-only
+    /// one STATUS_CANT_ENABLE_DENY_ONLY, and a group the token does not hold is not assigned
+    /// (STATUS_NOT_ALL_ASSIGNED, a success). TOKEN_ADJUST_GROUPS is needed, with TOKEN_QUERY
+    /// when PreviousState is given.
+    #[cfg_attr(not(test), allow(dead_code))] // wired to its export when the spec flips
+    pub fn adjust_groups_token(
+        _: &mut NtCall,
+        handle: Handle,
+        reset_to_default: bool,
+        new_state: UserAddr,
+        buffer_length: u32,
+        previous_state: UserAddr,
+        return_length: UserPtr<u32>,
+    ) -> NtResult {
+        new_state_required(reset_to_default, !new_state.is_null())?;
+        if !reset_to_default {
+            new_state.probe(4)?;
+        }
+        let reported = !previous_state.is_null();
+        if reported {
+            previous_state.probe(buffer_length)?;
+            if return_length.is_null() {
+                return Err(STATUS_ACCESS_VIOLATION);
+            }
+            return_length.addr().probe(4)?;
+        }
+        let mut plan = GroupsPlan::new();
+        if !reset_to_default {
+            let count = read_group_entries(new_state, |sid, attributes| {
+                plan.add(&se::GROUPS, sid.as_slice(), attributes);
+                Ok(())
+            })?;
+            plan.set_count(count);
+        }
+        let needed = TOKEN_ADJUST_GROUPS | if reported { TOKEN_QUERY } else { 0 };
+        let (token, _) = token_of(handle.raw(), needed)?;
+        drop(token);
+        let adjustment = plan_groups(reset_to_default, &se::GROUPS, &plan);
+        if reported {
+            let size = adjustment.report_size();
+            return_length.write(size)?;
+            adjustment.status()?;
+            if size > buffer_length {
+                return Err(STATUS_BUFFER_TOO_SMALL);
+            }
+            previous_state
+                .cast::<u32>()
+                .write(adjustment.changed() as u32)?;
+            for (index, (at, attributes, sid)) in
+                adjustment.entries(previous_state.raw()).enumerate()
+            {
+                previous_state
+                    .offset(4 + 8 * index as u32)
+                    .cast::<u32>()
+                    .write(at)?;
+                previous_state
+                    .offset(8 + 8 * index as u32)
+                    .cast::<u32>()
+                    .write(attributes)?;
+                UserAddr(at).write(sid.as_slice())?;
+            }
+        } else {
+            adjustment.status()?;
+        }
+        if adjustment.not_all_assigned() {
+            Ok(STATUS_NOT_ALL_ASSIGNED)
+        } else {
+            Ok(STATUS_SUCCESS)
+        }
+    }
+
+    /// NtCreateToken: a new token of the calling process's shape — a copy of its token, of the
+    /// type `kind` asked for (another is STATUS_INVALID_PARAMETER) at the ObjectAttributes'
+    /// impersonation level for an impersonation one (none there is
+    /// STATUS_BAD_IMPERSONATION_LEVEL, as is a level past SecurityDelegation) — its handle
+    /// granted the rights asked for (none at all is STATUS_ACCESS_DENIED) into TokenHandle,
+    /// inheritable when the attributes say so. The content pointers (the user, groups,
+    /// privileges, owner, primary group, default DACL, source) are not read: F2K's created
+    /// token is the process's shape.
+    #[cfg_attr(not(test), allow(dead_code))] // wired to its export when the spec flips
+    pub fn create_token(
+        call: &mut NtCall,
+        slot: UserPtr<u32>,
+        desired: u32,
+        attributes: UserAddr,
+        kind: u32,
+        _authentication_id: UserAddr,
+        _expiration_time: UserAddr,
+        _user: UserAddr,
+        _groups: UserAddr,
+        _privileges: UserAddr,
+        _owner: UserAddr,
+        _primary_group: UserAddr,
+        _default_dacl: UserAddr,
+        _token_source: UserAddr,
+    ) -> NtResult {
+        if slot.is_null() {
+            return Err(STATUS_ACCESS_VIOLATION);
+        }
+        slot.addr().probe(4)?;
+        let (level, inherit) = quality_of_service(attributes)?;
+        let access = granted(desired);
+        if access == 0 {
+            return Err(STATUS_ACCESS_DENIED);
+        }
+        let caller = call.process();
+        let source = ob::locked(|directory| {
+            directory
+                .process_token(caller.object())
+                .and_then(|id| directory.token(id).copied())
+        })
+        .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+        let body = created_body(&source, kind, level)?;
+        let made = ob::locked(|directory| directory.create_token(body))
+            .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+        let handle = ob::publish(caller, made, access, inherit)
+            .ok_or(STATUS_INSUFFICIENT_RESOURCES)?
+            .get();
+        if slot.write(handle).is_err() {
+            caller.close_handle(handle);
+            return Err(STATUS_ACCESS_VIOLATION);
+        }
+        Ok(STATUS_SUCCESS)
+    }
+
+    /// NtFilterToken: a new token, a copy of the one `existing` names (opened with
+    /// TOKEN_DUPLICATE), its handle granted the existing handle's access, into NewTokenHandle.
+    /// The lists are read and validated as they are captured (a malformed SID is
+    /// STATUS_INVALID_SID, a restricted SID with attributes STATUS_INVALID_PARAMETER); with
+    /// nothing disabled or restricted — the flags are 0 and the lists NULL — the copy is the
+    /// source whole.
+    #[cfg_attr(not(test), allow(dead_code))] // wired to its export when the spec flips
+    pub fn filter_token(
+        call: &mut NtCall,
+        existing: Handle,
+        _flags: u32,
+        sids_to_disable: UserAddr,
+        privileges_to_delete: UserAddr,
+        restricted_sids: UserAddr,
+        slot: UserPtr<u32>,
+    ) -> NtResult {
+        if slot.is_null() {
+            return Err(STATUS_ACCESS_VIOLATION);
+        }
+        slot.addr().probe(4)?;
+        if !sids_to_disable.is_null() {
+            read_group_entries(sids_to_disable, |_, _| Ok(()))?;
+        }
+        if !privileges_to_delete.is_null() {
+            read_privilege_entries(privileges_to_delete)?;
+        }
+        if !restricted_sids.is_null() {
+            read_group_entries(restricted_sids, |_, attributes| {
+                restricted_attributes_ok(attributes)
+            })?;
+        }
+        let (token, access) = token_of(existing.raw(), TOKEN_DUPLICATE)?;
+        let source = ob::locked(|directory| directory.token(token.id()).copied())
+            .ok_or(STATUS_INVALID_HANDLE)?;
+        drop(token);
+        let filtered = filtered_body(&source)?;
+        let made = ob::locked(|directory| directory.create_token(filtered))
+            .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+        let caller = call.process();
+        let handle = ob::publish(caller, made, access, false)
+            .ok_or(STATUS_INSUFFICIENT_RESOURCES)?
+            .get();
+        if slot.write(handle).is_err() {
+            caller.close_handle(handle);
+            return Err(STATUS_ACCESS_VIOLATION);
+        }
+        Ok(STATUS_SUCCESS)
+    }
+
+    /// NtOpenThreadToken: a handle to the token of the thread `thread` names (opened with
+    /// THREAD_QUERY_INFORMATION), granted the rights asked for (none at all is
+    /// STATUS_ACCESS_DENIED), into TokenHandle. F2K's threads never impersonate, so the
+    /// thread's token is its process's; OpenAsSelf makes no difference.
+    #[cfg_attr(not(test), allow(dead_code))] // wired to its export when the spec flips
+    pub fn open_thread_token(
+        call: &mut NtCall,
+        thread: Handle,
+        desired: u32,
+        _open_as_self: bool,
+        slot: UserPtr<u32>,
+    ) -> NtResult {
+        if slot.is_null() {
+            return Err(STATUS_ACCESS_VIOLATION);
+        }
+        slot.addr().probe(4)?;
+        let thread_ref = thread_of(thread, THREAD_QUERY_INFORMATION)?;
+        let process = {
+            let mut dispatch = call.passive().raise::<Dispatch>();
+            let dispatcher = DISPATCHER.get(&mut dispatch);
+            dispatcher
+                .thread(thread_ref.id)
+                .process()
+                .pool_index()
+                .map(crate::process::pool::record)
+                .expect("a thread object's process is a pool record")
+                .object()
+        };
+        drop(thread_ref);
+        let access = granted(desired);
+        if access == 0 {
+            return Err(STATUS_ACCESS_DENIED);
+        }
+        let token = ob::reference_process_token(process).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+        let caller = call.process();
+        let handle = ob::open(caller, token.id(), access, false)
+            .ok_or(STATUS_INSUFFICIENT_RESOURCES)?
+            .get();
+        drop(token);
+        if slot.write(handle).is_err() {
+            caller.close_handle(handle);
+            return Err(STATUS_ACCESS_VIOLATION);
+        }
+        Ok(STATUS_SUCCESS)
     }
 }
 
