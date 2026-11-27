@@ -439,14 +439,18 @@ mod services {
     }
 
     /// A new key object for `key`, its handle (with `desired`'s rights) into `slot`; a slot that
-    /// faults takes the handle back (STATUS_ACCESS_VIOLATION).
+    /// faults takes the handle back (STATUS_ACCESS_VIOLATION). The open's grant is checked against
+    /// the key object's descriptor — the key's own when one was set on it — and a denial answers
+    /// its status (STATUS_ACCESS_DENIED), not a full pool's.
     fn publish(slot: UserPtr<u32>, key: Key, desired: u32, inherit: bool) -> Result<u32, NtStatus> {
         let id = ob::locked(|directory| directory.create_key(KeyBody::of(key)))
             .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
         let process = calling_process();
-        let handle = ob::publish(process, id, granted(desired), inherit)
-            .ok_or(STATUS_INSUFFICIENT_RESOURCES)?
-            .get();
+        let handle = match ob::publish_checked(process, id, granted(desired), inherit) {
+            Ok(Some(handle)) => handle.get(),
+            Ok(None) => return Err(STATUS_INSUFFICIENT_RESOURCES),
+            Err(status) => return Err(status),
+        };
         if slot.write(handle).is_err() {
             process.close_handle(handle);
             return Err(STATUS_ACCESS_VIOLATION);

@@ -7,9 +7,6 @@ description = "keysec - registry key security on a subkey of HKEY_CURRENT_USER t
 kind = "sectioned"
 gate = true
 
-[pending]
-roundtrip = "[the key's SD: Control 0x8004, owner present: no, DACL present: no, length 20], expected [the key's SD: Control 0x8004, owner present: yes, DACL present: no, length 272]"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only what a section calls itself, through its own helpers too, never what the C runtime's

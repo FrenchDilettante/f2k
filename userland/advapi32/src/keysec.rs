@@ -27,7 +27,8 @@ fn deleted(key: u32) -> Option<u32> {
 /// `descriptor`, its size in `*size` and out again: the error code (ERROR_INVALID_HANDLE for a
 /// null key, ERROR_INVALID_PARAMETER for no size). A null descriptor is the size query: the
 /// service writes the size the descriptor takes into `*size` and its buffer-too-small status is
-/// reported as success.
+/// reported as success; a success reports the length the caller gave, as the call's RPC link
+/// returns the marshalled buffer's length.
 ///
 /// # Safety
 ///
@@ -43,8 +44,8 @@ pub unsafe extern "system" fn reg_get_key_security(
         return ERROR_INVALID_HANDLE;
     }
     // SAFETY: the caller's size.
-    let size_out = unsafe { Out::optional(size) };
-    let Some(size_out) = size_out.as_ref() else {
+    let mut size_out = unsafe { Out::optional(size) };
+    let Some(size_out) = size_out.as_mut() else {
         return ERROR_INVALID_PARAMETER;
     };
     let length = size_out.get();
@@ -66,6 +67,12 @@ pub unsafe extern "system" fn reg_get_key_security(
     }
     // SAFETY: the caller's buffer of `length` bytes and size, handed to the service.
     let status = unsafe { filesec::query_security_object(key, info, descriptor, length, size) };
+    if status.is_success() {
+        // The registry call answers over its RPC link, whose marshalled descriptor keeps the
+        // caller's buffer length on a success; the descriptor's own size is what the size query
+        // above reported. So a success reports the length the caller gave.
+        size_out.set(length);
+    }
     nt::dos_error(status)
 }
 

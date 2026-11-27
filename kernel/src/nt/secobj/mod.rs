@@ -1,5 +1,5 @@
 //! The object-security services: NtQuerySecurityObject and NtSetSecurityObject, over the
-//! security descriptor every object record stores (see `ob::security` and
+//! security descriptor every object record shares in the cache (see `ob::sdcache` and
 //! `ob::Directory`'s seam).
 //!
 //! A query names the parts it wants in its SECURITY_INFORMATION (owner, group, DACL, SACL)
@@ -183,9 +183,9 @@ impl OwnerRules {
     }
 }
 
-/// The query of the live object `id` on `directory` for the `info` parts: its stored
+/// The query of the live object `id` on `directory` for the `info` parts: its shared
 /// descriptor's answer (see [`query_reply`]); STATUS_INVALID_HANDLE for an id that names
-/// nothing.
+/// nothing. The handle taken out of the directory keeps the entry alive for the answer.
 #[cfg_attr(not(test), allow(dead_code))]
 fn query_on(
     directory: &mut crate::ob::Directory,
@@ -195,12 +195,14 @@ fn query_on(
     let stored = directory
         .security_descriptor(id)
         .ok_or(STATUS_INVALID_HANDLE)?;
-    query_reply(stored, info)
+    stored
+        .with_bytes(|bytes| query_reply(bytes, info))
+        .ok_or(STATUS_INSUFFICIENT_RESOURCES)?
 }
 
-/// Store `merged` as the security descriptor of the live object `id` on `directory`: the
-/// seam's own refusals (STATUS_INVALID_HANDLE for a dead id, STATUS_BUFFER_TOO_SMALL past
-/// the record's storage).
+/// Store `merged` as the security descriptor of the live object `id` on `directory`, logged into
+/// the shared cache: the seam's own refusals (STATUS_INVALID_HANDLE for a dead id,
+/// STATUS_INSUFFICIENT_RESOURCES when the cache has no room for a new entry).
 #[cfg_attr(not(test), allow(dead_code))]
 fn set_on(
     directory: &mut crate::ob::Directory,
@@ -220,7 +222,6 @@ mod services {
     use super::super::call::{calling_process, Handle, NtCall, NtResult, UserAddr, UserPtr};
     use super::super::object::{is_console_handle, CURRENT_PROCESS, CURRENT_THREAD};
     use super::*;
-    use crate::ob::security::{CallerMemory, MAX_SD};
     use crate::ob::{self, ObRef};
     use crate::sec::CallerMode;
 
@@ -315,29 +316,27 @@ mod services {
             return Err(STATUS_PRIVILEGE_NOT_HELD);
         }
         let user_mode = ob::security::caller_mode() == CallerMode::User;
-        let mut captured = [0u8; MAX_SD];
-        let mut captured_len = 0u32;
-        let captured_status = crate::sec::sd::capture(
-            &CallerMemory,
-            descriptor.raw(),
-            user_mode,
-            true,
-            &mut captured,
-            &mut captured_len,
-        );
-        if captured_status != STATUS_SUCCESS {
-            return Err(captured_status);
-        }
+        // The caller's descriptor captured into the shared cache, at whatever size it takes;
+        // the handle keeps the entry alive for the merge.
+        let captured = ob::security::capture_sd_forced(descriptor.raw(), user_mode)?
+            .unwrap_or(crate::ob::sdcache::SdRef::NONE);
         let rules = token.as_ref().map(OwnerRules::of);
         let merged = ob::locked(|directory| {
             let stored = directory
                 .security_descriptor(object.id())
                 .ok_or(STATUS_INVALID_HANDLE)?;
-            set_merge(stored, info, &captured[..captured_len as usize], |sid| {
-                rules.as_ref().is_some_and(|rules| rules.allows(sid))
-            })
+            stored
+                .with_bytes(|stored| {
+                    captured.with_bytes(|captured| {
+                        set_merge(stored, info, captured, |sid| {
+                            rules.as_ref().is_some_and(|rules| rules.allows(sid))
+                        })
+                    })
+                })
+                .ok_or(STATUS_INSUFFICIENT_RESOURCES)?
+                .ok_or(STATUS_INSUFFICIENT_RESOURCES)?
         })?;
-        ob::locked(|directory| directory.set_security_descriptor(object.id(), &merged))?;
+        ob::locked(|directory| directory.set_security_descriptor(object.id(), merged.as_slice()))?;
         Ok(STATUS_SUCCESS)
     }
 }

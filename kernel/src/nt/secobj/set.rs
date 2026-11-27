@@ -2,10 +2,8 @@
 //! merged into the stored one, the parts named by the SecurityInfo replaced and the rest
 //! kept — as a fresh self-relative descriptor.
 
-use rtl::array_vec::ArrayVec;
-
 use super::{acl_part, align4, header_relative, sid_part};
-use crate::ob::security::MAX_SD;
+use crate::ob::sdcache::PoolBuf;
 use crate::se::{STATUS_INVALID_OWNER, STATUS_INVALID_PRIMARY_GROUP};
 use crate::sec::sd::STATUS_INVALID_SECURITY_DESCR;
 use crate::sec::{
@@ -40,14 +38,13 @@ use crate::status::*;
 /// The refusals: a named owner or group with a zero part in the modification
 /// (STATUS_INVALID_SECURITY_DESCR); an owner or group that ends up null or malformed
 /// (STATUS_INVALID_OWNER / STATUS_INVALID_PRIMARY_GROUP); an owner the caller may not assign
-/// (STATUS_INVALID_OWNER); a merged descriptor past the record's storage
-/// (STATUS_BUFFER_TOO_SMALL).
+/// (STATUS_INVALID_OWNER); no room in the pool for the result (STATUS_INSUFFICIENT_RESOURCES).
 pub fn set_merge(
     stored: &[u8],
     info: u32,
     modification: &[u8],
     owner_allowed: impl FnOnce(&[u8]) -> bool,
-) -> Result<ArrayVec<u8, MAX_SD>, NtStatus> {
+) -> Result<PoolBuf, NtStatus> {
     let old = header_relative(stored)?;
     let new = header_relative(modification)?;
     if info & OWNER_SECURITY_INFORMATION != 0 && new.owner == 0 {
@@ -136,13 +133,7 @@ pub fn set_merge(
     {
         size += align4(part.raw);
     }
-    if size as usize > MAX_SD {
-        return Err(STATUS_BUFFER_TOO_SMALL);
-    }
-    let mut bytes = ArrayVec::<u8, MAX_SD>::new();
-    bytes
-        .try_extend_default(size as usize)
-        .map_err(|_| STATUS_BUFFER_TOO_SMALL)?;
+    let mut bytes = PoolBuf::take(size as usize).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
     let mut header = SecurityDescriptor {
         revision: SECURITY_DESCRIPTOR_REVISION,
         sbz1,
@@ -161,12 +152,12 @@ pub fn set_merge(
     ] {
         if let Some(part) = part {
             let dst = at as usize;
-            bytes[dst..dst + part.raw as usize].copy_from_slice(part.slice());
+            bytes.as_mut_slice()[dst..dst + part.raw as usize].copy_from_slice(part.slice());
             *field = at;
             at += align4(part.raw);
         }
     }
-    debug_assert!(header.write(&mut bytes[..SECURITY_DESCRIPTOR_MIN_LENGTH]));
+    debug_assert!(header.write(&mut bytes.as_mut_slice()[..SECURITY_DESCRIPTOR_MIN_LENGTH]));
     Ok(bytes)
 }
 
@@ -286,8 +277,7 @@ mod tests {
 
     /// The set's refusals: a named owner or group with a zero part in the modification, an
     /// ownerless stored descriptor when the owner is not being set, a malformed or
-    /// unassignable owner, a groupless one, and a merged descriptor past the record's
-    /// storage.
+    /// unassignable owner, and a groupless one.
     #[test]
     fn the_set_refuses_what_it_should() {
         let stored = stored_sd();
@@ -344,7 +334,7 @@ mod tests {
             .is_ok()
         );
 
-        // A merged descriptor past the record's storage.
+        // A merged descriptor past any fixed storage bound is built whole, in the pool.
         let big_sid = sid(5, &[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
         let big_dacl = acl(&[
             allowed_ace(0xFFFF_FFFF, &big_sid),
@@ -352,7 +342,7 @@ mod tests {
             allowed_ace(0xFFFF_FFFF, &big_sid),
             allowed_ace(0xFFFF_FFFF, &big_sid),
         ]);
-        assert!(20 + big_dacl.len() + owner.len() + group.len() > MAX_SD);
+        assert!(20 + big_dacl.len() + owner.len() + group.len() > 256);
         let modification = self_relative(
             SE_DACL_PRESENT,
             None,
@@ -360,9 +350,16 @@ mod tests {
             Some(&owner),
             Some(&group),
         );
+        let merged = set_merge(&stored, DACL_SECURITY_INFORMATION, &modification, any).unwrap();
+        // The kept SACL's 8 bytes, the new DACL, the owner and the group.
         assert_eq!(
-            set_merge(&stored, DACL_SECURITY_INFORMATION, &modification, any),
-            Err(STATUS_BUFFER_TOO_SMALL)
+            merged.len() as u32,
+            20 + 8 + align4(big_dacl.len() as u32) + owner.len() as u32 + group.len() as u32
+        );
+        assert!(crate::sec::is_valid_relative(&merged[..], 0));
+        assert_eq!(
+            &merged[header_of(&merged).dacl as usize..][..big_dacl.len()],
+            &big_dacl[..]
         );
 
         // A stored or captured descriptor that is not self-relative.
@@ -427,14 +424,35 @@ mod tests {
         let _installed = install(Rc::new(RefCell::new(Page(page))));
 
         // The forced capture (the set's): packed self-relative, DACL then owner, validated.
-        let mut buf = [0u8; MAX_SD];
+        // Sized first with an empty buffer, then copied into one of that size, as
+        // `ob::security::capture_sd` does.
+        let mut needed = 0u32;
+        assert_eq!(
+            crate::sec::sd::capture(
+                &CallerMemory,
+                BASE + 0x100,
+                true,
+                true,
+                &mut [],
+                &mut needed
+            ),
+            STATUS_BUFFER_TOO_SMALL
+        );
+        let mut buf = crate::ob::sdcache::PoolBuf::take(needed as usize).unwrap();
         let mut len = 0u32;
         assert_eq!(
-            crate::sec::sd::capture(&CallerMemory, BASE + 0x100, true, true, &mut buf, &mut len),
+            crate::sec::sd::capture(
+                &CallerMemory,
+                BASE + 0x100,
+                true,
+                true,
+                buf.as_mut_slice(),
+                &mut len
+            ),
             STATUS_SUCCESS
         );
         assert_eq!(len, 20 + 28 + 16);
-        let captured = &buf[..len as usize];
+        let captured = &buf.as_slice()[..len as usize];
         let h = header_of(captured);
         assert!(h.is_self_relative());
         assert_eq!((h.dacl, h.owner, h.group, h.sacl), (20, 48, 0, 0));
@@ -450,7 +468,14 @@ mod tests {
 
         // An unreadable header faults; a bad owner SID in user mode is STATUS_INVALID_SID.
         assert_eq!(
-            crate::sec::sd::capture(&CallerMemory, BASE + 0x7F0, true, true, &mut buf, &mut len),
+            crate::sec::sd::capture(
+                &CallerMemory,
+                BASE + 0x7F0,
+                true,
+                true,
+                buf.as_mut_slice(),
+                &mut len,
+            ),
             STATUS_ACCESS_VIOLATION
         );
         let _ = group;
@@ -505,9 +530,28 @@ mod tests {
         };
         let capture = |page: Vec<u8>| {
             let _installed = install(Rc::new(RefCell::new(Page(page))));
-            let mut buf = [0u8; MAX_SD];
+            let mut needed = 0u32;
+            let sized = crate::sec::sd::capture(
+                &CallerMemory,
+                BASE + 0x100,
+                true,
+                true,
+                &mut [],
+                &mut needed,
+            );
+            if sized != STATUS_BUFFER_TOO_SMALL {
+                return sized;
+            }
+            let mut buf = crate::ob::sdcache::PoolBuf::take(needed as usize).unwrap();
             let mut len = 0u32;
-            crate::sec::sd::capture(&CallerMemory, BASE + 0x100, true, true, &mut buf, &mut len)
+            crate::sec::sd::capture(
+                &CallerMemory,
+                BASE + 0x100,
+                true,
+                true,
+                buf.as_mut_slice(),
+                &mut len,
+            )
         };
 
         // A bad owner SID revision.

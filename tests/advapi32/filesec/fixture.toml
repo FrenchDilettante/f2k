@@ -7,9 +7,6 @@ description = "filesec - file security on a temp file the fixture creates in its
 kind = "sectioned"
 gate = true
 
-[pending]
-kernelobj = "[SetKernelObjectSecurity(the process handle, DACL, allow Everyone 0x000F01FF): ret=0 err=122], expected [SetKernelObjectSecurity(the process handle, DACL, allow Everyone 0x000F01FF): ret=1 err=-]"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. Only what a section calls itself, through its own helpers too, never what the C runtime's

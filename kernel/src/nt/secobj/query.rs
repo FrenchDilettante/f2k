@@ -1,10 +1,8 @@
 //! The query side: the answer a NtQuerySecurityObject builds from the stored descriptor —
 //! the requested parts packed self-relative — and the size-then-buffer protocol over it.
 
-use rtl::array_vec::ArrayVec;
-
 use super::{acl_part, align4, header_relative, sid_part};
-use crate::ob::security::MAX_SD;
+use crate::ob::sdcache::PoolBuf;
 use crate::sec::{
     SecurityDescriptor,
     DACL_SECURITY_INFORMATION,
@@ -27,10 +25,10 @@ use crate::sec::{
 };
 use crate::status::*;
 
-/// A query's answer: the self-relative output bytes, and the size they take whether or not
-/// the caller's buffer holds them.
+/// A query's answer: the self-relative output bytes in a pool buffer (at whatever size the
+/// answer takes), and the size they take whether or not the caller's buffer holds them.
 pub struct Reply {
-    pub bytes: ArrayVec<u8, MAX_SD>,
+    pub bytes: PoolBuf,
     pub size: u32,
 }
 
@@ -66,13 +64,7 @@ pub fn query_reply(stored: &[u8], info: u32) -> Result<Reply, NtStatus> {
     for part in [&owner, &group, &dacl, &sacl].into_iter().flatten() {
         size += align4(part.raw);
     }
-    if size as usize > MAX_SD {
-        return Err(STATUS_BUFFER_TOO_SMALL);
-    }
-    let mut bytes = ArrayVec::<u8, MAX_SD>::new();
-    bytes
-        .try_extend_default(size as usize)
-        .map_err(|_| STATUS_BUFFER_TOO_SMALL)?;
+    let mut bytes = PoolBuf::take(size as usize).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
 
     let mut control = SE_SELF_RELATIVE;
     if info & OWNER_SECURITY_INFORMATION != 0 {
@@ -108,12 +100,12 @@ pub fn query_reply(stored: &[u8], info: u32) -> Result<Reply, NtStatus> {
     ] {
         if let Some(part) = part {
             let dst = at as usize;
-            bytes[dst..dst + part.raw as usize].copy_from_slice(part.slice());
+            bytes.as_mut_slice()[dst..dst + part.raw as usize].copy_from_slice(part.slice());
             *field = at;
             at += align4(part.raw);
         }
     }
-    debug_assert!(header.write(&mut bytes[..SECURITY_DESCRIPTOR_MIN_LENGTH]));
+    debug_assert!(header.write(&mut bytes.as_mut_slice()[..SECURITY_DESCRIPTOR_MIN_LENGTH]));
     Ok(Reply { bytes, size })
 }
 
