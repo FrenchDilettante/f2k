@@ -316,7 +316,7 @@ note = "the user and the enabled groups; with no token, the process's (F2K's thr
 name = "OpenThreadToken"
 group = "security"
 args = ["handle ThreadHandle", "u32 DesiredAccess", "bool OpenAsSelf", "ptr<u32> TokenHandle"]
-impl = { stub = "not yet implemented" }
+impl = { native = "OpenThreadToken" }
 ordinal = 372
 fails = "FALSE"
 note = "exitwin.exe imports it for its guard, whose blocks never run on F2K"
@@ -345,86 +345,149 @@ ordinal = 5
 
 [[export]]
 name = "AccessCheck"
+group = "security"
+args = ["ptr SecurityDescriptor", "handle ClientToken", "u32 DesiredAccess", "ptr GenericMapping", "ptr PrivilegeSet", "ptr<u32> PrivilegeSetLength", "ptr<u32> GrantedAccess", "ptr<u32> AccessStatus"]
+impl = { native = "AccessCheck" }
 ordinal = 6
 
 [[export]]
 name = "AccessCheckAndAuditAlarmA"
+group = "security"
+args = ["strA? SubsystemName", "ptr HandleId", "strA? ObjectTypeName", "strA? ObjectName", "ptr SecurityDescriptor", "u32 DesiredAccess", "ptr GenericMapping", "u32 ObjectCreation", "ptr<u32> GrantedAccess", "ptr<u32> AccessStatus", "ptr<u32> GenerateOnClose"]
+impl = { native = "AccessCheckAndAuditAlarmA" }
 ordinal = 7
 
 [[export]]
 name = "AccessCheckAndAuditAlarmW"
+group = "security"
+args = ["strW? SubsystemName", "ptr HandleId", "strW? ObjectTypeName", "strW? ObjectName", "ptr SecurityDescriptor", "u32 DesiredAccess", "ptr GenericMapping", "u32 ObjectCreation", "ptr<u32> GrantedAccess", "ptr<u32> AccessStatus", "ptr<u32> GenerateOnClose"]
+impl = { native = "AccessCheckAndAuditAlarmW" }
 ordinal = 8
 
 [[export]]
 name = "AccessCheckByType"
+group = "security"
+args = ["ptr SecurityDescriptor", "ptr PrincipalSelfSid", "handle ClientToken", "u32 DesiredAccess", "ptr ObjectTypeList", "u32 ObjectTypeListLength", "ptr GenericMapping", "ptr PrivilegeSet", "ptr<u32> PrivilegeSetLength", "ptr<u32> GrantedAccess", "ptr<u32> AccessStatus"]
+impl = { native = "AccessCheckByType" }
 ordinal = 9
 
 [[export]]
 name = "AccessCheckByTypeAndAuditAlarmA"
+group = "security"
+args = ["strA? SubsystemName", "ptr HandleId", "strA? ObjectTypeName", "strA? ObjectName", "ptr SecurityDescriptor", "ptr PrincipalSelfSid", "u32 DesiredAccess", "u32 AuditType", "u32 Flags", "ptr ObjectTypeList", "u32 ObjectTypeListLength", "ptr GenericMapping", "u32 ObjectCreation", "ptr<u32> GrantedAccess", "ptr<u32> AccessStatus", "ptr<u32> GenerateOnClose"]
+impl = { native = "AccessCheckByTypeAndAuditAlarmA" }
 ordinal = 10
 
 [[export]]
 name = "AccessCheckByTypeAndAuditAlarmW"
+group = "security"
+args = ["strW? SubsystemName", "ptr HandleId", "strW? ObjectTypeName", "strW? ObjectName", "ptr SecurityDescriptor", "ptr PrincipalSelfSid", "u32 DesiredAccess", "u32 AuditType", "u32 Flags", "ptr ObjectTypeList", "u32 ObjectTypeListLength", "ptr GenericMapping", "u32 ObjectCreation", "ptr<u32> GrantedAccess", "ptr<u32> AccessStatus", "ptr<u32> GenerateOnClose"]
+impl = { native = "AccessCheckByTypeAndAuditAlarmW" }
 ordinal = 11
 
 [[export]]
 name = "AccessCheckByTypeResultList"
+group = "security"
+args = ["ptr SecurityDescriptor", "ptr PrincipalSelfSid", "handle ClientToken", "u32 DesiredAccess", "ptr ObjectTypeList", "u32 ObjectTypeListLength", "ptr GenericMapping", "ptr PrivilegeSet", "ptr<u32> PrivilegeSetLength", "ptr<u32> GrantedAccessList", "ptr<u32> AccessStatusList"]
+impl = { native = "AccessCheckByTypeResultList" }
 ordinal = 12
 
 [[export]]
 name = "AccessCheckByTypeResultListAndAuditAlarmA"
+group = "security"
+args = ["strA? SubsystemName", "ptr HandleId", "strA? ObjectTypeName", "strA? ObjectName", "ptr SecurityDescriptor", "ptr PrincipalSelfSid", "u32 DesiredAccess", "u32 AuditType", "u32 Flags", "ptr ObjectTypeList", "u32 ObjectTypeListLength", "ptr GenericMapping", "u32 ObjectCreation", "ptr<u32> GrantedAccessList", "ptr<u32> AccessStatusList", "ptr<u32> GenerateOnClose"]
+impl = { native = "AccessCheckByTypeResultListAndAuditAlarmA" }
 ordinal = 13
 
 [[export]]
 name = "AccessCheckByTypeResultListAndAuditAlarmByHandleA"
+group = "security"
+args = ["strA? SubsystemName", "ptr HandleId", "handle ClientToken", "strA? ObjectTypeName", "strA? ObjectName", "ptr SecurityDescriptor", "ptr PrincipalSelfSid", "u32 DesiredAccess", "u32 AuditType", "u32 Flags", "ptr ObjectTypeList", "u32 ObjectTypeListLength", "ptr GenericMapping", "u32 ObjectCreation", "ptr<u32> GrantedAccessList", "ptr<u32> AccessStatusList", "ptr<u32> GenerateOnClose"]
+impl = { native = "AccessCheckByTypeResultListAndAuditAlarmByHandleA" }
 ordinal = 14
 
 [[export]]
 name = "AccessCheckByTypeResultListAndAuditAlarmByHandleW"
+group = "security"
+args = ["strW? SubsystemName", "ptr HandleId", "handle ClientToken", "strW? ObjectTypeName", "strW? ObjectName", "ptr SecurityDescriptor", "ptr PrincipalSelfSid", "u32 DesiredAccess", "u32 AuditType", "u32 Flags", "ptr ObjectTypeList", "u32 ObjectTypeListLength", "ptr GenericMapping", "u32 ObjectCreation", "ptr<u32> GrantedAccessList", "ptr<u32> AccessStatusList", "ptr<u32> GenerateOnClose"]
+impl = { native = "AccessCheckByTypeResultListAndAuditAlarmByHandleW" }
 ordinal = 15
 
 [[export]]
 name = "AccessCheckByTypeResultListAndAuditAlarmW"
+group = "security"
+args = ["strW? SubsystemName", "ptr HandleId", "strW? ObjectTypeName", "strW? ObjectName", "ptr SecurityDescriptor", "ptr PrincipalSelfSid", "u32 DesiredAccess", "u32 AuditType", "u32 Flags", "ptr ObjectTypeList", "u32 ObjectTypeListLength", "ptr GenericMapping", "u32 ObjectCreation", "ptr<u32> GrantedAccessList", "ptr<u32> AccessStatusList", "ptr<u32> GenerateOnClose"]
+impl = { native = "AccessCheckByTypeResultListAndAuditAlarmW" }
 ordinal = 16
 
 [[export]]
 name = "AddAccessAllowedAce"
+group = "security"
+args = ["ptr acl", "u32 ace_revision", "u32 mask", "ptr sid"]
+impl = { native = "AddAccessAllowedAce" }
 ordinal = 17
 
 [[export]]
 name = "AddAccessAllowedAceEx"
+group = "security"
+args = ["ptr acl", "u32 ace_revision", "u32 flags", "u32 mask", "ptr sid"]
+impl = { native = "AddAccessAllowedAceEx" }
 ordinal = 18
 
 [[export]]
 name = "AddAccessAllowedObjectAce"
+group = "security"
+args = ["ptr acl", "u32 ace_revision", "u32 flags", "u32 mask", "ptr object_type", "ptr inherited_object_type", "ptr sid"]
+impl = { native = "AddAccessAllowedObjectAce" }
 ordinal = 19
 
 [[export]]
 name = "AddAccessDeniedAce"
+group = "security"
+args = ["ptr acl", "u32 ace_revision", "u32 mask", "ptr sid"]
+impl = { native = "AddAccessDeniedAce" }
 ordinal = 20
 
 [[export]]
 name = "AddAccessDeniedAceEx"
+group = "security"
+args = ["ptr acl", "u32 ace_revision", "u32 flags", "u32 mask", "ptr sid"]
+impl = { native = "AddAccessDeniedAceEx" }
 ordinal = 21
 
 [[export]]
 name = "AddAccessDeniedObjectAce"
+group = "security"
+args = ["ptr acl", "u32 ace_revision", "u32 flags", "u32 mask", "ptr object_type", "ptr inherited_object_type", "ptr sid"]
+impl = { native = "AddAccessDeniedObjectAce" }
 ordinal = 22
 
 [[export]]
 name = "AddAce"
+group = "security"
+args = ["ptr acl", "u32 ace_revision", "u32 starting_ace_index", "ptr list", "u32 list_length"]
+impl = { native = "AddAce" }
 ordinal = 23
 
 [[export]]
 name = "AddAuditAccessAce"
+group = "security"
+args = ["ptr acl", "u32 ace_revision", "u32 mask", "ptr sid", "u32 audit_success", "u32 audit_failure"]
+impl = { native = "AddAuditAccessAce" }
 ordinal = 24
 
 [[export]]
 name = "AddAuditAccessAceEx"
+group = "security"
+args = ["ptr acl", "u32 ace_revision", "u32 flags", "u32 mask", "ptr sid", "u32 audit_success", "u32 audit_failure"]
+impl = { native = "AddAuditAccessAceEx" }
 ordinal = 25
 
 [[export]]
 name = "AddAuditAccessObjectAce"
+group = "security"
+args = ["ptr acl", "u32 ace_revision", "u32 flags", "u32 mask", "ptr object_type", "ptr inherited_object_type", "ptr sid", "u32 audit_success", "u32 audit_failure"]
+impl = { native = "AddAuditAccessObjectAce" }
 ordinal = 26
 
 [[export]]
@@ -433,18 +496,30 @@ ordinal = 27
 
 [[export]]
 name = "AdjustTokenGroups"
+group = "security"
+args = ["handle TokenHandle", "bool ResetToDefault", "ptr NewState", "u32 BufferLength", "ptr PreviousState", "ptr<u32> ReturnLength"]
+impl = { native = "AdjustTokenGroups" }
 ordinal = 28
 
 [[export]]
 name = "AllocateLocallyUniqueId"
+group = "security"
+args = ["ptr Luid"]
+impl = { native = "AllocateLocallyUniqueId" }
 ordinal = 31
 
 [[export]]
 name = "AreAllAccessesGranted"
+group = "security"
+args = ["u32 GrantedAccess", "u32 DesiredAccess"]
+impl = { native = "AreAllAccessesGranted" }
 ordinal = 32
 
 [[export]]
 name = "AreAnyAccessesGranted"
+group = "security"
+args = ["u32 GrantedAccess", "u32 DesiredAccess"]
+impl = { native = "AreAnyAccessesGranted" }
 ordinal = 33
 
 [[export]]
@@ -457,66 +532,114 @@ ordinal = 35
 
 [[export]]
 name = "BuildExplicitAccessWithNameA"
+group = "security"
+args = ["ptr pExplicitAccess", "strA pTrusteeName", "u32 AccessPermissions", "u32 AccessMode", "u32 Inheritance"]
+impl = { native = "BuildExplicitAccessWithNameA" }
 ordinal = 36
 
 [[export]]
 name = "BuildExplicitAccessWithNameW"
+group = "security"
+args = ["ptr pExplicitAccess", "strW pTrusteeName", "u32 AccessPermissions", "u32 AccessMode", "u32 Inheritance"]
+impl = { native = "BuildExplicitAccessWithNameW" }
 ordinal = 37
 
 [[export]]
 name = "BuildImpersonateExplicitAccessWithNameA"
+group = "security"
+args = ["ptr pExplicitAccess", "strA pTrusteeName", "ptr pTrustee", "u32 AccessPermissions", "u32 AccessMode", "u32 Inheritance"]
+impl = { native = "BuildImpersonateExplicitAccessWithNameA" }
 ordinal = 38
 
 [[export]]
 name = "BuildImpersonateExplicitAccessWithNameW"
+group = "security"
+args = ["ptr pExplicitAccess", "strW pTrusteeName", "ptr pTrustee", "u32 AccessPermissions", "u32 AccessMode", "u32 Inheritance"]
+impl = { native = "BuildImpersonateExplicitAccessWithNameW" }
 ordinal = 39
 
 [[export]]
 name = "BuildImpersonateTrusteeA"
+group = "security"
+args = ["ptr trustee", "ptr multiple"]
+impl = { native = "BuildImpersonateTrusteeA" }
 ordinal = 40
 
 [[export]]
 name = "BuildImpersonateTrusteeW"
+group = "security"
+args = ["ptr trustee", "ptr multiple"]
+impl = { native = "BuildImpersonateTrusteeW" }
 ordinal = 41
 
 [[export]]
 name = "BuildSecurityDescriptorA"
+group = "security"
+args = ["ptr owner", "ptr group", "u32 access_count", "ptr access_list", "u32 audit_count", "ptr audit_list", "ptr sd", "ptr<u32> size", "ptr new_sd"]
+impl = { native = "BuildSecurityDescriptorA" }
 ordinal = 42
 
 [[export]]
 name = "BuildSecurityDescriptorW"
+group = "security"
+args = ["ptr owner", "ptr group", "u32 access_count", "ptr access_list", "u32 audit_count", "ptr audit_list", "ptr sd", "ptr<u32> size", "ptr new_sd"]
+impl = { native = "BuildSecurityDescriptorW" }
 ordinal = 43
 
 [[export]]
 name = "BuildTrusteeWithNameA"
+group = "security"
+args = ["ptr pTrustee", "strA pName"]
+impl = { native = "BuildTrusteeWithNameA" }
 ordinal = 44
 
 [[export]]
 name = "BuildTrusteeWithNameW"
+group = "security"
+args = ["ptr pTrustee", "strW pName"]
+impl = { native = "BuildTrusteeWithNameW" }
 ordinal = 45
 
 [[export]]
 name = "BuildTrusteeWithObjectsAndNameA"
+group = "security"
+args = ["ptr trustee", "ptr objects", "u32 _object_type", "strA? object_type_name", "strA? inherited_object_type_name", "strA? name"]
+impl = { native = "BuildTrusteeWithObjectsAndNameA" }
 ordinal = 46
 
 [[export]]
 name = "BuildTrusteeWithObjectsAndNameW"
+group = "security"
+args = ["ptr trustee", "ptr objects", "u32 _object_type", "strW? object_type_name", "strW? inherited_object_type_name", "strW? name"]
+impl = { native = "BuildTrusteeWithObjectsAndNameW" }
 ordinal = 47
 
 [[export]]
 name = "BuildTrusteeWithObjectsAndSidA"
+group = "security"
+args = ["ptr trustee", "ptr objects", "ptr object_type", "ptr inherited_object_type", "ptr sid"]
+impl = { native = "BuildTrusteeWithObjectsAndSidA" }
 ordinal = 48
 
 [[export]]
 name = "BuildTrusteeWithObjectsAndSidW"
+group = "security"
+args = ["ptr trustee", "ptr objects", "ptr object_type", "ptr inherited_object_type", "ptr sid"]
+impl = { native = "BuildTrusteeWithObjectsAndSidW" }
 ordinal = 49
 
 [[export]]
 name = "BuildTrusteeWithSidA"
+group = "security"
+args = ["ptr pTrustee", "ptr pSid"]
+impl = { native = "BuildTrusteeWithSidA" }
 ordinal = 50
 
 [[export]]
 name = "BuildTrusteeWithSidW"
+group = "security"
+args = ["ptr pTrustee", "ptr pSid"]
+impl = { native = "BuildTrusteeWithSidW" }
 ordinal = 51
 
 [[export]]
@@ -578,10 +701,16 @@ ordinal = 67
 
 [[export]]
 name = "ConvertAccessToSecurityDescriptorA"
+group = "security"
+args = ["ptr access_list", "ptr audit_list", "strA? owner_name", "strA? group_name", "ptr new_sd"]
+impl = { native = "ConvertAccessToSecurityDescriptorA" }
 ordinal = 68
 
 [[export]]
 name = "ConvertAccessToSecurityDescriptorW"
+group = "security"
+args = ["ptr access_list", "ptr audit_list", "strW? owner_name", "strW? group_name", "ptr new_sd"]
+impl = { native = "ConvertAccessToSecurityDescriptorW" }
 ordinal = 69
 
 [[export]]
@@ -594,34 +723,58 @@ ordinal = 71
 
 [[export]]
 name = "ConvertSecurityDescriptorToAccessA"
+group = "security"
+args = ["handle _handle", "u32 _object_type", "ptr _sd", "ptr _access_list", "ptr _audit_list", "strA? _owner_name", "strA? _group_name"]
+impl = { native = "ConvertSecurityDescriptorToAccessA" }
 ordinal = 72
 
 [[export]]
 name = "ConvertSecurityDescriptorToAccessNamedA"
+group = "security"
+args = ["strA? _name", "u32 _object_type", "ptr _sd", "ptr _access_list", "ptr _audit_list", "strA? _owner_name", "strA? _group_name"]
+impl = { native = "ConvertSecurityDescriptorToAccessNamedA" }
 ordinal = 73
 
 [[export]]
 name = "ConvertSecurityDescriptorToAccessNamedW"
+group = "security"
+args = ["strW? _name", "u32 _object_type", "ptr _sd", "ptr _access_list", "ptr _audit_list", "strA? _owner_name", "strA? _group_name"]
+impl = { native = "ConvertSecurityDescriptorToAccessNamedW" }
 ordinal = 74
 
 [[export]]
 name = "ConvertSecurityDescriptorToAccessW"
+group = "security"
+args = ["handle _handle", "u32 _object_type", "ptr _sd", "ptr _access_list", "ptr _audit_list", "strA? _owner_name", "strA? _group_name"]
+impl = { native = "ConvertSecurityDescriptorToAccessW" }
 ordinal = 75
 
 [[export]]
 name = "ConvertSecurityDescriptorToStringSecurityDescriptorA"
+group = "security"
+args = ["ptr sd", "u32 revision", "u32 info", "ptr string", "ptr<u32> length"]
+impl = { native = "ConvertSecurityDescriptorToStringSecurityDescriptorA" }
 ordinal = 76
 
 [[export]]
 name = "ConvertSecurityDescriptorToStringSecurityDescriptorW"
+group = "security"
+args = ["ptr sd", "u32 revision", "u32 info", "ptr string", "ptr<u32> length"]
+impl = { native = "ConvertSecurityDescriptorToStringSecurityDescriptorW" }
 ordinal = 77
 
 [[export]]
 name = "ConvertSidToStringSidA"
+group = "security"
+args = ["ptr sid", "ptr string"]
+impl = { native = "ConvertSidToStringSidA" }
 ordinal = 78
 
 [[export]]
 name = "ConvertSidToStringSidW"
+group = "security"
+args = ["ptr sid", "ptr string"]
+impl = { native = "ConvertSidToStringSidW" }
 ordinal = 79
 
 [[export]]
@@ -634,18 +787,30 @@ ordinal = 81
 
 [[export]]
 name = "ConvertStringSecurityDescriptorToSecurityDescriptorA"
+group = "security"
+args = ["ptr string", "u32 revision", "ptr sd", "ptr<u32> size"]
+impl = { native = "ConvertStringSecurityDescriptorToSecurityDescriptorA" }
 ordinal = 82
 
 [[export]]
 name = "ConvertStringSecurityDescriptorToSecurityDescriptorW"
+group = "security"
+args = ["strW? string", "u32 revision", "ptr sd", "ptr<u32> size"]
+impl = { native = "ConvertStringSecurityDescriptorToSecurityDescriptorW" }
 ordinal = 83
 
 [[export]]
 name = "ConvertStringSidToSidA"
+group = "security"
+args = ["strA StringSid", "ptr Sid"]
+impl = { native = "ConvertStringSidToSidA" }
 ordinal = 84
 
 [[export]]
 name = "ConvertStringSidToSidW"
+group = "security"
+args = ["strW StringSid", "ptr Sid"]
+impl = { native = "ConvertStringSidToSidW" }
 ordinal = 85
 
 [[export]]
@@ -654,6 +819,9 @@ ordinal = 86
 
 [[export]]
 name = "CopySid"
+group = "security"
+args = ["u32 length", "ptr destination", "ptr source"]
+impl = { native = "CopySid" }
 ordinal = 87
 
 [[export]]
@@ -682,6 +850,9 @@ ordinal = 93
 
 [[export]]
 name = "CreateRestrictedToken"
+group = "security"
+args = ["handle ExistingTokenHandle", "u32 Flags", "u32 DisableSidCount", "ptr SidsToDisable", "u32 DeletePrivilegeCount", "ptr PrivilegesToDelete", "u32 RestrictedSidCount", "ptr SidsToRestrict", "ptr<u32> NewTokenHandle"]
+impl = { native = "CreateRestrictedToken" }
 ordinal = 94
 
 [[export]]
@@ -698,6 +869,9 @@ ordinal = 97
 
 [[export]]
 name = "CreateWellKnownSid"
+group = "security"
+args = ["u32 kind", "ptr domain", "ptr sid", "ptr<u32> size"]
+impl = { native = "CreateWellKnownSid" }
 ordinal = 98
 
 [[export]]
@@ -866,6 +1040,9 @@ ordinal = 139
 
 [[export]]
 name = "DeleteAce"
+group = "security"
+args = ["ptr acl", "u32 index"]
+impl = { native = "DeleteAce" }
 ordinal = 140
 
 [[export]]
@@ -886,6 +1063,9 @@ ordinal = 144
 
 [[export]]
 name = "DuplicateTokenEx"
+group = "security"
+args = ["handle ExistingTokenHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "u32 ImpersonationLevel", "u32 TokenType", "ptr<u32> NewTokenHandle"]
+impl = { native = "DuplicateTokenEx" }
 ordinal = 146
 
 [[export]]
@@ -1014,10 +1194,16 @@ ordinal = 177
 
 [[export]]
 name = "EqualDomainSid"
+group = "security"
+args = ["ptr first", "ptr second", "ptr<u32> equal"]
+impl = { native = "EqualDomainSid" }
 ordinal = 178
 
 [[export]]
 name = "EqualPrefixSid"
+group = "security"
+args = ["ptr first", "ptr second"]
+impl = { native = "EqualPrefixSid" }
 ordinal = 179
 
 [[export]]
@@ -1030,6 +1216,9 @@ ordinal = 182
 
 [[export]]
 name = "FindFirstFreeAce"
+group = "security"
+args = ["ptr acl", "ptr ace"]
+impl = { native = "FindFirstFreeAce" }
 ordinal = 183
 
 [[export]]
@@ -1038,26 +1227,44 @@ ordinal = 184
 
 [[export]]
 name = "GetAccessPermissionsForObjectA"
+group = "security"
+args = ["ptr lpObject", "u32 ObjectType", "ptr lpObjType", "ptr lpProvider", "ptr<u32> pcEntries", "ptr ppAccessInfoList", "ptr<u32> pcRights", "ptr ppRightsList", "ptr<u32> pfAccessFlags"]
+impl = { native = "GetAccessPermissionsForObjectA" }
 ordinal = 186
 
 [[export]]
 name = "GetAccessPermissionsForObjectW"
+group = "security"
+args = ["ptr lpObject", "u32 ObjectType", "ptr lpObjType", "ptr lpProvider", "ptr<u32> pcEntries", "ptr ppAccessInfoList", "ptr<u32> pcRights", "ptr ppRightsList", "ptr<u32> pfAccessFlags"]
+impl = { native = "GetAccessPermissionsForObjectW" }
 ordinal = 187
 
 [[export]]
 name = "GetAce"
+group = "security"
+args = ["ptr acl", "u32 index", "ptr ace"]
+impl = { native = "GetAce" }
 ordinal = 188
 
 [[export]]
 name = "GetAclInformation"
+group = "security"
+args = ["ptr pAcl", "ptr pAclInformation", "u32 nAclInformationLength", "u32 dwAclInformationClass"]
+impl = { native = "GetAclInformation" }
 ordinal = 189
 
 [[export]]
 name = "GetAuditedPermissionsFromAclA"
+group = "security"
+args = ["ptr acl", "ptr trustee", "ptr<u32> success", "ptr<u32> failure"]
+impl = { native = "GetAuditedPermissionsFromAclA" }
 ordinal = 190
 
 [[export]]
 name = "GetAuditedPermissionsFromAclW"
+group = "security"
+args = ["ptr acl", "ptr trustee", "ptr<u32> success", "ptr<u32> failure"]
+impl = { native = "GetAuditedPermissionsFromAclW" }
 ordinal = 191
 
 [[export]]
@@ -1082,26 +1289,44 @@ ordinal = 196
 
 [[export]]
 name = "GetExplicitEntriesFromAclA"
+group = "security"
+args = ["ptr pacl", "ptr<u32> pcCountOfExplicitEntries", "ptr pListOfExplicitEntries"]
+impl = { native = "GetExplicitEntriesFromAclA" }
 ordinal = 197
 
 [[export]]
 name = "GetExplicitEntriesFromAclW"
+group = "security"
+args = ["ptr pacl", "ptr<u32> pcCountOfExplicitEntries", "ptr pListOfExplicitEntries"]
+impl = { native = "GetExplicitEntriesFromAclW" }
 ordinal = 198
 
 [[export]]
 name = "GetFileSecurityA"
+group = "security"
+args = ["strA pObjectName", "u32 SecurityInfo", "ptr pSecurityDescriptor", "u32 nLength", "ptr<u32> lpnLengthNeeded"]
+impl = { native = "GetFileSecurityA" }
 ordinal = 199
 
 [[export]]
 name = "GetFileSecurityW"
+group = "security"
+args = ["strW pObjectName", "u32 SecurityInfo", "ptr pSecurityDescriptor", "u32 nLength", "ptr<u32> lpnLengthNeeded"]
+impl = { native = "GetFileSecurityW" }
 ordinal = 200
 
 [[export]]
 name = "GetKernelObjectSecurity"
+group = "security"
+args = ["handle Handle", "u32 SecurityInfo", "ptr pSecurityDescriptor", "u32 nLength", "ptr<u32> lpnLengthNeeded"]
+impl = { native = "GetKernelObjectSecurity" }
 ordinal = 201
 
 [[export]]
 name = "GetLengthSid"
+group = "security"
+args = ["ptr sid"]
+impl = { native = "GetLengthSid" }
 ordinal = 202
 
 [[export]]
@@ -1134,18 +1359,30 @@ ordinal = 209
 
 [[export]]
 name = "GetNamedSecurityInfoA"
+group = "security"
+args = ["strA pObjectName", "u32 ObjectType", "u32 SecurityInfo", "ptr ppOwner", "ptr ppGroup", "ptr ppDacl", "ptr ppSacl", "ptr ppSecurityDescriptor"]
+impl = { native = "GetNamedSecurityInfoA" }
 ordinal = 210
 
 [[export]]
 name = "GetNamedSecurityInfoExA"
+group = "security"
+args = ["strA pObjectName", "u32 ObjectType", "u32 SecurityInfo", "strA? lpProvider", "strA? lpProperty", "ptr ppAccessList", "ptr ppAuditList", "ptr lppOwner", "ptr lppGroup"]
+impl = { native = "GetNamedSecurityInfoExA" }
 ordinal = 211
 
 [[export]]
 name = "GetNamedSecurityInfoExW"
+group = "security"
+args = ["strW pObjectName", "u32 ObjectType", "u32 SecurityInfo", "strW? lpProvider", "strW? lpProperty", "ptr ppAccessList", "ptr ppAuditList", "ptr lppOwner", "ptr lppGroup"]
+impl = { native = "GetNamedSecurityInfoExW" }
 ordinal = 212
 
 [[export]]
 name = "GetNamedSecurityInfoW"
+group = "security"
+args = ["strW pObjectName", "u32 ObjectType", "u32 SecurityInfo", "ptr ppOwner", "ptr ppGroup", "ptr ppDacl", "ptr ppSacl", "ptr ppSecurityDescriptor"]
+impl = { native = "GetNamedSecurityInfoW" }
 ordinal = 213
 
 [[export]]
@@ -1166,34 +1403,58 @@ ordinal = 217
 
 [[export]]
 name = "GetSecurityDescriptorControl"
+group = "security"
+args = ["ptr sd", "ptr<u16> control_out", "ptr<u32> revision"]
+impl = { native = "GetSecurityDescriptorControl" }
 ordinal = 218
 
 [[export]]
 name = "GetSecurityDescriptorDacl"
+group = "security"
+args = ["ptr sd", "ptr<u32> present", "ptr dacl", "ptr<u32> defaulted"]
+impl = { native = "GetSecurityDescriptorDacl" }
 ordinal = 219
 
 [[export]]
 name = "GetSecurityDescriptorGroup"
+group = "security"
+args = ["ptr sd", "ptr group", "ptr<u32> defaulted"]
+impl = { native = "GetSecurityDescriptorGroup" }
 ordinal = 220
 
 [[export]]
 name = "GetSecurityDescriptorLength"
+group = "security"
+args = ["ptr sd"]
+impl = { native = "GetSecurityDescriptorLength" }
 ordinal = 221
 
 [[export]]
 name = "GetSecurityDescriptorOwner"
+group = "security"
+args = ["ptr sd", "ptr owner", "ptr<u32> defaulted"]
+impl = { native = "GetSecurityDescriptorOwner" }
 ordinal = 222
 
 [[export]]
 name = "GetSecurityDescriptorRMControl"
+group = "security"
+args = ["ptr sd", "ptr rm"]
+impl = { native = "GetSecurityDescriptorRMControl" }
 ordinal = 223
 
 [[export]]
 name = "GetSecurityDescriptorSacl"
+group = "security"
+args = ["ptr sd", "ptr<u32> present", "ptr sacl", "ptr<u32> defaulted"]
+impl = { native = "GetSecurityDescriptorSacl" }
 ordinal = 224
 
 [[export]]
 name = "GetSecurityInfo"
+group = "security"
+args = ["handle hObject", "u32 ObjectType", "u32 SecurityInfo", "ptr ppOwner", "ptr ppGroup", "ptr ppDacl", "ptr ppSacl", "ptr ppSecurityDescriptor"]
+impl = { native = "GetSecurityInfo" }
 ordinal = 225
 
 [[export]]
@@ -1218,18 +1479,30 @@ ordinal = 231
 
 [[export]]
 name = "GetSidIdentifierAuthority"
+group = "security"
+args = ["ptr Sid"]
+impl = { native = "GetSidIdentifierAuthority" }
 ordinal = 232
 
 [[export]]
 name = "GetSidLengthRequired"
+group = "security"
+args = ["u32 SubAuthorityCount"]
+impl = { native = "GetSidLengthRequired" }
 ordinal = 233
 
 [[export]]
 name = "GetSidSubAuthority"
+group = "security"
+args = ["ptr Sid", "u32 SubAuthority"]
+impl = { native = "GetSidSubAuthority" }
 ordinal = 234
 
 [[export]]
 name = "GetSidSubAuthorityCount"
+group = "security"
+args = ["ptr Sid"]
+impl = { native = "GetSidSubAuthorityCount" }
 ordinal = 235
 
 [[export]]
@@ -1266,26 +1539,44 @@ ordinal = 244
 
 [[export]]
 name = "GetTrusteeFormA"
+group = "security"
+args = ["ptr trustee"]
+impl = { native = "GetTrusteeFormA" }
 ordinal = 245
 
 [[export]]
 name = "GetTrusteeFormW"
+group = "security"
+args = ["ptr trustee"]
+impl = { native = "GetTrusteeFormW" }
 ordinal = 246
 
 [[export]]
 name = "GetTrusteeNameA"
+group = "security"
+args = ["ptr trustee"]
+impl = { native = "GetTrusteeNameA" }
 ordinal = 247
 
 [[export]]
 name = "GetTrusteeNameW"
+group = "security"
+args = ["ptr trustee"]
+impl = { native = "GetTrusteeNameW" }
 ordinal = 248
 
 [[export]]
 name = "GetTrusteeTypeA"
+group = "security"
+args = ["ptr trustee"]
+impl = { native = "GetTrusteeTypeA" }
 ordinal = 249
 
 [[export]]
 name = "GetTrusteeTypeW"
+group = "security"
+args = ["ptr trustee"]
+impl = { native = "GetTrusteeTypeW" }
 ordinal = 250
 
 [[export]]
@@ -1330,14 +1621,23 @@ ordinal = 260
 
 [[export]]
 name = "InitializeAcl"
+group = "security"
+args = ["ptr acl", "u32 length", "u32 revision"]
+impl = { native = "InitializeAcl" }
 ordinal = 261
 
 [[export]]
 name = "InitializeSecurityDescriptor"
+group = "security"
+args = ["ptr sd", "u32 revision"]
+impl = { native = "InitializeSecurityDescriptor" }
 ordinal = 262
 
 [[export]]
 name = "InitializeSid"
+group = "security"
+args = ["ptr sid", "ptr authority", "u32 count"]
+impl = { native = "InitializeSid" }
 ordinal = 263
 
 [[export]]
@@ -1370,22 +1670,37 @@ ordinal = 270
 
 [[export]]
 name = "IsTokenRestricted"
+group = "security"
+args = ["handle TokenHandle"]
+impl = { native = "IsTokenRestricted" }
 ordinal = 271
 
 [[export]]
 name = "IsValidAcl"
+group = "security"
+args = ["ptr acl"]
+impl = { native = "IsValidAcl" }
 ordinal = 272
 
 [[export]]
 name = "IsValidSecurityDescriptor"
+group = "security"
+args = ["ptr sd"]
+impl = { native = "IsValidSecurityDescriptor" }
 ordinal = 273
 
 [[export]]
 name = "IsValidSid"
+group = "security"
+args = ["ptr sid"]
+impl = { native = "IsValidSid" }
 ordinal = 274
 
 [[export]]
 name = "IsWellKnownSid"
+group = "security"
+args = ["ptr sid", "u32 kind"]
+impl = { native = "IsWellKnownSid" }
 ordinal = 275
 
 [[export]]
@@ -1418,18 +1733,30 @@ ordinal = 282
 
 [[export]]
 name = "LookupPrivilegeDisplayNameA"
+group = "security"
+args = ["strA? lpSystemName", "strA? lpName", "ptr lpDisplayName", "ptr<u32> cchDisplayName", "ptr<u32> lpLanguageId"]
+impl = { native = "LookupPrivilegeDisplayNameA" }
 ordinal = 283
 
 [[export]]
 name = "LookupPrivilegeDisplayNameW"
+group = "security"
+args = ["strW? lpSystemName", "strW? lpName", "ptr<u16> lpDisplayName", "ptr<u32> cchDisplayName", "ptr<u32> lpLanguageId"]
+impl = { native = "LookupPrivilegeDisplayNameW" }
 ordinal = 284
 
 [[export]]
 name = "LookupPrivilegeNameA"
+group = "security"
+args = ["strA? lpSystemName", "ptr lpLuid", "ptr lpName", "ptr<u32> cchName"]
+impl = { native = "LookupPrivilegeNameA" }
 ordinal = 285
 
 [[export]]
 name = "LookupPrivilegeNameW"
+group = "security"
+args = ["strW? lpSystemName", "ptr lpLuid", "ptr<u16> lpName", "ptr<u32> cchName"]
+impl = { native = "LookupPrivilegeNameW" }
 ordinal = 286
 
 [[export]]
@@ -1674,6 +2001,9 @@ ordinal = 348
 
 [[export]]
 name = "MakeSelfRelativeSD"
+group = "security"
+args = ["ptr absolute", "ptr relative", "ptr<u32> length"]
+impl = { native = "MakeSelfRelativeSD" }
 ordinal = 349
 
 [[export]]
@@ -1690,34 +2020,58 @@ ordinal = 352
 
 [[export]]
 name = "ObjectCloseAuditAlarmA"
+group = "security"
+args = ["strA? SubsystemName", "ptr HandleId", "strA? ObjectTypeName", "strA? ObjectName", "ptr SecurityDescriptor", "handle ClientToken", "u32 DesiredAccess", "u32 GrantedAccess", "ptr Privileges", "ptr<u32> GenerateOnClose"]
+impl = { native = "ObjectCloseAuditAlarmA" }
 ordinal = 353
 
 [[export]]
 name = "ObjectCloseAuditAlarmW"
+group = "security"
+args = ["strW? SubsystemName", "ptr HandleId", "strW? ObjectTypeName", "strW? ObjectName", "ptr SecurityDescriptor", "handle ClientToken", "u32 DesiredAccess", "u32 GrantedAccess", "ptr Privileges", "ptr<u32> GenerateOnClose"]
+impl = { native = "ObjectCloseAuditAlarmW" }
 ordinal = 354
 
 [[export]]
 name = "ObjectDeleteAuditAlarmA"
+group = "security"
+args = ["strA? SubsystemName", "ptr HandleId", "strA? ObjectTypeName", "strA? ObjectName", "ptr SecurityDescriptor", "handle ClientToken", "u32 DesiredAccess", "u32 GrantedAccess", "ptr Privileges", "ptr<u32> GenerateOnClose"]
+impl = { native = "ObjectDeleteAuditAlarmA" }
 ordinal = 355
 
 [[export]]
 name = "ObjectDeleteAuditAlarmW"
+group = "security"
+args = ["strW? SubsystemName", "ptr HandleId", "strW? ObjectTypeName", "strW? ObjectName", "ptr SecurityDescriptor", "handle ClientToken", "u32 DesiredAccess", "u32 GrantedAccess", "ptr Privileges", "ptr<u32> GenerateOnClose"]
+impl = { native = "ObjectDeleteAuditAlarmW" }
 ordinal = 356
 
 [[export]]
 name = "ObjectOpenAuditAlarmA"
+group = "security"
+args = ["strA? SubsystemName", "ptr HandleId", "strA? ObjectTypeName", "strA? ObjectName", "ptr SecurityDescriptor", "handle ClientToken", "u32 DesiredAccess", "u32 GrantedAccess", "ptr Privileges", "bool ObjectCreation", "bool AccessGranted", "ptr<u32> GenerateOnClose"]
+impl = { native = "ObjectOpenAuditAlarmA" }
 ordinal = 357
 
 [[export]]
 name = "ObjectOpenAuditAlarmW"
+group = "security"
+args = ["strW? SubsystemName", "ptr HandleId", "strW? ObjectTypeName", "strW? ObjectName", "ptr SecurityDescriptor", "handle ClientToken", "u32 DesiredAccess", "u32 GrantedAccess", "ptr Privileges", "bool ObjectCreation", "bool AccessGranted", "ptr<u32> GenerateOnClose"]
+impl = { native = "ObjectOpenAuditAlarmW" }
 ordinal = 358
 
 [[export]]
 name = "ObjectPrivilegeAuditAlarmA"
+group = "security"
+args = ["strA? SubsystemName", "ptr HandleId", "handle ClientToken", "ptr Privileges", "bool AccessGranted"]
+impl = { native = "ObjectPrivilegeAuditAlarmA" }
 ordinal = 359
 
 [[export]]
 name = "ObjectPrivilegeAuditAlarmW"
+group = "security"
+args = ["strW? SubsystemName", "ptr HandleId", "handle ClientToken", "ptr Privileges", "bool AccessGranted"]
+impl = { native = "ObjectPrivilegeAuditAlarmW" }
 ordinal = 360
 
 [[export]]
@@ -1767,14 +2121,23 @@ ordinal = 374
 
 [[export]]
 name = "PrivilegeCheck"
+group = "security"
+args = ["handle TokenHandle", "ptr RequiredPrivileges", "ptr<u32> Result"]
+impl = { native = "PrivilegeCheck" }
 ordinal = 375
 
 [[export]]
 name = "PrivilegedServiceAuditAlarmA"
+group = "security"
+args = ["strA? SubsystemName", "strA? ServiceName", "handle ClientToken", "ptr Privileges", "bool AccessGranted"]
+impl = { native = "PrivilegedServiceAuditAlarmA" }
 ordinal = 376
 
 [[export]]
 name = "PrivilegedServiceAuditAlarmW"
+group = "security"
+args = ["strW? SubsystemName", "strW? ServiceName", "handle ClientToken", "ptr Privileges", "bool AccessGranted"]
+impl = { native = "PrivilegedServiceAuditAlarmW" }
 ordinal = 377
 
 [[export]]
@@ -1883,6 +2246,9 @@ ordinal = 414
 
 [[export]]
 name = "RegGetKeySecurity"
+group = "security"
+args = ["handle hKey", "u32 SecurityInfo", "ptr pSecurityDescriptor", "ptr<u32> lpcbSecurityDescriptor"]
+impl = { native = "RegGetKeySecurity" }
 ordinal = 415
 
 [[export]]
@@ -1943,6 +2309,9 @@ ordinal = 439
 
 [[export]]
 name = "RegSetKeySecurity"
+group = "security"
+args = ["handle hKey", "u32 SecurityInfo", "ptr pSecurityDescriptor"]
+impl = { native = "RegSetKeySecurity" }
 ordinal = 440
 
 [[export]]
@@ -2007,6 +2376,9 @@ ordinal = 459
 
 [[export]]
 name = "SetAclInformation"
+group = "security"
+args = ["ptr pAcl", "ptr pAclInformation", "u32 nAclInformationLength", "u32 dwAclInformationClass"]
+impl = { native = "SetAclInformation" }
 ordinal = 460
 
 [[export]]
@@ -2019,46 +2391,79 @@ ordinal = 462
 
 [[export]]
 name = "SetEntriesInAclA"
+group = "security"
+args = ["u32 cCountOfExplicitEntries", "ptr pListOfExplicitEntries", "ptr OldAcl", "ptr NewAcl"]
+impl = { native = "SetEntriesInAclA" }
 ordinal = 463
 
 [[export]]
 name = "SetEntriesInAclW"
+group = "security"
+args = ["u32 cCountOfExplicitEntries", "ptr pListOfExplicitEntries", "ptr OldAcl", "ptr NewAcl"]
+impl = { native = "SetEntriesInAclW" }
 ordinal = 464
 
 [[export]]
 name = "SetEntriesInAuditListA"
+group = "security"
+args = ["u32 _entries", "ptr _list", "u32 _mode", "strA? _name", "ptr _old_list", "ptr _new_list"]
+impl = { native = "SetEntriesInAuditListA" }
 ordinal = 465
 
 [[export]]
 name = "SetEntriesInAuditListW"
+group = "security"
+args = ["u32 _entries", "ptr _list", "u32 _mode", "strW? _name", "ptr _old_list", "ptr _new_list"]
+impl = { native = "SetEntriesInAuditListW" }
 ordinal = 466
 
 [[export]]
 name = "SetFileSecurityA"
+group = "security"
+args = ["strA pObjectName", "u32 SecurityInfo", "ptr pSecurityDescriptor"]
+impl = { native = "SetFileSecurityA" }
 ordinal = 467
 
 [[export]]
 name = "SetFileSecurityW"
+group = "security"
+args = ["strW pObjectName", "u32 SecurityInfo", "ptr pSecurityDescriptor"]
+impl = { native = "SetFileSecurityW" }
 ordinal = 468
 
 [[export]]
 name = "SetKernelObjectSecurity"
+group = "security"
+args = ["handle Handle", "u32 SecurityInfo", "ptr pSecurityDescriptor"]
+impl = { native = "SetKernelObjectSecurity" }
 ordinal = 469
 
 [[export]]
 name = "SetNamedSecurityInfoA"
+group = "security"
+args = ["strA pObjectName", "u32 ObjectType", "u32 SecurityInfo", "ptr pOwner", "ptr pGroup", "ptr pDacl", "ptr pSacl"]
+impl = { native = "SetNamedSecurityInfoA" }
 ordinal = 470
 
 [[export]]
 name = "SetNamedSecurityInfoExA"
+group = "security"
+args = ["strA pObjectName", "u32 ObjectType", "u32 SecurityInfo", "strA? lpProvider", "strA? lpProperty", "ptr pAccessList", "ptr pAuditList", "ptr lpOwner", "ptr lpGroup"]
+impl = { native = "SetNamedSecurityInfoExA" }
 ordinal = 471
 
 [[export]]
 name = "SetNamedSecurityInfoExW"
+group = "security"
+args = ["strW pObjectName", "u32 ObjectType", "u32 SecurityInfo", "strW? lpProvider", "strW? lpProperty", "ptr pAccessList", "ptr pAuditList", "ptr lpOwner", "ptr lpGroup"]
+impl = { native = "SetNamedSecurityInfoExW" }
 ordinal = 472
 
 [[export]]
 name = "SetNamedSecurityInfoW"
+group = "security"
+args = ["strW pObjectName", "u32 ObjectType", "u32 SecurityInfo", "ptr pOwner", "ptr pGroup", "ptr pDacl", "ptr pSacl"]
+impl = { native = "SetNamedSecurityInfoW" }
 ordinal = 473
 
 [[export]]
@@ -2071,30 +2476,51 @@ ordinal = 475
 
 [[export]]
 name = "SetSecurityDescriptorControl"
+group = "security"
+args = ["ptr sd", "u32 interest", "u32 to_set"]
+impl = { native = "SetSecurityDescriptorControl" }
 ordinal = 476
 
 [[export]]
 name = "SetSecurityDescriptorDacl"
+group = "security"
+args = ["ptr sd", "u32 present", "ptr dacl", "u32 defaulted"]
+impl = { native = "SetSecurityDescriptorDacl" }
 ordinal = 477
 
 [[export]]
 name = "SetSecurityDescriptorGroup"
+group = "security"
+args = ["ptr sd", "ptr group", "u32 defaulted"]
+impl = { native = "SetSecurityDescriptorGroup" }
 ordinal = 478
 
 [[export]]
 name = "SetSecurityDescriptorOwner"
+group = "security"
+args = ["ptr sd", "ptr owner", "u32 defaulted"]
+impl = { native = "SetSecurityDescriptorOwner" }
 ordinal = 479
 
 [[export]]
 name = "SetSecurityDescriptorRMControl"
+group = "security"
+args = ["ptr sd", "ptr rm"]
+impl = { native = "SetSecurityDescriptorRMControl" }
 ordinal = 480
 
 [[export]]
 name = "SetSecurityDescriptorSacl"
+group = "security"
+args = ["ptr sd", "u32 present", "ptr sacl", "u32 defaulted"]
+impl = { native = "SetSecurityDescriptorSacl" }
 ordinal = 481
 
 [[export]]
 name = "SetSecurityInfo"
+group = "security"
+args = ["handle hObject", "u32 ObjectType", "u32 SecurityInfo", "ptr pSecurityDescriptor"]
+impl = { native = "SetSecurityInfo" }
 ordinal = 482
 
 [[export]]
@@ -2123,6 +2549,9 @@ ordinal = 488
 
 [[export]]
 name = "SetTokenInformation"
+group = "security"
+args = ["handle TokenHandle", "u32 TokenInformationClass", "ptr TokenInformation", "u32 TokenInformationLength"]
+impl = { native = "SetTokenInformation" }
 ordinal = 489
 
 [[export]]
