@@ -3,11 +3,6 @@ description = "threads - thread lifecycle and per-thread state (threads.c, /MT):
 kind = "sectioned"
 gate = true
 
-[pending]
-# Not captured yet: its output.txt block is a placeholder, which tests/capture.bat threads replaces
-# once tests/build.bat threads has built stackkid.exe and rebuilt threads.exe.
-stacksize = "F2K honours Windows XP's STACK_SIZE_PARAM_IS_A_RESERVATION (a 64 KiB reservation overflows) and gives a created thread a fixed 1 MiB reservation, not the image's SizeOfStackReserve (stackkid.exe's 4 MiB)"
-
 [pins]
 # The exports each block pins, as dll.Export ("*": every block, what the C runtime's startup
 # calls); scripts/compat.py derives each export's coverage from them.

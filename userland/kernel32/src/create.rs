@@ -169,10 +169,8 @@ use rtl::nt::access::THREAD_ALL_ACCESS;
 const MEM_COMMIT: u32 = 0x1000;
 const PAGE_READWRITE: u32 = 0x04;
 
-/// The page, the allocation granularity and a MiB: the stack's sizes' units.
+/// The page: the first thread's commit's unit.
 const PAGE: u32 = 0x1000;
-const GRANULARITY: u32 = 0x1_0000;
-const MIB: u32 = 0x10_0000;
 
 /// The committed stack a new process's first thread is seen to start with: two pages. Windows
 /// 2000's child commits the image's one page, and its start-up (ntdll's process initialization,
@@ -713,20 +711,10 @@ fn push_parameters(
         .map_err(Failure::Status)
 }
 
-/// The first thread's stack sizes for the image (its SizeOfStackReserve and SizeOfStackCommit, as
-/// BaseCreateStack rounds them: the commit to pages, the reservation to the allocation
-/// granularity, a commit reaching the reservation taking a reservation of whole MiBs).
+/// The first thread's stack sizes for the image: its SizeOfStackReserve and SizeOfStackCommit, as
+/// BaseCreateStack rounds them ([`thread::stack_sizes`]).
 fn stack_sizes(image: &SectionImageInformation) -> (u32, u32) {
-    let commit = image.committed_stack_size.max(PAGE).next_multiple_of(PAGE);
-    let reserve = match image.maximum_stack_size {
-        0 => thread::DEFAULT_STACK_RESERVE,
-        size => size.next_multiple_of(GRANULARITY),
-    };
-    if commit >= reserve {
-        (commit.next_multiple_of(MIB), commit)
-    } else {
-        (reserve, commit)
-    }
+    thread::stack_sizes(image.maximum_stack_size, image.committed_stack_size)
 }
 
 /// kernel32's BaseProcessStartThunk (src/start.s), where a new process's first thread starts.

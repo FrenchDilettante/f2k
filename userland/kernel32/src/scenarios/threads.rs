@@ -278,10 +278,11 @@ fn tls_indexes_allocate_and_free() {
 }
 
 /// The CreateThread the threads, memory and sched fixtures run on, as Windows 2000's
-/// CreateRemoteThread makes it: the stack reserved (1 MiB by default), its top two pages committed
-/// with a guard page below them; the CONTEXT starting at BaseThreadStartThunk with EAX the start
-/// address, EBX the parameter and ESP one dword below the stack's base; NtCreateThread suspended,
-/// on the INITIAL_TEB of that stack, then resumed; the thread id written back.
+/// CreateRemoteThread makes it: the stack the image asks reserved (1 MiB), its commit (one page)
+/// committed at the top with a guard page below it; the CONTEXT starting at BaseThreadStartThunk
+/// with EAX the start address, EBX the parameter and ESP one dword below the stack's base;
+/// NtCreateThread suspended, on the INITIAL_TEB of that stack, then resumed; the thread id written
+/// back.
 ///
 /// Pins: kernel32.CreateThread
 #[test]
@@ -298,8 +299,8 @@ fn create_thread_builds_the_stack_and_the_context() {
         vm_calls(),
         [
             ("allocate", 0, 0x10_0000, 0x2000),
-            ("allocate", top - 0x3000, 0x3000, 0x1000),
-            ("protect", top - 0x3000, 0x1000, 0x104),
+            ("allocate", top - 0x2000, 0x2000, 0x1000),
+            ("protect", top - 0x2000, 0x1000, 0x104),
         ]
     );
     let created = CREATED.with(|created| created.borrow_mut().pop().unwrap());
@@ -316,7 +317,7 @@ fn create_thread_builds_the_stack_and_the_context() {
         old_stack_base: 0,
         old_stack_limit: 0,
         stack_base: top,
-        stack_limit: top - 0x2000,
+        stack_limit: top - 0x1000,
         allocation_base: BASE,
     };
     assert_eq!(created.stack, stack);
@@ -379,6 +380,65 @@ fn create_thread_honours_its_flags() {
         1
     );
     assert_eq!(vm_calls()[0], ("allocate", 0, 0x40_0000, 0x2000));
+}
+
+/// The stack as Windows 2000's BaseCreateStack sizes it from the calling image's headers (the
+/// threads fixture's stacksize block): an image linked /STACK:0x400000 gives its threads 4 MiB
+/// reservations, of stack size 0 (the image's commit) and 0x10000 (that commit) alike; under the
+/// 1 MiB default, a stack size of 0x10000 commits 64 KiB, with or without Windows XP's
+/// STACK_SIZE_PARAM_IS_A_RESERVATION (0x10000), which Windows 2000 does not know.
+///
+/// Pins: kernel32.CreateThread
+#[test]
+fn create_thread_takes_the_images_stack() {
+    use crate::nt::host::{vm_calls, BASE};
+    use crate::nt::modules::IMAGE_STACK;
+    let create = |size, flags| {
+        let _ = vm_calls();
+        let handle = unsafe {
+            create_thread(
+                core::ptr::null(),
+                size,
+                0x0040_1000,
+                0,
+                flags,
+                core::ptr::null_mut(),
+            )
+        };
+        assert_ne!(handle, 0);
+        vm_calls()
+    };
+    IMAGE_STACK.with(|stack| stack.set((0x40_0000, 0x1000)));
+    let top = BASE + 0x40_0000;
+    assert_eq!(
+        create(0, 0),
+        [
+            ("allocate", 0, 0x40_0000, 0x2000),
+            ("allocate", top - 0x2000, 0x2000, 0x1000),
+            ("protect", top - 0x2000, 0x1000, 0x104),
+        ]
+    );
+    assert_eq!(
+        create(0x1_0000, 0),
+        [
+            ("allocate", 0, 0x40_0000, 0x2000),
+            ("allocate", top - 0x1_1000, 0x1_1000, 0x1000),
+            ("protect", top - 0x1_1000, 0x1000, 0x104),
+        ]
+    );
+    IMAGE_STACK.with(|stack| stack.set((0x10_0000, 0x1000)));
+    let top = BASE + 0x10_0000;
+    for flags in [0, 0x1_0000] {
+        assert_eq!(
+            create(0x1_0000, flags),
+            [
+                ("allocate", 0, 0x10_0000, 0x2000),
+                ("allocate", top - 0x1_1000, 0x1_1000, 0x1000),
+                ("protect", top - 0x1_1000, 0x1000, 0x104),
+            ],
+            "flags {flags:#x}"
+        );
+    }
 }
 
 /// A refused create gives the stack back and returns NULL with the status's error: no room for the

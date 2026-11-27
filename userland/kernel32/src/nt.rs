@@ -3371,18 +3371,23 @@ pub mod modules {
         /// The process image's subsystem version (major, minor), as its NT headers carry it: the
         /// MSVC 6 linker's 4.0 to start.
         pub static IMAGE_SUBSYSTEM_VERSION: std::cell::Cell<(u16, u16)> = const { std::cell::Cell::new((4, 0)) };
+        /// The process image's stack sizes (SizeOfStackReserve, SizeOfStackCommit), as its NT
+        /// headers carry them: the MSVC 6 linker's 1 MiB and one page to start.
+        pub static IMAGE_STACK: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((0x10_0000, 0x1000)) };
         /// The headers the stand-in RtlImageNtHeader hands out, one per test thread (leaked).
         static IMAGE_HEADERS: *mut ImageNtHeaders32 =
             std::boxed::Box::into_raw(std::boxed::Box::new(Pod::zeroed()));
     }
 
     /// RtlImageNtHeader: the process image's headers (at [`IMAGE_BASE`]: a PE32 image's, its
-    /// subsystem version [`IMAGE_SUBSYSTEM_VERSION`]'s); null for any other base.
+    /// subsystem version [`IMAGE_SUBSYSTEM_VERSION`]'s, its stack sizes [`IMAGE_STACK`]'s); null
+    /// for any other base.
     pub unsafe extern "system" fn RtlImageNtHeader(base: usize) -> *const ImageNtHeaders32 {
         if base != IMAGE_BASE as usize {
             return core::ptr::null();
         }
         let (major, minor) = IMAGE_SUBSYSTEM_VERSION.with(std::cell::Cell::get);
+        let (stack_reserve, stack_commit) = IMAGE_STACK.with(std::cell::Cell::get);
         let headers = IMAGE_HEADERS.with(|headers| *headers);
         // SAFETY: the thread's own leaked headers, written here alone, between calls.
         unsafe {
@@ -3390,6 +3395,8 @@ pub mod modules {
             (*headers).optional_header.magic = rtl::image::PE32_MAGIC;
             (*headers).optional_header.major_subsystem_version = major;
             (*headers).optional_header.minor_subsystem_version = minor;
+            (*headers).optional_header.size_of_stack_reserve = stack_reserve;
+            (*headers).optional_header.size_of_stack_commit = stack_commit;
         }
         headers
     }
