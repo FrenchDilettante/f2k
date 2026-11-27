@@ -76,6 +76,7 @@ pub mod sync;
 pub mod system;
 pub mod thread;
 pub mod token;
+pub mod token_ops;
 pub mod wait;
 
 /// The host builds' synchronization services (see [`unserved`]).
