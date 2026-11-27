@@ -197,30 +197,6 @@ unsafe fn guarded_acl<'a>(at: usize) -> Option<&'a [u8]> {
     Some(acl)
 }
 
-/// The SID component `index` of the descriptor at `base`, read whole (its count says how long),
-/// probed first as [`guarded_sid`].
-///
-/// # Safety
-///
-/// The descriptor and its component are readable.
-unsafe fn guarded_component_sid<'a>(base: usize, sd: &[u8], index: usize) -> Option<&'a [u8]> {
-    let at = component_addr(base, sd, index)?;
-    // SAFETY: the component's address resolves into memory the call may read.
-    unsafe { guarded_sid(at) }
-}
-
-/// The ACL component `index` of the descriptor at `base`, read whole, probed first as
-/// [`guarded_acl`].
-///
-/// # Safety
-///
-/// As [`guarded_component_sid`]'s.
-unsafe fn guarded_component_acl<'a>(base: usize, sd: &[u8], index: usize) -> Option<&'a [u8]> {
-    let at = component_addr(base, sd, index)?;
-    // SAFETY: the component's address resolves into memory the call may read.
-    unsafe { guarded_acl(at) }
-}
-
 /// The SID component `index` of the descriptor at `base`, read whole (its count says how long).
 ///
 /// # Safety
@@ -254,24 +230,25 @@ pub(crate) fn valid_sd(base: usize, sd: &[u8]) -> bool {
     }
     // SAFETY: the descriptor's components are read as it names them, probed.
     unsafe {
-        if let Some(owner) = guarded_component_sid(base, sd, FIELD_OWNER) {
-            if !valid_sid(owner) {
-                return false;
-            }
-        }
-        if let Some(group) = guarded_component_sid(base, sd, FIELD_GROUP) {
-            if !valid_sid(group) {
-                return false;
+        // A component the descriptor names but whose bytes cannot be read makes it invalid: the
+        // platform's check reads them under a guard and answers "not valid" where the read faults.
+        for index in [FIELD_OWNER, FIELD_GROUP] {
+            match component_addr(base, sd, index) {
+                None => {}
+                Some(at) => match guarded_sid(at) {
+                    Some(sid) if valid_sid(sid) => {}
+                    _ => return false,
+                },
             }
         }
         if control(sd) & SE_DACL_PRESENT != 0 {
-            match guarded_component_acl(base, sd, FIELD_DACL) {
+            match component_addr(base, sd, FIELD_DACL).and_then(|at| guarded_acl(at)) {
                 Some(dacl) if valid_acl(dacl) => {}
                 _ => return false,
             }
         }
         if control(sd) & SE_SACL_PRESENT != 0 {
-            match guarded_component_acl(base, sd, FIELD_SACL) {
+            match component_addr(base, sd, FIELD_SACL).and_then(|at| guarded_acl(at)) {
                 Some(sacl) if valid_acl(sacl) => {}
                 _ => return false,
             }
@@ -532,8 +509,10 @@ pub unsafe extern "system" fn get_security_descriptor_length(sd: *const u8) -> u
     // SAFETY: the caller's descriptor.
     let buffer = unsafe { caller_sd(sd) };
     let Some(buffer) = buffer else {
-        // A null descriptor: the revision's read faults the caller.
-        unsafe { sd.read() };
+        // A null descriptor: the revision's read faults the caller. The read is volatile so
+        // the fault is the read's, not the optimizer's (a plain read of a null pointer is
+        // undefined behavior, which the optimizer turns into a trap).
+        unsafe { core::ptr::read_volatile(sd) };
         unreachable!("the read above faults")
     };
     // SAFETY: the descriptor's components are read as it names them.
@@ -564,8 +543,10 @@ pub unsafe extern "system" fn get_security_descriptor_control(
         )
     };
     let Some(buffer) = buffer else {
-        // A null descriptor: the revision's read faults the caller.
-        unsafe { sd.read() };
+        // A null descriptor: the revision's read faults the caller. The read is volatile so
+        // the fault is the read's, not the optimizer's (a plain read of a null pointer is
+        // undefined behavior, which the optimizer turns into a trap).
+        unsafe { core::ptr::read_volatile(sd) };
         unreachable!("the read above faults")
     };
     if let Some(revision) = revision.as_mut() {

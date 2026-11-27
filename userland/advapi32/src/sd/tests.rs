@@ -439,6 +439,35 @@ fn set_dword_pub(bytes: &mut [u8], at: usize, value: u32) {
     bytes[at..at + 4].copy_from_slice(&value.to_le_bytes());
 }
 
+/// IsValidSecurityDescriptor on an absolute descriptor names its components: the owner and group
+/// fields point at the SIDs, and one that is not well formed makes the descriptor invalid
+/// (ERROR_INVALID_SECURITY_DESCR), as the platform's guarded read of the component does.
+#[test]
+fn an_absolute_descriptor_names_its_components() {
+    let mut buf = vec![0xCCu8; 256];
+    let mut owner = vec![0xCCu8; 16];
+    arm();
+    assert_eq!(
+        (unsafe { initialize_security_descriptor(buf.as_mut_ptr(), 1) }, last_error()),
+        (1, 0xF2F2)
+    );
+    set_sd_field_value(&mut buf, FIELD_OWNER, owner.as_ptr() as usize);
+    arm();
+    assert_eq!(
+        (unsafe { is_valid_security_descriptor(buf.as_ptr()) }, last_error()),
+        (0, 1338),
+        "the owner field names no well-formed SID"
+    );
+    owner[0] = 1;
+    owner[1] = 1;
+    arm();
+    assert_eq!(
+        (unsafe { is_valid_security_descriptor(buf.as_ptr()) }, last_error()),
+        (1, 0xF2F2),
+        "a well-formed SID named by the owner field"
+    );
+}
+
 /// ConvertAccessToSecurityDescriptorA/W build a heap descriptor (DACL present with the
 /// auto-inherit-requested bit) and answer ERROR_SUCCESS; ConvertSecurityDescriptorToAccess and
 /// its named forms answer ERROR_INVALID_PRIMARY_GROUP, touching nothing.
