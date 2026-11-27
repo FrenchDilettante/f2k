@@ -60,9 +60,7 @@ pub mod access;
 pub mod security;
 
 use rtl::array_vec::ArrayVec;
-
 use security::Sd;
-use crate::status::NtStatus;
 
 use crate::level::Dispatch;
 use crate::sched::dispatcher::Dispatcher;
@@ -70,8 +68,9 @@ use crate::sched::event::EventKind;
 use crate::sched::mutex::MutexId;
 use crate::sched::thread::ThreadId;
 use crate::sched::timer::TimerId;
-use crate::sched::wait::{WaitableId, MAXIMUM_WAIT_OBJECTS};
-use crate::slots::{per_page, Id, KernelId, Record, Slots};
+use crate::sched::wait::{MAXIMUM_WAIT_OBJECTS, WaitableId};
+use crate::slots::{Id, KernelId, Record, Slots, per_page};
+use crate::status::NtStatus;
 
 /// Run `f` on the dispatcher database, where the dispatcher objects' bodies live: the kernel's one
 /// dispatcher (on the host, the test thread's). The directory holds no token: it raises to the
@@ -1109,12 +1108,18 @@ impl Directory {
     /// service lands.
     #[cfg_attr(not(test), allow(dead_code))]
     pub fn set_security_descriptor(&mut self, id: ObjectId, sd: &[u8]) -> Result<(), NtStatus> {
-        use crate::status::{STATUS_BUFFER_TOO_SMALL, STATUS_INVALID_HANDLE, STATUS_INVALID_PARAMETER};
+        use crate::status::{
+            STATUS_BUFFER_TOO_SMALL,
+            STATUS_INVALID_HANDLE,
+            STATUS_INVALID_PARAMETER,
+        };
         if sd.is_empty() {
             return Err(STATUS_INVALID_PARAMETER);
         }
         let stored = Sd::from_bytes(sd).ok_or(STATUS_BUFFER_TOO_SMALL)?;
-        self.set_sd(id, stored).then_some(()).ok_or(STATUS_INVALID_HANDLE)
+        self.set_sd(id, stored)
+            .then_some(())
+            .ok_or(STATUS_INVALID_HANDLE)
     }
 
     /// The body of the live object `id` names, when it is of `T`'s kind.
@@ -1832,10 +1837,12 @@ impl Directory {
     /// returning. False, and nothing held, when one of them is gone already (a handle another
     /// thread closed meanwhile).
     pub fn hold_wait(&mut self, thread: u16, objects: &[ObjectId]) -> bool {
-        debug_assert!(self.waits[thread as usize]
-            .objects
-            .iter()
-            .all(Option::is_none));
+        debug_assert!(
+            self.waits[thread as usize]
+                .objects
+                .iter()
+                .all(Option::is_none)
+        );
         debug_assert!(
             objects
                 .iter()
@@ -3174,7 +3181,7 @@ mod tests {
     /// left for it — nothing made — and a file object's close frees its record for the next open.
     #[test]
     fn the_file_object_table_fills_and_reuses() {
-        use crate::fs::file::{Context, FileRecordId, ACCESS_READ, SHARE_ALL};
+        use crate::fs::file::{ACCESS_READ, Context, FileRecordId, SHARE_ALL};
         let directory = directory();
         let open = |directory: &mut Directory, record: u16| {
             directory.create_file(
@@ -3997,7 +4004,13 @@ mod tests {
     /// A small security descriptor's bytes for the tests: a self-relative header, a present DACL
     /// of one allowed ACE, the owner after it.
     fn test_sd(owner: &[u8], aces: &[Vec<u8>]) -> Vec<u8> {
-        use crate::sec::{ACL_REVISION2, ACCESS_ALLOWED_ACE_TYPE, SE_DACL_PRESENT, SE_SELF_RELATIVE, SecurityDescriptor};
+        use crate::sec::{
+            ACCESS_ALLOWED_ACE_TYPE,
+            ACL_REVISION2,
+            SE_DACL_PRESENT,
+            SE_SELF_RELATIVE,
+            SecurityDescriptor,
+        };
         let mut dacl = vec![ACL_REVISION2, 0];
         let size = (8 + aces.iter().map(|a| a.len()).sum::<usize>()) as u16;
         dacl.extend_from_slice(&size.to_le_bytes());
@@ -4099,7 +4112,11 @@ mod tests {
         );
         assert!(directory.set_sd(b, security::Sd::NULL_DACL));
         assert_eq!(directory.dereference(a), None);
-        assert_eq!(directory.security_descriptor(a), None, "a dead id names none");
+        assert_eq!(
+            directory.security_descriptor(a),
+            None,
+            "a dead id names none"
+        );
         assert_eq!(
             directory.set_security_descriptor(a, &sd),
             Err(crate::status::STATUS_INVALID_HANDLE)
@@ -4144,17 +4161,22 @@ mod tests {
         let locked = directory
             .create_event(EventKind::Notification, false)
             .unwrap();
-        let deny_all = test_sd(&user_sid(), &[{
-            use crate::sec::ACCESS_DENIED_ACE_TYPE;
-            let mut v = vec![ACCESS_DENIED_ACE_TYPE, 0];
-            let size = (4 + 4 + user_sid().len() + 3) & !3;
-            v.extend_from_slice(&(size as u16).to_le_bytes());
-            v.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
-            v.extend_from_slice(&user_sid());
-            v.resize(size, 0);
-            v
-        }]);
-        directory.set_security_descriptor(locked, &deny_all).unwrap();
+        let deny_all = test_sd(
+            &user_sid(),
+            &[{
+                use crate::sec::ACCESS_DENIED_ACE_TYPE;
+                let mut v = vec![ACCESS_DENIED_ACE_TYPE, 0];
+                let size = (4 + 4 + user_sid().len() + 3) & !3;
+                v.extend_from_slice(&(size as u16).to_le_bytes());
+                v.extend_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+                v.extend_from_slice(&user_sid());
+                v.resize(size, 0);
+                v
+            }],
+        );
+        directory
+            .set_security_descriptor(locked, &deny_all)
+            .unwrap();
 
         let token = crate::se::TokenBody::of(ObjectId {
             kind: ObjectType::Process,

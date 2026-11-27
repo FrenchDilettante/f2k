@@ -11,9 +11,9 @@
 use core::mem::size_of;
 
 use rtl::array_vec::ArrayVec;
-use rtl::nt::{ObjectAttributes, UnicodeString};
 // OBJECT_ATTRIBUTES' Attributes: OBJ_INHERIT, OBJ_CASE_INSENSITIVE and OBJ_OPENIF.
 pub use rtl::nt::{OBJ_CASE_INSENSITIVE, OBJ_INHERIT, OBJ_OPENIF};
+use rtl::nt::{ObjectAttributes, UnicodeString};
 
 use super::call::UserAddr;
 use crate::status::*;
@@ -328,7 +328,7 @@ mod tests {
 
         use rtl::pod::Pod;
 
-        use crate::user::syscall::host::{install, UserMemory};
+        use crate::user::syscall::host::{UserMemory, install};
         const BASE: u32 = 0x10000;
         struct Page(std::vec::Vec<u8>);
         impl UserMemory for Page {
@@ -405,14 +405,16 @@ mod tests {
 
         use rtl::pod::Pod;
 
-        use crate::user::syscall::host::{install, UserMemory};
+        use crate::user::syscall::host::{UserMemory, install};
         const BASE: u32 = 0x20000;
         struct Page(std::vec::Vec<u8>);
         impl UserMemory for Page {
             fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
                 let at = pointer.checked_sub(BASE).ok_or(STATUS_ACCESS_VIOLATION)? as usize;
                 bytes.copy_from_slice(
-                    self.0.get(at..at + bytes.len()).ok_or(STATUS_ACCESS_VIOLATION)?,
+                    self.0
+                        .get(at..at + bytes.len())
+                        .ok_or(STATUS_ACCESS_VIOLATION)?,
                 );
                 Ok(())
             }

@@ -15,12 +15,18 @@
 //! MAXIMUM_ALLOWED takes the check's own fast path.
 
 use rtl::array_vec::ArrayVec;
-use rtl::nt::access::{GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ, GENERIC_WRITE};
 use rtl::nt::LuidAndAttributes;
+use rtl::nt::access::{GENERIC_ALL, GENERIC_EXECUTE, GENERIC_READ, GENERIC_WRITE};
 
 use super::{ObjectId, ObjectType};
 use crate::sec::{
-    AccessCheck, CallerMode, GenericMapping, Memory, SidAndAttributes, Subject, TokenView,
+    AccessCheck,
+    CallerMode,
+    GenericMapping,
+    Memory,
+    SidAndAttributes,
+    Subject,
+    TokenView,
 };
 use crate::status::{NtStatus, STATUS_SUCCESS};
 
@@ -43,7 +49,6 @@ impl Sd {
         len: 0,
         bytes: [0; MAX_SD],
     };
-
     /// The default descriptor: a self-relative header with the DACL present and null — a NULL
     /// DACL, which grants every access.
     pub const NULL_DACL: Sd = {
@@ -155,9 +160,8 @@ mod pending {
     static SLOTS: Slots = Slots([const { core::cell::UnsafeCell::new(Sd::NONE) }; THREADS]);
 
     fn slot() -> &'static core::cell::UnsafeCell<Sd> {
-        let index = crate::sched::try_current_thread().map_or(THREADS - 1, |thread| {
-            thread.index() as usize
-        });
+        let index = crate::sched::try_current_thread()
+            .map_or(THREADS - 1, |thread| thread.index() as usize);
         &SLOTS.0[index]
     }
 
@@ -403,8 +407,8 @@ pub fn grant_handle(
     if creating && desired == 0 {
         return Ok(0);
     }
-    let sd = crate::ob::locked(|directory| directory.sd(id).copied())
-        .ok_or(STATUS_INVALID_HANDLE)?;
+    let sd =
+        crate::ob::locked(|directory| directory.sd(id).copied()).ok_or(STATUS_INVALID_HANDLE)?;
     let token = crate::ob::reference_process_token(process.object())
         .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
     let body = crate::ob::locked(|directory| directory.token(token.id()).copied())
@@ -416,19 +420,31 @@ pub fn grant_handle(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::sec::{
-        ACL_REVISION2, ACCESS_ALLOWED_ACE_TYPE, ACCESS_DENIED_ACE_TYPE, SE_DACL_PRESENT,
-        SE_GROUP_ENABLED, SE_SELF_RELATIVE, WORLD_SID, SecurityDescriptor,
-    };
-    use crate::status::{STATUS_ACCESS_DENIED, STATUS_ACCESS_VIOLATION};
-    use rtl::nt::access::{
-        EVENT_MODIFY_STATE, EVENT_QUERY_STATE, GENERIC_ALL, GENERIC_READ, MAXIMUM_ALLOWED,
-        READ_CONTROL, SYNCHRONIZE,
-    };
     use std::vec::Vec;
 
+    use rtl::nt::access::{
+        EVENT_MODIFY_STATE,
+        EVENT_QUERY_STATE,
+        GENERIC_ALL,
+        GENERIC_READ,
+        MAXIMUM_ALLOWED,
+        READ_CONTROL,
+        SYNCHRONIZE,
+    };
+
     use super::super::access::EVENT_MAPPING;
+    use super::*;
+    use crate::sec::{
+        ACCESS_ALLOWED_ACE_TYPE,
+        ACCESS_DENIED_ACE_TYPE,
+        ACL_REVISION2,
+        SE_DACL_PRESENT,
+        SE_GROUP_ENABLED,
+        SE_SELF_RELATIVE,
+        SecurityDescriptor,
+        WORLD_SID,
+    };
+    use crate::status::{STATUS_ACCESS_DENIED, STATUS_ACCESS_VIOLATION};
 
     // -- the byte builders -------------------------------------------------------
 
@@ -600,7 +616,11 @@ mod tests {
 
         // It grants every kind everything asked, exactly as the kind's mapping grants it.
         let event = ObjectType::Event;
-        for desired in [GENERIC_ALL, MAXIMUM_ALLOWED, EVENT_MODIFY_STATE | SYNCHRONIZE] {
+        for desired in [
+            GENERIC_ALL,
+            MAXIMUM_ALLOWED,
+            EVENT_MODIFY_STATE | SYNCHRONIZE,
+        ] {
             assert_eq!(
                 run_user(event, desired, default.as_slice()),
                 Ok(event.granted(desired)),
@@ -650,7 +670,11 @@ mod tests {
     impl crate::user::syscall::host::UserMemory for Page {
         fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
             let at = pointer.checked_sub(BASE).ok_or(STATUS_ACCESS_VIOLATION)? as usize;
-            bytes.copy_from_slice(self.0.get(at..at + bytes.len()).ok_or(STATUS_ACCESS_VIOLATION)?);
+            bytes.copy_from_slice(
+                self.0
+                    .get(at..at + bytes.len())
+                    .ok_or(STATUS_ACCESS_VIOLATION)?,
+            );
             Ok(())
         }
 
@@ -681,10 +705,7 @@ mod tests {
         let mut header = [0u8; 20];
         assert!(h.write(&mut header));
         page[0x100..0x114].copy_from_slice(&header);
-        (
-            Page(page),
-            BASE + 0x100,
-        )
+        (Page(page), BASE + 0x100)
     }
 
     /// A user-mode capture of the caller's descriptor lands packed self-relative, every range
@@ -717,7 +738,11 @@ mod tests {
         assert!(header.has_control(SE_DACL_PRESENT));
         assert_eq!(header.dacl, 20, "the DACL packed right after the header");
         assert_eq!(header.owner, 20 + 44, "then the owner, dword-aligned");
-        assert_eq!(&bytes[20..28], &dacl[..8], "the ACL's header, size rewritten aligned");
+        assert_eq!(
+            &bytes[20..28],
+            &dacl[..8],
+            "the ACL's header, size rewritten aligned"
+        );
         assert_eq!(
             &bytes[28..64],
             &allowed(READ_CONTROL | EVENT_QUERY_STATE, &user)[..],
@@ -732,10 +757,7 @@ mod tests {
         );
 
         // An unreadable header: the probe's status.
-        assert_eq!(
-            capture_sd(BASE + 0x7F0, true),
-            Err(STATUS_ACCESS_VIOLATION)
-        );
+        assert_eq!(capture_sd(BASE + 0x7F0, true), Err(STATUS_ACCESS_VIOLATION));
         // A misaligned one.
         assert_eq!(
             capture_sd(at + 2, true),
@@ -757,10 +779,7 @@ mod tests {
         page[0x100..0x114].copy_from_slice(&header);
         let memory = Rc::new(RefCell::new(Page(page)));
         let _installed = install(memory);
-        assert_eq!(
-            capture_sd(BASE + 0x100, true),
-            Err(STATUS_ACCESS_VIOLATION)
-        );
+        assert_eq!(capture_sd(BASE + 0x100, true), Err(STATUS_ACCESS_VIOLATION));
         let _ = &mut h;
     }
 
@@ -795,10 +814,7 @@ mod tests {
         );
         let event = ObjectType::Event;
         // GENERIC_ALL maps to EVENT_ALL_ACCESS; the deny leaves EVENT_MODIFY_STATE remaining.
-        assert_eq!(
-            run_user(event, GENERIC_ALL, &d),
-            Err(STATUS_ACCESS_DENIED)
-        );
+        assert_eq!(run_user(event, GENERIC_ALL, &d), Err(STATUS_ACCESS_DENIED));
         // MAXIMUM_ALLOWED asks the most grantable, not everything: the allow's mask, the deny
         // already out of it.
         assert_eq!(
@@ -812,12 +828,19 @@ mod tests {
             Ok(EVENT_MAPPING.read),
             "granted as the mapping reads"
         );
-        assert_eq!(run_user(event, EVENT_MODIFY_STATE, &d), Err(STATUS_ACCESS_DENIED));
+        assert_eq!(
+            run_user(event, EVENT_MODIFY_STATE, &d),
+            Err(STATUS_ACCESS_DENIED)
+        );
         assert_eq!(
             run_user(event, EVENT_QUERY_STATE | SYNCHRONIZE, &d),
             Ok(EVENT_QUERY_STATE | SYNCHRONIZE)
         );
-        assert_eq!(run_user(event, 0, &d), Err(STATUS_ACCESS_DENIED), "an empty ask grants nothing");
+        assert_eq!(
+            run_user(event, 0, &d),
+            Err(STATUS_ACCESS_DENIED),
+            "an empty ask grants nothing"
+        );
     }
 
     /// An open asking for what the descriptor does not grant is ACCESS_DENIED; one asking within
@@ -872,7 +895,12 @@ mod tests {
         let user = user_sid();
         let deny_all = sd(&user, &[denied(0xFFFF_FFFF, &user)]);
         let event = ObjectType::Event;
-        for desired in [GENERIC_ALL, MAXIMUM_ALLOWED, EVENT_MODIFY_STATE | SYNCHRONIZE, 0x1] {
+        for desired in [
+            GENERIC_ALL,
+            MAXIMUM_ALLOWED,
+            EVENT_MODIFY_STATE | SYNCHRONIZE,
+            0x1,
+        ] {
             assert_eq!(
                 run(event, desired, &deny_all, &user, &[], CallerMode::Kernel),
                 Ok(event.granted(desired)),
@@ -890,7 +918,7 @@ mod tests {
     /// attributes, the owner, the privilege set — and a group's allow ACE matches through it.
     #[test]
     fn the_subject_is_the_processs_token() {
-        use crate::se::{TokenBody, ADMINISTRATORS, GROUPS, USER};
+        use crate::se::{ADMINISTRATORS, GROUPS, TokenBody, USER};
         let process = ObjectId {
             kind: ObjectType::Process,
             index: 3,
@@ -934,7 +962,13 @@ mod tests {
         );
         // The default NULL DACL grants the token everything.
         assert_eq!(
-            check_with(&parts, event, GENERIC_ALL, Sd::NULL_DACL.as_slice(), CallerMode::User),
+            check_with(
+                &parts,
+                event,
+                GENERIC_ALL,
+                Sd::NULL_DACL.as_slice(),
+                CallerMode::User
+            ),
             Ok(event.granted(GENERIC_ALL))
         );
     }
@@ -948,11 +982,25 @@ mod tests {
         let event = ObjectType::Event;
         let groups: [(Vec<u8>, u32); 0] = [];
         assert_eq!(
-            run(event, GENERIC_ALL, open.as_slice(), &user, &groups, CallerMode::User),
+            run(
+                event,
+                GENERIC_ALL,
+                open.as_slice(),
+                &user,
+                &groups,
+                CallerMode::User
+            ),
             Ok(event.granted(GENERIC_ALL))
         );
         assert_eq!(
-            run(event, GENERIC_ALL, locked_down.as_slice(), &user, &groups, CallerMode::User),
+            run(
+                event,
+                GENERIC_ALL,
+                locked_down.as_slice(),
+                &user,
+                &groups,
+                CallerMode::User
+            ),
             Err(STATUS_ACCESS_DENIED)
         );
     }
