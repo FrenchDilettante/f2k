@@ -438,6 +438,9 @@ pub fn ext_get_object_w(
             bytes[..answer.len()].copy_from_slice(answer);
             answer.len()
         }
+        Some(OBJ_PEN | OBJ_EXTPEN) if stock_object(object.raw()).is_none() => {
+            return super::pen::get_object(call, object, count, buffer, out);
+        }
         Some(OBJ_BRUSH) if global_brush(object.raw()).is_none() => {
             let brush = super::brush::brush_of(call, object)?;
             let answer = brush.log_brush();

@@ -165,6 +165,7 @@ impl ObjectType {
             | ObjectType::Desktop
             | ObjectType::Dc
             | ObjectType::Brush
+            | ObjectType::Pen
             | ObjectType::Bitmap
             | ObjectType::Font
             | ObjectType::Region => desired,
@@ -200,7 +201,7 @@ mod tests {
 
     use super::*;
 
-    const KINDS: [ObjectType; 18] = [
+    const KINDS: [ObjectType; 19] = [
         ObjectType::Event,
         ObjectType::Semaphore,
         ObjectType::Mutex,
@@ -215,6 +216,7 @@ mod tests {
         ObjectType::Key,
         ObjectType::Dc,
         ObjectType::Brush,
+        ObjectType::Pen,
         ObjectType::Bitmap,
         ObjectType::Font,
         ObjectType::Region,

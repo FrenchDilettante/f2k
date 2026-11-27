@@ -3,6 +3,12 @@
 # rows of letters (or hex for the mix modes). No handle or address prints.
 description = "shapes - CreatePen in each style and width and ExtCreatePen (cosmetic, geometric, end caps, joins) with GetObjectW; MoveToEx/LineTo (the end pixel excluded) and GetCurrentPositionEx; Polyline, Polygon under both fill modes (SetPolyFillMode/GetPolyFillMode), Rectangle, Ellipse and RoundRect with the null pen and the null brush; SetROP2/GetROP2 over every mix mode; all drawn into a DIB section and read back."
 kind = "sectioned"
+gate = true
+
+[pending]
+# F2K fills an ellipse and a rounded rectangle drawn with the null pen close to Windows 2000 but
+# not pixel for pixel: a few edge pixels differ (kernel/src/win32k/stroke.rs, `draw_shape`).
+shapes = "the null pen's Ellipse and RoundRect fills are not yet pixel-exact"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

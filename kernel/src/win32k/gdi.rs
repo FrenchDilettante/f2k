@@ -2,9 +2,9 @@
 //! brushes, bitmaps, fonts, regions), as Windows 2000's GDI keeps its own handle table beside the
 //! processes' object handle tables.
 //!
-//! A GDI object is an object of the object manager ([`crate::ob`]'s Dc, Brush, Bitmap, Font and
-//! Region types), and the table's entry holds its creator's reference on it, never a handle in its
-//! process's handle table: CloseHandle and DuplicateHandle know nothing of GDI objects, and a
+//! A GDI object is an object of the object manager ([`crate::ob`]'s Dc, Brush, Pen, Bitmap, Font
+//! and Region types), and the table's entry holds its creator's reference on it, never a handle in
+//! its process's handle table: CloseHandle and DuplicateHandle know nothing of GDI objects, and a
 //! process's handle count does not include them, as on Windows 2000. The entry names its owner,
 //! the process that made the object, and only the owner finds it: a handle another process
 //! passes along names nothing there (STATUS_INVALID_HANDLE, as Windows 2000's GDI handles are
@@ -13,7 +13,8 @@
 //! process names alike.
 //!
 //! A handle is [`GdiHandle`]'s shape: the slot's index in the low word, the object's kind in bits
-//! 16-19 ([`rtl::gdi::object_handle`]; a DC's clear), the stock bit (23) clear, and the slot's
+//! 16-19 ([`rtl::gdi::object_handle`]; a DC's clear; the entry keeps it, as a pen's is OBJ_PEN or
+//! OBJ_EXTPEN by how it was made), the stock bit (23) clear, and the slot's
 //! uniqueness in bits 24-31, so a deleted object's handle names nothing even once its slot is
 //! taken again (the slot comes back with a uniqueness one more). The slot freed last is reused
 //! first. 16,384 slots at most, Windows 2000's own ceiling, in chunks of one page made as the
@@ -28,7 +29,7 @@
 //! fails (its id's generation moved on), so nothing the table hands out ever names another object.
 
 use rtl::dib::OBJ_BITMAP;
-use rtl::gdi::{object_handle, OBJ_BRUSH, OBJ_FONT, OBJ_REGION};
+use rtl::gdi::{object_handle, OBJ_BRUSH, OBJ_FONT, OBJ_PEN, OBJ_REGION};
 
 use crate::ob::{ObjectId, ObjectType};
 use crate::slots::{per_page, Codec, GdiHandle, Inline, Pages, Record, Slots};
@@ -40,13 +41,26 @@ pub const DC_KIND: u32 = 0;
 /// and the stock bit.
 const TYPE_BITS: u32 = 0x00FF_0000;
 
-/// A table entry: the object (its creator's reference, which the entry holds) and its owner, the
-/// process that made it, by its object's index.
+/// A table entry: the object (its creator's reference, which the entry holds), its owner, the
+/// process that made it, by its object's index (the low byte: a process's index is below 64), and
+/// the kind its handle carries (the high byte), in one word so an entry keeps to its 16-byte slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GdiEntry {
     object: ObjectId,
-    owner: u16,
+    owner_kind: u16,
 }
+
+impl GdiEntry {
+    fn owner(&self) -> u16 {
+        self.owner_kind & 0xFF
+    }
+
+    fn kind(&self) -> u32 {
+        u32::from(self.owner_kind >> 8)
+    }
+}
+
+const _: () = assert!(crate::process::MAX_PROCESSES <= 0x100);
 
 // SAFETY: writes a whole entry (an id that names nothing, generation 0).
 unsafe impl Record for GdiEntry {
@@ -59,7 +73,7 @@ unsafe impl Record for GdiEntry {
                     index: 0,
                     generation: 0,
                 },
-                owner: 0,
+                owner_kind: 0,
             })
         };
     }
@@ -78,6 +92,7 @@ pub const fn kind_bits(kind: ObjectType) -> Option<u32> {
     match kind {
         ObjectType::Dc => Some(DC_KIND),
         ObjectType::Brush => Some(OBJ_BRUSH),
+        ObjectType::Pen => Some(OBJ_PEN),
         ObjectType::Bitmap => Some(OBJ_BITMAP),
         ObjectType::Font => Some(OBJ_FONT),
         ObjectType::Region => Some(OBJ_REGION),
@@ -113,8 +128,26 @@ impl GdiTable {
     /// `object` is no GDI object's.
     pub fn insert(&mut self, owner: u16, object: ObjectId, pages: &impl Pages) -> Option<u32> {
         let kind = kind_bits(object.kind).expect("a GDI object");
+        self.insert_as(owner, object, kind, pages)
+    }
+
+    /// [`GdiTable::insert`], the handle carrying the kind `kind` (an extended pen's OBJ_EXTPEN,
+    /// where its object's type says OBJ_PEN).
+    pub fn insert_as(
+        &mut self,
+        owner: u16,
+        object: ObjectId,
+        kind: u32,
+        pages: &impl Pages,
+    ) -> Option<u32> {
+        if owner > 0xFF || kind > 0xFF {
+            return None;
+        }
         let (id, entry) = self.slots.allocate_or_grow(0, pages).ok()?;
-        *entry = GdiEntry { object, owner };
+        *entry = GdiEntry {
+            object,
+            owner_kind: owner | ((kind as u16) << 8),
+        };
         Some(object_handle(kind, id))
     }
 
@@ -123,8 +156,8 @@ impl GdiTable {
     /// deleted object's, a global object's, or one past the table.
     pub fn find(&self, owner: u16, handle: u32) -> Option<ObjectId> {
         let entry = self.slots.get(handle)?;
-        let kind = kind_bits(entry.object.kind)?;
-        (entry.owner == owner && handle & TYPE_BITS == object_handle(kind, 0))
+        let kind = entry.kind();
+        (entry.owner() == owner && handle & TYPE_BITS == object_handle(kind, 0))
             .then_some(entry.object)
     }
 
@@ -147,7 +180,7 @@ impl GdiTable {
             if count == room {
                 break;
             }
-            if entry.owner == owner {
+            if entry.owner() == owner {
                 handles[count] = id;
                 out[count] = Some(entry.object);
                 count += 1;
@@ -169,7 +202,7 @@ impl GdiTable {
     pub fn owned(&self, owner: u16) -> usize {
         self.slots
             .iter()
-            .filter(|(_, entry)| entry.owner == owner)
+            .filter(|(_, entry)| entry.owner() == owner)
             .count()
     }
 }
@@ -219,12 +252,24 @@ mod target {
         handle
     }
 
+    /// [`insert`], the handle carrying the kind `kind` ([`GdiTable::insert_as`]).
+    pub fn insert_as(object: ObjectId, kind: u32) -> Option<u32> {
+        let owner = owner();
+        let handle = with_table(|table| table.insert_as(owner, object, kind, &KERNEL_PAGES));
+        if handle.is_none() {
+            crate::ob::release(object);
+        }
+        handle
+    }
+
     /// The object of `kind` (its handle's kind bits: [`DC_KIND`], OBJ_BRUSH...) the calling
     /// process's `handle` names; none for a handle naming nothing of that kind there.
     pub fn object(handle: u32, kind: u32) -> Option<ObjectId> {
+        if handle & TYPE_BITS != object_handle(kind, 0) {
+            return None;
+        }
         let owner = owner();
         with_table(|table| table.find(owner, handle))
-            .filter(|object| kind_bits(object.kind) == Some(kind))
     }
 
     /// [`object`], referenced for as long as the caller keeps the reference (none when it went
@@ -244,13 +289,10 @@ mod target {
     /// names none.
     pub fn delete(handle: u32, kind: u32) -> bool {
         let owner = owner();
-        let object = with_table(|table| {
-            let object = table.find(owner, handle)?;
-            if kind_bits(object.kind) != Some(kind) {
-                return None;
-            }
-            table.remove(owner, handle)
-        });
+        if handle & TYPE_BITS != object_handle(kind, 0) {
+            return false;
+        }
+        let object = with_table(|table| table.remove(owner, handle));
         match object {
             Some(object) => {
                 crate::ob::release(object);
@@ -341,6 +383,24 @@ mod tests {
             assert_eq!(handle & crate::slots::GDI_STOCK, 0);
             assert_eq!(rtl::gdi::global_object_kind(handle), None);
         }
+    }
+
+    /// A pen's handle carries the kind it was made as: OBJ_PEN for CreatePen's, OBJ_EXTPEN for
+    /// ExtCreatePen's, both of the Pen type; the other kind's bits name nothing.
+    #[test]
+    fn a_pens_handle_carries_its_kind() {
+        let pages = HostPages::new();
+        let mut table = GdiTable::new();
+        let pen = object(ObjectType::Pen, 1);
+        let plain = table.insert(ONE, pen, &pages).unwrap();
+        let extended = table
+            .insert_as(ONE, pen, rtl::gdi::OBJ_EXTPEN, &pages)
+            .unwrap();
+        assert_eq!(rtl::gdi::object_kind(plain), Some(OBJ_PEN));
+        assert_eq!(rtl::gdi::object_kind(extended), Some(rtl::gdi::OBJ_EXTPEN));
+        assert_eq!(table.find(ONE, extended), Some(pen));
+        let swapped = rtl::gdi::object_handle(OBJ_PEN, extended & 0xFF00_FFFF);
+        assert_eq!(table.find(ONE, swapped), None);
     }
 
     /// Only the owner finds its objects: another process's look-up, its delete and its teardown

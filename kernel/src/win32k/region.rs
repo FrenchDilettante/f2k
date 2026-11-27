@@ -45,8 +45,8 @@
 //!   rectangle, its edges put in order (an empty one is the empty region);
 //! - NtGdiPolyPolyDraw(u32 Dc, ptr Points, ptr Counts, u32 Count, u32 Function, ptr<u32> Result):
 //!   with I_POLYPOLYRGN, a region of the `Count` polygons (`Dc` its fill mode, as Windows 2000's
-//!   gdi32 passes it); the other functions draw, which F2K does not yet do
-//!   (STATUS_NOT_IMPLEMENTED);
+//!   gdi32 passes it); I_POLYPOLYGON and I_POLYPOLYLINE draw ([`super::shape::poly_poly_draw`]),
+//!   the others are STATUS_NOT_IMPLEMENTED;
 //! - NtGdiSetRectRgn(handle Region, i32 Left, i32 Top, i32 Right, i32 Bottom): the region made the
 //!   rectangle;
 //! - NtGdiCombineRgn(handle Dest, handle Source1, handle Source2, u32 Mode, ptr<u32> Complexity):
@@ -944,6 +944,10 @@ pub fn poly_poly_draw(
     function: u32,
     out: UserPtr<u32>,
 ) -> NtResult {
+    if matches!(function, I_POLYPOLYGON | I_POLYPOLYLINE) {
+        let dc = Handle(dc);
+        return super::shape::poly_poly_draw(call, dc, points, counts, count, function, out);
+    }
     if function != I_POLYPOLYRGN {
         return Err(STATUS_NOT_IMPLEMENTED);
     }

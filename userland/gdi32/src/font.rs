@@ -573,8 +573,11 @@ pub unsafe extern "system" fn get_object_a(object: usize, size: i32, buffer: *mu
     if object_kind(object as u32) == Some(rtl::dib::OBJ_BITMAP) {
         return crate::bitmap::get_object(object, size, buffer as usize);
     }
-    if matches!(object_of(object as u32), Some((OBJ_BRUSH, _))) {
-        // A brush's LOGBRUSH has no string: the wide form's.
+    if matches!(
+        object_of(object as u32),
+        Some((OBJ_BRUSH | OBJ_PEN | OBJ_EXTPEN, _))
+    ) {
+        // A brush's LOGBRUSH and a pen's LOGPEN or EXTLOGPEN have no string: the wide form's.
         return get_object_w(object, size, buffer as usize);
     }
     if size < 0 {

@@ -25,6 +25,7 @@
 pub mod bitmap;
 pub mod brush;
 pub mod dc;
+pub mod draw;
 pub mod font;
 pub mod imports;
 pub mod region;

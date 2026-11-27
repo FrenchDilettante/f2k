@@ -16,14 +16,14 @@
 
 use core::ffi::CStr;
 
-use rtl::gdi::{Abc, FontEnumRecord, LogFontW, Size, TextMetricW};
+use rtl::gdi::{Abc, FontEnumRecord, LogFontW, Point, Size, TextMetricW};
 use rtl::heap::HEAP_ZERO_MEMORY;
 use rtl::status::{checked, NtStatus};
 
 #[cfg(all(target_arch = "x86", not(test)))]
 mod raw {
     use rtl::dib::BitmapDesc;
-    use rtl::gdi::{Abc, FontEnumRecord, LogFontW, Rect, Size, TextMetricW};
+    use rtl::gdi::{Abc, FontEnumRecord, LogFontW, Point, Rect, Size, TextMetricW};
 
     #[link(
         name = "kernel32",
@@ -239,6 +239,39 @@ mod raw {
         pub fn NtGdiRectVisible(dc: usize, rect: *const Rect, visible: *mut u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtGdiPatBlt"]
         pub fn NtGdiPatBlt(dc: usize, x: i32, y: i32, width: i32, height: i32, rop: u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiCreatePen"]
+        pub fn NtGdiCreatePen(style: i32, width: i32, color: u32, pen: *mut u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiExtCreatePen"]
+        pub fn NtGdiExtCreatePen(
+            style: u32,
+            width: u32,
+            brush_style: u32,
+            color: u32,
+            hatch: u32,
+            count: u32,
+            entries: *const u32,
+            pen: *mut u32,
+        ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiMoveTo"]
+        pub fn NtGdiMoveTo(dc: usize, x: i32, y: i32, previous: *mut Point) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiGetDCPoint"]
+        pub fn NtGdiGetDCPoint(dc: usize, which: u32, point: *mut Point) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiLineTo"]
+        pub fn NtGdiLineTo(dc: usize, x: i32, y: i32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiRectangle"]
+        pub fn NtGdiRectangle(dc: usize, left: i32, top: i32, right: i32, bottom: i32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiEllipse"]
+        pub fn NtGdiEllipse(dc: usize, left: i32, top: i32, right: i32, bottom: i32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtGdiRoundRect"]
+        pub fn NtGdiRoundRect(
+            dc: usize,
+            left: i32,
+            top: i32,
+            right: i32,
+            bottom: i32,
+            width: i32,
+            height: i32,
+        ) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtGdiCreateCompatibleDC"]
         pub fn NtGdiCreateCompatibleDC(dc: usize, memory_dc: *mut u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtGdiCreateBitmap"]
@@ -592,6 +625,115 @@ pub fn pat_blt(
 ) -> Result<(), NtStatus> {
     // SAFETY: no pointers.
     checked(unsafe { raw::NtGdiPatBlt(dc, x, y, width, height, rop) })
+}
+
+// --- win32k's pens, lines and shapes -------------------------------------------------------------
+
+/// NtGdiCreatePen: a pen of `style`, `width` and `color`, its handle.
+pub fn create_pen(style: i32, width: i32, color: u32) -> Result<u32, NtStatus> {
+    let mut pen = 0u32;
+    // SAFETY: the service writes the handle into the local.
+    checked(unsafe { raw::NtGdiCreatePen(style, width, color, &mut pen) })?;
+    Ok(pen)
+}
+
+/// NtGdiExtCreatePen: an extended pen of `style` and `width`, its brush's fields, and `count` user
+/// style entries at `entries`; its handle.
+pub fn ext_create_pen(
+    style: u32,
+    width: u32,
+    brush: rtl::dib::LogBrush,
+    count: u32,
+    entries: Caller,
+) -> Result<u32, NtStatus> {
+    let mut pen = 0u32;
+    // SAFETY: the kernel reads the entries through its fault-tolerant copies, and writes the
+    // handle into the local.
+    checked(unsafe {
+        raw::NtGdiExtCreatePen(
+            style,
+            width,
+            brush.style,
+            brush.color,
+            brush.hatch,
+            count,
+            entries.0 as *const u32,
+            &mut pen,
+        )
+    })?;
+    Ok(pen)
+}
+
+/// NtGdiMoveTo: `dc`'s current position moved to (`x`, `y`), the one it had into the POINT at
+/// `previous` (none: a null address).
+pub fn move_to(dc: usize, x: i32, y: i32, previous: Caller) -> Result<(), NtStatus> {
+    // SAFETY: the kernel writes the POINT through its fault-tolerant copies.
+    checked(unsafe { raw::NtGdiMoveTo(dc, x, y, previous.0 as *mut Point) })
+}
+
+/// NtGdiGetDCPoint: `dc`'s point `which` (rtl::gdi's DCPT_ indexes) into the POINT at `point`.
+pub fn dc_point(dc: usize, which: u32, point: Caller) -> Result<(), NtStatus> {
+    // SAFETY: the kernel writes the POINT through its fault-tolerant copies.
+    checked(unsafe { raw::NtGdiGetDCPoint(dc, which, point.0 as *mut Point) })
+}
+
+/// NtGdiLineTo: a line from `dc`'s current position to (`x`, `y`), its new current position.
+pub fn line_to(dc: usize, x: i32, y: i32) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe { raw::NtGdiLineTo(dc, x, y) })
+}
+
+/// NtGdiRectangle, NtGdiEllipse and NtGdiRoundRect (`corner` its corners' ellipse's size): the
+/// shape drawn in the box.
+pub fn shape(
+    kind: ShapeKind,
+    dc: usize,
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+) -> Result<(), NtStatus> {
+    // SAFETY: no pointers.
+    checked(unsafe {
+        match kind {
+            ShapeKind::Rectangle => raw::NtGdiRectangle(dc, left, top, right, bottom),
+            ShapeKind::Ellipse => raw::NtGdiEllipse(dc, left, top, right, bottom),
+            ShapeKind::RoundRect(width, height) => {
+                raw::NtGdiRoundRect(dc, left, top, right, bottom, width, height)
+            }
+        }
+    })
+}
+
+/// The shapes a box makes, as [`shape`] draws them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ShapeKind {
+    Rectangle,
+    Ellipse,
+    RoundRect(i32, i32),
+}
+
+/// NtGdiPolyPolyDraw's I_POLYPOLYGON or I_POLYPOLYLINE (`function`): the figures whose point
+/// counts are `counts` drawn into `dc`, their points at `points`.
+pub fn poly_poly_draw(
+    dc: usize,
+    points: Caller,
+    counts: &[u32],
+    function: u32,
+) -> Result<(), NtStatus> {
+    let mut result = 0u32;
+    // SAFETY: the kernel reads the points through its fault-tolerant copies, the counts from the
+    // slice, and writes the result into the local.
+    checked(unsafe {
+        raw::NtGdiPolyPolyDraw(
+            dc as u32,
+            points.0 as *const u8,
+            counts.as_ptr(),
+            counts.len() as u32,
+            function,
+            &mut result,
+        )
+    })
 }
 
 // --- win32k's regions ----------------------------------------------------------------------------
@@ -1479,6 +1621,65 @@ pub mod host {
         _: u32,
         _: u32,
         _: *mut u32,
+    ) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    // The pens and shapes: none on the host (the kernel's tests drive the rasterizer).
+    pub unsafe extern "system" fn NtGdiCreatePen(_: i32, _: i32, _: u32, _: *mut u32) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub unsafe extern "system" fn NtGdiExtCreatePen(
+        _: u32,
+        _: u32,
+        _: u32,
+        _: u32,
+        _: u32,
+        _: u32,
+        _: *const u32,
+        _: *mut u32,
+    ) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiMoveTo(_: usize, _: i32, _: i32, _: *mut Point) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiGetDCPoint(_: usize, _: u32, _: *mut Point) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiLineTo(_: usize, _: i32, _: i32) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiRectangle(_: usize, _: i32, _: i32, _: i32, _: i32) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiEllipse(_: usize, _: i32, _: i32, _: i32, _: i32) -> u32 {
+        served();
+        STATUS_NOT_IMPLEMENTED
+    }
+
+    pub unsafe extern "system" fn NtGdiRoundRect(
+        _: usize,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: i32,
+        _: i32,
     ) -> u32 {
         served();
         STATUS_NOT_IMPLEMENTED

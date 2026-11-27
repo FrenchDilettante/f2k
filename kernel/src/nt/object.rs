@@ -400,6 +400,7 @@ pub fn type_name(kind: ObjectType) -> &'static str {
         ObjectType::Key => "Key",
         ObjectType::Dc => "Dc",
         ObjectType::Brush => "Brush",
+        ObjectType::Pen => "Pen",
         ObjectType::Bitmap => "Bitmap",
         ObjectType::Font => "Font",
         ObjectType::Region => "Region",
@@ -692,6 +693,7 @@ fn object_name(entry: Entry, out: &mut [u16]) -> Result<usize, NtStatus> {
         | ObjectType::Key
         | ObjectType::Dc
         | ObjectType::Brush
+        | ObjectType::Pen
         | ObjectType::Bitmap
         | ObjectType::Font
         | ObjectType::Region => Err(STATUS_NOT_IMPLEMENTED),

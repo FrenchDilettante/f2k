@@ -28,9 +28,11 @@
 //! - the stock objects as constant handles ([`rtl::gdi::stock_handle`]), which a DC selects by
 //!   kind; brushes as objects and global brushes ([`super::brush`]), the DC keeping the selected
 //!   brush's fill beside its handle; font objects ([`super::fonts`]), the DC keeping the selected
-//!   font's object id beside its handle; no pens but the stock ones (the seam where they land: an
-//!   object's handle carries its kind, [`rtl::gdi::object_handle`], and a selection of an object of
-//!   another kind answers STATUS_OBJECT_TYPE_MISMATCH);
+//!   font's object id beside its handle; the stock pens and pen objects ([`super::pen`]), the DC
+//!   keeping a copy of the selected pen beside its handle (a selection of an object of another kind
+//!   answers STATUS_OBJECT_TYPE_MISMATCH);
+//! - the current position, the mix mode and the polygon fill mode, which the lines and shapes draw
+//!   with ([`super::shape`]);
 //! - the stock fonts are the built-in 8x16 one ([`super::font`]): ExtTextOutW draws its glyphs at
 //!   (x, y) as their cells' top left, glyph pixels in the text color, the cells' other pixels in
 //!   the background color when the background mode is OPAQUE (TRANSPARENT leaves them), every pixel
@@ -75,9 +77,9 @@
 //! - NtUserGetDC(handle Window, ptr<u32> Dc), NtUserGetDCEx(handle Window, handle Region, u32
 //!   Flags, ptr<u32> Dc), NtUserGetWindowDC(handle Window, ptr<u32> Dc): the window's DC (the
 //!   screen's for no window); STATUS_INVALID_HANDLE for a handle that names no window;
-//! - NtGdiDeleteObjectApp(handle Object): a DC's, a brush's, a font's or a bitmap's handle closed
-//!   (a bitmap a DC holds is not: STATUS_CANNOT_DELETE); a global object (a stock object, a global
-//!   brush, the default bitmap) is never deleted (the call succeeds);
+//! - NtGdiDeleteObjectApp(handle Object): a DC's, a brush's, a pen's, a font's or a bitmap's handle
+//!   closed (a bitmap a DC holds is not: STATUS_CANNOT_DELETE); a global object (a stock object, a
+//!   global brush, the default bitmap) is never deleted (the call succeeds);
 //! - NtGdiGetStockObject(u32 Index, ptr<u32> Object): the stock object's handle;
 //! - NtGdiSelectBrush, NtGdiSelectPen, NtGdiSelectFont(handle Dc, handle Object, ptr<u32>
 //!   Previous): the object selected, the one it replaces answered (NtGdiSelectFont takes a font
@@ -85,8 +87,9 @@
 //!   STATUS_INVALID_HANDLE for a handle that names none;
 //! - NtGdiGetDCDword(handle Dc, u32 Index, ptr<u32> Value) and NtGdiGetAndSetDCDword(handle Dc, u32
 //!   Index, u32 Value, ptr<u32> Previous): the text color, the background color, the background
-//!   mode, the stretch mode, the brush origin's coordinates, the window origin's, and (read alone)
-//!   the DC's kind, OBJ_DC or OBJ_MEMDC ([`rtl::gdi`]'s DC_ indexes);
+//!   mode, the stretch mode, the brush origin's coordinates, the window origin's, the mix mode, the
+//!   polygon fill mode, and (read alone) the DC's kind, OBJ_DC or OBJ_MEMDC ([`rtl::gdi`]'s DC_
+//!   indexes);
 //! - NtGdiExtTextOutW(handle Dc, i32 X, i32 Y, u32 Options, ptr Rect, ptr String, u32 Count, ptr
 //!   Dx): the text drawn (`Dx`, when given, the advance of each character), and NtGdiEngTextOut,
 //!   the engine's entry, the same;
@@ -156,6 +159,14 @@ pub struct Dc {
     pub font: u32,
     /// What the selected brush paints.
     pub brush_fill: Fill,
+    /// The selected pen, a copy of it.
+    pub pen_state: super::pen::Pen,
+    /// The current position (MoveToEx's, LineTo's), logical.
+    pub current: (i32, i32),
+    /// The mix mode (SetROP2's) and the polygon fill mode (SetPolyFillMode's), as set: any value
+    /// is taken.
+    pub rop2: u32,
+    pub fill_mode: u32,
     /// The font object selected, beside its handle: none for a stock font.
     pub font_object: Option<crate::ob::ObjectId>,
     /// Whether it is a memory DC (CreateCompatibleDC's): it draws on its selected bitmap, whose
@@ -192,6 +203,10 @@ impl Dc {
             pen: 0,
             font: 0,
             brush_fill: Fill::Null,
+            pen_state: super::pen::Pen::none(),
+            current: (0, 0),
+            rop2: 0,
+            fill_mode: 0,
             font_object: None,
             memory: false,
             bitmap: 0,
@@ -221,6 +236,10 @@ impl Dc {
             pen: stock(BLACK_PEN),
             font: stock(SYSTEM_FONT),
             brush_fill: Fill::of_global(GlobalBrush::Stock(WHITE_BRUSH)),
+            pen_state: super::pen::Pen::stock(BLACK_PEN),
+            current: (0, 0),
+            rop2: DEFAULT_ROP2,
+            fill_mode: DEFAULT_POLY_FILL_MODE,
             font_object: None,
             memory: false,
             bitmap: DEFAULT_BITMAP,
@@ -307,6 +326,8 @@ impl Dc {
             DC_BRUSH_ORG_Y => Some(self.brush_org.1 as u32),
             DC_WINDOW_ORG_X => Some(self.window_org.0 as u32),
             DC_WINDOW_ORG_Y => Some(self.window_org.1 as u32),
+            DC_ROP2 => Some(self.rop2),
+            DC_POLY_FILL_MODE => Some(self.fill_mode),
             DC_OBJECT_TYPE => Some(if self.memory {
                 rtl::dib::OBJ_MEMDC
             } else {
@@ -335,6 +356,8 @@ impl Dc {
             DC_BK_COLOR => &mut self.bk_color,
             DC_BK_MODE if matches!(value, TRANSPARENT | OPAQUE) => &mut self.bk_mode,
             DC_STRETCH_MODE => &mut self.stretch_mode,
+            DC_ROP2 => &mut self.rop2,
+            DC_POLY_FILL_MODE => &mut self.fill_mode,
             DC_BRUSH_ORG_X => {
                 return Some(core::mem::replace(&mut self.brush_org.0, value as i32) as u32)
             }
@@ -364,7 +387,10 @@ impl Dc {
             return Some(self.select_brush(handle, Fill::of_global(GlobalBrush::Stock(index))));
         }
         let slot = match kind {
-            OBJ_PEN => &mut self.pen,
+            OBJ_PEN => {
+                self.pen_state = super::pen::Pen::stock(index);
+                &mut self.pen
+            }
             OBJ_FONT => {
                 self.font_object = None;
                 &mut self.font
@@ -378,6 +404,12 @@ impl Dc {
     pub fn select_brush(&mut self, handle: u32, fill: Fill) -> u32 {
         self.brush_fill = fill;
         core::mem::replace(&mut self.brush, handle)
+    }
+
+    /// Select the pen `handle`, which draws as `pen`, answering the pen it replaces.
+    pub fn select_pen(&mut self, handle: u32, pen: super::pen::Pen) -> u32 {
+        self.pen_state = pen;
+        core::mem::replace(&mut self.pen, handle)
     }
 
     /// Select the font object `id`, whose handle is `handle`, answering the font it replaces (a
@@ -760,9 +792,14 @@ pub fn select_brush(call: &mut NtCall, dc: Handle, object: Handle, out: UserPtr<
     Ok(STATUS_SUCCESS)
 }
 
-/// NtGdiSelectPen(Dc, Pen, Previous).
+/// NtGdiSelectPen(Dc, Pen, Previous): a stock pen or a pen object, either kind (see
+/// [`super::pen::pen_of`]).
 pub fn select_pen(call: &mut NtCall, dc: Handle, object: Handle, out: UserPtr<u32>) -> NtResult {
-    select(call, dc, OBJ_PEN, object, out)
+    dc_of(call, dc)?;
+    let pen = super::pen::pen_of(call, object)?;
+    let previous = update_dc(call, dc, |dc| dc.select_pen(object.raw(), pen))?;
+    out.write(previous)?;
+    Ok(STATUS_SUCCESS)
 }
 
 /// NtGdiSelectFont(Dc, Font, Previous): a font object the calling process's `object` names (a
@@ -1281,6 +1318,7 @@ fn close_object(call: &mut NtCall, handle: Handle) -> Result<(), NtStatus> {
         Some((OBJ_FONT, _)) => super::fonts::delete_font(call, handle),
         Some((rtl::dib::OBJ_BITMAP, _)) => super::bitmap::delete_bitmap(call, handle.raw()),
         Some((OBJ_REGION, _)) if super::gdi::delete(handle.raw(), OBJ_REGION) => Ok(()),
+        Some((OBJ_PEN | OBJ_EXTPEN, _)) if super::pen::close_pen(call, handle.raw()) => Ok(()),
         Some(_) => Err(STATUS_INVALID_HANDLE),
         None => close_dc(call, handle),
     }
@@ -1449,12 +1487,18 @@ mod tests {
         let before = dc;
         assert_eq!(dc.set_attribute(DC_BK_MODE, 3), None);
         assert_eq!(dc.set_attribute(DC_BK_MODE, 0), None);
-        assert_eq!(dc.set_attribute(9, 1), None);
+        assert_eq!(dc.set_attribute(99, 1), None);
         assert_eq!(dc, before);
         assert_eq!(dc.attribute(DC_TEXT_COLOR), Some(0x00_00FF));
         assert_eq!(dc.attribute(DC_BK_COLOR), Some(0xFF_0000));
         assert_eq!(dc.attribute(DC_BK_MODE), Some(OPAQUE));
-        assert_eq!(dc.attribute(9), None);
+        assert_eq!(dc.attribute(99), None);
+        // The mix mode and the fill mode take any value, as the shapes capture's SetROP2(17) and
+        // SetPolyFillMode(3) do.
+        assert_eq!(dc.set_attribute(DC_ROP2, 17), Some(R2_COPYPEN));
+        assert_eq!(dc.attribute(DC_ROP2), Some(17));
+        assert_eq!(dc.set_attribute(DC_POLY_FILL_MODE, 3), Some(ALTERNATE));
+        assert_eq!(dc.attribute(DC_POLY_FILL_MODE), Some(3));
     }
 
     /// The bitmaps capture's attributes: the stretch mode starts BLACKONWHITE and takes any value

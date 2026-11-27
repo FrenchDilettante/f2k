@@ -6,13 +6,13 @@
 # and background colors and the background mode, text drawn with the built-in font or a TrueType
 # font and its metrics, the TrueType fonts themselves (loading, font objects, their metrics, data,
 # glyphs and enumeration), single pixels, memory DCs, bitmaps and DIB sections, the blits and
-# pattern brushes, region objects and FillRgn; and stubs for what the corpus fixtures import beyond
-# it (pens, clipping, mapping modes). Its own code runs over ntdll, kernel32 and user32 as Windows
+# pattern brushes, region objects and FillRgn, clipping, pens, lines and shapes and the mix modes;
+# and stubs for what the corpus fixtures import beyond it (mapping modes). Its own code runs over ntdll, kernel32 and user32 as Windows
 # 2000's gdi32 imports them, and enters the kernel itself, as Windows 2000's does: through win32k's
 # services (`impl = { syscall = "<the kernel's typed handler>" }`, `internal = true`: its own calls,
 # never exported; see userland/user32/exports.toml for the stubs' shape). Their argument lists are
 # F2K's own (only gdi32 calls them; the kernel's handlers in kernel/src/win32k/dc.rs, brush.rs,
-# bitmap.rs, region.rs and fonts describe them). The rest of the records are catalogued from
+# pen.rs, shape.rs, bitmap.rs, region.rs and fonts describe them). The rest of the records are catalogued from
 # GDI32.dll 5.0.2195.6660's export table (scripts/catalogue_exports.py): their name and ordinal.
 # Implementing one gives it its group, prototype and implementation.
 
@@ -326,7 +326,7 @@ fails = "0"
 name = "GetROP2"
 group = "attributes"
 args = ["handle hdc"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetROP2" }
 ordinal = 354
 fails = "0"
 
@@ -334,15 +334,16 @@ fails = "0"
 name = "SetROP2"
 group = "attributes"
 args = ["handle hdc", "i32 fnDrawMode"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetROP2" }
 ordinal = 500
 fails = "0"
+note = "any mode is taken, as Windows 2000's does (the shapes capture's SetROP2(0) and SetROP2(17)); the previous one answered"
 
 [[export]]
 name = "GetPolyFillMode"
 group = "attributes"
 args = ["handle hdc"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetPolyFillMode" }
 ordinal = 353
 fails = "0"
 
@@ -350,9 +351,10 @@ fails = "0"
 name = "SetPolyFillMode"
 group = "attributes"
 args = ["handle hdc", "i32 iPolyFillMode"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SetPolyFillMode" }
 ordinal = 499
 fails = "0"
+note = "any mode is taken, as Windows 2000's does (the shapes capture's SetPolyFillMode(3)); the previous one answered"
 
 # --- text -----------------------------------------------------------------------------------------
 
@@ -1353,23 +1355,25 @@ internal = true
 name = "CreatePen"
 group = "drawing"
 args = ["i32 fnPenStyle", "i32 nWidth", "u32 crColor"]
-impl = { stub = "not yet implemented" }
+impl = { native = "CreatePen" }
 ordinal = 70
 fails = "NULL"
+note = "a style past PS_INSIDEFRAME is PS_SOLID; wider than 1, a geometric pen with round caps and joins, solid whatever its style"
 
 [[export]]
 name = "ExtCreatePen"
 group = "drawing"
 args = ["u32 dwPenStyle", "u32 dwWidth", "ptr lplb", "u32 dwStyleCount", "ptr lpStyle"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ExtCreatePen" }
 ordinal = 158
 fails = "NULL"
+note = "cosmetic (width 1, a solid brush) or geometric; the brush's color alone draws (a hatched brush's lines are solid)"
 
 [[export]]
 name = "Rectangle"
 group = "drawing"
 args = ["handle hdc", "i32 nLeftRect", "i32 nTopRect", "i32 nRightRect", "i32 nBottomRect"]
-impl = { stub = "not yet implemented" }
+impl = { native = "Rectangle" }
 ordinal = 439
 fails = "FALSE"
 
@@ -1377,15 +1381,16 @@ fails = "FALSE"
 name = "Ellipse"
 group = "drawing"
 args = ["handle hdc", "i32 nLeftRect", "i32 nTopRect", "i32 nRightRect", "i32 nBottomRect"]
-impl = { stub = "not yet implemented" }
+impl = { native = "Ellipse" }
 ordinal = 90
 fails = "FALSE"
+note = "with the null pen, the fill is close to Windows 2000's but not pixel-exact"
 
 [[export]]
 name = "GetCurrentPositionEx"
 group = "drawing"
 args = ["handle hdc", "ptr lpPoint"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetCurrentPositionEx" }
 ordinal = 296
 fails = "FALSE"
 
@@ -1393,7 +1398,7 @@ fails = "FALSE"
 name = "LineTo"
 group = "drawing"
 args = ["handle hdc", "i32 nXEnd", "i32 nYEnd"]
-impl = { stub = "not yet implemented" }
+impl = { native = "LineTo" }
 ordinal = 398
 fails = "FALSE"
 
@@ -1401,7 +1406,7 @@ fails = "FALSE"
 name = "MoveToEx"
 group = "drawing"
 args = ["handle hdc", "i32 X", "i32 Y", "ptr lpPoint"]
-impl = { stub = "not yet implemented" }
+impl = { native = "MoveToEx" }
 ordinal = 402
 fails = "FALSE"
 
@@ -1409,7 +1414,7 @@ fails = "FALSE"
 name = "Polygon"
 group = "drawing"
 args = ["handle hdc", "ptr lpPoints", "i32 nCount"]
-impl = { stub = "not yet implemented" }
+impl = { native = "Polygon" }
 ordinal = 430
 fails = "FALSE"
 
@@ -1417,7 +1422,7 @@ fails = "FALSE"
 name = "Polyline"
 group = "drawing"
 args = ["handle hdc", "ptr lppt", "i32 cPoints"]
-impl = { stub = "not yet implemented" }
+impl = { native = "Polyline" }
 ordinal = 431
 fails = "FALSE"
 
@@ -1428,9 +1433,72 @@ args = [
     "handle hdc", "i32 nLeftRect", "i32 nTopRect", "i32 nRightRect", "i32 nBottomRect",
     "i32 nWidth", "i32 nHeight",
 ]
-impl = { stub = "not yet implemented" }
+impl = { native = "RoundRect" }
 ordinal = 450
 fails = "FALSE"
+note = "with the null pen, the fill is close to Windows 2000's but not pixel-exact"
+
+# win32k's services behind them: gdi32's internal calls (NtGdiPolyPolyDraw draws Polygon and
+# Polyline: see the regions group).
+
+[[export]]
+name = "NtGdiCreatePen"
+group = "drawing"
+args = ["i32 Style", "i32 Width", "u32 Color", "ptr<u32> Pen"]
+impl = { syscall = "crate::win32k::pen::create_pen" }
+internal = true
+
+[[export]]
+name = "NtGdiExtCreatePen"
+group = "drawing"
+args = [
+    "u32 Style", "u32 Width", "u32 BrushStyle", "u32 Color", "u32 Hatch", "u32 Count", "ptr Entries",
+    "ptr<u32> Pen",
+]
+impl = { syscall = "crate::win32k::pen::ext_create_pen" }
+internal = true
+
+[[export]]
+name = "NtGdiMoveTo"
+group = "drawing"
+args = ["handle Dc", "i32 X", "i32 Y", "ptr Previous"]
+impl = { syscall = "crate::win32k::shape::move_to" }
+internal = true
+
+[[export]]
+name = "NtGdiGetDCPoint"
+group = "drawing"
+args = ["handle Dc", "u32 Which", "ptr Point"]
+impl = { syscall = "crate::win32k::shape::get_dc_point" }
+internal = true
+
+[[export]]
+name = "NtGdiLineTo"
+group = "drawing"
+args = ["handle Dc", "i32 X", "i32 Y"]
+impl = { syscall = "crate::win32k::shape::line_to" }
+internal = true
+
+[[export]]
+name = "NtGdiRectangle"
+group = "drawing"
+args = ["handle Dc", "i32 Left", "i32 Top", "i32 Right", "i32 Bottom"]
+impl = { syscall = "crate::win32k::shape::rectangle" }
+internal = true
+
+[[export]]
+name = "NtGdiEllipse"
+group = "drawing"
+args = ["handle Dc", "i32 Left", "i32 Top", "i32 Right", "i32 Bottom"]
+impl = { syscall = "crate::win32k::shape::ellipse" }
+internal = true
+
+[[export]]
+name = "NtGdiRoundRect"
+group = "drawing"
+args = ["handle Dc", "i32 Left", "i32 Top", "i32 Right", "i32 Bottom", "i32 Width", "i32 Height"]
+impl = { syscall = "crate::win32k::shape::round_rect" }
+internal = true
 
 # --- coordinate spaces and transforms -------------------------------------------------------------
 

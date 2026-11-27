@@ -163,7 +163,7 @@ pub extern "system" fn get_stock_object(index: i32) -> usize {
 pub extern "system" fn select_object(dc: usize, object: usize) -> usize {
     let kind = match object_kind(object as u32) {
         Some(OBJ_BRUSH) => Selected::Brush,
-        Some(OBJ_PEN) => Selected::Pen,
+        Some(OBJ_PEN | OBJ_EXTPEN) => Selected::Pen,
         Some(OBJ_FONT) => Selected::Font,
         Some(rtl::dib::OBJ_BITMAP) => {
             return answered(imports::select_bitmap(dc, object))
@@ -221,6 +221,32 @@ pub extern "system" fn set_bk_mode(dc: usize, mode: i32) -> i32 {
 #[unsafe(export_name = "f2k_export_GetBkMode")]
 pub extern "system" fn get_bk_mode(dc: usize) -> i32 {
     attribute(dc, DC_BK_MODE, 0) as i32
+}
+
+/// GetROP2: the DC's mix mode; 0 with the last error for a DC that is none.
+#[unsafe(export_name = "f2k_export_GetROP2")]
+pub extern "system" fn get_rop2(dc: usize) -> i32 {
+    attribute(dc, DC_ROP2, 0) as i32
+}
+
+/// SetROP2: the DC's mix mode set (any value, as Windows 2000's takes it), the one it had
+/// answered; 0 with the last error for a DC that is none.
+#[unsafe(export_name = "f2k_export_SetROP2")]
+pub extern "system" fn set_rop2(dc: usize, mode: i32) -> i32 {
+    set_attribute(dc, DC_ROP2, mode as u32, 0) as i32
+}
+
+/// GetPolyFillMode: the DC's polygon fill mode (ALTERNATE or WINDING, or what was set).
+#[unsafe(export_name = "f2k_export_GetPolyFillMode")]
+pub extern "system" fn get_poly_fill_mode(dc: usize) -> i32 {
+    attribute(dc, DC_POLY_FILL_MODE, 0) as i32
+}
+
+/// SetPolyFillMode: the DC's polygon fill mode set (any value, as Windows 2000's takes it), the
+/// one it had answered.
+#[unsafe(export_name = "f2k_export_SetPolyFillMode")]
+pub extern "system" fn set_poly_fill_mode(dc: usize, mode: i32) -> i32 {
+    set_attribute(dc, DC_POLY_FILL_MODE, mode as u32, 0) as i32
 }
 
 /// GetCurrentObject: the brush, pen or font selected into the DC (OBJ_BRUSH, OBJ_PEN, OBJ_FONT);

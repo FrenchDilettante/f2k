@@ -174,7 +174,8 @@ pub const fn global_object_kind(handle: u32) -> Option<u32> {
 /// uniqueness (from 1) in bits 24-31. The uniqueness keeps a program's handle above the small
 /// values FillRect takes as COLOR_* + 1, and gdi32 reads an object's kind from its handle. (A DC's
 /// handle has its kind bits clear.) Bits 20-23 (the rest of Windows' type field, and the stock bit)
-/// are clear in every such handle.
+/// are clear in every such handle. An extended pen's kind, OBJ_EXTPEN (11), is the one past
+/// OBJ_REGION a handle carries.
 const TYPE_BITS: u32 = 0xFF << KIND_SHIFT;
 
 /// The handle of the object of `kind` whose GDI table handle (its slot and uniqueness, its type
@@ -185,10 +186,11 @@ pub const fn object_handle(kind: u32, table: u32) -> u32 {
 
 /// The kind of the object an object's handle names, and its GDI table handle (the kind's bits
 /// taken off); none for a handle with no kind bits (a DC's), a global object's, one whose kind is
-/// past OBJ_REGION, or one with other type bits set.
+/// past OBJ_REGION (but OBJ_EXTPEN), or one with other type bits set.
 pub const fn object_of(handle: u32) -> Option<(u32, u32)> {
     let kind = (handle >> KIND_SHIFT) & KIND_MASK;
-    if kind == 0 || kind > OBJ_REGION || handle & TYPE_BITS != kind << KIND_SHIFT {
+    let known = kind != 0 && (kind <= OBJ_REGION || kind == OBJ_EXTPEN);
+    if !known || handle & TYPE_BITS != kind << KIND_SHIFT {
         return None;
     }
     Some((kind, handle & !TYPE_BITS))
@@ -273,9 +275,21 @@ pub const DC_BRUSH_ORG_Y: u32 = 5;
 pub const DC_OBJECT_TYPE: u32 = 6;
 pub const DC_WINDOW_ORG_X: u32 = 7;
 pub const DC_WINDOW_ORG_Y: u32 = 8;
+/// The mix mode (SetROP2's) and the polygon fill mode (SetPolyFillMode's): any value is taken, as
+/// Windows 2000's DC takes it.
+pub const DC_ROP2: u32 = 9;
+pub const DC_POLY_FILL_MODE: u32 = 10;
+
+/// NtGdiGetDCPoint's points (F2K's own indexes): the current position (MoveToEx's, LineTo's), in
+/// logical coordinates.
+pub const DCPT_CURRENT_POSITION: u32 = 0;
 
 /// A DC's stretch mode as it starts: BLACKONWHITE.
 pub const DEFAULT_STRETCH_MODE: u32 = crate::dib::BLACKONWHITE;
+
+/// A DC's mix mode and polygon fill mode as it starts: R2_COPYPEN, ALTERNATE.
+pub const DEFAULT_ROP2: u32 = R2_COPYPEN;
+pub const DEFAULT_POLY_FILL_MODE: u32 = ALTERNATE;
 
 /// A DC's attributes as it starts (the platform's defaults): black text on a white background,
 /// OPAQUE.
@@ -909,6 +923,114 @@ pub fn narrow_truetype_metric(metric: &TextMetricW) -> TextMetricA {
     narrow
 }
 
+// --- Pens and mix modes --------------------------------------------------------------------------
+
+/// GetObjectType's answer for an extended pen (ExtCreatePen's; wingdi.h's OBJ_EXTPEN). Its handles
+/// carry it in their kind bits, as a CreatePen pen's carry OBJ_PEN.
+pub const OBJ_EXTPEN: u32 = 11;
+
+/// A pen's style (wingdi.h's PS_*): its line style in the low nibble, its end cap, join and type
+/// above it (ExtCreatePen's).
+pub const PS_SOLID: u32 = 0;
+pub const PS_DASH: u32 = 1;
+pub const PS_DOT: u32 = 2;
+pub const PS_DASHDOT: u32 = 3;
+pub const PS_DASHDOTDOT: u32 = 4;
+pub const PS_NULL: u32 = 5;
+pub const PS_INSIDEFRAME: u32 = 6;
+pub const PS_USERSTYLE: u32 = 7;
+pub const PS_ALTERNATE: u32 = 8;
+pub const PS_STYLE_MASK: u32 = 0x0000_000F;
+pub const PS_ENDCAP_ROUND: u32 = 0x0000_0000;
+pub const PS_ENDCAP_SQUARE: u32 = 0x0000_0100;
+pub const PS_ENDCAP_FLAT: u32 = 0x0000_0200;
+pub const PS_ENDCAP_MASK: u32 = 0x0000_0F00;
+pub const PS_JOIN_ROUND: u32 = 0x0000_0000;
+pub const PS_JOIN_BEVEL: u32 = 0x0000_1000;
+pub const PS_JOIN_MITER: u32 = 0x0000_2000;
+pub const PS_JOIN_MASK: u32 = 0x0000_F000;
+pub const PS_COSMETIC: u32 = 0x0000_0000;
+pub const PS_GEOMETRIC: u32 = 0x0001_0000;
+pub const PS_TYPE_MASK: u32 = 0x000F_0000;
+
+/// The most entries a user style holds (ExtCreatePen's PS_USERSTYLE), Windows 2000's.
+pub const MAX_STYLE_ENTRIES: usize = 16;
+
+/// LOGPEN (16 bytes): GetObject's answer for a CreatePen pen, its width in `width.x`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LogPen {
+    pub style: u32,
+    pub width: Point,
+    pub color: u32,
+}
+
+// SAFETY: integers and a POINT, no padding.
+unsafe impl Pod for LogPen {}
+
+/// EXTLOGPEN's fixed part (24 bytes): GetObject's answer for an ExtCreatePen pen, its user style's
+/// entries (`count` dwords) after it.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExtLogPenHeader {
+    pub style: u32,
+    pub width: u32,
+    pub brush_style: u32,
+    pub color: u32,
+    pub hatch: u32,
+    pub count: u32,
+}
+
+// SAFETY: six u32s.
+unsafe impl Pod for ExtLogPenHeader {}
+
+const _: () = {
+    assert!(core::mem::size_of::<LogPen>() == 16);
+    assert!(core::mem::size_of::<ExtLogPenHeader>() == 24);
+};
+
+/// The mix modes (SetROP2's, wingdi.h's R2_*): `mode - 1` is the operation's truth table, bit
+/// `pen << 1 | destination` its result ([`mix`]).
+pub const R2_BLACK: u32 = 1;
+pub const R2_NOT: u32 = 6;
+pub const R2_XORPEN: u32 = 7;
+pub const R2_NOP: u32 = 11;
+pub const R2_COPYPEN: u32 = 13;
+pub const R2_WHITE: u32 = 16;
+
+/// The mix mode `mode` applied to every bit of a pen's pixel `pen` and a destination pixel
+/// `destination` (the values as they are, all 32 bits: the mix modes capture shows R2_NOT setting
+/// a 32-bit pixel's top byte). A mode past 1-16 is taken by its low four bits less one, as a
+/// table.
+pub const fn mix(mode: u32, pen: u32, destination: u32) -> u32 {
+    let table = mode.wrapping_sub(1) & 0xF;
+    let (p, d) = (pen, destination);
+    let mut result = 0;
+    if table & 0b0001 != 0 {
+        result |= !p & !d;
+    }
+    if table & 0b0010 != 0 {
+        result |= !p & d;
+    }
+    if table & 0b0100 != 0 {
+        result |= p & !d;
+    }
+    if table & 0b1000 != 0 {
+        result |= p & d;
+    }
+    result
+}
+
+/// Whether the mix mode reads the destination.
+pub const fn mix_reads_destination(mode: u32) -> bool {
+    let table = mode.wrapping_sub(1) & 0xF;
+    (table & 0b0101) != ((table >> 1) & 0b0101)
+}
+
+/// NtGdiPolyPolyDraw's functions (Windows 2000's): polygons drawn and filled, polylines drawn.
+pub const I_POLYPOLYGON: u32 = 1;
+pub const I_POLYPOLYLINE: u32 = 2;
+
 // --- Regions -------------------------------------------------------------------------------------
 
 /// GetObjectType's answer for a region (wingdi.h's OBJ_REGION). Its handles carry it in their kind
@@ -1185,6 +1307,12 @@ mod tests {
         assert_eq!(object_of(HALFTONE_BRUSH), None);
         assert_eq!(object_of(DEFAULT_BITMAP), None);
         assert_eq!(object_of(0x010A_001C), None, "a kind past OBJ_REGION");
+        assert_eq!(
+            object_of(object_handle(OBJ_EXTPEN, 0x0100_001C)),
+            Some((OBJ_EXTPEN, 0x0100_001C)),
+            "an extended pen's"
+        );
+        assert_eq!(object_of(0x010C_001C), None, "a kind past OBJ_EXTPEN");
         assert_eq!(object_of(0x0112_001C), None, "a type bit past the kind's");
         assert_eq!(
             object_of(object_handle(OBJ_REGION, 0x0100_001C)),
@@ -1192,6 +1320,43 @@ mod tests {
         );
         assert_eq!(object_handle(OBJ_REGION, 0x0100_001C), 0x0108_001C);
         assert_eq!(object_of(0x0182_001C), None, "the stock bit");
+    }
+
+    /// Every mix mode over the shapes capture's four destinations, a pen of 0x00CC9966: the
+    /// capture's sixteen rows, the top byte included.
+    #[test]
+    fn the_mix_modes_evaluate_as_the_capture() {
+        let pen = 0x00CC_9966;
+        let destinations = [0x0000_0000, 0x00FF_FFFF, 0x00F0_CC0F, 0x0033_6699];
+        let rows: [[u32; 4]; 16] = [
+            [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+            [0xFF33_6699, 0xFF00_0000, 0xFF03_2290, 0xFF00_0000],
+            [0x0000_0000, 0x0033_6699, 0x0030_4409, 0x0033_6699],
+            [0xFF33_6699, 0xFF33_6699, 0xFF33_6699, 0xFF33_6699],
+            [0x00CC_9966, 0x0000_0000, 0x000C_1160, 0x00CC_9966],
+            [0xFFFF_FFFF, 0xFF00_0000, 0xFF0F_33F0, 0xFFCC_9966],
+            [0x00CC_9966, 0x0033_6699, 0x003C_5569, 0x00FF_FFFF],
+            [0xFFFF_FFFF, 0xFF33_6699, 0xFF3F_77F9, 0xFFFF_FFFF],
+            [0x0000_0000, 0x00CC_9966, 0x00C0_8806, 0x0000_0000],
+            [0xFF33_6699, 0xFFCC_9966, 0xFFC3_AA96, 0xFF00_0000],
+            [0x0000_0000, 0x00FF_FFFF, 0x00F0_CC0F, 0x0033_6699],
+            [0xFF33_6699, 0xFFFF_FFFF, 0xFFF3_EE9F, 0xFF33_6699],
+            [0x00CC_9966, 0x00CC_9966, 0x00CC_9966, 0x00CC_9966],
+            [0xFFFF_FFFF, 0xFFCC_9966, 0xFFCF_BBF6, 0xFFCC_9966],
+            [0x00CC_9966, 0x00FF_FFFF, 0x00FC_DD6F, 0x00FF_FFFF],
+            [0xFFFF_FFFF, 0xFFFF_FFFF, 0xFFFF_FFFF, 0xFFFF_FFFF],
+        ];
+        for (index, row) in rows.iter().enumerate() {
+            let mode = index as u32 + 1;
+            for (destination, expected) in destinations.iter().zip(row) {
+                assert_eq!(mix(mode, pen, *destination), *expected, "mode {mode}");
+            }
+            let reads = destinations
+                .iter()
+                .any(|&d| mix(mode, pen, d) != mix(mode, pen, 0));
+            assert_eq!(mix_reads_destination(mode), reads, "mode {mode}");
+        }
+        assert_eq!(mix(R2_XORPEN, 0x0000_FF00, 0x00FF_0000), 0x00FF_FF00);
     }
 
     /// The raster operations PatBlt takes evaluate as their names say, bit by bit; a source's

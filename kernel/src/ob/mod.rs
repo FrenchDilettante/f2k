@@ -107,6 +107,8 @@ pub enum ObjectType {
     Dc,
     /// A brush: win32k's, a logical brush a DC selects (see [`crate::win32k::brush`]).
     Brush,
+    /// A pen: win32k's, a logical pen a DC selects (see [`crate::win32k::pen`]).
+    Pen,
     /// A bitmap: win32k's, a device-dependent bitmap or a DIB section a memory DC selects (see
     /// [`crate::win32k::bitmap`]).
     Bitmap,
@@ -150,6 +152,7 @@ impl ObjectId {
             | ObjectType::Key
             | ObjectType::Dc
             | ObjectType::Brush
+            | ObjectType::Pen
             | ObjectType::Bitmap
             | ObjectType::Font
             | ObjectType::Region
@@ -1088,6 +1091,7 @@ pools! {
         Key => keys: crate::cm::KeyBody = crate::cm::KeyBody::none();
         Dc => dcs: crate::win32k::dc::Dc = crate::win32k::dc::Dc::none();
         Brush => brushes: crate::win32k::brush::Brush = crate::win32k::brush::Brush::none();
+        Pen => pens: crate::win32k::pen::Pen = crate::win32k::pen::Pen::none();
         Bitmap => bitmaps: crate::win32k::bitmap::Bitmap = crate::win32k::bitmap::Bitmap::none();
         Font => fonts: crate::win32k::fonts::FontObject =
             crate::win32k::fonts::FontObject::none();
@@ -1166,6 +1170,7 @@ bodies! {
     crate::cm::KeyBody => Key, keys, key;
     crate::win32k::dc::Dc => Dc, dcs, dc;
     crate::win32k::brush::Brush => Brush, brushes, brush;
+    crate::win32k::pen::Pen => Pen, pens, pen;
     crate::win32k::bitmap::Bitmap => Bitmap, bitmaps, bitmap;
     crate::win32k::fonts::FontObject => Font, fonts, font;
     crate::win32k::region::Region => Region, regions, region;
@@ -1586,6 +1591,11 @@ impl Directory {
         self.insert(body)
     }
 
+    /// A pen of `body`'s style, width and color; none when the pool is exhausted.
+    pub fn create_pen(&mut self, body: crate::win32k::pen::Pen) -> Option<ObjectId> {
+        self.insert(body)
+    }
+
     /// A bitmap described by `body`; none when the pool is exhausted.
     pub fn create_bitmap(&mut self, body: crate::win32k::bitmap::Bitmap) -> Option<ObjectId> {
         self.insert(body)
@@ -1922,6 +1932,7 @@ impl Directory {
             | ObjectType::Desktop
             | ObjectType::Key
             | ObjectType::Brush
+            | ObjectType::Pen
             | ObjectType::Bitmap
             | ObjectType::Font
             | ObjectType::Token => None,
@@ -2099,6 +2110,7 @@ impl Directory {
             ObjectType::Key,
             ObjectType::Dc,
             ObjectType::Brush,
+            ObjectType::Pen,
             ObjectType::Bitmap,
             ObjectType::Font,
             ObjectType::Region,
@@ -3381,7 +3393,7 @@ mod tests {
     fn slot_kinds_name_only_their_live_objects() {
         use crate::fs::file::{Context, FileRecordId};
         let directory = directory();
-        let makers: [fn(&mut Directory) -> Option<ObjectId>; 10] = [
+        let makers: [fn(&mut Directory) -> Option<ObjectId>; 11] = [
             |d| d.create_section(SectionObject::none()),
             |d| d.create_file(Context::Disk(FileRecordId::at(1)), 0, 0, 0),
             |d| d.create_window_station("W", 0),
@@ -3389,6 +3401,7 @@ mod tests {
             |d| d.create_key(crate::cm::KeyBody::none()),
             |d| d.create_dc(crate::win32k::dc::Dc::none()),
             |d| d.create_brush(crate::win32k::brush::Brush::none()),
+            |d| d.create_pen(crate::win32k::pen::Pen::none()),
             |d| d.create_bitmap(crate::win32k::bitmap::Bitmap::none()),
             |d| d.create_font(crate::win32k::fonts::FontObject::none()),
             |d| d.create_token(crate::se::TokenBody::none()),
