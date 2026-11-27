@@ -19,6 +19,7 @@
 //! ERROR_NOT_SUPPORTED without touching the caller's outs.
 
 pub mod builders;
+pub mod entries;
 
 use core::mem::size_of;
 
