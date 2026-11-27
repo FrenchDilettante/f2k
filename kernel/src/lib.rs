@@ -122,6 +122,9 @@ mod cm;
 // bookkeeping only (nothing checks them)
 mod se;
 
+// The SID primitives: the byte layout, the well-known SIDs, and the operations on the bytes
+mod sec_sid;
+
 // Wall-clock time and the performance counter: the boot's real-time clock reading, the FILETIME
 // the system services and the shared data page report
 mod time;
