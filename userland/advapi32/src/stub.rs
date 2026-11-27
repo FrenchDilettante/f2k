@@ -52,34 +52,18 @@ pub unsafe fn stubbed(entry: &Entry, reason: &str, args: &[u64]) -> u32 {
 mod tests {
     use crate::imports::host::{DEBUG_PRINTS, LAST_ERROR};
 
-    /// A stubbed call's generated body logs its arguments (the handle as its value, the provider as
-    /// text) and answers its failure, the last error ERROR_CALL_NOT_IMPLEMENTED.
+    /// A stubbed call's generated body logs its arguments (the handle as its value) and answers
+    /// its failure, the last error ERROR_CALL_NOT_IMPLEMENTED.
     #[test]
     fn a_stub_logs_its_call_and_fails() {
-        let provider: Vec<u16> = "Windows NT Access Provider\0".encode_utf16().collect();
-        // SAFETY: the generated body (stdcall), given a NUL-terminated provider and null slots.
-        let result = unsafe {
-            crate::f2k_stub_OpenSCManagerA(
-                0x44,
-                1,
-                4,
-                provider.as_ptr() as usize,
-                0,
-                0,
-                0,
-                0,
-                0,
-            )
-        };
-        assert_eq!(result, 1204, "ERROR_BAD_PROVIDER");
+        // SAFETY: the generated body (stdcall), given the handle 0x44.
+        let result = unsafe { crate::f2k_stub_CloseServiceHandle(0x44) };
+        assert_eq!(result, 0, "FALSE");
         assert_eq!(LAST_ERROR.with(|error| error.get()), 120);
         let printed = DEBUG_PRINTS.with(|prints| prints.borrow().clone());
         assert_eq!(printed.len(), 1);
         assert!(
-            printed[0].starts_with(
-                "stub advapi32.GetSecurityInfoExW(hObject=0x44, ObjectType=0x1, SecurityInfo=0x4, \
-                 lpProvider=\"Windows NT Access Provider\", "
-            ),
+            printed[0].starts_with("stub advapi32.CloseServiceHandle(hSCObject=0x00000044"),
             "{}",
             printed[0]
         );
