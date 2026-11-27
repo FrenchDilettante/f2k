@@ -9,18 +9,9 @@ gate = true
 timeout = 60
 
 [pending]
-# What F2K's user32 lacks (catalogued only in userland/user32/exports.toml); drop each entry once
-# its block passes.
-indirect = "F2K's user32 lacks CreateDialogIndirectParamA (catalogued only)"
-ex = "F2K's user32 lacks CreateDialogIndirectParamA (catalogued only); DLGTEMPLATEEX through CreateDialogIndirectParamW is uncaptured"
-aorw = "F2K's user32 lacks CreateDialogIndirectParamAorW and DialogBoxIndirectParamAorW (catalogued only)"
-modal = "DialogBoxIndirectParamW is a stub and DialogBoxIndirectParamA not yet implemented (catalogued only)"
-tabs = "F2K's user32 lacks GetNextDlgTabItem (catalogued only)"
-groups = "F2K's user32 lacks GetNextDlgGroupItem (catalogued only)"
-senditem = "F2K's user32 lacks SendDlgItemMessageA (catalogued only)"
-alias = "F2K's user32 lacks IsDialogMessage, the unsuffixed alias of IsDialogMessageA (catalogued only)"
-msgboxex = "F2K's user32 lacks MessageBoxExW and MessageBoxExA (catalogued only)"
-msgboxind = "F2K's user32 lacks MessageBoxIndirectW and MessageBoxIndirectA (catalogued only)"
+# What F2K does differently; drop each entry once its block passes.
+aorw = "DialogBoxIndirectParamAorW's lines are hand-corrected to err=- (60199a36, after DialogBoxParamW's clean capture, whose template has no edit); F2K leaves err=0, the edit's text lock, as the modeless CreateDialogIndirectParamW twins' uncorrected err=0 shows Windows 2000's creation does: the two lines need a clean recapture"
+modal = "the six successful DialogBoxIndirectParamW/A lines are hand-corrected to err=- (60199a36, after DialogBoxParamW's clean capture, whose template has no edit); F2K leaves err=0, the edit's text lock, as the modeless CreateDialogIndirectParamW twins' uncorrected err=0 shows Windows 2000's creation does (EndDialog inside WM_INITDIALOG too: no show, no loop): the lines need a clean recapture"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

@@ -2001,6 +2001,9 @@ fn focus_gained(window: usize) {
     };
     s.flags |= FOCUSED;
     store(window, &s);
+    // The text locked whatever its length, as Windows 2000's edit reads it when the focus comes
+    // (the dialog2 capture's Tab to an empty edit leaves err=0 after the unfocused EM_SETSEL's 5).
+    let _ = with_text(&s, |_| ());
     let height = Measure::new(window, s.font).map_or(16, |measure| measure.line_height());
     let width = crate::display::get_system_metrics(SM_CXBORDER);
     caret::create_caret(window, 0, width, height);

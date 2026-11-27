@@ -1127,6 +1127,47 @@ pub unsafe extern "system" fn create_dialog_param_a(
     unsafe { create_from_resource(ResourceName::Narrow(name as usize), request) }
 }
 
+/// A dialog request for the template `template` in the caller's memory, made through `entry`:
+/// the dialog and its procedure the narrow caller's for `ansi`.
+fn indirect_request(
+    entry: &'static rtl::stub::Entry,
+    instance: usize,
+    template: usize,
+    owner: usize,
+    proc: usize,
+    param: i32,
+    ansi: bool,
+) -> Request {
+    Request {
+        instance,
+        owner,
+        proc: Procedure {
+            address: proc as u32,
+            ansi,
+        },
+        param,
+        ansi,
+        call: Call::of(entry, instance, template, owner, proc, param),
+    }
+}
+
+/// The dialog the template in the caller's memory describes, made for `request` (shown when the
+/// template asks for WS_VISIBLE and `show` lets it): its handle, or none with the last error.
+///
+/// # Safety
+///
+/// `template` is a DLGTEMPLATE or DLGTEMPLATEEX the call may read whole, DWORD-aligned.
+unsafe fn create_indirect(template: *const u8, request: Request, show: bool) -> Option<usize> {
+    // SAFETY: the caller's template, which the reader reads only as far as its own structure goes.
+    let read = |at: usize| Some(unsafe { template.add(at).read() });
+    let mut reader = Reader::new(&read, template as usize);
+    create(&mut reader, request, show)
+}
+
+/// The AorW pair's flag: the dialog and its procedure are the narrow caller's (what the A forms
+/// pass; any other bit, 1 among them, leaves them the wide caller's, as the dialog2 capture shows).
+const DLG_ISANSI: u32 = 0x0002;
+
 /// CreateDialogIndirectParamW: the modeless dialog the template in the caller's memory describes.
 ///
 /// # Safety
@@ -1141,28 +1182,72 @@ pub unsafe extern "system" fn create_dialog_indirect_param_w(
     proc: usize,
     param: i32,
 ) -> usize {
-    // SAFETY: the caller's template, which the reader reads only as far as its own structure goes.
-    let read = |at: usize| Some(unsafe { template.add(at).read() });
-    let mut reader = Reader::new(&read, template as usize);
-    let request = Request {
+    let request = indirect_request(
+        &crate::spec::CreateDialogIndirectParamW,
         instance,
+        template as usize,
         owner,
-        proc: Procedure {
-            address: proc as u32,
-            ansi: false,
-        },
+        proc,
         param,
-        ansi: false,
-        call: Call::of(
-            &crate::spec::CreateDialogIndirectParamW,
-            instance,
-            template as usize,
-            owner,
-            proc,
-            param,
-        ),
-    };
-    create(&mut reader, request, true).unwrap_or(0)
+        false,
+    );
+    // SAFETY: the caller's contract.
+    unsafe { create_indirect(template, request, true) }.unwrap_or(0)
+}
+
+/// CreateDialogIndirectParamA: CreateDialogIndirectParamW's (a template's strings are wide in
+/// either form), the dialog and its procedure the narrow caller's.
+///
+/// # Safety
+///
+/// As CreateDialogIndirectParamW's.
+#[unsafe(export_name = "f2k_export_CreateDialogIndirectParamA")]
+pub unsafe extern "system" fn create_dialog_indirect_param_a(
+    instance: usize,
+    template: *const u8,
+    owner: usize,
+    proc: usize,
+    param: i32,
+) -> usize {
+    let request = indirect_request(
+        &crate::spec::CreateDialogIndirectParamA,
+        instance,
+        template as usize,
+        owner,
+        proc,
+        param,
+        true,
+    );
+    // SAFETY: the caller's contract.
+    unsafe { create_indirect(template, request, true) }.unwrap_or(0)
+}
+
+/// CreateDialogIndirectParamAorW: the two forms' common entry, undocumented, which COMDLG32 calls:
+/// the narrow form's for DLG_ISANSI in `flags`, the wide form's otherwise.
+///
+/// # Safety
+///
+/// As CreateDialogIndirectParamW's.
+#[unsafe(export_name = "f2k_export_CreateDialogIndirectParamAorW")]
+pub unsafe extern "system" fn create_dialog_indirect_param_aorw(
+    instance: usize,
+    template: *const u8,
+    owner: usize,
+    proc: usize,
+    param: i32,
+    flags: u32,
+) -> usize {
+    let request = indirect_request(
+        &crate::spec::CreateDialogIndirectParamAorW,
+        instance,
+        template as usize,
+        owner,
+        proc,
+        param,
+        flags & DLG_ISANSI != 0,
+    );
+    // SAFETY: the caller's contract.
+    unsafe { create_indirect(template, request, true) }.unwrap_or(0)
 }
 
 // --- Modal dialogs -------------------------------------------------------------------------------
@@ -1296,6 +1381,103 @@ pub unsafe extern "system" fn dialog_box_param_a(
     };
     // SAFETY: the caller's contract.
     unsafe { modal_from_resource(ResourceName::Narrow(name as usize), request) }
+}
+
+/// A modal dialog made from the template in the caller's memory and run: EndDialog's result, or
+/// -1 with the last error when it could not be made.
+///
+/// # Safety
+///
+/// `template` is a DLGTEMPLATE or DLGTEMPLATEEX the call may read whole, DWORD-aligned.
+unsafe fn modal_indirect(template: *const u8, request: Request) -> i32 {
+    // SAFETY: the caller's contract.
+    match unsafe { create_indirect(template, request, false) } {
+        Some(dialog) => run_modal(dialog, request.owner),
+        None => -1,
+    }
+}
+
+/// DialogBoxIndirectParamW: the modal dialog the template in the caller's memory describes, run
+/// until EndDialog: its result, or -1 with the last error when it could not be made.
+///
+/// # Safety
+///
+/// `template` is a DLGTEMPLATE or DLGTEMPLATEEX the call may read whole, DWORD-aligned, as for the
+/// platform's.
+#[unsafe(export_name = "f2k_export_DialogBoxIndirectParamW")]
+pub unsafe extern "system" fn dialog_box_indirect_param_w(
+    instance: usize,
+    template: *const u8,
+    owner: usize,
+    proc: usize,
+    param: i32,
+) -> i32 {
+    let request = indirect_request(
+        &crate::spec::DialogBoxIndirectParamW,
+        instance,
+        template as usize,
+        owner,
+        proc,
+        param,
+        false,
+    );
+    // SAFETY: the caller's contract.
+    unsafe { modal_indirect(template, request) }
+}
+
+/// DialogBoxIndirectParamA: DialogBoxIndirectParamW's, the dialog and its procedure the narrow
+/// caller's.
+///
+/// # Safety
+///
+/// As DialogBoxIndirectParamW's.
+#[unsafe(export_name = "f2k_export_DialogBoxIndirectParamA")]
+pub unsafe extern "system" fn dialog_box_indirect_param_a(
+    instance: usize,
+    template: *const u8,
+    owner: usize,
+    proc: usize,
+    param: i32,
+) -> i32 {
+    let request = indirect_request(
+        &crate::spec::DialogBoxIndirectParamA,
+        instance,
+        template as usize,
+        owner,
+        proc,
+        param,
+        true,
+    );
+    // SAFETY: the caller's contract.
+    unsafe { modal_indirect(template, request) }
+}
+
+/// DialogBoxIndirectParamAorW: the two forms' common entry, undocumented: the narrow form's for
+/// DLG_ISANSI in `flags`, the wide form's otherwise.
+///
+/// # Safety
+///
+/// As DialogBoxIndirectParamW's.
+#[unsafe(export_name = "f2k_export_DialogBoxIndirectParamAorW")]
+pub unsafe extern "system" fn dialog_box_indirect_param_aorw(
+    instance: usize,
+    template: *const u8,
+    owner: usize,
+    proc: usize,
+    param: i32,
+    flags: u32,
+) -> i32 {
+    let request = indirect_request(
+        &crate::spec::DialogBoxIndirectParamAorW,
+        instance,
+        template as usize,
+        owner,
+        proc,
+        param,
+        flags & DLG_ISANSI != 0,
+    );
+    // SAFETY: the caller's contract.
+    unsafe { modal_indirect(template, request) }
 }
 
 /// EndDialog: the dialog's end asked for, `result` what its DialogBox answers; the modal loop ends
@@ -1826,6 +2008,74 @@ pub extern "system" fn send_dlg_item_message_w(
     }
 }
 
+/// SendDlgItemMessageA: SendDlgItemMessageW's, the message the narrow caller's (its text
+/// arguments ANSI).
+#[unsafe(export_name = "f2k_export_SendDlgItemMessageA")]
+pub extern "system" fn send_dlg_item_message_a(
+    dialog: usize,
+    id: i32,
+    message: u32,
+    wparam: u32,
+    lparam: i32,
+) -> i32 {
+    match get_dlg_item(dialog, id) {
+        0 => 0,
+        control => message::send_message_a(control, message, wparam, lparam),
+    }
+}
+
+/// The control of the dialog the walks start from: `control` when it is below the dialog (not the
+/// dialog itself), none otherwise (a window outside the dialog starts the walk as no control
+/// does).
+fn walk_start(dialog: usize, control: usize) -> Option<usize> {
+    (control != 0 && control != dialog && is_descendant(dialog, control)).then_some(control)
+}
+
+/// GetNextDlgTabItem: the visible, enabled tab stop after `control` in the dialog (before it with
+/// `previous`), round the end ([`next_tab_item`]); from no control (or one outside the dialog) the
+/// first, and NULL backwards, as the dialog2 capture shows. NULL with 1400 for a handle naming no
+/// window.
+#[unsafe(export_name = "f2k_export_GetNextDlgTabItem")]
+pub extern "system" fn get_next_dlg_tab_item(
+    dialog: usize,
+    control: usize,
+    previous: u32,
+) -> usize {
+    if answered(window::links(dialog)).is_none() {
+        return 0;
+    }
+    match walk_start(dialog, control) {
+        Some(from) => next_tab_item(dialog, from, previous != 0),
+        None if previous != 0 => 0,
+        None => next_tab_item(dialog, 0, false),
+    }
+}
+
+/// GetNextDlgGroupItem: the visible, enabled control after `control` in its group (before it with
+/// `previous`), round the group's end ([`next_group_item`]); from no control (or one outside the
+/// dialog) the dialog's first visible, enabled control, and NULL backwards, as the dialog2 capture
+/// shows. NULL with 1400 for a handle naming no window.
+#[unsafe(export_name = "f2k_export_GetNextDlgGroupItem")]
+pub extern "system" fn get_next_dlg_group_item(
+    dialog: usize,
+    control: usize,
+    previous: u32,
+) -> usize {
+    if answered(window::links(dialog)).is_none() {
+        return 0;
+    }
+    match walk_start(dialog, control) {
+        Some(from) => next_group_item(dialog, from, previous != 0),
+        None if previous != 0 => 0,
+        None => control_list(dialog)
+            .as_slice()
+            .iter()
+            .copied()
+            .find(|&control| takes_focus(control, false))
+            .unwrap_or(0),
+    }
+}
+
 /// SetDlgItemInt: the control's text set to `value` in decimal, signed (a minus sign for a
 /// negative value) or unsigned; TRUE, or FALSE with the last error for no control of that id.
 #[unsafe(export_name = "f2k_export_SetDlgItemInt")]
@@ -2191,6 +2441,18 @@ pub unsafe extern "system" fn is_dialog_message_a(dialog: usize, msg: *const Msg
     // SAFETY: the caller's MSG.
     let msg = unsafe { In::new(msg) }.read();
     is_dialog_message(dialog, &msg, true) as u32
+}
+
+/// IsDialogMessage: the unsuffixed name, IsDialogMessageA's alias (Windows 2000's export table
+/// carries both).
+///
+/// # Safety
+///
+/// The caller's MSG, as for the platform's.
+#[unsafe(export_name = "f2k_export_IsDialogMessage")]
+pub unsafe extern "system" fn is_dialog_message_alias(dialog: usize, msg: *const Msg) -> u32 {
+    // SAFETY: the caller's contract.
+    unsafe { is_dialog_message_a(dialog, msg) }
 }
 
 #[cfg(test)]
@@ -2625,6 +2887,52 @@ mod tests {
         assert_eq!(next_group_item(dialog, controls[0], true), controls[299]);
         assert_eq!(next_group_item_any(dialog, controls[299]), controls[0]);
         window::destroy_window(dialog);
+    }
+
+    /// GetNextDlgTabItem and GetNextDlgGroupItem from no control: the first control forwards and
+    /// NULL backwards; a window outside the dialog starts as no control does (the dialog2
+    /// capture's `tabs` and `groups`). A handle naming no window is 1400.
+    ///
+    /// Pins: user32.GetNextDlgTabItem, user32.GetNextDlgGroupItem
+    #[test]
+    fn the_walk_exports_start_from_no_control() {
+        let (dialog, controls) = crowded_dialog(3, WS_TABSTOP);
+        let (outer, _) = nested_dialogs();
+        for walk in [get_next_dlg_tab_item, get_next_dlg_group_item] {
+            assert_eq!(walk(dialog, 0, 0), controls[0]);
+            assert_eq!(walk(dialog, 0, 1), 0);
+            assert_eq!(walk(dialog, dialog, 0), controls[0]);
+            assert_eq!(walk(dialog, outer, 0), controls[0]);
+            assert_eq!(walk(dialog, controls[0], 0), controls[1]);
+            assert_eq!(walk(dialog, controls[0], 1), controls[2]);
+            assert_eq!(walk(0, controls[0], 0), 0);
+        }
+        window::destroy_window(dialog);
+        window::destroy_window(outer);
+    }
+
+    /// The AorW pair makes the narrow caller's dialog for DLG_ISANSI only (the dialog2 capture's
+    /// flags 0, 1 and 2).
+    #[test]
+    fn the_aorw_flag_picks_the_form() {
+        crate::class::SYSTEM_CLASSES_WANTED.with(|wanted| wanted.set(true));
+        let template = button_template(WS_POPUP, &[]);
+        for (flags, ansi) in [(0, false), (1, false), (2, true)] {
+            // SAFETY: the template above, whole.
+            let dialog = unsafe {
+                create_dialog_indirect_param_aorw(
+                    0x40_0000,
+                    template.as_ptr().cast(),
+                    0,
+                    0,
+                    0,
+                    flags,
+                )
+            };
+            assert_ne!(dialog, 0);
+            assert_eq!(kept::procedure(dialog), Some((0, ansi)), "flags {flags}");
+            window::destroy_window(dialog);
+        }
     }
 
     // --- DefDlgProc ------------------------------------------------------------------------------

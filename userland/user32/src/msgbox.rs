@@ -45,6 +45,7 @@ use crate::{draw, focus, imports, window};
 const MB_TYPEMASK: u32 = 0x0000_000F;
 const MB_ICONMASK: u32 = 0x0000_00F0;
 const MB_DEFMASK: u32 = 0x0000_0F00;
+const MB_USERICON: u32 = 0x0000_0080;
 const MB_TOPMOST: u32 = 0x0004_0000;
 const MB_OK: u32 = 0;
 
@@ -114,7 +115,7 @@ const IDIGNORE: u32 = 5;
 const IDYES: u32 = 6;
 const IDNO: u32 = 7;
 
-/// The icon static's id (an assumption: Windows 2000's is not public).
+/// The icon static's id: 20, as the dialog2 capture shows.
 const ICON_ID: u16 = 20;
 /// The text static's id: 0xFFFF, as the dialog capture shows.
 const TEXT_ID: u16 = 0xFFFF;
@@ -284,20 +285,48 @@ fn measure(text: &[u16], wrap: i32) -> ((i32, i32), (i32, i32)) {
     ((used.right - used.left, used.bottom - used.top), units)
 }
 
-/// The box's template for `text`, `caption` and the MB_ `kind`, built into `template`.
-fn build(template: &mut Template<'_>, text: &[u16], caption: &[u16], kind: u32) {
+/// The SS_EDITCONTROL style of the text's static (winuser.h), which Windows 2000's boxes give it.
+const SS_EDITCONTROL: u32 = 0x2000;
+
+/// The icon a box shows: none, a stock icon by its IDI_ id (an MB_ICON flag's), or the caller's
+/// own (MB_USERICON), set on the static once the box is made.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BoxIcon {
+    None,
+    Stock(u16),
+    User(usize),
+}
+
+impl BoxIcon {
+    /// The icon of the MB_ `kind`, `user` the caller's own icon for MB_USERICON (0 for none).
+    fn of(kind: u32, user: usize) -> Self {
+        if kind & MB_ICONMASK == MB_USERICON {
+            if user != 0 {
+                BoxIcon::User(user)
+            } else {
+                BoxIcon::None
+            }
+        } else {
+            icon_of(kind).map_or(BoxIcon::None, BoxIcon::Stock)
+        }
+    }
+}
+
+/// The box's template for `text`, `caption`, the MB_ `kind` and its `icon`, built into
+/// `template`.
+fn build(template: &mut Template<'_>, text: &[u16], caption: &[u16], kind: u32, icon: BoxIcon) {
     let wrap = crate::display::get_system_metrics(0) * 5 / 8;
     let ((width, height), (ux, uy)) = measure(text, wrap);
     let du_x = |pixels: i32| (pixels * 4 + ux - 1) / ux.max(1);
     let du_y = |pixels: i32| (pixels * 8 + uy - 1) / uy.max(1);
     let margin = 7;
-    let icon = icon_of(kind);
-    let (icon_cx, icon_cy) = if icon.is_some() {
+    let has_icon = icon != BoxIcon::None;
+    let (icon_cx, icon_cy) = if has_icon {
         (du_x(32), du_y(32))
     } else {
         (0, 0)
     };
-    let text_x = margin + if icon.is_some() { icon_cx + margin } else { 0 };
+    let text_x = margin + if has_icon { icon_cx + margin } else { 0 };
     let text_cx = du_x(width).max(1);
     let text_cy = du_y(height).max(8);
     let list = buttons(kind);
@@ -308,7 +337,7 @@ fn build(template: &mut Template<'_>, text: &[u16], caption: &[u16], kind: u32) 
     let cy = top + button_cy + margin;
     let default = ((kind & MB_DEFMASK) >> 8) as usize;
     let default = if default < list.len() { default } else { 0 };
-    let count = list.len() + 1 + icon.is_some() as usize;
+    let count = list.len() + 1 + has_icon as usize;
 
     template.dword(
         WS_POPUP
@@ -353,17 +382,22 @@ fn build(template: &mut Template<'_>, text: &[u16], caption: &[u16], kind: u32) 
         );
         x += button_cx + gap;
     }
-    if let Some(icon) = icon {
+    let icon_title = match icon {
+        BoxIcon::None => None,
+        BoxIcon::Stock(id) => Some(Title::Ordinal(id)),
+        BoxIcon::User(_) => Some(Title::Str("")),
+    };
+    if let Some(title) = icon_title {
         template.item(
-            WS_CHILD | WS_VISIBLE | SS_ICON,
+            WS_CHILD | WS_VISIBLE | WS_GROUP | SS_ICON,
             (margin, margin, icon_cx, icon_cy),
             ICON_ID,
             0x82,
-            Title::Ordinal(icon),
+            title,
         );
     }
     template.item(
-        WS_CHILD | WS_VISIBLE | WS_GROUP | SS_LEFT | SS_NOPREFIX,
+        WS_CHILD | WS_VISIBLE | WS_GROUP | SS_LEFT | SS_EDITCONTROL | SS_NOPREFIX,
         (text_x, margin, text_cx, text_cy),
         TEXT_ID,
         0x82,
@@ -431,9 +465,17 @@ fn box_procedure_address() -> u32 {
 }
 
 /// MessageBox's core, for `call`: the box made and run, its text and caption whole (Windows 2000's
-/// bounds neither); the id of the button that ended it, 0 with the last error when it could not be
-/// made (ERROR_NOT_ENOUGH_MEMORY when the heap has no room for its template).
-fn message_box(owner: usize, text: &[u16], caption: &[u16], kind: u32, call: Call) -> i32 {
+/// bounds neither), `user_icon` the caller's icon for MB_USERICON; the id of the button that ended
+/// it, 0 with the last error when it could not be made (ERROR_NOT_ENOUGH_MEMORY when the heap has
+/// no room for its template).
+fn message_box(
+    owner: usize,
+    text: &[u16],
+    caption: &[u16],
+    kind: u32,
+    user_icon: usize,
+    call: Call,
+) -> i32 {
     log_unhandled_flags(kind, &call);
     let size = template_words(text.len(), caption.len());
     let Some(mut block) = imports::HeapBlock::new(2 * size) else {
@@ -443,7 +485,8 @@ fn message_box(owner: usize, text: &[u16], caption: &[u16], kind: u32, call: Cal
         words: block.units_mut(),
         at: 0,
     };
-    build(&mut template, text, caption, kind);
+    let icon = BoxIcon::of(kind, user_icon);
+    build(&mut template, text, caption, kind, icon);
     debug_assert!(template.at <= template.words.len(), "the template's room");
     let read = template.bytes();
     let mut reader = Reader::new(&read, template.words.as_ptr() as usize);
@@ -459,7 +502,15 @@ fn message_box(owner: usize, text: &[u16], caption: &[u16], kind: u32, call: Cal
         call,
     };
     match dialog::create(&mut reader, request, false) {
-        Some(dialog) => dialog::run_modal(dialog, owner),
+        Some(dialog) => {
+            if let BoxIcon::User(handle) = icon {
+                let control = dialog::child_by_id(dialog, u32::from(ICON_ID));
+                if control != 0 {
+                    let _ = crate::message::send(control, STM_SETICON, handle as u32, 0);
+                }
+            }
+            dialog::run_modal(dialog, owner)
+        }
         None => 0,
     }
 }
@@ -473,6 +524,87 @@ const ERROR_CAPTION: [u16; 6] = [
     b'r' as u16,
     0,
 ];
+
+/// MessageBoxW's core, for `call`: the caller's strings (NULL caption: "Error") copied whole.
+///
+/// # Safety
+///
+/// `text` and `caption` are NUL-terminated strings or null.
+unsafe fn message_box_wide(
+    owner: usize,
+    text: *const u16,
+    caption: *const u16,
+    kind: u32,
+    user_icon: usize,
+    call: Call,
+) -> i32 {
+    // SAFETY: the caller's strings, or null.
+    let (text, caption) = unsafe {
+        (
+            rtl::edge::InWStr::optional(text),
+            rtl::edge::InWStr::optional(caption),
+        )
+    };
+    let with_caption = |text: &[u16]| match caption {
+        Some(caption) => with_wide(caption, |caption| {
+            message_box(owner, text, caption, kind, user_icon, call)
+        }),
+        None => Some(message_box(
+            owner,
+            text,
+            &ERROR_CAPTION[..5],
+            kind,
+            user_icon,
+            call,
+        )),
+    };
+    let shown = match text {
+        Some(text) => with_wide(text, with_caption).flatten(),
+        None => with_caption(&[]),
+    };
+    shown.unwrap_or_else(|| crate::failed(crate::ERROR_NOT_ENOUGH_MEMORY).unwrap_or(0))
+}
+
+/// MessageBoxA's core, for `call`: the caller's strings converted from the ANSI code page.
+///
+/// # Safety
+///
+/// `text` and `caption` are NUL-terminated strings or null.
+unsafe fn message_box_narrow(
+    owner: usize,
+    text: *const u8,
+    caption: *const u8,
+    kind: u32,
+    user_icon: usize,
+    call: Call,
+) -> i32 {
+    // SAFETY: the caller's strings, or null.
+    let (text, caption) = unsafe { (InStr::optional(text), InStr::optional(caption)) };
+    let text = text.map_or(&[][..], |text| text.bytes());
+    crate::with_wide(text, |text| match caption {
+        Some(caption) => crate::with_wide(caption.bytes(), |caption| {
+            message_box(owner, text, caption, kind, user_icon, call)
+        }),
+        None => Some(message_box(
+            owner,
+            text,
+            &ERROR_CAPTION[..5],
+            kind,
+            user_icon,
+            call,
+        )),
+    })
+    .flatten()
+    .unwrap_or(0)
+}
+
+/// A message box export's call: its arguments (at most five) as its line names them.
+fn call_of(entry: &'static rtl::stub::Entry, args: [usize; 5]) -> Call {
+    Call {
+        entry,
+        args: args.map(|arg| arg as u64),
+    }
+}
 
 /// MessageBoxW: a modal box showing `text` under `caption` (NULL: "Error") with the buttons and
 /// icon the MB_ `kind` asks for; the id of the button that ended it, 0 with the last error when
@@ -488,35 +620,12 @@ pub unsafe extern "system" fn message_box_w(
     caption: *const u16,
     kind: u32,
 ) -> i32 {
-    let (text_arg, caption_arg) = (text as usize, caption as usize);
-    let call = Call {
-        entry: &crate::spec::MessageBoxW,
-        args: [
-            owner as u64,
-            text_arg as u64,
-            caption_arg as u64,
-            u64::from(kind),
-            0,
-        ],
-    };
-    // SAFETY: the caller's strings, or null.
-    let (text, caption) = unsafe {
-        (
-            rtl::edge::InWStr::optional(text),
-            rtl::edge::InWStr::optional(caption),
-        )
-    };
-    let with_caption = |text: &[u16]| match caption {
-        Some(caption) => with_wide(caption, |caption| {
-            message_box(owner, text, caption, kind, call)
-        }),
-        None => Some(message_box(owner, text, &ERROR_CAPTION[..5], kind, call)),
-    };
-    let shown = match text {
-        Some(text) => with_wide(text, with_caption).flatten(),
-        None => with_caption(&[]),
-    };
-    shown.unwrap_or_else(|| crate::failed(crate::ERROR_NOT_ENOUGH_MEMORY).unwrap_or(0))
+    let call = call_of(
+        &crate::spec::MessageBoxW,
+        [owner, text as usize, caption as usize, kind as usize, 0],
+    );
+    // SAFETY: the caller's contract.
+    unsafe { message_box_wide(owner, text, caption, kind, 0, call) }
 }
 
 /// MessageBoxA: MessageBoxW's, the text and the caption converted from the ANSI code page.
@@ -531,28 +640,170 @@ pub unsafe extern "system" fn message_box_a(
     caption: *const u8,
     kind: u32,
 ) -> i32 {
-    let (text_arg, caption_arg) = (text as usize, caption as usize);
-    let call = Call {
-        entry: &crate::spec::MessageBoxA,
-        args: [
-            owner as u64,
-            text_arg as u64,
-            caption_arg as u64,
-            u64::from(kind),
-            0,
+    let call = call_of(
+        &crate::spec::MessageBoxA,
+        [owner, text as usize, caption as usize, kind as usize, 0],
+    );
+    // SAFETY: the caller's contract.
+    unsafe { message_box_narrow(owner, text, caption, kind, 0, call) }
+}
+
+/// MessageBoxExW: MessageBoxW's; the language the buttons' texts would be in is not used, as
+/// Windows 2000's user32 carries its strings in one language only (the dialog2 capture's French
+/// box shows English buttons).
+///
+/// # Safety
+///
+/// As MessageBoxW's.
+#[unsafe(export_name = "f2k_export_MessageBoxExW")]
+pub unsafe extern "system" fn message_box_ex_w(
+    owner: usize,
+    text: *const u16,
+    caption: *const u16,
+    kind: u32,
+    language: u32,
+) -> i32 {
+    let call = call_of(
+        &crate::spec::MessageBoxExW,
+        [
+            owner,
+            text as usize,
+            caption as usize,
+            kind as usize,
+            language as usize,
         ],
+    );
+    // SAFETY: the caller's contract.
+    unsafe { message_box_wide(owner, text, caption, kind, 0, call) }
+}
+
+/// MessageBoxExA: MessageBoxA's, the language not used (MessageBoxExW's).
+///
+/// # Safety
+///
+/// As MessageBoxA's.
+#[unsafe(export_name = "f2k_export_MessageBoxExA")]
+pub unsafe extern "system" fn message_box_ex_a(
+    owner: usize,
+    text: *const u8,
+    caption: *const u8,
+    kind: u32,
+    language: u32,
+) -> i32 {
+    let call = call_of(
+        &crate::spec::MessageBoxExA,
+        [
+            owner,
+            text as usize,
+            caption as usize,
+            kind as usize,
+            language as usize,
+        ],
+    );
+    // SAFETY: the caller's contract.
+    unsafe { message_box_narrow(owner, text, caption, kind, 0, call) }
+}
+
+/// MSGBOXPARAMSW and MSGBOXPARAMSA (winuser.h): the same layout, the strings in the form's.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct MsgBoxParams {
+    pub size: u32,
+    pub owner: u32,
+    pub instance: u32,
+    pub text: u32,
+    pub caption: u32,
+    pub style: u32,
+    pub icon: u32,
+    pub context_help_id: u32,
+    pub callback: u32,
+    pub language: u32,
+}
+
+/// The flags of MessageBoxIndirect's the box does not handle yet, logged (once per process): the
+/// help callback (MB_HELP's WM_HELP goes to it).
+fn log_unhandled_params(params: &MsgBoxParams, call: &Call) {
+    const CALLBACK: u32 = 0x8000_0000;
+    if params.callback != 0 && params.style & 0x4000 != 0 && FLAGS_LOGGED.first(CALLBACK) {
+        call.unhandled(
+            "lpfnMsgBoxCallback (MB_HELP's WM_HELP to the callback) is not yet implemented",
+        );
+    }
+}
+
+/// MessageBoxIndirectW: MessageBoxExW's over the caller's MSGBOXPARAMSW, its MB_USERICON icon the
+/// one LoadIconW finds for its hInstance and lpszIcon (the stock icons for no module); cbSize is
+/// not checked (the dialog2 capture's box of cbSize 0 shows as any other).
+///
+/// # Safety
+///
+/// `params` is the caller's MSGBOXPARAMSW, its strings NUL-terminated or null, as for the
+/// platform's.
+#[unsafe(export_name = "f2k_export_MessageBoxIndirectW")]
+pub unsafe extern "system" fn message_box_indirect_w(params: *const MsgBoxParams) -> i32 {
+    let call = call_of(
+        &crate::spec::MessageBoxIndirectW,
+        [params as usize, 0, 0, 0, 0],
+    );
+    // SAFETY: the caller's MSGBOXPARAMSW.
+    let params = unsafe { rtl::edge::In::new(params) }.read();
+    log_unhandled_params(&params, &call);
+    let icon = if params.style & MB_ICONMASK == MB_USERICON {
+        // SAFETY: the caller's icon name: a number, or its NUL-terminated string.
+        unsafe {
+            crate::icon::load_icon_w(params.instance as usize, params.icon as usize as *const u16)
+        }
+    } else {
+        0
     };
     // SAFETY: the caller's strings, or null.
-    let (text, caption) = unsafe { (InStr::optional(text), InStr::optional(caption)) };
-    let text = text.map_or(&[][..], |text| text.bytes());
-    crate::with_wide(text, |text| match caption {
-        Some(caption) => crate::with_wide(caption.bytes(), |caption| {
-            message_box(owner, text, caption, kind, call)
-        }),
-        None => Some(message_box(owner, text, &ERROR_CAPTION[..5], kind, call)),
-    })
-    .flatten()
-    .unwrap_or(0)
+    unsafe {
+        message_box_wide(
+            params.owner as usize,
+            params.text as usize as *const u16,
+            params.caption as usize as *const u16,
+            params.style,
+            icon,
+            call,
+        )
+    }
+}
+
+/// MessageBoxIndirectA: MessageBoxIndirectW's over the caller's MSGBOXPARAMSA, the strings ANSI
+/// (LoadIconA's for the icon).
+///
+/// # Safety
+///
+/// `params` is the caller's MSGBOXPARAMSA, its strings NUL-terminated or null, as for the
+/// platform's.
+#[unsafe(export_name = "f2k_export_MessageBoxIndirectA")]
+pub unsafe extern "system" fn message_box_indirect_a(params: *const MsgBoxParams) -> i32 {
+    let call = call_of(
+        &crate::spec::MessageBoxIndirectA,
+        [params as usize, 0, 0, 0, 0],
+    );
+    // SAFETY: the caller's MSGBOXPARAMSA.
+    let params = unsafe { rtl::edge::In::new(params) }.read();
+    log_unhandled_params(&params, &call);
+    let icon = if params.style & MB_ICONMASK == MB_USERICON {
+        // SAFETY: the caller's icon name: a number, or its NUL-terminated string.
+        unsafe {
+            crate::icon::load_icon_a(params.instance as usize, params.icon as usize as *const u8)
+        }
+    } else {
+        0
+    };
+    // SAFETY: the caller's strings, or null.
+    unsafe {
+        message_box_narrow(
+            params.owner as usize,
+            params.text as usize as *const u8,
+            params.caption as usize as *const u8,
+            params.style,
+            icon,
+            call,
+        )
+    }
 }
 
 #[cfg(test)]
@@ -571,7 +822,13 @@ mod tests {
             words: &mut words,
             at: 0,
         };
-        build(&mut template, &text, &caption, 3 | 0x10);
+        build(
+            &mut template,
+            &text,
+            &caption,
+            3 | 0x10,
+            BoxIcon::Stock(32513),
+        );
         assert!(template.at <= size, "{} words in {size}", template.at);
         let read = template.bytes();
         let mut reader = Reader::new(&read, template.words.as_ptr() as usize);
@@ -593,5 +850,41 @@ mod tests {
         // SAFETY: as above.
         let shown = unsafe { rtl::cstr::units_until_nul(at as *const u16) };
         assert_eq!(shown, &text[..]);
+    }
+
+    /// A box's controls as the dialog2 capture shows Windows 2000's: the buttons, the icon static
+    /// (id 20, WS_GROUP | SS_ICON, no title for the caller's own icon), then the text static
+    /// (id 0xFFFF, WS_GROUP | SS_EDITCONTROL | SS_NOPREFIX).
+    #[test]
+    fn a_boxs_controls_have_the_captured_styles() {
+        let text = rtl::testing::wide("F2K indirect");
+        let caption = rtl::testing::wide("F2K box");
+        let size = template_words(text.len(), caption.len());
+        let mut words = std::vec![0u16; size];
+        let mut template = Template {
+            words: &mut words,
+            at: 0,
+        };
+        build(
+            &mut template,
+            &text,
+            &caption,
+            MB_OK | MB_USERICON,
+            BoxIcon::User(0x1234),
+        );
+        let read = template.bytes();
+        let mut reader = Reader::new(&read, template.words.as_ptr() as usize);
+        let mut face = [0u16; rtl::gdi::LF_FACESIZE];
+        let header = dialog::read_header(&mut reader, &mut face).unwrap();
+        let items: std::vec::Vec<dialog::Item> = (0..header.count)
+            .map(|_| dialog::read_item(&mut reader, false).unwrap())
+            .collect();
+        let shown: std::vec::Vec<(u32, u32)> =
+            items.iter().map(|item| (item.id, item.style)).collect();
+        assert_eq!(
+            shown,
+            [(2, 0x5003_0001), (20, 0x5002_0003), (0xFFFF, 0x5002_2080)]
+        );
+        assert_eq!(items[1].title, dialog::Field::None);
     }
 }

@@ -2267,6 +2267,63 @@ ordinal = 80
 fails = "NULL"
 
 [[export]]
+name = "CreateDialogIndirectParamA"
+group = "dialog"
+args = [
+    "handle hInstance", "ptr lpTemplate", "handle hWndParent", "ptr lpDialogFunc",
+    "i32 dwInitParam",
+]
+impl = { native = "CreateDialogIndirectParamA" }
+ordinal = 78
+fails = "NULL"
+
+[[export]]
+name = "CreateDialogIndirectParamAorW"
+group = "dialog"
+args = [
+    "handle hInstance", "ptr lpTemplate", "handle hWndParent", "ptr lpDialogFunc",
+    "i32 dwInitParam", "u32 dwFlags",
+]
+impl = { native = "CreateDialogIndirectParamAorW" }
+ordinal = 79
+fails = "NULL"
+note = "undocumented: dwFlags 2 (DLG_ISANSI) makes the A form's dialog, any other the W form's"
+
+[[export]]
+name = "DialogBoxIndirectParamA"
+group = "dialog"
+args = [
+    "handle hInstance", "ptr lpTemplate", "handle hWndParent", "ptr lpDialogFunc",
+    "i32 dwInitParam",
+]
+impl = { native = "DialogBoxIndirectParamA" }
+ordinal = 147
+fails = "-1"
+
+[[export]]
+name = "DialogBoxIndirectParamAorW"
+group = "dialog"
+args = [
+    "handle hInstance", "ptr lpTemplate", "handle hWndParent", "ptr lpDialogFunc",
+    "i32 dwInitParam", "u32 dwFlags",
+]
+impl = { native = "DialogBoxIndirectParamAorW" }
+ordinal = 148
+fails = "-1"
+note = "undocumented: dwFlags 2 (DLG_ISANSI) makes the A form's dialog, any other the W form's"
+
+[[export]]
+name = "DialogBoxIndirectParamW"
+group = "dialog"
+args = [
+    "handle hInstance", "ptr lpTemplate", "handle hWndParent", "ptr lpDialogFunc",
+    "i32 dwInitParam",
+]
+impl = { native = "DialogBoxIndirectParamW" }
+ordinal = 149
+fails = "-1"
+
+[[export]]
 name = "DialogBoxParamA"
 group = "dialog"
 args = [
@@ -2311,6 +2368,31 @@ args = ["handle hDlg", "ptr lpMsg"]
 impl = { native = "IsDialogMessageW" }
 ordinal = 398
 fails = "FALSE"
+
+[[export]]
+name = "IsDialogMessage"
+group = "dialog"
+args = ["handle hDlg", "ptr lpMsg"]
+impl = { native = "IsDialogMessage" }
+ordinal = 396
+fails = "FALSE"
+note = "IsDialogMessageA's alias"
+
+[[export]]
+name = "GetNextDlgTabItem"
+group = "dialog"
+args = ["handle hDlg", "handle hCtl", "bool bPrevious"]
+impl = { native = "GetNextDlgTabItem" }
+ordinal = 311
+fails = "NULL"
+
+[[export]]
+name = "GetNextDlgGroupItem"
+group = "dialog"
+args = ["handle hDlg", "handle hCtl", "bool bPrevious"]
+impl = { native = "GetNextDlgGroupItem" }
+ordinal = 310
+fails = "NULL"
 
 [[export]]
 name = "GetDlgItem"
@@ -2385,6 +2467,14 @@ ordinal = 533
 fails = "0"
 
 [[export]]
+name = "SendDlgItemMessageA"
+group = "dialog"
+args = ["handle hDlg", "i32 nIDDlgItem", "u32 Msg", "u32 wParam", "i32 lParam"]
+impl = { native = "SendDlgItemMessageA" }
+ordinal = 532
+fails = "0"
+
+[[export]]
 name = "CheckDlgButton"
 group = "dialog"
 args = ["handle hDlg", "i32 nIDButton", "u32 uCheck"]
@@ -2438,6 +2528,38 @@ group = "dialog"
 args = ["handle hWnd", "strW? lpText", "strW? lpCaption", "u32 uType"]
 impl = { native = "MessageBoxW" }
 ordinal = 457
+fails = "0"
+
+[[export]]
+name = "MessageBoxExA"
+group = "dialog"
+args = ["handle hWnd", "strA? lpText", "strA? lpCaption", "u32 uType", "u32 wLanguageId"]
+impl = { native = "MessageBoxExA" }
+ordinal = 453
+fails = "0"
+
+[[export]]
+name = "MessageBoxExW"
+group = "dialog"
+args = ["handle hWnd", "strW? lpText", "strW? lpCaption", "u32 uType", "u32 wLanguageId"]
+impl = { native = "MessageBoxExW" }
+ordinal = 454
+fails = "0"
+
+[[export]]
+name = "MessageBoxIndirectA"
+group = "dialog"
+args = ["ptr lpMsgBoxParams"]
+impl = { native = "MessageBoxIndirectA" }
+ordinal = 455
+fails = "0"
+
+[[export]]
+name = "MessageBoxIndirectW"
+group = "dialog"
+args = ["ptr lpMsgBoxParams"]
+impl = { native = "MessageBoxIndirectW" }
+ordinal = 456
 fails = "0"
 
 [[export]]
@@ -3925,14 +4047,6 @@ name = "CreateDesktopW"
 ordinal = 77
 
 [[export]]
-name = "CreateDialogIndirectParamA"
-ordinal = 78
-
-[[export]]
-name = "CreateDialogIndirectParamAorW"
-ordinal = 79
-
-[[export]]
 name = "CreateIcon"
 ordinal = 83
 
@@ -4135,25 +4249,6 @@ fails = "FALSE"
 [[export]]
 name = "DeviceEventWorker"
 ordinal = 146
-
-[[export]]
-name = "DialogBoxIndirectParamA"
-ordinal = 147
-
-[[export]]
-name = "DialogBoxIndirectParamAorW"
-ordinal = 148
-
-[[export]]
-name = "DialogBoxIndirectParamW"
-group = "dialog"
-args = [
-    "handle hInstance", "ptr hDialogTemplate", "handle hWndParent", "u32 lpDialogFunc",
-    "u32 dwInitParam",
-]
-impl = { stub = "not yet implemented" }
-ordinal = 149
-fails = "-1"
 
 [[export]]
 name = "DlgDirListA"
@@ -4545,14 +4640,6 @@ name = "GetMouseMovePointsEx"
 ordinal = 309
 
 [[export]]
-name = "GetNextDlgGroupItem"
-ordinal = 310
-
-[[export]]
-name = "GetNextDlgTabItem"
-ordinal = 311
-
-[[export]]
 name = "GetPriorityClipboardFormat"
 ordinal = 314
 
@@ -4727,10 +4814,6 @@ name = "IsCharUpperW"
 ordinal = 393
 
 [[export]]
-name = "IsDialogMessage"
-ordinal = 396
-
-[[export]]
 name = "KillSystemTimer"
 ordinal = 409
 
@@ -4833,22 +4916,6 @@ ordinal = 449
 [[export]]
 name = "MenuWindowProcW"
 ordinal = 450
-
-[[export]]
-name = "MessageBoxExA"
-ordinal = 453
-
-[[export]]
-name = "MessageBoxExW"
-ordinal = 454
-
-[[export]]
-name = "MessageBoxIndirectA"
-ordinal = 455
-
-[[export]]
-name = "MessageBoxIndirectW"
-ordinal = 456
 
 [[export]]
 name = "MsgWaitForMultipleObjectsEx"
@@ -5033,10 +5100,6 @@ args = [
 impl = { stub = "not yet implemented" }
 ordinal = 529
 fails = "FALSE"
-
-[[export]]
-name = "SendDlgItemMessageA"
-ordinal = 532
 
 [[export]]
 name = "SendIMEMessageExA"
