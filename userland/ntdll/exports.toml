@@ -1811,7 +1811,11 @@ ordinal = 59
 
 [[export]]
 name = "NtAccessCheck"
+group = "nt"
+args = ["ptr SecurityDescriptor", "handle TokenHandle", "u32 DesiredAccess", "ptr GenericMapping", "ptr PrivilegeSet", "ptr<u32> PrivilegeSetLength", "ptr<u32> GrantedAccess", "ptr<u32> AccessStatus"]
+impl = { syscall = "crate::nt::seccheck::access_check" }
 ordinal = 60
+zw_ordinal = 706
 
 [[export]]
 name = "NtAccessCheckAndAuditAlarm"
@@ -1819,7 +1823,11 @@ ordinal = 61
 
 [[export]]
 name = "NtAccessCheckByType"
+group = "nt"
+args = ["ptr SecurityDescriptor", "ptr PrincipalSelfSid", "handle TokenHandle", "u32 DesiredAccess", "ptr ObjectTypeList", "u32 ObjectTypeListLength", "ptr GenericMapping", "ptr PrivilegeSet", "ptr<u32> PrivilegeSetLength", "ptr<u32> GrantedAccess", "ptr<u32> AccessStatus"]
+impl = { syscall = "crate::nt::seccheck::access_check_by_type" }
 ordinal = 62
+zw_ordinal = 708
 
 [[export]]
 name = "NtAccessCheckByTypeAndAuditAlarm"
@@ -1827,7 +1835,11 @@ ordinal = 63
 
 [[export]]
 name = "NtAccessCheckByTypeResultList"
+group = "nt"
+args = ["ptr SecurityDescriptor", "ptr PrincipalSelfSid", "handle TokenHandle", "u32 DesiredAccess", "ptr ObjectTypeList", "u32 ObjectTypeListLength", "ptr GenericMapping", "ptr PrivilegeSet", "ptr<u32> PrivilegeSetLength", "ptr<u32> GrantedAccessList", "ptr<u32> AccessStatusList"]
+impl = { syscall = "crate::nt::seccheck::access_check_by_type_result_list" }
 ordinal = 64
+zw_ordinal = 710
 
 [[export]]
 name = "NtAccessCheckByTypeResultListAndAuditAlarm"
@@ -1839,7 +1851,11 @@ ordinal = 66
 
 [[export]]
 name = "NtAdjustGroupsToken"
+group = "nt"
+args = ["handle TokenHandle", "boolean ResetToDefault", "ptr NewState", "u32 BufferLength", "ptr PreviousState", "ptr<u32> ReturnLength"]
+impl = { syscall = "crate::nt::token_ops::adjust_groups_token" }
 ordinal = 68
+zw_ordinal = 714
 
 [[export]]
 name = "NtAlertResumeThread"
@@ -1931,7 +1947,11 @@ ordinal = 105
 
 [[export]]
 name = "NtCreateToken"
+group = "nt"
+args = ["ptr<u32> TokenHandle", "u32 DesiredAccess", "ptr ObjectAttributes", "u32 TokenType", "ptr AuthenticationId", "ptr ExpirationTime", "ptr User", "ptr Groups", "ptr Privileges", "ptr Owner", "ptr PrimaryGroup", "ptr DefaultDacl", "ptr TokenSource"]
+impl = { syscall = "crate::nt::token_ops::create_token" }
 ordinal = 108
+zw_ordinal = 754
 
 [[export]]
 name = "NtCreateWaitablePort"
@@ -1959,7 +1979,11 @@ ordinal = 123
 
 [[export]]
 name = "NtFilterToken"
+group = "nt"
+args = ["handle ExistingTokenHandle", "u32 Flags", "ptr SidsToDisable", "ptr PrivilegesToDelete", "ptr RestrictedSids", "ptr<u32> NewTokenHandle"]
+impl = { syscall = "crate::nt::token_ops::filter_token" }
 ordinal = 124
+zw_ordinal = 769
 
 [[export]]
 name = "NtFlushVirtualMemory"
@@ -2083,7 +2107,11 @@ ordinal = 173
 
 [[export]]
 name = "NtOpenThreadToken"
+group = "nt"
+args = ["handle ThreadHandle", "u32 DesiredAccess", "boolean OpenAsSelf", "ptr<u32> TokenHandle"]
+impl = { syscall = "crate::nt::token_ops::open_thread_token" }
 ordinal = 175
+zw_ordinal = 820
 
 [[export]]
 name = "NtPlugPlayControl"
@@ -2095,7 +2123,11 @@ ordinal = 178
 
 [[export]]
 name = "NtPrivilegeCheck"
+group = "nt"
+args = ["handle TokenHandle", "ptr PrivilegeSet", "ptr<u32> Result"]
+impl = { syscall = "crate::nt::seccheck::privilege_check" }
 ordinal = 179
+zw_ordinal = 824
 
 [[export]]
 name = "NtPrivilegeObjectAuditAlarm"
@@ -2163,7 +2195,11 @@ ordinal = 208
 
 [[export]]
 name = "NtQuerySecurityObject"
+group = "nt"
+args = ["handle ObjectHandle", "u32 SecurityInfo", "ptr SecurityDescriptor", "u32 Length", "ptr<u32> LengthNeeded"]
+impl = { syscall = "crate::nt::secobj::query_security_object" }
 ordinal = 210
+zw_ordinal = 855
 
 [[export]]
 name = "NtQuerySemaphore"
@@ -2343,7 +2379,11 @@ ordinal = 271
 
 [[export]]
 name = "NtSetSecurityObject"
+group = "nt"
+args = ["handle ObjectHandle", "u32 SecurityInfo", "ptr SecurityDescriptor"]
+impl = { syscall = "crate::nt::secobj::set_security_object" }
 ordinal = 272
+zw_ordinal = 917
 
 [[export]]
 name = "NtSetSystemEnvironmentValue"
@@ -3938,24 +3978,12 @@ name = "ZwAcceptConnectPort"
 ordinal = 705
 
 [[export]]
-name = "ZwAccessCheck"
-ordinal = 706
-
-[[export]]
 name = "ZwAccessCheckAndAuditAlarm"
 ordinal = 707
 
 [[export]]
-name = "ZwAccessCheckByType"
-ordinal = 708
-
-[[export]]
 name = "ZwAccessCheckByTypeAndAuditAlarm"
 ordinal = 709
-
-[[export]]
-name = "ZwAccessCheckByTypeResultList"
-ordinal = 710
 
 [[export]]
 name = "ZwAccessCheckByTypeResultListAndAuditAlarm"
@@ -3964,10 +3992,6 @@ ordinal = 711
 [[export]]
 name = "ZwAccessCheckByTypeResultListAndAuditAlarmByHandle"
 ordinal = 712
-
-[[export]]
-name = "ZwAdjustGroupsToken"
-ordinal = 714
 
 [[export]]
 name = "ZwAlertResumeThread"
@@ -4058,10 +4082,6 @@ name = "ZwCreateSymbolicLinkObject"
 ordinal = 751
 
 [[export]]
-name = "ZwCreateToken"
-ordinal = 754
-
-[[export]]
 name = "ZwCreateWaitablePort"
 ordinal = 755
 
@@ -4080,10 +4100,6 @@ ordinal = 763
 [[export]]
 name = "ZwExtendSection"
 ordinal = 768
-
-[[export]]
-name = "ZwFilterToken"
-ordinal = 769
 
 [[export]]
 name = "ZwFlushVirtualMemory"
@@ -4206,20 +4222,12 @@ name = "ZwOpenSymbolicLinkObject"
 ordinal = 818
 
 [[export]]
-name = "ZwOpenThreadToken"
-ordinal = 820
-
-[[export]]
 name = "ZwPlugPlayControl"
 ordinal = 822
 
 [[export]]
 name = "ZwPowerInformation"
 ordinal = 823
-
-[[export]]
-name = "ZwPrivilegeCheck"
-ordinal = 824
 
 [[export]]
 name = "ZwPrivilegeObjectAuditAlarm"
@@ -4284,10 +4292,6 @@ ordinal = 851
 [[export]]
 name = "ZwQueryQuotaInformationFile"
 ordinal = 853
-
-[[export]]
-name = "ZwQuerySecurityObject"
-ordinal = 855
 
 [[export]]
 name = "ZwQuerySemaphore"
@@ -4456,10 +4460,6 @@ ordinal = 915
 [[export]]
 name = "ZwSetQuotaInformationFile"
 ordinal = 916
-
-[[export]]
-name = "ZwSetSecurityObject"
-ordinal = 917
 
 [[export]]
 name = "ZwSetSystemEnvironmentValue"
