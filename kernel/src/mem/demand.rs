@@ -393,11 +393,18 @@ pub mod target {
         true
     }
 
+    /// A transfer buffer on a page boundary: the disk moves it by bus-master DMA only from an even
+    /// address (an odd one falls back to PIO, the processor moving every word), and a byte array's
+    /// place in a static would otherwise follow the kernel image's layout.
+    #[repr(C, align(4096))]
+    pub struct PageAligned<const N: usize>(pub [u8; N]);
+
     /// The page buffers a staged transfer copies through: the disk I/O waits (a switch can happen
     /// inside it), so a buffer is claimed for the transfer, not borrowed from a stack.
     const BUF_COUNT: usize = 4;
     static BUF_CLAIMS: AtomicU8 = AtomicU8::new(0);
-    static mut BUFS: [[u8; PAGE_SIZE]; BUF_COUNT] = [[0; PAGE_SIZE]; BUF_COUNT];
+    static mut BUFS: [PageAligned<PAGE_SIZE>; BUF_COUNT] =
+        [const { PageAligned([0; PAGE_SIZE]) }; BUF_COUNT];
 
     /// A claimed page buffer; released on drop.
     pub struct PageBuf {
@@ -429,13 +436,13 @@ pub mod target {
         pub fn as_mut(&mut self) -> &mut [u8; PAGE_SIZE] {
             // SAFETY: the index is claimed in BUF_CLAIMS until the drop, so the buffer has one
             // user at a time.
-            unsafe { &mut (*core::ptr::addr_of_mut!(BUFS))[self.index] }
+            unsafe { &mut (*core::ptr::addr_of_mut!(BUFS))[self.index].0 }
         }
 
         /// The buffer, shared.
         pub fn as_ref(&self) -> &[u8; PAGE_SIZE] {
             // SAFETY: as `as_mut`.
-            unsafe { &(*core::ptr::addr_of!(BUFS))[self.index] }
+            unsafe { &(*core::ptr::addr_of!(BUFS))[self.index].0 }
         }
     }
 
@@ -448,12 +455,12 @@ pub mod target {
     /// The batch buffer a group's pages are copied through: the disk I/O waits (a switch can
     /// happen inside it), so the pages are copied out of the frames under a database borrow
     /// into this, not borrowed from a stack.
-    static mut BATCH_BUF: [u8; GROUP * PAGE_SIZE] = [0; GROUP * PAGE_SIZE];
+    static mut BATCH_BUF: PageAligned<{ GROUP * PAGE_SIZE }> = PageAligned([0; GROUP * PAGE_SIZE]);
 
     /// The batch buffer, while the relieve holds RELIEF_BUSY (one user at a time).
     fn batch_all() -> &'static mut [u8; GROUP * PAGE_SIZE] {
         // SAFETY: RELIEF_BUSY is held for the whole relieve, so the buffer has one user at a time.
-        unsafe { &mut *core::ptr::addr_of_mut!(BATCH_BUF) }
+        unsafe { &mut (*core::ptr::addr_of_mut!(BATCH_BUF)).0 }
     }
 
     /// Page `index` of the batch buffer, while the relieve holds RELIEF_BUSY.

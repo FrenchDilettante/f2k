@@ -89,6 +89,22 @@ pub trait PageStore {
         }
         Ok(())
     }
+
+    /// Read whole pages starting at byte `offset` into `data` as one operation when the store can
+    /// move them in a single run (a file layer does): the default reads page by page through
+    /// [`Self::read_at`].
+    fn read_at_many(&mut self, offset: u64, data: &mut [u8]) -> Result<(), StoreError> {
+        assert!(
+            !data.is_empty() && data.len() % PAGE_BYTES == 0,
+            "whole pages"
+        );
+        for (index, page) in data.chunks_exact_mut(PAGE_BYTES).enumerate() {
+            let page: &mut Page = page.try_into().expect("a whole page");
+            self.read_at(offset + index as u64 * PAGE_BYTES as u64, page)?;
+        }
+        Ok(())
+    }
+
     /// Set the file's length to `len` bytes; a growth's contents are undefined (no slot is read
     /// before it is written).
     fn set_len(&mut self, len: u64) -> Result<(), StoreError>;
@@ -265,6 +281,26 @@ impl<S: PageStore> PagingFile<S> {
         self.store.write_at_many(first * PAGE_BYTES as u64, data)
     }
 
+    /// Read the run of allocated slots starting at `first` into `data` — whole pages — as one
+    /// store operation at the run's first offset (a clustered page-in).
+    ///
+    /// # Panics
+    /// `data` is empty or not whole pages, or one of the run's slots is not allocated.
+    pub fn read_pages(&mut self, first: u64, data: &mut [u8]) -> Result<(), StoreError> {
+        assert!(
+            !data.is_empty() && data.len() % PAGE_BYTES == 0,
+            "a multi-page read moves whole pages"
+        );
+        for index in 0..(data.len() / PAGE_BYTES) as u64 {
+            assert!(
+                self.is_allocated(first + index),
+                "slot {} of the run is not allocated",
+                first + index
+            );
+        }
+        self.store.read_at_many(first * PAGE_BYTES as u64, data)
+    }
+
     /// Give slot `slot` back.
     ///
     /// # Panics
@@ -392,7 +428,7 @@ impl<S: PageStore> PagingIo for FileIo<'_, S> {
 
 #[cfg(target_arch = "x86")]
 mod target {
-    use super::{boot_sizing, FileIo, Page, PageStore, PagingFile, StoreError};
+    use super::{boot_sizing, FileIo, Page, PageStore, PagingFile, StoreError, PAGE_BYTES};
     use crate::block::lock::DeviceLock;
     use crate::fs::fat32::dirent::{ATTR_HIDDEN, ATTR_SYSTEM};
     use crate::fs::fat32::extent::Extents;
@@ -480,6 +516,23 @@ mod target {
                 .map_err(store_error)?;
             if count != page.len() {
                 return Err(StoreError::Io);
+            }
+            Ok(())
+        }
+
+        fn read_at_many(&mut self, offset: u64, data: &mut [u8]) -> Result<(), StoreError> {
+            if let Some(extents) = self.mapped(offset, data.len()) {
+                return with_boot_volume(|volume| {
+                    extents.split(offset, data.len(), |lba, range| {
+                        volume.read_sectors(lba, &mut data[range])
+                    })
+                })
+                .ok_or(StoreError::Io)?
+                .map_err(store_error);
+            }
+            for (index, page) in data.chunks_exact_mut(PAGE_BYTES).enumerate() {
+                let page: &mut Page = page.try_into().map_err(|_| StoreError::Io)?;
+                self.read_at(offset + (index * PAGE_BYTES) as u64, page)?;
             }
             Ok(())
         }
@@ -1075,6 +1128,35 @@ mod tests {
         let mut page = [0u8; PAGE_BYTES];
         file.read_page(2, &mut page).unwrap();
         assert_eq!(&page[..], &data[PAGE_BYTES..2 * PAGE_BYTES]);
+    }
+
+    /// A multi-page read takes the run from its first offset (the default reads one page per
+    /// call, at the slots' offsets) and refuses a run with a slot that is not allocated.
+    #[test]
+    fn a_multi_page_read_takes_the_run_from_its_first_offset() {
+        let mut file = PagingFile::create(RamDisk::new(u64::MAX), 8 * PAGE_BYTES as u64).unwrap();
+        let first = file.allocate_slots(3).unwrap();
+        let mut data = vec![0u8; 3 * PAGE_BYTES];
+        for (index, byte) in data.iter_mut().enumerate() {
+            *byte = (index % 251) as u8;
+        }
+        file.write_pages(first, &data).unwrap();
+        let mut back = vec![0u8; 3 * PAGE_BYTES];
+        file.read_pages(first, &mut back).unwrap();
+        assert_eq!(back, data);
+        assert_eq!(
+            file.store().reads,
+            vec![
+                PAGE_BYTES as u64,
+                2 * PAGE_BYTES as u64,
+                3 * PAGE_BYTES as u64
+            ]
+        );
+        file.free_slot(3);
+        let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            file.read_pages(first, &mut back)
+        }));
+        assert!(refused.is_err(), "slot 3 of the run is free");
     }
 
     /// Freeing a slot that is not allocated is refused.

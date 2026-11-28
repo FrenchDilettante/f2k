@@ -10,7 +10,9 @@
 //! [`apply`] applies the two I/O arms: [`page_file_in`] decodes the slot from the entry and reads
 //! it back into a fresh frame through [`pageout::page_in`], [`section_in`] reads the section's
 //! page from its backing; each maps the page present with the entry's protection. When no frame
-//! is left, the relief hook runs once and the allocation is retried once.
+//! is left, the relief hook runs once and the allocation is retried once. On the target a
+//! paging-file fault reads a cluster: the neighbours whose entries name the slots next to the
+//! faulting page's ([`page_file_cluster`]) come in with it in one transfer.
 //!
 //! The relief itself is working-set driven and lives with the fault path: the vector-14 hook in
 //! `user::seh` runs [`super::wstrim::relieve_pressure`] over the current process's working set,
@@ -30,6 +32,41 @@ use super::vm::{self, Pages, PAGE};
 /// The paging-file slot a [`pte::PAGE_FILE`] entry names (bits 12-31 hold it counted from one).
 pub fn slot_of(entry: u32) -> SlotId {
     pte::backing_payload(entry) >> 12
+}
+
+/// The most pages one paging-file fault reads: the faulting page and the neighbours whose entries
+/// name the slots next to its own, in one transfer. Windows 2000 clusters a page fault's read the
+/// same way, eight pages for a paging-file read on a machine of this size.
+pub const PAGE_FILE_CLUSTER: u32 = 8;
+
+/// The run of pages a paging-file fault at `page` reads in one transfer: the page, and the pages
+/// next to it — after it first, then before it, up to `max` in all — whose entries are paging-file
+/// ones like its own (the same protection and bits) naming the slots next to its slot in the same
+/// order, so the run's pages lie in one run of slots. The run's first page and its length (1: the
+/// faulting page alone).
+pub fn page_file_cluster(pages: &impl Pages, page: u32, max: u32) -> (u32, u32) {
+    let entry = pages.entry(page);
+    let slot = slot_of(entry);
+    // Whether the page `step` pages from the faulting one (either way) holds the slot as far from
+    // its slot.
+    let holds = |step: i64| {
+        let va = i64::from(page) + step * i64::from(PAGE);
+        let want = i64::from(slot) + step;
+        if va < i64::from(vm::USER_LOW) || va >= i64::from(vm::USER_HIGH) || want < 1 {
+            return false;
+        }
+        let want = (want as u32) << 12;
+        pages.entry(va as u32) == (entry & !pte::FRAME_MASK) | want
+    };
+    let mut after = 0;
+    while 1 + after < max && holds(i64::from(after) + 1) {
+        after += 1;
+    }
+    let mut before = 0;
+    while 1 + after + before < max && holds(-i64::from(before) - 1) {
+        before += 1;
+    }
+    (page - before * PAGE, 1 + before + after)
 }
 
 /// The section page index a [`pte::PROTOTYPE`] entry names (bits 12-31 hold it).
@@ -197,22 +234,25 @@ pub fn relieve_pass<H: FrameHooks, Io: PagingIo, Mem: FrameMemory>(
 
 /// Apply a faulting access at `va` whose resolution needs backing-store I/O — `write` for a
 /// store, `user` when it came from ring 3: the PageFile and Section arms above. True when the page
-/// is mapped present now and the access can resume. On the target this runs the staged driver
-/// ([`target`]); on host builds the arms are pure and the tests drive them directly.
+/// is mapped present now and the access can resume. A paging-file read brings in the neighbouring
+/// pages of its cluster too, each mapped and passed to `resident` (the faulting page is the
+/// caller's to note). On the target this runs the staged driver ([`target`]); on host builds the
+/// arms are pure and the tests drive them directly.
 pub fn apply(
     pages: &mut impl Pages,
     va: u32,
     write: bool,
     user: bool,
     relieve: &mut impl FnMut() -> bool,
+    resident: &mut impl FnMut(u32),
 ) -> bool {
     #[cfg(target_arch = "x86")]
     {
-        target::apply(pages, va, write, user, relieve)
+        target::apply(pages, va, write, user, relieve, resident)
     }
     #[cfg(not(target_arch = "x86"))]
     {
-        let _ = (pages, va, write, user, relieve);
+        let _ = (pages, va, write, user, relieve, resident);
         false
     }
 }
@@ -226,8 +266,10 @@ pub fn apply(
 
 #[cfg(target_arch = "x86")]
 pub mod target {
-    use super::{section_index_of, slot_of};
-    use crate::mem::demand::target::PageBuf;
+    use core::sync::atomic::{AtomicBool, Ordering};
+
+    use super::{page_file_cluster, section_index_of, slot_of, PAGE_FILE_CLUSTER};
+    use crate::mem::demand::target::{PageAligned, PageBuf};
     use crate::mem::fault::{self, Resolution};
     use crate::mem::pageout::PAGE_SIZE;
     use crate::mem::pagingfile::{with_paging_file, PagingFileIo};
@@ -246,46 +288,170 @@ pub mod target {
         pages.zeroed_frame()
     }
 
-    /// The PageFile arm on the target: the slot's page read back into a fresh frame through the
-    /// paging file (staged: the slot is read into a claimed buffer and released, then the buffer
-    /// is copied into the frame), the page mapped present with the entry's protection.
+    /// The buffer a clustered page-in reads its run into, on a page boundary ([`PageAligned`]):
+    /// the disk I/O waits (a switch can happen inside it), so the buffer is claimed for the
+    /// transfer, not borrowed from a stack. A fault that finds it in use reads its page alone,
+    /// through a [`PageBuf`].
+    static CLUSTER_CLAIMED: AtomicBool = AtomicBool::new(false);
+    static mut CLUSTER_BUF: PageAligned<{ PAGE_FILE_CLUSTER as usize * PAGE_SIZE }> =
+        PageAligned([0; PAGE_FILE_CLUSTER as usize * PAGE_SIZE]);
+
+    /// The claimed cluster buffer; released on drop.
+    struct ClusterBuf;
+
+    impl ClusterBuf {
+        fn claim() -> Option<ClusterBuf> {
+            CLUSTER_CLAIMED
+                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok()
+                .then_some(ClusterBuf)
+        }
+
+        fn as_mut(&mut self) -> &mut [u8] {
+            // SAFETY: CLUSTER_CLAIMED is held until the drop, so the buffer has one user.
+            unsafe { &mut (*core::ptr::addr_of_mut!(CLUSTER_BUF)).0 }
+        }
+    }
+
+    impl Drop for ClusterBuf {
+        fn drop(&mut self) {
+            CLUSTER_CLAIMED.store(false, Ordering::Release);
+        }
+    }
+
+    /// The PageFile arm on the target: the faulting page's slot read back, together with the
+    /// neighbours whose entries name the slots next to it ([`page_file_cluster`]), in one transfer
+    /// into a claimed buffer, then each page copied into a fresh frame and mapped present with its
+    /// entry's protection. The neighbours' frames are taken without relief (the run shrinks to the
+    /// frames there are), and each mapped neighbour is noted `resident`: the faulting page alone
+    /// is its caller's to note.
+    ///
+    /// The read-ahead pages join the working set as clean pages (the dirty bit clear: a trim
+    /// evicts them with no write). Windows 2000 leaves them in transition on the standby list,
+    /// where it can take their frames back at any time; a standby frame here is held by the
+    /// transition entry naming it until the page is re-faulted, out of reach of every trim, so a
+    /// page read ahead that way would keep its frame for good.
+    ///
+    /// Each slot is given back only once its page is mapped, and a page whose entry changed while
+    /// the read was in flight (another thread's fault brought it in, a decommit dropped it) keeps
+    /// what it has: its frame here goes back and its slot is left alone. True when the faulting
+    /// page is mapped now — or its entry changed meanwhile, for the retried access to resolve.
     fn page_file_in(
         pages: &mut impl Pages,
         page: u32,
         entry: u32,
         relieve: &mut impl FnMut() -> bool,
+        resident: &mut impl FnMut(u32),
     ) -> bool {
-        let slot = slot_of(entry);
-        let protect = pte::soft_protect(entry);
+        const MAX: usize = PAGE_FILE_CLUSTER as usize;
         let Some(frame) = fresh_frame(pages, relieve) else {
             return false;
         };
-        let mut buf = match PageBuf::claim() {
-            Some(buf) => buf,
-            None => {
-                pages.free_frame(frame);
-                return false;
-            }
+        let mut cluster = ClusterBuf::claim();
+        let mut single = match cluster {
+            Some(_) => None,
+            None => match PageBuf::claim() {
+                Some(buf) => Some(buf),
+                None => {
+                    pages.free_frame(frame);
+                    return false;
+                }
+            },
         };
-        let read = with_paging_file(|file| {
-            let slot = u64::from(slot);
-            if !file.is_allocated(slot) {
-                return false;
+        let (buf, max) = match (&mut cluster, &mut single) {
+            (Some(cluster), _) => (cluster.as_mut(), PAGE_FILE_CLUSTER),
+            (None, Some(single)) => (&mut single.as_mut()[..], 1),
+            (None, None) => unreachable!("a buffer was claimed"),
+        };
+        // The run, its entries as they are now, and a frame for each page: the faulting page's
+        // own, the neighbours' taken while there are frames (the run shrinks to them).
+        let (mut first, mut count) = page_file_cluster(pages, page, max);
+        let mut at = ((page - first) / PAGE) as usize;
+        let mut entries = [0u32; MAX];
+        let mut frames = [0u32; MAX];
+        for index in 0..count as usize {
+            entries[index] = pages.entry(first + index as u32 * PAGE);
+            if index == at {
+                frames[index] = frame;
+            } else if let Some(neighbour) = pages.zeroed_frame() {
+                frames[index] = neighbour;
             }
-            if file.read_page(slot, buf.as_mut()).is_err() {
-                return false;
-            }
-            file.free_slot(slot);
-            true
-        })
-        .unwrap_or(false);
-        if !read {
-            pages.free_frame(frame);
-            return false;
         }
-        pages.fill_frame(frame, buf.as_ref());
-        vm::map_named_frame(pages, page, frame, protect);
-        true
+        let (start, end) = run_around(count as usize, at, |index| frames[index] != 0);
+        for (index, &spare) in frames[..count as usize].iter().enumerate() {
+            if (index < start || index >= end) && spare != 0 {
+                pages.free_frame(spare);
+            }
+        }
+        frames.copy_within(start..end, 0);
+        entries.copy_within(start..end, 0);
+        first += start as u32 * PAGE;
+        count = (end - start) as u32;
+        at -= start;
+        let first_slot = u64::from(slot_of(entries[0]));
+        // The read, the run's slots still allocated: none when the faulting page's slot went
+        // (another fault brought the page in meanwhile), the run cut short at a neighbour's.
+        let read = with_paging_file(|file| {
+            if !file.is_allocated(first_slot + at as u64) {
+                return None;
+            }
+            let (start, end) = run_around(count as usize, at, |index| {
+                file.is_allocated(first_slot + index as u64)
+            });
+            let bytes = &mut buf[start * PAGE_SIZE..end * PAGE_SIZE];
+            file.read_pages(first_slot + start as u64, bytes)
+                .ok()
+                .map(|()| (start, end))
+        })
+        .flatten();
+        let Some((start, end)) = read else {
+            for &spare in &frames[..count as usize] {
+                pages.free_frame(spare);
+            }
+            return pages.entry(page) != entry;
+        };
+        // Each page whose entry still names its slot is mapped; the others' frames go back.
+        let mut mapped = [false; MAX];
+        for index in 0..count as usize {
+            let va = first + index as u32 * PAGE;
+            if index < start || index >= end || pages.entry(va) != entries[index] {
+                pages.free_frame(frames[index]);
+                continue;
+            }
+            pages.fill_frame(
+                frames[index],
+                &buf[index * PAGE_SIZE..(index + 1) * PAGE_SIZE],
+            );
+            vm::map_named_frame(pages, va, frames[index], pte::soft_protect(entries[index]));
+            mapped[index] = true;
+            if index != at {
+                resident(va);
+            }
+        }
+        let _ = with_paging_file(|file| {
+            for index in (0..count as usize).filter(|&index| mapped[index]) {
+                let slot = u64::from(slot_of(entries[index]));
+                if file.is_allocated(slot) {
+                    file.free_slot(slot);
+                }
+            }
+        });
+        mapped[at] || pages.entry(page) != entry
+    }
+
+    /// The run of the indexes `0..len` around `at` (which it always holds) whose `holds` is true,
+    /// as a half-open range.
+    fn run_around(len: usize, at: usize, holds: impl Fn(usize) -> bool) -> (usize, usize) {
+        let start = (0..at)
+            .rev()
+            .take_while(|&index| holds(index))
+            .last()
+            .unwrap_or(at);
+        let end = (at + 1..len)
+            .take_while(|&index| holds(index))
+            .last()
+            .map_or(at + 1, |index| index + 1);
+        (start, end)
     }
 
     /// What a section's page is read from on a fault: the section of the view holding `page`.
@@ -388,13 +554,15 @@ pub mod target {
     }
 
     /// Apply a faulting access at `va` whose resolution needs backing-store I/O (see the module
-    /// notes): the PageFile and Section arms. True when the page is mapped present now.
+    /// notes): the PageFile and Section arms. True when the page is mapped present now; the
+    /// neighbours a paging-file read mapped too are passed to `resident`.
     pub fn apply(
         pages: &mut impl Pages,
         va: u32,
         write: bool,
         user: bool,
         relieve: &mut impl FnMut() -> bool,
+        resident: &mut impl FnMut(u32),
     ) -> bool {
         if va >= USER_HIGH {
             return false;
@@ -402,7 +570,7 @@ pub mod target {
         let page = va & !(PAGE - 1);
         let entry = pages.entry(page);
         match fault::resolve(entry, write, user) {
-            Resolution::PageFile => page_file_in(pages, page, entry, relieve),
+            Resolution::PageFile => page_file_in(pages, page, entry, relieve, resident),
             Resolution::Section => section_in(pages, page, entry, relieve),
             _ => false,
         }
@@ -647,6 +815,55 @@ mod tests {
             pte::soft_protect(page_file_entry(7, PAGE_READWRITE)),
             PAGE_READWRITE
         );
+    }
+
+    /// A paging-file fault's cluster: the pages after the faulting one whose entries name the
+    /// next slots, then the pages before it naming the slots before, up to the most asked; a page
+    /// naming another slot, holding another protection or another kind of entry ends the run on
+    /// its side, as do slot 0 (reserved) and the application range's ends.
+    #[test]
+    fn a_paging_file_fault_clusters_the_neighbours_naming_the_next_slots() {
+        let base = USER_LOW + 0x10 * PAGE;
+        let at = |index: u32| base + index * PAGE;
+        let mut pages = Fake::default();
+        for (index, slot) in [(0, 8), (1, 9), (2, 10), (3, 11), (4, 12), (5, 13), (6, 40)] {
+            pages
+                .entries
+                .insert(at(index), page_file_entry(slot, PAGE_READWRITE));
+        }
+        // From page 2: forwards to page 5 (page 6 names slot 40), then back to page 0.
+        assert_eq!(page_file_cluster(&pages, at(2), 8), (at(0), 6));
+        // Forwards first: with room for 3, pages 2-4.
+        assert_eq!(page_file_cluster(&pages, at(2), 3), (at(2), 3));
+        // Forwards stopped at page 5, the rest backwards.
+        assert_eq!(page_file_cluster(&pages, at(5), 4), (at(2), 4));
+        assert_eq!(page_file_cluster(&pages, at(2), 1), (at(2), 1));
+        // Another protection, a transition entry and a demand-zero page each end the run.
+        pages
+            .entries
+            .insert(at(4), page_file_entry(12, PAGE_READONLY));
+        pages.entries.insert(
+            at(1),
+            pte::encode_backing(pte::TRANSITION, 0x5000, PAGE_READWRITE),
+        );
+        assert_eq!(page_file_cluster(&pages, at(2), 8), (at(2), 2));
+        pages.entries.insert(at(3), 0);
+        assert_eq!(page_file_cluster(&pages, at(2), 8), (at(2), 1));
+        // The page before slot 1 would name slot 0, the reserved one.
+        let mut pages = Fake::default();
+        pages
+            .entries
+            .insert(at(0), page_file_entry(0, PAGE_READWRITE));
+        pages
+            .entries
+            .insert(at(1), page_file_entry(1, PAGE_READWRITE));
+        assert_eq!(page_file_cluster(&pages, at(1), 8), (at(1), 1));
+        // The application range's first page has nothing before it.
+        let mut pages = Fake::default();
+        pages
+            .entries
+            .insert(USER_LOW, page_file_entry(2, PAGE_READWRITE));
+        assert_eq!(page_file_cluster(&pages, USER_LOW, 8), (USER_LOW, 1));
     }
 
     /// The PageFile arm: a paged-out page's slot is read back into a fresh frame (the slot

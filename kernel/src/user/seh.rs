@@ -537,6 +537,7 @@ mod target {
                 write,
                 true,
                 &mut relieve,
+                &mut note_resident,
             ) {
                 note_resident(cr2);
                 return true;
