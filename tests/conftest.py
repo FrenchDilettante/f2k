@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Callable
@@ -129,14 +130,57 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     }, indent=1) + "\n")
 
 
+def build_features(config: pytest.Config, wanted: list[str]) -> list[str]:
+    """The cargo features a test's build is made with: those it asks for, and with `--perf-trace`
+    the sampler's (it rides every boot)."""
+    return [*wanted, PERF_TRACE] if config.getoption("--perf-trace") else list(wanted)
+
+
+def wanted_feature_sets(items: list[pytest.Item]) -> list[list[str]]:
+    """The feature sets the selected tests' builds are made with, the plain one first, then in the
+    order the tests come: a kernel case's (tests/core/kernel/test_kernel.py's `case` parameter's
+    `features`) or its module's FEATURES (tests/core/test_input.py). A test asking for one by other
+    means still gets it, built when it asks."""
+    sets: list[list[str]] = [[]]
+    for item in items:
+        callspec = getattr(item, "callspec", None)
+        case = callspec.params.get("case") if callspec is not None else None
+        features = getattr(case, "features", None)
+        if features is None:
+            features = getattr(getattr(item, "module", None), "FEATURES", None)
+        if features and list(features) not in sets:
+            sets.append(list(features))
+    return sets
+
+
+# Set at the run's end: the prebuild thread starts no further build.
+PREBUILD_STOP = threading.Event()
+
+
+def pytest_collection_finish(session: pytest.Session) -> None:
+    """Under xdist, the first worker builds every feature set the selected tests boot, in a thread,
+    from the run's start (`f2kboot.prebuild`): the builds share one lock and one cargo target
+    directory, so they run one at a time, but back to back while the workers boot the plain kernel,
+    rather than each when a test first asks for it, with that worker waiting. Not with --no-build,
+    a collection only, or outside xdist (one process: nothing to overlap)."""
+    config = session.config
+    workerinput = getattr(config, "workerinput", None)
+    if (workerinput is None or workerinput.get("workerid") != "gw0"
+            or config.getoption("--no-build") or config.getoption("collectonly")):
+        return
+    sets = [build_features(config, each) for each in wanted_feature_sets(session.items)]
+    threading.Thread(target=f2kboot.prebuild, args=(sets, workerinput["testrunuid"], PREBUILD_STOP),
+                     name="f2k-prebuild", daemon=True).start()
+
+
+def pytest_unconfigure(config: pytest.Config) -> None:
+    PREBUILD_STOP.set()
+
+
 @pytest.fixture(scope="session")
 def builder(request: pytest.FixtureRequest, testrun_uid: str) -> Callable[[list[str]], f2kboot.Build]:
     """Build (once per test run) the kernel and disk for a set of cargo features."""
-    # The performance trace builds with every feature set: the sampler rides every boot.
-    if request.config.getoption("--perf-trace"):
-        features = lambda wanted: [*wanted, PERF_TRACE]  # noqa: E731
-    else:
-        features = lambda wanted: wanted  # noqa: E731
+    features = lambda wanted: build_features(request.config, wanted)  # noqa: E731
     if request.config.getoption("--no-build"):
 
         def reuse(wanted: list[str]) -> f2kboot.Build:

@@ -51,6 +51,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
 import zlib
@@ -300,6 +301,20 @@ def build(features: list[str], run_id: str) -> Build:
             sources.write_text(f"{before}\n{command}")
         marker.write_text(run_id)
     return built
+
+
+def prebuild(feature_sets: list[list[str]], run_id: str, stop: threading.Event) -> None:
+    """Build each of `feature_sets` for the run `run_id` (`build`), in order, until `stop` is set:
+    a worker's thread builds them ahead of the tests that boot them, so a test finds its build
+    made rather than waiting its turn on the build lock. A failed build is left to the tests that
+    need it, which report it."""
+    for features in feature_sets:
+        if stop.is_set():
+            return
+        try:
+            build(features, run_id)
+        except BuildError:
+            pass
 
 
 def make_arguments(features: list[str]) -> list[str]:
