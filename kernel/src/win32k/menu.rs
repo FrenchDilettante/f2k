@@ -234,6 +234,10 @@ struct MenuRecord {
     /// Set while the menu's destruction goes down its popups: a popup opening one of its own
     /// ancestors ends there.
     destroying: bool,
+    /// Set once a window has been given the menu as its own (Windows 2000's lock a window's
+    /// `spmenu` takes on the menu object): only then can a window still hold it at its
+    /// destruction, so a menu never given to a window is destroyed without walking the windows.
+    held: bool,
     /// The window whose system menu this menu is (its handle; 0 for none).
     system_of: u32,
     count: u16,
@@ -246,6 +250,7 @@ impl MenuRecord {
         handle: 0,
         owner: 0,
         destroying: false,
+        held: false,
         system_of: 0,
         count: 0,
         items: [Id::new(0, 0); MAX_MENU_ITEMS],
@@ -379,6 +384,7 @@ impl Menus {
         record.handle = handle;
         record.owner = owner;
         record.destroying = false;
+        record.held = false;
         record.system_of = 0;
         record.count = 0;
         Ok(handle)
@@ -391,6 +397,18 @@ impl Menus {
             Some(id) if self.is_live(id) => Ok(id),
             _ => Err(Failure::InvalidMenuHandle),
         }
+    }
+
+    /// Mark the live menu `handle` names as held by a window (nothing for a handle naming none).
+    pub fn mark_held(&mut self, handles: &UserHandles, handle: u32) {
+        if let Some(record) = handles.menu(handle).and_then(|id| self.at_mut(id)) {
+            record.held = true;
+        }
+    }
+
+    /// Whether a window has been given the menu `id` (see [`MenuRecord::held`]).
+    fn held(&self, id: MenuId) -> bool {
+        self.at(id).is_some_and(|record| record.held)
     }
 
     /// The handle of `id` (0 when it names no live menu).
@@ -767,9 +785,7 @@ impl Windows {
     /// without one.
     pub fn destroy_menu_handle(&mut self, handle: u32) -> Result<(), Failure> {
         let menu = self.menu_of(handle)?;
-        let canonical = self.menus.handle_of(menu);
-        self.menus.destroy(&mut self.handles, menu);
-        self.forget_menu(canonical);
+        self.destroy_menu_id(menu);
         Ok(())
     }
 
@@ -804,11 +820,16 @@ impl Windows {
         Ok(())
     }
 
-    /// The menu `menu` and its popups destroyed, a window holding it left without one.
+    /// The menu `menu` and its popups destroyed, a window holding it left without one. Only a
+    /// menu a window was given sends the walk over the windows (`manywin`'s `wrap`: 65,540
+    /// DestroyMenu calls after 2,000 windows made the pool that long).
     fn destroy_menu_id(&mut self, menu: MenuId) {
         let canonical = self.menus.handle_of(menu);
+        let held = self.menus.held(menu);
         self.menus.destroy(&mut self.handles, menu);
-        self.forget_menu(canonical);
+        if held {
+            self.forget_menu(canonical);
+        }
     }
 
     /// GetSystemMenu over handles: the window's copy of the system menu, its handle (0 for none

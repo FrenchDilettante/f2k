@@ -1885,11 +1885,23 @@ impl Windows {
 
     /// Set a top-level window's menu handle (0: none).
     pub fn set_window_menu(&mut self, id: WindowId, menu: u32) {
-        self.at_mut(id).menu = if menu == 0 {
-            Menu::None
-        } else {
-            Menu::Handle(menu)
-        };
+        self.give_menu(
+            id,
+            if menu == 0 {
+                Menu::None
+            } else {
+                Menu::Handle(menu)
+            },
+        );
+    }
+
+    /// Store `menu` as the window `id`'s, a menu its handle names marked as held by a window
+    /// ([`super::menu::Menus::mark_held`]: its destruction looks for the windows holding it).
+    fn give_menu(&mut self, id: WindowId, menu: Menu) {
+        if let Menu::Handle(handle) = menu {
+            self.menus.mark_held(&self.handles, handle);
+        }
+        self.at_mut(id).menu = menu;
     }
 
     /// Leave every top-level window holding the menu `menu` without one: the menu was destroyed.
@@ -2589,11 +2601,12 @@ impl Windows {
             }
         }
         let windows = s.windows();
-        windows.at_mut(id).menu = if child {
+        let menu = if child {
             menu.as_child_menu()
         } else {
             menu.as_window_menu()
         };
+        windows.give_menu(id, menu);
 
         // Owner and parent wiring for top-level windows: the owner is the parent's top-level
         // window; the parent itself becomes the desktop window (a message-window parent stays).
@@ -5022,12 +5035,12 @@ impl Windows {
         let previous = match index {
             GWL_STYLE | GWL_EXSTYLE => Windows::set_style(s, window, index, value),
             GWL_ID => {
-                let w = windows.at_mut(window);
-                w.menu = match value {
+                let menu = match value {
                     0 => Menu::None,
-                    id if w.is_child() => Menu::Id(id),
+                    id if windows.at(window).is_child() => Menu::Id(id),
                     menu => Menu::Handle(menu),
                 };
+                windows.give_menu(window, menu);
                 data.id
             }
             GWL_USERDATA => core::mem::replace(&mut windows.at_mut(window).user_data, value),
@@ -8611,6 +8624,22 @@ mod tests {
         assert_eq!(w.subtree_depth(a, 1), 3);
         assert_eq!(w.subtree_depth(b, 1), 6);
         assert_eq!(w.subtree_depth(a21, 4), 4);
+    }
+
+    /// DestroyMenu leaves a top-level window holding the menu without one; a menu no window was
+    /// given is destroyed without touching the windows' menus.
+    #[test]
+    fn a_destroyed_menu_leaves_the_window_holding_it() {
+        let (w, _, t, _, _, _) = setup();
+        let a = raw_window(w, t, WS_OVERLAPPED, None);
+        let handle = w.handle_of(a);
+        let held = w.menus.create(&mut w.handles, OWNER).unwrap();
+        let loose = w.menus.create(&mut w.handles, OWNER).unwrap();
+        w.set_menu_handle(handle, held).unwrap();
+        w.destroy_menu_handle(loose).unwrap();
+        assert_eq!(w.window_menu(a), held);
+        w.destroy_menu_handle(held).unwrap();
+        assert_eq!(w.window_menu(a), 0);
     }
 
     /// The free's cleanup calls run after WM_NCDESTROY, in order: the window teardown, the quit
