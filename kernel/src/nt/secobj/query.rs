@@ -105,7 +105,9 @@ pub fn query_reply(stored: &[u8], info: u32) -> Result<Reply, NtStatus> {
             at += align4(part.raw);
         }
     }
-    debug_assert!(header.write(&mut bytes.as_mut_slice()[..SECURITY_DESCRIPTOR_MIN_LENGTH]));
+    // Written outside the assertion: a release build compiles `debug_assert!`'s argument out.
+    let written = header.write(&mut bytes.as_mut_slice()[..SECURITY_DESCRIPTOR_MIN_LENGTH]);
+    debug_assert!(written, "the header fits the descriptor's first bytes");
     Ok(Reply { bytes, size })
 }
 
