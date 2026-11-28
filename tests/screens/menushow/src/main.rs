@@ -10,91 +10,16 @@
 
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-use exe::winuser::{
-    COLOR_3DFACE,
-    MF_BYCOMMAND,
-    MF_POPUP,
-    MF_SEPARATOR,
-    MF_STRING,
-    PM_NOREMOVE,
-    SM_CXSCREEN,
-    SM_CYSCREEN,
-    WM_COMMAND,
-    WM_DESTROY,
-};
+use common::{TopLevel, Wide};
+use exe::winuser::{COLOR_3DFACE, MF_BYCOMMAND, MF_POPUP, MF_SEPARATOR, MF_STRING, WM_COMMAND};
 use menushow::*;
 
 exe::entry!(main);
 
-/// The calls menushow makes, as user32 and kernel32 export them.
+/// The calls menushow makes, as user32 exports them: its own.
 mod ffi {
-    /// MSG (28 bytes).
-    #[repr(C)]
-    #[derive(Default)]
-    pub struct Msg {
-        pub window: usize,
-        pub message: u32,
-        pub wparam: usize,
-        pub lparam: isize,
-        pub time: u32,
-        pub x: i32,
-        pub y: i32,
-    }
-
-    /// RECT.
-    #[repr(C)]
-    #[derive(Default)]
-    pub struct Rect {
-        pub left: i32,
-        pub top: i32,
-        pub right: i32,
-        pub bottom: i32,
-    }
-
-    /// WNDCLASSW.
-    #[repr(C)]
-    pub struct WndClassW {
-        pub style: u32,
-        pub proc: extern "system" fn(usize, u32, usize, isize) -> isize,
-        pub class_extra: i32,
-        pub window_extra: i32,
-        pub instance: usize,
-        pub icon: usize,
-        pub cursor: usize,
-        pub background: usize,
-        pub menu_name: *const u16,
-        pub class_name: *const u16,
-    }
-
-    #[link(
-        name = "kernel32",
-        kind = "raw-dylib",
-        import_name_type = "undecorated"
-    )]
-    unsafe extern "system" {
-        pub fn GetModuleHandleA(name: *const u8) -> usize;
-    }
-
     #[link(name = "user32", kind = "raw-dylib", import_name_type = "undecorated")]
     unsafe extern "system" {
-        pub fn RegisterClassW(class: *const WndClassW) -> u16;
-        pub fn CreateWindowExW(
-            ex_style: u32,
-            class: *const u16,
-            name: *const u16,
-            style: u32,
-            x: i32,
-            y: i32,
-            cx: i32,
-            cy: i32,
-            parent: usize,
-            menu: usize,
-            instance: usize,
-            param: usize,
-        ) -> usize;
-        pub fn DefWindowProcW(window: usize, message: u32, wparam: usize, lparam: isize) -> isize;
-        pub fn AdjustWindowRectEx(rect: *mut Rect, style: u32, menu: i32, ex_style: u32) -> i32;
-        pub fn GetSystemMetrics(index: i32) -> i32;
         pub fn CreateMenu() -> usize;
         pub fn CreatePopupMenu() -> usize;
         pub fn AppendMenuW(menu: usize, flags: u32, item: usize, text: *const u16) -> i32;
@@ -108,30 +33,6 @@ mod ffi {
             flags: u32,
         ) -> i32;
         pub fn DrawMenuBar(window: usize) -> i32;
-        pub fn GetMessageW(msg: *mut Msg, window: usize, first: u32, last: u32) -> i32;
-        pub fn PeekMessageW(msg: *mut Msg, window: usize, first: u32, last: u32, flags: u32)
-            -> i32;
-        pub fn TranslateMessage(msg: *const Msg) -> i32;
-        pub fn DispatchMessageW(msg: *const Msg) -> isize;
-        pub fn SetForegroundWindow(window: usize) -> i32;
-        pub fn PostQuitMessage(code: i32);
-    }
-}
-
-/// A string's UTF-16 units, NUL-terminated, in a buffer of the program's own.
-struct Wide([u16; 64]);
-
-impl Wide {
-    fn of(text: &str) -> Wide {
-        let mut units = [0u16; 64];
-        for (unit, value) in units.iter_mut().take(63).zip(text.encode_utf16()) {
-            *unit = value;
-        }
-        Wide(units)
-    }
-
-    fn as_ptr(&self) -> *const u16 {
-        self.0.as_ptr()
     }
 }
 
@@ -189,13 +90,7 @@ extern "system" fn procedure(window: usize, message: u32, wparam: usize, lparam:
             SETTLE.store(true, Ordering::Relaxed);
             0
         }
-        WM_DESTROY => {
-            // SAFETY: no pointers.
-            unsafe { ffi::PostQuitMessage(0) };
-            0
-        }
-        // SAFETY: the message as the window manager handed it over.
-        _ => unsafe { ffi::DefWindowProcW(window, message, wparam, lparam) },
+        _ => common::procedure(window, message, wparam, lparam),
     }
 }
 
@@ -231,80 +126,33 @@ fn build_menu() -> usize {
 }
 
 fn main() -> u32 {
-    let class_name = Wide::of("MenuShow");
-    let title = Wide::of("Calculator");
-    // SAFETY: the program's own module, class, strings and RECT, which live for each call.
-    let window = unsafe {
-        let instance = ffi::GetModuleHandleA(core::ptr::null());
-        let class = ffi::WndClassW {
-            style: 0,
-            proc: procedure,
-            class_extra: 0,
-            window_extra: 0,
-            instance,
-            icon: 0,
-            cursor: 0,
-            background: COLOR_3DFACE + 1,
-            menu_name: core::ptr::null(),
-            class_name: class_name.as_ptr(),
-        };
-        if ffi::RegisterClassW(&class) == 0 {
-            return NO_WINDOW;
-        }
-        let bar = build_menu();
-        BAR.store(bar, Ordering::Relaxed);
-        let mut rect = ffi::Rect {
-            left: 0,
-            top: 0,
-            right: 260,
-            bottom: 200,
-        };
-        ffi::AdjustWindowRectEx(&mut rect, STYLE, 1, 0);
-        let (cx, cy) = (rect.right - rect.left, rect.bottom - rect.top);
-        let x = (ffi::GetSystemMetrics(SM_CXSCREEN) - cx) / 2;
-        let y = (ffi::GetSystemMetrics(SM_CYSCREEN) - cy) / 2;
-        ffi::CreateWindowExW(
-            0,
-            class_name.as_ptr(),
-            title.as_ptr(),
-            STYLE,
-            x,
-            y,
-            cx,
-            cy,
-            0,
-            bar,
-            instance,
-            0,
-        )
-    };
-    if window == 0 {
+    let bar = build_menu();
+    BAR.store(bar, Ordering::Relaxed);
+    let made = TopLevel {
+        class: "MenuShow",
+        title: "Calculator",
+        procedure,
+        background: COLOR_3DFACE + 1,
+        style: STYLE,
+        client: (260, 200),
+        menu: bar,
+    }
+    .create();
+    let Some(window) = made else {
         let _ = exe::stderr().print(format_args!("menushow: the window cannot be made\r\n"));
         return NO_WINDOW;
-    }
-    // SAFETY: the program's own window.
-    unsafe { ffi::SetForegroundWindow(window) };
+    };
+    window.to_foreground();
     let mut ready = false;
-    let mut msg = ffi::Msg::default();
-    loop {
-        // SAFETY: the loop's own MSG.
-        let idle = unsafe { ffi::PeekMessageW(&mut msg, 0, 0, 0, PM_NOREMOVE) } == 0;
-        if idle && !ready {
+    common::pump(|| {
+        if !ready {
             ready = true;
             let _ = exe::stdout().print(format_args!("{READY}\r\n"));
         }
-        if idle && SETTLE.swap(false, Ordering::Relaxed) {
+        if SETTLE.swap(false, Ordering::Relaxed) {
             let _ = exe::stdout().print(format_args!("{SETTLED}\r\n"));
         }
-        // SAFETY: as above.
-        if unsafe { ffi::GetMessageW(&mut msg, 0, 0, 0) } <= 0 {
-            break;
-        }
-        // SAFETY: as above.
-        unsafe {
-            ffi::TranslateMessage(&msg);
-            ffi::DispatchMessageW(&msg);
-        }
-    }
+        false
+    });
     0
 }

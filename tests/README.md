@@ -16,7 +16,7 @@ tests/
 ├── screens/    # F2K's own GUI test programs, one directory each: the program's crate (a member of
 │               # the userland workspace), its tests and their committed screenshots: clipshow,
 │               # comboboxshow, dlgshow, drawdemo, fontshow, keyshow, listboxshow, mapshow,
-│               # menushow, nestshow, scrollshow, shapeshow, textshow
+│               # menushow, nestshow, scrollshow, shapeshow, textshow; common, what they share
 ├── kernel32/   # runtime, memory, threads, sync, sched, files, fswrite, dll, dllmain, msgtable,
 │               # console, spawn, pipe, newcon, screen, lineedit, ctrl, lstr, utility, toolhelp,
 │               # batspawn, shutparm, profile, threx, vmedge, vmdemand, startup, lcid, ntquery, manyproc,

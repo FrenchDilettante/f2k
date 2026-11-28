@@ -1,0 +1,16 @@
+[package]
+name = "common"
+version = "0.1.0"
+edition = "2021"
+# A member of the userland workspace (userland/Cargo.toml), which lives elsewhere.
+workspace = "../../../userland"
+
+# What the screen tests' programs (tests/screens/<program>) share: the user32, gdi32 and kernel32
+# calls and structures they make and pass, and a top-level window's class, creation, painting and
+# message loop. A library each program's binary links, beside the runtime (userland/exe).
+[lib]
+name = "common"
+path = "src/lib.rs"
+
+[dependencies]
+exe = { path = "../../../userland/exe" }

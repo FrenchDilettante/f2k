@@ -36,87 +36,14 @@ const CLASS: &[u8] = b"F2KDrawDemo\0";
 const BLACK_BRUSH: i32 = 4;
 const TRANSPARENT: i32 = 1;
 
-/// The calls the sheet makes, as user32, gdi32 and kernel32 export them.
+/// The calls the sheet makes, as user32 exports them: the shared ones, and its own.
 mod ffi {
+    pub use common::ffi::*;
     use drawdemo::Rect;
-
-    /// WNDCLASSEXA (48 bytes).
-    #[repr(C)]
-    pub struct WndClassExA {
-        pub size: u32,
-        pub style: u32,
-        pub proc: extern "system" fn(usize, u32, usize, isize) -> isize,
-        pub class_extra: i32,
-        pub window_extra: i32,
-        pub instance: usize,
-        pub icon: usize,
-        pub cursor: usize,
-        pub background: usize,
-        pub menu_name: *const u8,
-        pub class_name: *const u8,
-        pub small_icon: usize,
-    }
-
-    /// MSG (28 bytes).
-    #[repr(C)]
-    #[derive(Default)]
-    pub struct Msg {
-        pub window: usize,
-        pub message: u32,
-        pub wparam: usize,
-        pub lparam: isize,
-        pub time: u32,
-        pub x: i32,
-        pub y: i32,
-    }
-
-    /// PAINTSTRUCT (64 bytes).
-    #[repr(C)]
-    #[derive(Default)]
-    pub struct PaintStruct {
-        pub dc: usize,
-        pub erase: i32,
-        pub paint: Rect,
-        pub restore: i32,
-        pub inc_update: i32,
-        pub reserved: [u8; 32],
-    }
-
-    #[link(
-        name = "kernel32",
-        kind = "raw-dylib",
-        import_name_type = "undecorated"
-    )]
-    unsafe extern "system" {
-        pub fn GetModuleHandleA(name: *const u8) -> usize;
-    }
 
     #[link(name = "user32", kind = "raw-dylib", import_name_type = "undecorated")]
     unsafe extern "system" {
-        pub fn RegisterClassExA(class: *const WndClassExA) -> u16;
-        #[allow(clippy::too_many_arguments)]
-        pub fn CreateWindowExA(
-            ex_style: u32,
-            class: *const u8,
-            name: *const u8,
-            style: u32,
-            x: i32,
-            y: i32,
-            width: i32,
-            height: i32,
-            parent: usize,
-            menu: usize,
-            instance: usize,
-            param: usize,
-        ) -> usize;
         pub fn ShowWindow(window: usize, command: i32) -> i32;
-        pub fn UpdateWindow(window: usize) -> i32;
-        pub fn GetMessageA(msg: *mut Msg, window: usize, first: u32, last: u32) -> i32;
-        pub fn DispatchMessageA(msg: *const Msg) -> isize;
-        pub fn DefWindowProcA(window: usize, message: u32, wparam: usize, lparam: isize) -> isize;
-        pub fn PostQuitMessage(code: i32);
-        pub fn BeginPaint(window: usize, paint: *mut PaintStruct) -> usize;
-        pub fn EndPaint(window: usize, paint: *const PaintStruct) -> i32;
         pub fn GetDC(window: usize) -> usize;
         pub fn ReleaseDC(window: usize, dc: usize) -> i32;
         pub fn GetSysColorBrush(index: i32) -> usize;
@@ -132,14 +59,6 @@ mod ffi {
             rect: *mut Rect,
             format: u32,
         ) -> i32;
-    }
-
-    #[link(name = "gdi32", kind = "raw-dylib", import_name_type = "undecorated")]
-    unsafe extern "system" {
-        pub fn CreateSolidBrush(color: u32) -> usize;
-        pub fn DeleteObject(object: usize) -> i32;
-        pub fn GetStockObject(index: i32) -> usize;
-        pub fn SetBkMode(dc: usize, mode: i32) -> i32;
     }
 }
 
@@ -308,27 +227,10 @@ extern "system" fn window_proc(window: usize, message: u32, wparam: usize, lpara
 }
 
 fn main() -> u32 {
-    // SAFETY: the program's own module.
-    let instance = unsafe { ffi::GetModuleHandleA(core::ptr::null()) };
-    let class = ffi::WndClassExA {
-        size: core::mem::size_of::<ffi::WndClassExA>() as u32,
-        style: 0,
-        proc: window_proc,
-        class_extra: 0,
-        window_extra: 0,
-        instance,
-        icon: 0,
-        cursor: 0,
-        background: COLOR_3DFACE + 1,
-        menu_name: core::ptr::null(),
-        class_name: CLASS.as_ptr(),
-        small_icon: 0,
-    };
-    // SAFETY: the class's structure and name, which live for the call.
-    if unsafe { ffi::RegisterClassExA(&class) } == 0 {
+    let Some(instance) = common::register_class_a(CLASS, window_proc, COLOR_3DFACE + 1) else {
         let _ = exe::stderr().print(format_args!("drawdemo: the class cannot be registered\r\n"));
         return 1;
-    }
+    };
     let (width, height) = (WINDOW.right - WINDOW.left, WINDOW.bottom - WINDOW.top);
     // SAFETY: the class's name and the window's, NUL-terminated.
     let window = unsafe {

@@ -12,29 +12,9 @@ use exe::winuser::{PM_NOREMOVE, WM_CLOSE, WM_COMMAND, WM_INITDIALOG, WM_KEYDOWN}
 
 exe::entry!(main);
 
-/// The calls dlgshow makes, as user32 and kernel32 export them.
+/// The calls dlgshow makes, as user32 exports them: the shared ones, and its own.
 mod ffi {
-    /// MSG (28 bytes).
-    #[repr(C)]
-    #[derive(Default)]
-    pub struct Msg {
-        pub window: usize,
-        pub message: u32,
-        pub wparam: usize,
-        pub lparam: isize,
-        pub time: u32,
-        pub x: i32,
-        pub y: i32,
-    }
-
-    #[link(
-        name = "kernel32",
-        kind = "raw-dylib",
-        import_name_type = "undecorated"
-    )]
-    unsafe extern "system" {
-        pub fn GetModuleHandleA(name: *const u8) -> usize;
-    }
+    pub use common::ffi::*;
 
     #[link(name = "user32", kind = "raw-dylib", import_name_type = "undecorated")]
     unsafe extern "system" {
@@ -46,18 +26,10 @@ mod ffi {
             param: isize,
         ) -> usize;
         pub fn IsDialogMessageW(dialog: usize, msg: *const Msg) -> i32;
-        pub fn GetMessageW(msg: *mut Msg, window: usize, first: u32, last: u32) -> i32;
-        pub fn PeekMessageW(msg: *mut Msg, window: usize, first: u32, last: u32, flags: u32)
-            -> i32;
-        pub fn TranslateMessage(msg: *const Msg) -> i32;
-        pub fn DispatchMessageW(msg: *const Msg) -> isize;
-        pub fn DestroyWindow(window: usize) -> i32;
-        pub fn SetForegroundWindow(window: usize) -> i32;
         pub fn GetFocus() -> usize;
         pub fn GetDlgCtrlID(window: usize) -> i32;
         pub fn CheckRadioButton(dialog: usize, first: i32, last: i32, check: i32) -> i32;
         pub fn IsDlgButtonChecked(dialog: usize, id: i32) -> u32;
-        pub fn PostQuitMessage(code: i32);
     }
 }
 

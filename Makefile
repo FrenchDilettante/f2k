@@ -469,9 +469,9 @@ run-tests: userland
 	for dll in kernel32 msvcrt advapi32 user32 gdi32 shell32; do \
 		CARGO_UNSTABLE_BUILD_STD=std $(HOST_TEST) cargo test --manifest-path $(USERLAND_DIR)/$$dll/Cargo.toml --lib --target $(RUST_HOST_TARGET) --target-dir target/userland-host || exit 1; \
 	done
-	# The compiler's helpers, F2K's own programs' runtime, and the programs' libraries (a program
-	# without one, fontshow, is passed over).
-	for crate in $(foreach crate,compiler-helpers exe $(SYSTEM_PROGRAMS) $(CMD_PROGRAM) $(TEST_PROGRAMS),$(call crate_dir,$(crate))); do \
+	# The compiler's helpers, F2K's own programs' runtime, the programs' libraries (a program
+	# without one, fontshow, is passed over), and what the screen tests' programs share.
+	for crate in $(foreach crate,compiler-helpers exe $(SYSTEM_PROGRAMS) $(CMD_PROGRAM) $(TEST_PROGRAMS) common,$(call crate_dir,$(crate))); do \
 		[ -f $$crate/src/lib.rs ] || continue; \
 		CARGO_UNSTABLE_BUILD_STD=std $(HOST_TEST) cargo test --manifest-path $$crate/Cargo.toml --lib --target $(RUST_HOST_TARGET) --target-dir target/userland-host || exit 1; \
 	done

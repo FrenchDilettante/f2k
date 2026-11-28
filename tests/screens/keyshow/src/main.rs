@@ -14,74 +14,13 @@ exe::entry!(main);
 /// The window's class name, and the messages and styles it uses (winuser.h).
 const CLASS: &[u8] = b"F2KKeyShow\0";
 
-/// The calls keyshow makes, as user32 and kernel32 export them.
+/// The calls keyshow makes, as user32 exports them: the shared ones, and its own.
 mod ffi {
-    /// WNDCLASSEXA (48 bytes).
-    #[repr(C)]
-    pub struct WndClassExA {
-        pub size: u32,
-        pub style: u32,
-        pub proc: extern "system" fn(usize, u32, usize, isize) -> isize,
-        pub class_extra: i32,
-        pub window_extra: i32,
-        pub instance: usize,
-        pub icon: usize,
-        pub cursor: usize,
-        pub background: usize,
-        pub menu_name: *const u8,
-        pub class_name: *const u8,
-        pub small_icon: usize,
-    }
-
-    /// MSG (28 bytes).
-    #[repr(C)]
-    #[derive(Default)]
-    pub struct Msg {
-        pub window: usize,
-        pub message: u32,
-        pub wparam: usize,
-        pub lparam: isize,
-        pub time: u32,
-        pub x: i32,
-        pub y: i32,
-    }
-
-    #[link(
-        name = "kernel32",
-        kind = "raw-dylib",
-        import_name_type = "undecorated"
-    )]
-    unsafe extern "system" {
-        pub fn GetModuleHandleA(name: *const u8) -> usize;
-    }
+    pub use common::ffi::*;
 
     #[link(name = "user32", kind = "raw-dylib", import_name_type = "undecorated")]
     unsafe extern "system" {
-        pub fn RegisterClassExA(class: *const WndClassExA) -> u16;
-        #[allow(clippy::too_many_arguments)]
-        pub fn CreateWindowExA(
-            ex_style: u32,
-            class: *const u8,
-            name: *const u8,
-            style: u32,
-            x: i32,
-            y: i32,
-            width: i32,
-            height: i32,
-            parent: usize,
-            menu: usize,
-            instance: usize,
-            param: usize,
-        ) -> usize;
-        pub fn DestroyWindow(window: usize) -> i32;
-        pub fn SetForegroundWindow(window: usize) -> i32;
         pub fn GetForegroundWindow() -> usize;
-        pub fn SetFocus(window: usize) -> usize;
-        pub fn GetMessageA(msg: *mut Msg, window: usize, first: u32, last: u32) -> i32;
-        pub fn TranslateMessage(msg: *const Msg) -> i32;
-        pub fn DispatchMessageA(msg: *const Msg) -> isize;
-        pub fn DefWindowProcA(window: usize, message: u32, wparam: usize, lparam: isize) -> isize;
-        pub fn PostQuitMessage(code: i32);
     }
 }
 
@@ -106,25 +45,10 @@ extern "system" fn procedure(window: usize, message: u32, wparam: usize, lparam:
 }
 
 fn main() -> u32 {
-    // SAFETY: the program's own module.
-    let instance = unsafe { ffi::GetModuleHandleA(core::ptr::null()) };
-    let class = ffi::WndClassExA {
-        size: core::mem::size_of::<ffi::WndClassExA>() as u32,
-        style: 0,
-        proc: procedure,
-        class_extra: 0,
-        window_extra: 0,
-        instance,
-        icon: 0,
-        cursor: 0,
-        background: 0,
-        menu_name: core::ptr::null(),
-        class_name: CLASS.as_ptr(),
-        small_icon: 0,
-    };
-    // SAFETY: the class's structure and name live for the call.
-    let window = unsafe {
-        ffi::RegisterClassExA(&class);
+    // No class, no window.
+    let instance = common::register_class_a(CLASS, procedure, 0);
+    // SAFETY: the class's name and the window's, NUL-terminated.
+    let window = instance.map_or(0, |instance| unsafe {
         ffi::CreateWindowExA(
             0,
             CLASS.as_ptr(),
@@ -139,7 +63,7 @@ fn main() -> u32 {
             instance,
             0,
         )
-    };
+    });
     if window == 0 {
         let _ = exe::stderr().print(format_args!("keyshow: the window cannot be made\r\n"));
         return NO_WINDOW;
