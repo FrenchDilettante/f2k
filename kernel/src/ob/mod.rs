@@ -1,28 +1,25 @@
 //! The object manager: every kernel object a handle can name, with its lifetime.
 //!
-//! Objects live in typed pools, global to the kernel rather than to a process:
-//! every process's objects share them, and a process's end deletes only what its own references
-//! held (the leak sweep waits for quiescence, when no process is left to hold one). An object
-//! is named by an [`ObjectId`] — its kind, its pool index and the generation of that record — never
-//! by a raw pointer: the generation moves on when the object is deleted, so an id that outlived its
-//! object resolves to nothing instead of to whatever reused the record.
+//! Objects live in typed pools global to the kernel: every process's objects share them, and a
+//! process's end deletes only what its own references held (the leak sweep waits for quiescence,
+//! when no process is left to hold one). An object is named by an [`ObjectId`] (its kind, its pool
+//! index and that record's generation), never by a raw pointer: the generation moves on at the
+//! delete, so an id that outlived its object resolves to nothing, not to the record's next object.
 //!
-//! The dispatcher objects — events, semaphores, mutexes, waitable timers, threads, and the
-//! waitable side of processes — keep only their headers here: their bodies are records of the
-//! dispatcher database ([`crate::sched::database`]), at the same index, as Windows 2000 keeps a
-//! dispatcher object's DISPATCHER_HEADER and type fields apart from its object header. An id names
-//! its body there by that index ([`ObjectId::waitable`]), where the body is reached with the
-//! dispatch token; the directory itself holds no token, so what it does to a body (a create's
-//! fresh body, a deletion's cancel) it does raised to the dispatch level.
+//! The dispatcher objects (events, semaphores, mutexes, waitable timers, threads, and the waitable
+//! side of processes) keep only their headers here: their bodies are records of the dispatcher
+//! database ([`crate::sched::database`]) at the same index, as Windows 2000 keeps a dispatcher
+//! object's DISPATCHER_HEADER apart from its object header. An id names its body by that index
+//! ([`ObjectId::waitable`]), reached with the dispatch token; the directory holds no token, so what
+//! it does to a body (a create's fresh body, a deletion's cancel) it does raised to dispatch level.
 //!
-//! Each object carries two counts. The pointer count is every
-//! reference: the creator's while it builds the object, each handle's, each wait's (a waiting
-//! thread holds its objects for the wait's whole life, replays after an APC included), a thread's
-//! own while it runs, a process's own until its teardown ends. The handle count is the handles
-//! alone. The last handle's close drops the object's name (NT's temporary objects); the last
-//! reference deletes the object — an owned mutex leaves its owner's list — and its record is free
-//! for reuse. Nothing scans handle tables to decide whether an object lives. `\BaseNamedObjects`
-//! itself is a directory object, permanent: made at its first open, never deleted.
+//! Each object carries two counts. The pointer count is every reference: the creator's while it
+//! builds the object, each handle's, each wait's (for the wait's whole life, replays after an APC
+//! included), a thread's own while it runs, a process's own until its teardown ends. The handle
+//! count is the handles alone. The last handle's close drops the object's name (NT's temporary
+//! objects); the last reference deletes the object (an owned mutex leaves its owner's list) and
+//! frees its record. Nothing scans handle tables to decide whether an object lives.
+//! `\BaseNamedObjects` is a directory object, permanent: made at its first open, never deleted.
 //!
 //! Names live in one namespace for all kinds (the `\BaseNamedObjects` directory): a name binds one
 //! live object, compares exactly (Win32 object names are case-sensitive; a caller's
@@ -33,32 +30,28 @@
 //!
 //! The kernel's directory is passive-level state behind a short lock (Windows 2000's object
 //! manager guards its namespace and object headers with a fast mutex too): [`lock`] takes it with
-//! the caller's passive token, which the guard keeps borrowed, and [`locked`] is the bridge for
-//! code that holds no token. The lock is held briefly and never across a wait, a user-memory copy
-//! or disk I/O. So a deletion does not finish its object's teardown in place: what lies outside
-//! the directory — a section's frames, a file object's cleanup (which may delete the file, on disk)
-//! and its close — comes back as a [`Followup`], which the caller finishes with [`finish`] once the
-//! lock is released, as Windows 2000 runs an object's delete procedure after the object-manager
-//! lock is dropped. A look-up and what it decides (a name's binding and the create it allows, a
-//! handle's object and the reference that keeps it) happen in one hold, so no other thread comes
-//! between them.
+//! the caller's passive token, which the guard keeps borrowed; [`locked`] is the bridge for code
+//! holding no token. The lock is never held across a wait, a user-memory copy or disk I/O, so a
+//! deletion does not finish its teardown in place: what lies outside the directory (a section's
+//! frames, a file object's cleanup, which may delete the file on disk, and its close) comes back as
+//! a [`Followup`], which the caller finishes with [`finish`] once the lock is released, as Windows
+//! 2000 runs an object's delete procedure after dropping the object-manager lock. A look-up and
+//! what it decides (a name's binding and the create it allows, a handle's object and the reference
+//! that keeps it) happen in one hold.
 //!
-//! A kind plugs in with its row in the pools' table ([`Directory`]), a `create_*`, and — when its
+//! A kind plugs in with its row in the pools' table ([`Directory`]), a `create_*`, and, when its
 //! deletion needs more than the record going dead (a timer leaving the timer table, an owned mutex
-//! its owner's list) — an arm in `delete`; a kind whose body the directory holds gets its typed
-//! accessor from the bodies' table; what the deletion leaves outside the directory is a
-//! [`Followup`] variant.
+//! its owner's list), an arm in `delete`; a kind whose body the directory holds gets its typed
+//! accessor from the bodies' table; what its deletion leaves outside is a [`Followup`] variant.
 //!
 //! Every kind lives in a slot pool ([`crate::slots`]) that grows a page at a time from the nonpaged
 //! pool and keeps its peak, so a record never moves; its only bound is the u16 index, and a create
-//! that finds no page fails as the platform's out-of-memory would. An event's, a semaphore's, a
-//! mutex's, a waitable timer's, a thread's or a process's body is made in the dispatcher database
-//! at its record's index before the id is handed out, from the same pages. The processes' pool
-//! hands out its lowest free index first and never the System process's ([`ProcessIndex`]), the
-//! threads' never the system threads' ([`ThreadIndex`]); no cap holds processes or threads back but
-//! memory, as on Windows 2000.
-//! A slot pool's first generation is 1 and moves on at the delete, so no live object's id carries
-//! generation 0.
+//! that finds no page fails as out-of-memory would. A dispatcher object's body is made in the
+//! dispatcher database at its record's index, from the same pages, before the id is handed out.
+//! The processes' pool hands out its lowest free index first, never the System process's
+//! ([`ProcessIndex`]); the threads' never the system threads' ([`ThreadIndex`]); only memory caps
+//! processes and threads, as on Windows 2000. A slot pool's first generation is 1 and moves on at
+//! the delete, so no live object's id carries generation 0.
 
 pub mod access;
 pub mod grant;
@@ -161,12 +154,10 @@ pub struct ObjectId {
 }
 
 impl ObjectId {
-    /// The waitable name of a dispatcher object's body (an event, a semaphore, a mutex, a waitable
-    /// timer, a thread, a process), as the wait entries take it: the dispatcher database's record
-    /// at the object's own index. None for a section, a file object (a wait on it waits on the
-    /// event embedded in its record: [`crate::fs::file::FileObject::completion`]), the directory, a
-    /// window station, a desktop, a key, a DC, a font or a token. The id's liveness is the caller's
-    /// to know (a reference it holds).
+    /// The waitable name of a dispatcher object's body, as the wait entries take it: the dispatcher
+    /// database's record at the object's own index. None for every other kind (a wait on a file
+    /// object waits on its embedded event: [`crate::fs::file::FileObject::completion`]). The id's
+    /// liveness is the caller's to know (a reference it holds).
     pub fn waitable(self) -> Option<WaitableId> {
         let index = self.index;
         match self.kind {
@@ -198,8 +189,8 @@ impl ObjectId {
     }
 }
 
-/// What a handle-table entry names: an object (a directory search is kernel32's own structure on
-/// the process heap, as on Windows 2000, not a kernel handle).
+/// What a handle-table entry names: an object (a directory search is kernel32's structure on the
+/// process heap, as on Windows 2000, not a kernel handle).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Target {
     Object(ObjectId),
@@ -257,13 +248,11 @@ pub const MAX_NAME: usize = 260;
 
 /// An object's counts: every reference (the pointer count), and the handles among them.
 ///
-/// Both are atomic, as Windows 2000's PointerCount is changed with interlocked operations
-/// (ObReferenceObject, ObDereferenceObject; from memory). The protocol, which every change goes
-/// through one method of this type for:
+/// Both are atomic, as Windows 2000 changes PointerCount with interlocked operations
+/// (ObReferenceObject, ObDereferenceObject; from memory). Every change goes through one method:
 ///
-/// - **A holder's reference** ([`Counts::add_held`]): whoever holds a reference may take another
-///   without the directory's lock. The count is at least the holder's, so it cannot reach zero
-///   meanwhile.
+/// - **A holder's reference** ([`Counts::add_held`]): a holder may take another without the
+///   directory's lock; the count is at least the holder's, so it cannot reach zero meanwhile.
 /// - **A look-up's reference** ([`Counts::try_add`]): a reference found by id, handle or name is
 ///   taken under the directory's lock, which keeps the record the object's (its generation), and
 ///   refuses a zero count. An object whose last reference went is *dying*: its deleter is on its
@@ -283,10 +272,9 @@ pub const MAX_NAME: usize = 260;
 ///   reference is a look-up's, and the last close decides the name's and a file object's cleanup in
 ///   the same hold. They are atomic so a reader outside the lock sees a whole value.
 ///
-/// Today every caller is inside the directory's lock, so the two phases of a deletion run in one
-/// hold. Taking a holder's reference, or dropping a reference that is not the last, outside it
-/// needs the counts reachable without the directory's `&mut` (multicore phase 1); the protocol is
-/// already the one that allows it.
+/// Today every caller is inside the directory's lock, so a deletion's two phases run in one hold.
+/// Taking a holder's reference, or dropping one that is not the last, outside it needs the counts
+/// reachable without the directory's `&mut` (multicore phase 1); the protocol already allows it.
 #[derive(Debug)]
 struct Counts {
     pointers: AtomicU32,
@@ -540,11 +528,10 @@ pub struct ProcessRecord;
 pub struct ThreadRecord;
 
 /// How the thread objects' pool hands out its indices: never the system threads' (the first
-/// [`crate::sched::database::SYSTEM_THREADS`], which no object takes), and the lowest free one
-/// first, as the fixed pool it was did, so the dispatcher's records stay packed in the chunks
-/// already made. No cap but the u16 index's 65,532 threads: a representation limit, as Windows
-/// 2000 has none but memory; the pages for the records and their kernel stacks (12,743 at most,
-/// [`crate::mem::kstacks`]) run out long before it, and either is a refused create.
+/// [`crate::sched::database::SYSTEM_THREADS`]), and the lowest free one first, so the dispatcher's
+/// records stay packed in the chunks already made. No cap but the u16 index's 65,532 threads (a
+/// representation limit; Windows 2000 has none but memory): the pages for the records and their
+/// kernel stacks (12,743 at most, [`crate::mem::kstacks`]) run out long before, a refused create.
 pub struct ThreadIndex;
 
 impl Codec for ThreadIndex {
@@ -566,11 +553,10 @@ impl Codec for ThreadIndex {
 }
 
 /// How the process objects' pool hands out its indices: never the System process's
-/// ([`SYSTEM_PROCESS_INDEX`], which no object takes), and the lowest free one first, as the fixed
-/// pool it was did, since the walks over the processes (the reap's, the console's control events')
-/// go in index order. No cap but the u16 index's 65,534 processes: a representation limit, as
-/// Windows 2000 has none but memory; the pages for the records, bodies and side tables run out
-/// long before it, and either is STATUS_INSUFFICIENT_RESOURCES.
+/// ([`SYSTEM_PROCESS_INDEX`]), and the lowest free one first, since the walks over the processes
+/// (the reap's, the console's control events') go in index order. No cap but the u16 index's
+/// 65,534 processes (a representation limit; Windows 2000 has none but memory): the pages for the
+/// records, bodies and side tables run out long before, STATUS_INSUFFICIENT_RESOURCES.
 pub struct ProcessIndex;
 
 impl Codec for ProcessIndex {
@@ -975,12 +961,10 @@ unsafe impl Record for ThreadSide {
 }
 
 /// The kinds' pools: each row the kind, its pool's field, its body and how a fresh body is made (a
-/// marker for an event, a semaphore, a mutex, a waitable timer, a thread and a process, whose
-/// bodies are the dispatcher database's, at the same index), and its codec when it is not the
-/// kernel ids' ([`ThreadIndex`], [`ProcessIndex`]); the pool holds a page of records a chunk. The
-/// table makes the
-/// [`Directory`]'s pools, its in-place builder, and the matches the untyped paths (an object's
-/// counts by id, its deletion, the sweep) reach a kind's pool through.
+/// marker for the dispatcher kinds, whose bodies are the dispatcher database's), and its codec when
+/// not the kernel ids' ([`ThreadIndex`], [`ProcessIndex`]); a chunk is a page of records. The table
+/// makes the [`Directory`]'s pools, its in-place builder, and the matches through which the untyped
+/// paths (an object's counts by id, its deletion, the sweep) reach a kind's pool.
 macro_rules! pools {
     // A slot row's codec: its own, or the kernel ids' (FIFO reuse from index 0).
     (@codec $sbody:ty) => { KernelId<$sbody> };
@@ -1433,11 +1417,10 @@ impl Directory {
     }
 
     /// A process object for a new process, unsignaled and still active, holding the process's own
-    /// reference, with every thread ordinal free, at the lowest free index ([`ProcessIndex`]);
-    /// none when no page is left for its record, its ordinals or its body (made at its index the
-    /// first time a process takes it, and kept: nothing is made then, the record free again), or
-    /// every u16 index is in use. Its index is the process record's, never
-    /// the System process's.
+    /// reference, with every thread ordinal free, at the lowest free index ([`ProcessIndex`]): the
+    /// process record's, never the System process's. None, the record free again, when no page is
+    /// left for its record, its ordinals or its body (each made the first time a process takes the
+    /// index, and kept), or every u16 index is in use.
     pub fn create_process(&mut self) -> Option<ObjectId> {
         let fallback = security::default_sd(ObjectType::Process)?;
         let (id, _) = allocate_record(&mut self.processes, ObjectType::Process, Some(fallback))?;
@@ -2012,11 +1995,10 @@ impl Directory {
 
     /// Delete the object `id` names: its kind's teardown, then the record is dead and its id stale.
     /// A section leaves its frames (and a file's section its file object; an image section its
-    /// segment's, when it held the segment's last reference) to the caller, a file
-    /// object its close; an owned mutex leaves its owner's list; no other
-    /// kind here needs more than the record going: a waitable's last reference is gone, so nothing
-    /// waits on it; a thread's record stays as it ended (its pages are released when the record is
-    /// reused); a process's record is free for the next process once its object is gone.
+    /// segment's, when it held the segment's last reference) to the caller, a file object its
+    /// close; an owned mutex leaves its owner's list. No other kind needs more than the record
+    /// going: nothing waits on a waitable whose last reference went; a thread's record stays as it
+    /// ended (its pages go when the record is reused); a process's record serves the next process.
     fn delete(&mut self, id: ObjectId) -> Option<Followup> {
         let followup = match id.kind {
             ObjectType::Timer => {
@@ -2211,10 +2193,9 @@ impl Directory {
         }
     }
 
-    /// A thread has ended, or is ending on its way out: its wait's references, if it ended inside
-    /// one, and the thread's own reference on its object go. Its record is free once nothing else
-    /// holds it. The exit calls this in the directory hold it retires the thread in: a retired
-    /// thread waits for nothing, a lock included.
+    /// A thread has ended, or is on its way out: its wait's references (if it ended inside one)
+    /// and its own reference on its object go; its record is free once nothing else holds it. The
+    /// exit calls this in the hold it retires the thread in: a retired thread waits for nothing.
     pub fn end_thread_references(&mut self, thread: ThreadId) {
         if let Some(id) = self.thread_object(thread) {
             self.release_wait(id.index);
@@ -2238,12 +2219,11 @@ impl Directory {
     }
 
     /// The process whose scheduling record is `owner` is gone: the records its threads left start
-    /// over (their pages went with its address space). Nothing else here is the process's alone:
-    /// its handles are closed and its threads have ended by now, so every object only it held went
-    /// with its last reference, and one still live is another process's too — or a leak, which
-    /// only the sweep at quiescence can tell ([`Directory::sweep_next`]). A thread record whose
-    /// object still lives (another process holds a handle to the thread) stays as it ended: its
-    /// object is still waitable and its exit code still readable.
+    /// over (their pages went with its address space). Its handles are closed and its threads
+    /// ended by now, so every object only it held went with its last reference; one still live is
+    /// another process's too, or a leak only the sweep at quiescence can tell
+    /// ([`Directory::sweep_next`]). A thread record whose object still lives (another process holds
+    /// a handle to it) stays as it ended: still waitable, its exit code still readable.
     pub fn process_ended(&mut self, owner: *const crate::sched::process::SchedProcess) {
         // The records a thread object ever took: the system threads' never end, and no index
         // past the pool's high-water mark was handed out.
@@ -2261,14 +2241,13 @@ impl Directory {
         });
     }
 
-    /// One step of the sweep at quiescence, once no process remains that has not been torn down:
-    /// every reference a process held went with its end, so every object (and image segment) still
-    /// live is a leak. The step deletes the next one, an object first, then a segment no object
-    /// took with it; none once nothing is left. Each step is one leak. Process objects are not
-    /// swept (the reaped process's own goes with its own reference, at its teardown's end), nor the
-    /// permanent directory, window station and desktop, which outlive every process. The caller
-    /// finishes what a step leaves (a leaked section's or segment's hold on its frames) between
-    /// steps, then ends the sweep ([`Directory::sweep_end`]).
+    /// One step of the sweep at quiescence, once every process is torn down: every reference a
+    /// process held went with its end, so every object (and image segment) still live is a leak.
+    /// Each step deletes one, objects first, then a segment no object took with it; none once
+    /// nothing is left. Not swept: process objects (the reaped process's own reference takes its
+    /// object at its teardown's end) and the permanent directory, window station and desktop. The
+    /// caller finishes what each step leaves (a leaked section's or segment's frames) before the
+    /// next, then ends the sweep ([`Directory::sweep_end`]).
     pub fn sweep_next(&mut self) -> Option<Leak> {
         for kind in [
             ObjectType::Event,
@@ -2709,9 +2688,8 @@ mod target {
     }
 
     /// The process `id` names has ended with `exit_status`: its object signals, once, and its
-    /// waiters wake. The process's own reference keeps the object, so the directory is not
-    /// reached: the last thread's exit signals it after the thread has retired, when it must not
-    /// be preempted.
+    /// waiters wake. The process's own reference keeps the object, so the directory is not reached:
+    /// the last thread's exit signals it after retiring, when it must not be preempted.
     pub fn signal_process_end(id: ObjectId, exit_status: u32) {
         let index = id.body_of(ObjectType::Process).expect("a process's object");
         signal_process_body(index, exit_status);
@@ -2777,9 +2755,8 @@ mod tests {
     use crate::sched::testkit::record;
     use crate::sched::thread::Thread;
 
-    // The rig: leaked records at their final addresses, as the scheduler's test modules build them.
-    // A directory comes with a fresh dispatcher of its own, which holds its dispatcher objects'
-    // bodies.
+    // The rig: leaked records at their final addresses, as the scheduler's tests build them. Each
+    // directory comes with a fresh dispatcher of its own, holding its dispatcher objects' bodies.
 
     /// `text`'s UTF-16 units: a name as a UNICODE_STRING gives it.
     fn w(text: &str) -> Vec<u16> {
