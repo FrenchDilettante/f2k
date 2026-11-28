@@ -276,9 +276,6 @@ fn is_switch(argument: &[u16], letter: u8) -> bool {
     matches!(argument, [SLASH, unit] if ascii_upper(*unit) == u16::from(letter.to_ascii_uppercase()))
 }
 
-/// `unit` upper-cased when it is an ASCII letter: how shutdown compares its switches, answers and
-/// computer names, through its C runtime rather than NT's upcase rule (`rtl::text`, which a
-/// program on `exe` does not link); no capture has a non-ASCII computer name.
 fn ascii_upper(unit: u16) -> u16 {
     if (u16::from(b'a')..=u16::from(b'z')).contains(&unit) {
         unit - 0x20

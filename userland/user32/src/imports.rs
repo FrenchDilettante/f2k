@@ -180,6 +180,33 @@ mod raw {
         pub fn LocalUnlock(memory: usize) -> u32;
         pub fn LocalSize(memory: usize) -> usize;
         pub fn LocalFree(memory: usize) -> usize;
+        /// GetThreadLocale: the calling thread's locale.
+        pub fn GetThreadLocale() -> u32;
+        /// CompareStringW: two counted strings' order in a locale (1 less, 2 equal, 3 greater;
+        /// 0, the last error set, for a refusal).
+        pub fn CompareStringW(
+            locale: u32,
+            flags: u32,
+            a: *const u16,
+            a_count: i32,
+            b: *const u16,
+            b_count: i32,
+        ) -> i32;
+        /// FindFirstFileW, FindNextFileW and FindClose: a directory's entries matching a pattern,
+        /// one WIN32_FIND_DATAW at a time (INVALID_HANDLE_VALUE or FALSE, the last error set,
+        /// when there is none or no more).
+        pub fn FindFirstFileW(pattern: *const u16, data: *mut crate::imports::FindData) -> usize;
+        pub fn FindNextFileW(find: usize, data: *mut crate::imports::FindData) -> u32;
+        pub fn FindClose(find: usize) -> u32;
+        /// GetCurrentDirectoryW and SetCurrentDirectoryW: the process's current directory read
+        /// (its length; the size it needs when the buffer is short) and changed (FALSE, the last
+        /// error set, when it cannot be).
+        pub fn GetCurrentDirectoryW(length: u32, buffer: *mut u16) -> u32;
+        pub fn SetCurrentDirectoryW(path: *const u16) -> u32;
+        /// GetFileAttributesW: a file's attributes; 0xFFFFFFFF, the last error set, for none.
+        pub fn GetFileAttributesW(path: *const u16) -> u32;
+        /// GetLogicalDrives: the drives there are, a bit each from A:.
+        pub fn GetLogicalDrives() -> u32;
     }
 
     #[link(name = "ntdll", kind = "raw-dylib", import_name_type = "undecorated")]
@@ -1076,6 +1103,130 @@ pub fn local_size(memory: usize) -> usize {
 pub fn local_free(memory: usize) {
     // SAFETY: as for `local_realloc`.
     unsafe { raw::LocalFree(memory) };
+}
+
+/// GetThreadLocale: the calling thread's locale.
+pub fn thread_locale() -> u32 {
+    // SAFETY: no pointers.
+    unsafe { raw::GetThreadLocale() }
+}
+
+/// CompareStringW over `a` and `b` whole in `locale` with `flags`: 1 (less), 2 (equal) or 3
+/// (greater); 0, with kernel32's last error, when it refuses them.
+pub fn compare_string(locale: u32, flags: u32, a: &[u16], b: &[u16]) -> i32 {
+    // An empty slice's address is dangling but never read (its count is 0).
+    // SAFETY: kernel32 reads each slice's count of units, which live for the call.
+    unsafe {
+        raw::CompareStringW(
+            locale,
+            flags,
+            a.as_ptr(),
+            a.len() as i32,
+            b.as_ptr(),
+            b.len() as i32,
+        )
+    }
+}
+
+/// WIN32_FIND_DATAW (592 bytes): FindFirstFileW's and FindNextFileW's entry.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FindData {
+    pub attributes: u32,
+    /// The creation, last access and last write times, the size (high, low) and two reserved
+    /// words: ten DWORDs the callers here do not read.
+    pub times_and_size: [u32; 10],
+    pub file_name: [u16; 260],
+    pub alternate_file_name: [u16; 14],
+}
+
+impl Default for FindData {
+    fn default() -> Self {
+        FindData {
+            attributes: 0,
+            times_and_size: [0; 10],
+            file_name: [0; 260],
+            alternate_file_name: [0; 14],
+        }
+    }
+}
+
+// SAFETY: integers only, with no padding (eleven DWORDs, then 274 units: an even count).
+unsafe impl Pod for FindData {}
+
+/// A FindFirstFileW search: its entries one at a time, the handle closed when dropped.
+pub struct FileSearch {
+    handle: usize,
+    first: Option<FindData>,
+}
+
+/// INVALID_HANDLE_VALUE: FindFirstFileW's failure.
+const INVALID_HANDLE_VALUE: usize = usize::MAX;
+
+impl FileSearch {
+    /// The search of the NUL-terminated `pattern`; none, with kernel32's last error (2, 3...), when
+    /// it finds nothing.
+    pub fn new(pattern: &[u16]) -> Option<FileSearch> {
+        debug_assert_eq!(pattern.last(), Some(&0));
+        let mut data = FindData::default();
+        // SAFETY: kernel32 reads the terminated pattern and writes the local structure.
+        let handle = unsafe { raw::FindFirstFileW(pattern.as_ptr(), &mut data) };
+        // Made only for a search there is: a FileSearch closes its handle when dropped.
+        (handle != INVALID_HANDLE_VALUE && handle != 0).then(|| FileSearch {
+            handle,
+            first: Some(data),
+        })
+    }
+}
+
+impl Iterator for FileSearch {
+    type Item = FindData;
+
+    /// The next entry; none once FindNextFileW finds no more (which leaves ERROR_NO_MORE_FILES).
+    fn next(&mut self) -> Option<FindData> {
+        if let Some(first) = self.first.take() {
+            return Some(first);
+        }
+        let mut data = FindData::default();
+        // SAFETY: the search's handle; kernel32 writes the local structure.
+        (unsafe { raw::FindNextFileW(self.handle, &mut data) } != 0).then_some(data)
+    }
+}
+
+impl Drop for FileSearch {
+    fn drop(&mut self) {
+        // SAFETY: the search's handle, closed once.
+        unsafe { raw::FindClose(self.handle) };
+    }
+}
+
+/// GetCurrentDirectoryW into `buffer`: its length in units (0 with kernel32's last error, or the
+/// size it needs when the buffer is too short).
+pub fn current_directory(buffer: &mut [u16]) -> usize {
+    // SAFETY: kernel32 writes at most the buffer's units.
+    unsafe { raw::GetCurrentDirectoryW(buffer.len() as u32, buffer.as_mut_ptr()) as usize }
+}
+
+/// SetCurrentDirectoryW to the NUL-terminated `path`; false, with kernel32's last error, when it
+/// cannot be.
+pub fn set_current_directory(path: &[u16]) -> bool {
+    debug_assert_eq!(path.last(), Some(&0));
+    // SAFETY: kernel32 reads the terminated path.
+    unsafe { raw::SetCurrentDirectoryW(path.as_ptr()) != 0 }
+}
+
+/// GetFileAttributesW of the NUL-terminated `path`; none, with kernel32's last error, for none.
+pub fn file_attributes(path: &[u16]) -> Option<u32> {
+    debug_assert_eq!(path.last(), Some(&0));
+    // SAFETY: kernel32 reads the terminated path.
+    let attributes = unsafe { raw::GetFileAttributesW(path.as_ptr()) };
+    (attributes != u32::MAX).then_some(attributes)
+}
+
+/// GetLogicalDrives: a bit for each drive there is, A: the lowest.
+pub fn logical_drives() -> u32 {
+    // SAFETY: no pointers.
+    unsafe { raw::GetLogicalDrives() }
 }
 
 /// A movable local memory block locked while this lives (LocalLock, then LocalUnlock when dropped,

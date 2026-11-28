@@ -4254,9 +4254,10 @@ ordinal = 146
 name = "DlgDirListA"
 group = "dialog"
 args = ["handle hDlg", "ptr lpPathSpec", "i32 nIDListBox", "i32 nIDStaticPath", "u32 uFileType"]
-impl = { stub = "not yet implemented" }
+impl = { native = "DlgDirListA" }
 ordinal = 154
 fails = "0"
+note = "DlgDirListW's over the narrow path, the file part written back narrow"
 
 [[export]]
 name = "DlgDirListComboBoxA"
@@ -4278,9 +4279,10 @@ fails = "0"
 name = "DlgDirListW"
 group = "dialog"
 args = ["handle hDlg", "ptr lpPathSpec", "i32 nIDListBox", "i32 nIDStaticPath", "u32 uFileType"]
-impl = { stub = "not yet implemented" }
+impl = { native = "DlgDirListW" }
 ordinal = 157
 fails = "0"
+note = "the current directory changed to the path's directory, the list box filled by LB_DIR (files, then directories and drives), the file part written back uppercased"
 
 [[export]]
 name = "DlgDirSelectComboBoxExA"
@@ -4302,17 +4304,19 @@ fails = "FALSE"
 name = "DlgDirSelectExA"
 group = "dialog"
 args = ["handle hDlg", "ptr lpString", "i32 nCount", "i32 nIDListBox"]
-impl = { stub = "not yet implemented" }
+impl = { native = "DlgDirSelectExA" }
 ordinal = 160
 fails = "FALSE"
+note = "DlgDirSelectExW's into a wide buffer of its own, written back narrow (nothing selected: an empty string)"
 
 [[export]]
 name = "DlgDirSelectExW"
 group = "dialog"
 args = ["handle hDlg", "ptr lpString", "i32 nCount", "i32 nIDListBox"]
-impl = { stub = "not yet implemented" }
+impl = { native = "DlgDirSelectExW" }
 ordinal = 161
 fails = "FALSE"
+note = "the selected entry as a path: [dir] as dir\\, [-x-] as x:, a file without an extension with a dot"
 
 [[export]]
 name = "DragDetect"
@@ -4609,7 +4613,12 @@ ordinal = 286
 
 [[export]]
 name = "GetListBoxInfo"
+group = "dialog"
+args = ["handle hwnd"]
+impl = { native = "GetListBoxInfo" }
 ordinal = 287
+fails = "0"
+note = "LB_GETLISTBOXINFO: an LBS_MULTICOLUMN list box's items per column, 0 for another"
 
 [[export]]
 name = "GetMenuBarInfo"

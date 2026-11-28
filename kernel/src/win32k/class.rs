@@ -358,18 +358,19 @@ impl Atoms {
         self.find_folded(name)
     }
 
-    /// The atom `name` has, its ASCII letters matched without regard to case, as every atom table
-    /// matches them ([`rtl::text::same_atom_name`]); 0 when the table has none.
+    /// The atom `name` has, its letters matched without regard to case (each unit folded to its
+    /// uppercase form); 0 when the table has none.
     fn find_folded(&self, name: &[u16]) -> Atom {
+        let fold = |unit: u16| rtl::cp1252::map_case(unit, true);
         self.entries
             .iter()
             .find(|e| {
                 e.live
                     && e.len as usize == name.len()
-                    && rtl::text::same_atom_name(
-                        e.units[..name.len()].iter().copied(),
-                        name.iter().copied(),
-                    )
+                    && e.units[..name.len()]
+                        .iter()
+                        .zip(name)
+                        .all(|(&a, &b)| fold(a) == fold(b))
             })
             .map_or(0, |e| e.atom)
     }

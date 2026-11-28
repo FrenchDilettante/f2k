@@ -61,6 +61,18 @@ pub const SS_ETCHEDHORZ: u32 = 0x10;
 pub const SBS_HORZ: u32 = 0x0;
 pub const SBS_VERT: u32 = 0x1;
 
+pub const WS_DISABLED: u32 = 0x0800_0000;
+
+// --- The list boxes (LBS_*, LB_*) ----------------------------------------------------------------
+
+pub const LBS_NOTIFY: u32 = 0x0001;
+pub const LBS_MULTIPLESEL: u32 = 0x0008;
+pub const LBS_NOINTEGRALHEIGHT: u32 = 0x0100;
+
+pub const LB_ADDSTRING: u32 = 0x0180;
+pub const LB_SETSEL: u32 = 0x0185;
+pub const LB_SETCURSEL: u32 = 0x0186;
+
 // --- ShowWindow, the system metrics and colours (SW_*, SM_*, COLOR_*)
 // -----------------------------
 

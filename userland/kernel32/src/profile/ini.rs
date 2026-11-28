@@ -31,8 +31,6 @@
 use core::iter::once;
 use core::ops::Range;
 
-use rtl::text::eq_ignore_case;
-
 /// The units the parser tells apart.
 const TAB: u16 = 0x09;
 const LF: u16 = 0x0A;
@@ -83,6 +81,14 @@ pub fn without_trailing_blanks(text: &[u16]) -> &[u16] {
         .rposition(|&unit| !is_blank(unit))
         .map_or(0, |at| at + 1);
     &text[..end]
+}
+
+/// Whether two names are the same, without regard to case.
+fn same(a: &[u16], b: &[u16]) -> bool {
+    a.len() == b.len()
+        && a.iter()
+            .zip(b)
+            .all(|(&a, &b)| rtl::path::upcase(a) == rtl::path::upcase(b))
 }
 
 /// What a line is.
@@ -229,14 +235,14 @@ impl Section {
     pub fn key(&self, text: &[u16], name: &[u16]) -> Option<Line> {
         let name = trimmed(name);
         self.keys(text)
-            .find(|line| eq_ignore_case(&text[line.name.clone()], name))
+            .find(|line| same(&text[line.name.clone()], name))
     }
 }
 
 /// The first section of `name` (any case, the caller's blanks dropped).
 pub fn section(text: &[u16], name: &[u16]) -> Option<Section> {
     let name = trimmed(name);
-    let header = headers(text).find(|header| eq_ignore_case(&text[header.name.clone()], name))?;
+    let header = headers(text).find(|header| same(&text[header.name.clone()], name))?;
     let entries_end = Lines::from(text, header.next)
         .take_while(|line| line.kind != Kind::Header)
         .filter(|line| line.kind == Kind::Entry)

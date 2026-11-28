@@ -1,6 +1,7 @@
 //! The volume's calls: GetDriveType, GetDiskFreeSpace, GetDiskFreeSpaceEx and GetVolumeInformation
-//! (A and W), each an open of the root path named (the current drive's for none; any directory for
-//! GetDiskFreeSpaceEx) and NtQueryVolumeInformationFile, as Windows 2000's kernel32 makes them.
+//! (A and W), and GetLogicalDrives (GetDriveType's probe of each letter), each an open of the root
+//! path named (the current drive's for none; any directory for GetDiskFreeSpaceEx) and
+//! NtQueryVolumeInformationFile, as Windows 2000's kernel32 makes them.
 //! GetDriveType does not consult the kernel's drive-letter map (NtQueryInformationProcess's
 //! ProcessDeviceMap, not served): it always takes the open's way.
 
@@ -105,6 +106,22 @@ fn drive_type(path: Result<Wide, Failure>) -> u32 {
         0x07 | 0x08 => DRIVE_FIXED,
         _ => DRIVE_UNKNOWN,
     }
+}
+
+/// GetLogicalDrives: a bit for each drive letter (A: the lowest) whose root [`drive_type`] finds,
+/// each probed in turn as GetDriveType probes it (the kernel's drive-letter map, ProcessDeviceMap,
+/// is not served); the last error is left as it was.
+#[unsafe(export_name = "f2k_export_GetLogicalDrives")]
+pub extern "system" fn get_logical_drives() -> u32 {
+    (0..26u16).fold(0, |drives, letter| {
+        let root = [u16::from(b'A') + letter, u16::from(b':'), u16::from(b'\\')];
+        let path = Wide::of(&root).expect("a short name");
+        if drive_type(Ok(path)) == DRIVE_NO_ROOT_DIR {
+            drives
+        } else {
+            drives | 1 << letter
+        }
+    })
 }
 
 /// GetDriveType's export body, either form (see [`drive_type`]).

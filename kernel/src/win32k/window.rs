@@ -5603,12 +5603,15 @@ impl WindowManager {
             },
             None => None,
         };
+        let fold = |unit: u16| rtl::cp1252::map_case(unit, true);
         while let Some(c) = child {
             let record = w.at(c);
             let class_matches =
                 atom.is_none_or(|atom| record.class.map(|id| self.classes.atom(id)) == Some(atom));
-            let title_matches = title
-                .is_none_or(|title| rtl::text::eq_ignore_case(w.texts.units(record.title), title));
+            let title_matches = title.is_none_or(|title| {
+                let own = w.texts.units(record.title);
+                own.len() == title.len() && own.iter().zip(title).all(|(&a, &b)| fold(a) == fold(b))
+            });
             if class_matches && title_matches {
                 return Ok(Some(record.handle));
             }

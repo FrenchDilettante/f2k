@@ -204,8 +204,7 @@ impl Order {
     }
 }
 
-/// A UTF-16 unit lower-cased when it is an ASCII letter: names compare so, and `/L` shows them so
-/// (cmd's C runtime, as [`crate::fold`]).
+/// A UTF-16 unit lower-cased when it is an ASCII letter: names compare so, and `/L` shows them so.
 fn lower(unit: u16) -> u16 {
     if (u16::from(b'A')..=u16::from(b'Z')).contains(&unit) {
         unit + 32

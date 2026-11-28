@@ -378,7 +378,7 @@ impl<B: Storage> FontTable<B> {
         let bold = mapper::asks_bold(weight);
         let mut family = self
             .visible(process)
-            .filter(|(_, face)| rtl::text::eq_ignore_case(face.family.units(), name));
+            .filter(|(_, face)| mapper::same_name(face.family.units(), name));
         let (first, face) = family.next()?;
         if mapper::asks_bold(face.weight) == bold {
             return Some(first);

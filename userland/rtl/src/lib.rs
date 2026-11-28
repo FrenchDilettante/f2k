@@ -2,8 +2,7 @@
 //!
 //! What every build shares, host-tested: the status mapping ([`status`]: RtlNtStatusToDosError's
 //! table, which kernel32 reports every failed system service through), the code pages and their
-//! conversions ([`codepage`], [`cp1252`]), case-insensitive name comparison ([`text`]:
-//! RtlUpcaseUnicodeChar's rule), the counted strings ([`string`]: ntdll's
+//! conversions ([`codepage`], [`cp1252`]), the counted strings ([`string`]: ntdll's
 //! RtlAnsiStringToUnicodeString family, which kernel32's narrow calls convert through), the time
 //! conversions ([`time`]: ntdll's RtlTimeToTimeFields and RtlTimeFieldsToTime), the bitmaps
 //! ([`bitmap`]: ntdll's RtlFindClearBitsAndSet family, kernel32's TLS slots), the critical sections
@@ -110,7 +109,6 @@ pub mod sync;
 pub mod sys;
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
-pub mod text;
 pub mod time;
 pub mod truetype;
 pub mod user;

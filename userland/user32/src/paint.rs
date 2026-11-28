@@ -135,6 +135,11 @@ impl Painting {
     pub fn dc(&self) -> usize {
         self.paint.hdc as usize
     }
+
+    /// The area to paint (rcPaint), in client coordinates.
+    pub fn area(&self) -> Rect {
+        self.paint.paint
+    }
 }
 
 impl Drop for Painting {

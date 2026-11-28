@@ -1678,17 +1678,17 @@ mod tests {
         use crate::imports::host::DEBUG_PRINTS;
         let printed = || DEBUG_PRINTS.with(|prints| prints.take());
         let _ = printed();
-        let list_box = wide("listbox\0");
+        let mdi_client = wide("mdiclient\0");
         let create = |class: *const u16| {
             create_window_ex_w(0, class, core::ptr::null(), 0, 0, 0, 1, 1, 0, 0, 0, 0)
         };
-        assert_eq!(create(list_box.as_ptr()), 0);
+        assert_eq!(create(mdi_client.as_ptr()), 0);
         assert_eq!(last_error(), ERROR_CANNOT_FIND_WND_CLASS);
         let line = printed();
         assert_eq!(line.len(), 1);
         assert!(
             line[0].starts_with("stub user32.CreateWindowExW(dwExStyle=0, lpClassName=0x")
-                && line[0].ends_with(": the ListBox control class is not yet implemented\n"),
+                && line[0].ends_with(": the MDIClient class is not yet implemented\n"),
             "{line:?}"
         );
         let other = wide("NoSuchClass\0");

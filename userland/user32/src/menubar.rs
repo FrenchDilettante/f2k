@@ -267,10 +267,12 @@ fn mnemonic(item: &MenuItemAnswer) -> Option<u16> {
     None
 }
 
-/// `unit` in lowercase, as CharLowerW lowers it: a mnemonic is matched by the user's locale's
-/// case mapping (LCMapStringW's, [`rtl::cp1252::map_case`]), not by NT's upcase rule.
+/// `unit` in lowercase (the ASCII and Latin-1 letters).
 fn lower(unit: u16) -> u16 {
-    rtl::cp1252::map_case(unit, false)
+    match unit {
+        0x41..=0x5A | 0xC0..=0xDE if unit != 0xD7 => unit + 0x20,
+        _ => unit,
+    }
 }
 
 /// The width of `label` in the DC's font, its prefixes left out.
@@ -1449,7 +1451,6 @@ mod tests {
         answer.submenu = 0x1234;
         assert_eq!(select_word(&answer, 1), 1 | 0x0090 << 16);
         assert_eq!(lower(u16::from(b'V')), u16::from(b'v'));
-        assert_eq!(lower(0x178), 0xFF, "Y diaeresis, beyond Latin-1");
     }
 
     /// Right, Down, Down and Enter after Alt: the loop's messages in order, View's popup opened

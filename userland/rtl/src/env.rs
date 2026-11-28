@@ -10,7 +10,7 @@
 //! drive-directory entries). A new variable goes in at its sorted place, by its upper-cased name,
 //! as Windows 2000 keeps the block sorted; a replaced one stays where it was.
 
-use crate::text::cmp_ignore_case as compare;
+use crate::cp1252::map_case;
 
 const EQUALS: u16 = b'=' as u16;
 const PERCENT: u16 = b'%' as u16;
@@ -66,6 +66,15 @@ fn name_of(entry: &[u16]) -> &[u16] {
         .position(|&unit| unit == EQUALS)
         .map_or(entry.len(), |i| i + 1);
     &entry[..split]
+}
+
+fn upper(unit: u16) -> u16 {
+    map_case(unit, true)
+}
+
+/// Compare two names as the platform does: upper-cased, unit by unit.
+fn compare(a: &[u16], b: &[u16]) -> core::cmp::Ordering {
+    a.iter().map(|&u| upper(u)).cmp(b.iter().map(|&u| upper(u)))
 }
 
 /// Whether `name` is a variable name.

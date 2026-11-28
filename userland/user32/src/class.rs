@@ -401,18 +401,19 @@ fn system_classes_due() -> bool {
     SYSTEM_CLASSES_WANTED.with(|wanted| wanted.replace(false))
 }
 
-/// user32's own classes registered in the calling process, once: the Button, Static, ScrollBar and
-/// Edit controls, the dialog class (#32770) and the menu class (#32768), as Windows 2000's user32
-/// registers them in every process it connects. Each names its procedure's two forms, so a window
-/// takes the form of the call that created it (CreateWindowExA's is no Unicode window). They are
-/// registered when the process first creates a window, not when user32 loads, so a console program
-/// that loads user32 makes no connection to the window manager; the last error is left as it was.
+/// user32's own classes registered in the calling process, once: the Button, Static, ScrollBar,
+/// ListBox and Edit controls, the dialog class (#32770) and the menu class (#32768), as Windows
+/// 2000's user32 registers them in every process it connects. Each names its procedure's two forms,
+/// so a window takes the form of the call that created it (CreateWindowExA's is no Unicode window).
+/// They are registered when the process first creates a window, not when user32 loads, so a console
+/// program that loads user32 makes no connection to the window manager; the last error is left as
+/// it was.
 pub fn register_system_classes() {
     if !system_classes_due() {
         return;
     }
     let arrow = stock(32512, RT_CURSOR);
-    let classes: [(usize, u32, usize, usize, i32); 5] = [
+    let classes: [(usize, u32, usize, usize, i32); 6] = [
         (
             BUTTON_NAME.as_ptr() as usize,
             CS_DBLCLKS | CS_PARENTDC | CS_VREDRAW | CS_HREDRAW,
@@ -433,6 +434,13 @@ pub fn register_system_classes() {
             procedures::scroll_bar().0,
             procedures::scroll_bar().1,
             crate::scrollbar::SCROLLBAR_EXTRA,
+        ),
+        (
+            LISTBOX_NAME.as_ptr() as usize,
+            CS_DBLCLKS,
+            procedures::list_box().0,
+            procedures::list_box().1,
+            crate::listbox::LISTBOX_EXTRA,
         ),
         (
             usize::from(DIALOG_CLASS_ATOM),
@@ -491,8 +499,7 @@ const IDC_IBEAM: u16 = 32513;
 
 /// The system classes Windows 2000 has (user32's and win32k's, as the platform documents them)
 /// that F2K does not register yet: each one's name, and what it is, as a log line names it.
-const MISSING_SYSTEM_CLASSES: [(&str, &str); 8] = [
-    ("ListBox", "the ListBox control class"),
+const MISSING_SYSTEM_CLASSES: [(&str, &str); 7] = [
     ("ComboBox", "the ComboBox control class"),
     (
         "ComboLBox",
@@ -547,6 +554,7 @@ const BUTTON_NAME: [u16; 7] = ascii_units::<7>("Button");
 const STATIC_NAME: [u16; 7] = ascii_units::<7>("Static");
 const EDIT_NAME: [u16; 5] = ascii_units::<5>("Edit");
 const SCROLLBAR_NAME: [u16; 10] = ascii_units::<10>("ScrollBar");
+const LISTBOX_NAME: [u16; 8] = ascii_units::<8>("ListBox");
 
 /// The entry points user32's classes are registered with: the procedures' addresses on the target,
 /// the stand-ins' numbers for them in the host tests (whose procedure calls go through a table).
@@ -591,6 +599,13 @@ mod procedures {
         (
             crate::menubar::menu_proc_w as *const () as usize,
             crate::menubar::menu_proc_a as *const () as usize,
+        )
+    }
+
+    pub fn list_box() -> (usize, usize) {
+        (
+            crate::listbox::list_box_proc_w as *const () as usize,
+            crate::listbox::list_box_proc_a as *const () as usize,
         )
     }
 }
@@ -671,6 +686,21 @@ mod procedures {
         (
             procedure(scroll_bar_w) as usize,
             procedure(scroll_bar_a) as usize,
+        )
+    }
+
+    fn list_box_w(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+        crate::listbox::list_box_proc_w(window as usize, message, wparam, lparam)
+    }
+
+    fn list_box_a(window: u32, message: u32, wparam: u32, lparam: i32) -> i32 {
+        crate::listbox::list_box_proc_a(window as usize, message, wparam, lparam)
+    }
+
+    pub fn list_box() -> (usize, usize) {
+        (
+            procedure(list_box_w) as usize,
+            procedure(list_box_a) as usize,
         )
     }
 }

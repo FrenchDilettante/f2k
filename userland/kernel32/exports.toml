@@ -3943,7 +3943,11 @@ ordinal = 312
 
 [[export]]
 name = "GetLogicalDrives"
+group = "files"
+args = []
+impl = { native = "GetLogicalDrives" }
 ordinal = 313
+note = "a bit for each drive letter whose root opens, as GetDriveType finds it (no ProcessDeviceMap)"
 
 [[export]]
 name = "GetLongPathNameA"

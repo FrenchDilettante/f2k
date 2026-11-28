@@ -94,7 +94,7 @@ pub fn invoke(proc: u32, msg: Msg, carried_text: bool) -> i32 {
 /// and the procedure takes the other form (its window's, read only then); as it is otherwise.
 fn call(proc: u32, from: Option<bool>, msg: &Msg) -> i32 {
     let target = match from {
-        Some(ansi) if procedure::translates(msg.message) => Procedure {
+        Some(ansi) if procedure::translates_to(msg.hwnd, msg.message) => Procedure {
             address: proc,
             ansi: window::procedure_is_ansi(msg.hwnd as usize).unwrap_or(ansi),
         },

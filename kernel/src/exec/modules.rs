@@ -513,7 +513,7 @@ mod tests {
         // resource, profile, global-atom and debug-output calls and RaiseException its Rust, the
         // heap and Local/Global calls its own over ntdll's heap, GlobalCompact over its
         // RtlCompactHeap). The internal start thunks are not among them.
-        assert_eq!(NATIVE_EXPORTS.len(), 380);
+        assert_eq!(NATIVE_EXPORTS.len(), 381);
         for &(name, _) in &NATIVE_EXPORTS {
             let address =
                 kernel32_export(name).unwrap_or_else(|| panic!("kernel32 exports no {name}"));
@@ -727,13 +727,15 @@ mod tests {
     /// The exports kernel32 implements for the system DLLs rather than for a corpus binary:
     /// msvcrt's _kbhit and _getch read the console's key events through the A forms (Windows
     /// 2000's msvcrt imports them), the W forms their twins; gdi32 finds the Fonts directory under
-    /// GetSystemWindowsDirectoryW's (Windows 2000's gdi32 imports it).
-    const FOR_SYSTEM_DLLS: [&str; 5] = [
+    /// GetSystemWindowsDirectoryW's (Windows 2000's gdi32 imports it); user32's LB_DIR lists the
+    /// drives through GetLogicalDrives (Windows 2000's user32 imports it).
+    const FOR_SYSTEM_DLLS: [&str; 6] = [
         "PeekConsoleInputA",
         "PeekConsoleInputW",
         "ReadConsoleInputA",
         "ReadConsoleInputW",
         "GetSystemWindowsDirectoryW",
+        "GetLogicalDrives",
     ];
 
     /// The exports kernel32 implements for a studied program outside the corpus (tests/compat,
@@ -774,7 +776,7 @@ mod tests {
     #[test]
     fn the_surface_is_the_corpus_import_surface() {
         let names: Vec<&str> = DLL_EXPORTS.iter().map(|&(name, _)| name).collect();
-        assert_eq!(names.len(), 390, "the corpus's import surface");
+        assert_eq!(names.len(), 391, "the corpus's import surface");
         for (i, name) in names.iter().enumerate() {
             assert!(!names[i + 1..].contains(name), "{name} listed twice");
             assert!(

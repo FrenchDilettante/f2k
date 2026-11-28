@@ -7,19 +7,11 @@ description = "listbox - user32's ListBox control driven by messages and keys: a
 kind = "sectioned"
 gate = true
 
-[pending]
-# F2K registers no ListBox class yet (user32's MISSING_SYSTEM_CLASSES, userland/user32/src/class.rs):
-# every block waits for the control (gui-H). Drop each entry once its block passes.
-basic = "F2K has no ListBox class (user32's MISSING_SYSTEM_CLASSES): CreateWindowExW(\"ListBox\") fails"
-sort = "F2K has no ListBox class (user32's MISSING_SYSTEM_CLASSES): CreateWindowExW(\"ListBox\") fails"
-multi = "F2K has no ListBox class (user32's MISSING_SYSTEM_CLASSES): CreateWindowExW(\"ListBox\") fails"
-ownerfix = "F2K has no ListBox class (user32's MISSING_SYSTEM_CLASSES): no owner-draw list box, WM_MEASUREITEM or WM_DRAWITEM for one"
-ownervar = "F2K has no ListBox class (user32's MISSING_SYSTEM_CLASSES): no owner-draw list box, WM_MEASUREITEM or WM_DRAWITEM for one"
-notify = "F2K has no ListBox class (user32's MISSING_SYSTEM_CLASSES): no LBN_* notifications"
-keys = "F2K has no ListBox class (user32's MISSING_SYSTEM_CLASSES): no keyboard interface"
-dir = "F2K has no ListBox class (user32's MISSING_SYSTEM_CLASSES), and user32's DlgDirListA/W and DlgDirSelectExA/W are not implemented"
-info = "F2K has no ListBox class (user32's MISSING_SYSTEM_CLASSES), and no GetListBoxInfo"
-dialog = "F2K has no ListBox class (user32's MISSING_SYSTEM_CLASSES): a dialog template's ListBox item fails the dialog's creation"
+[masks]
+# An LBS_OWNERDRAWFIXED list box's WM_MEASUREITEM at its creation measures no item: Windows 2000
+# leaves its itemID as the stack held it (an address of the creating thread's stack, 1244756 on
+# the capture machine). F2K's is 0; the rest of the structure is pinned literally.
+ownerfix = ["  WM_MEASUREITEM CtlType=2 CtlID=300 itemID=* itemData=0x0"]
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

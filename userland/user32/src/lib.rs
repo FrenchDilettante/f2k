@@ -6,9 +6,9 @@
 //! their focus, enabling and activation, [`focus`]; the message loop and the default window
 //! procedure, [`message`]; the procedures' narrow and wide forms and CallWindowProc,
 //! [`procedure`]; the painting, [`paint`]; the GetDC family, [`dc`]; the drawing calls, [`draw`];
-//! the string tables, [`resource`]; the dialog manager, [`dialog`]; the Button, Static and Edit
-//! controls, [`button`], [`static_control`] and [`edit`]; the scroll bars and the ScrollBar
-//! control, [`scrollbar`]; MessageBox, [`msgbox`]; the menus,
+//! the string tables, [`resource`]; the dialog manager, [`dialog`]; the Button, Static, Edit and
+//! ListBox controls, [`button`], [`static_control`], [`edit`] and [`listbox`]; the scroll bars and
+//! the ScrollBar control, [`scrollbar`]; MessageBox, [`msgbox`]; the menus,
 //! [`menu`], and their MENUITEMINFO calls, [`menuinfo`]; the menu bar, its popups and the keyboard
 //! menu loop, [`menubar`]; the non-client area, [`nonclient`]; the caret, [`caret`]; the keyboard
 //! accelerators, [`accel`]; the icons, [`icon`]; the bitmaps, [`bitmap`]; the clipboard,
@@ -56,6 +56,7 @@ pub mod help;
 pub mod icon;
 pub mod imports;
 pub mod keyboard;
+pub mod listbox;
 pub mod menu;
 pub mod menubar;
 pub mod menuinfo;

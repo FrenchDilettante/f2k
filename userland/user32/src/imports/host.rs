@@ -54,6 +54,8 @@ use crate::class::WndClassExW;
 
 mod clipboard;
 pub use clipboard::*;
+mod files;
+pub use files::*;
 mod local;
 pub use local::*;
 mod prop;
@@ -638,10 +640,16 @@ pub fn wm<R>(f: impl FnOnce(&mut Wm) -> R) -> R {
     WM.with(|wm| f(&mut wm.borrow_mut()))
 }
 
-/// Whether two class names are the same, as win32k's class atoms match them
-/// ([`rtl::text::same_atom_name`]).
+/// Whether two class names are the same, without regard to ASCII case (atom names are not).
 fn same_name(a: &[u16], b: &[u16]) -> bool {
-    rtl::text::same_atom_name(a.iter().copied(), b.iter().copied())
+    let fold = |unit: u16| {
+        if (0x61..=0x7A).contains(&unit) {
+            unit - 0x20
+        } else {
+            unit
+        }
+    };
+    a.len() == b.len() && a.iter().zip(b).all(|(&x, &y)| fold(x) == fold(y))
 }
 
 /// A name argument: a string's units (read to its NUL), or an integer atom.

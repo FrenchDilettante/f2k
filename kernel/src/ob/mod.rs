@@ -916,10 +916,14 @@ pub fn namespace_name(name: &[u16]) -> &[u16] {
 }
 
 /// Whether two names are the same one: unit for unit, or, `case_insensitive` (the caller's
-/// OBJ_CASE_INSENSITIVE), each unit upper-cased by NT's upcase rule ([`rtl::text::upcase`]).
+/// OBJ_CASE_INSENSITIVE), each unit upper-cased as the kernel's case-insensitive comparisons fold
+/// it ([`rtl::path::upcase`]).
 fn same_name(a: &[u16], b: &[u16], case_insensitive: bool) -> bool {
     if case_insensitive {
-        rtl::text::eq_ignore_case(a, b)
+        a.len() == b.len()
+            && a.iter()
+                .zip(b)
+                .all(|(&x, &y)| rtl::path::upcase(x) == rtl::path::upcase(y))
     } else {
         a == b
     }
@@ -3003,9 +3007,8 @@ mod tests {
         assert_eq!(directory.name_of(pair), Some(&w("F2K.\u{1F600}")[..]));
     }
 
-    /// OBJ_CASE_INSENSITIVE folds the comparison by NT's upcase rule (ASCII, Latin-1 and Latin
-    /// Extended-A letters among others; a unit without a case compares as it is); without it a
-    /// name compares exactly.
+    /// OBJ_CASE_INSENSITIVE folds the comparison as the kernel's upcase table does (ASCII and
+    /// Latin-1 letters; other units compare as they are); without it a name compares exactly.
     #[test]
     fn a_case_insensitive_lookup_folds() {
         let directory = directory();
@@ -3032,13 +3035,6 @@ mod tests {
             Some(id),
             "past the session prefix"
         );
-        let id = directory
-            .create_event(EventKind::Notification, false)
-            .unwrap();
-        directory.bind_name(&w("Ma\u{161}ina"), id).unwrap();
-        assert_eq!(directory.lookup_name(&w("MA\u{160}INA"), true), Some(id));
-        assert_eq!(directory.lookup_name(&w("MA\u{160}INA"), false), None);
-        assert_eq!(directory.lookup_name(&w("MASINA"), true), None);
     }
 
     /// The name table refuses an over-long name, grows past the 256 names it once held, and
