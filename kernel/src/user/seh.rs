@@ -399,20 +399,20 @@ mod target {
     /// kind ([`crate::mem::wstrim::victim_of`]); a clean victim goes to standby with its frame held
     /// against reallocation, its entry rewritten to a transition one naming the frame (the hold
     /// drops when that entry is re-faulted); the dirty ones are recorded and committed to the
-    /// write-out, which [`crate::mem::demand::target::write_out_queued`] runs staged around the
-    /// paging file's lock: its disk I/O waits, and no frame-database borrow is held across a wait.
-    /// True when the relieve made at least one frame available.
+    /// write-out, which [`crate::mem::demand::target::Relief::write_out_queued`] runs staged
+    /// around the paging file's lock: its disk I/O waits, and no frame-database borrow is held
+    /// across a wait. The relieve's state is claimed for it
+    /// ([`crate::mem::demand::target::Relief`]): one at a time. True when the relieve made at least
+    /// one frame available.
     fn relieve_working_set() -> bool {
-        if !crate::mem::demand::target::try_begin_relieve() {
+        let Some(mut relief) = crate::mem::demand::target::try_begin_relieve() else {
             return false;
-        }
-        let freed = relieve_working_set_inner();
-        crate::mem::demand::target::end_relieve();
-        freed > 0
+        };
+        relieve_working_set_inner(&mut relief) > 0
     }
 
     /// One relieve: the trim itself, then the committed victims' page-out.
-    fn relieve_working_set_inner() -> u32 {
+    fn relieve_working_set_inner(relief: &mut crate::mem::demand::target::Relief) -> u32 {
         use crate::mem::{bootmem, vm, wstrim};
         let process = crate::process::pool::address_space();
         let policy = wstrim::TrimPolicy::new(RELIEF_THRESHOLD, RELIEF_BATCH);
@@ -436,11 +436,7 @@ mod target {
                             let protect = vm::decode(entry)
                                 .map(|(_, protect)| protect)
                                 .unwrap_or_else(|| crate::mem::pte::soft_protect(entry));
-                            crate::mem::demand::target::record_victim(
-                                va,
-                                victim.frame.addr().get(),
-                                protect,
-                            );
+                            relief.record_victim(va, victim.frame.addr().get(), protect);
                         }
                         victim
                     },
@@ -459,7 +455,7 @@ mod target {
                             protect,
                         );
                     },
-                    |frame, slot| crate::mem::demand::target::queue_dirty(frame, slot),
+                    |frame, slot| relief.queue_dirty(frame, slot),
                 )
             })
         });
@@ -470,13 +466,13 @@ mod target {
         // copied out under a database borrow, the run of slots allocated and written through the
         // file with no borrow held — the disk wait — the frames released to Standby and the
         // entries rewritten under a final one.
-        let mut freed = crate::mem::demand::target::write_out_queued();
+        let mut freed = relief.write_out_queued();
         if freed == 0 && report.clean > 0 {
             // The dirty victims freed nothing: the clean ones went to held standby, which does
             // not free a frame. Write them out from standby instead — their holds drop and their
             // entries name paging-file slots — so the pressure is actually relieved.
-            crate::mem::demand::target::queue_standby_victims();
-            freed = crate::mem::demand::target::write_out_queued();
+            relief.queue_standby_victims();
+            freed = relief.write_out_queued();
         }
         freed
     }

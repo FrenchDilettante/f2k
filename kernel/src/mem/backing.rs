@@ -266,8 +266,6 @@ pub fn apply(
 
 #[cfg(target_arch = "x86")]
 pub mod target {
-    use core::sync::atomic::{AtomicBool, Ordering};
-
     use super::{page_file_cluster, section_index_of, slot_of, PAGE_FILE_CLUSTER};
     use crate::mem::demand::target::{PageAligned, PageBuf};
     use crate::mem::fault::{self, Resolution};
@@ -275,6 +273,7 @@ pub mod target {
     use crate::mem::pagingfile::{with_paging_file, PagingFileIo};
     use crate::mem::pte;
     use crate::mem::vm::{self, Kind, Pages, PAGE, USER_HIGH};
+    use crate::sync::ClaimBuf;
 
     /// A fresh zeroed frame, or none: when the allocator finds none, `relieve` runs once and the
     /// allocation is retried once.
@@ -292,32 +291,8 @@ pub mod target {
     /// the disk I/O waits (a switch can happen inside it), so the buffer is claimed for the
     /// transfer, not borrowed from a stack. A fault that finds it in use reads its page alone,
     /// through a [`PageBuf`].
-    static CLUSTER_CLAIMED: AtomicBool = AtomicBool::new(false);
-    static mut CLUSTER_BUF: PageAligned<{ PAGE_FILE_CLUSTER as usize * PAGE_SIZE }> =
-        PageAligned([0; PAGE_FILE_CLUSTER as usize * PAGE_SIZE]);
-
-    /// The claimed cluster buffer; released on drop.
-    struct ClusterBuf;
-
-    impl ClusterBuf {
-        fn claim() -> Option<ClusterBuf> {
-            CLUSTER_CLAIMED
-                .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-                .is_ok()
-                .then_some(ClusterBuf)
-        }
-
-        fn as_mut(&mut self) -> &mut [u8] {
-            // SAFETY: CLUSTER_CLAIMED is held until the drop, so the buffer has one user.
-            unsafe { &mut (*core::ptr::addr_of_mut!(CLUSTER_BUF)).0 }
-        }
-    }
-
-    impl Drop for ClusterBuf {
-        fn drop(&mut self) {
-            CLUSTER_CLAIMED.store(false, Ordering::Release);
-        }
-    }
+    static CLUSTER_BUF: ClaimBuf<PageAligned<{ PAGE_FILE_CLUSTER as usize * PAGE_SIZE }>> =
+        ClaimBuf::new(PageAligned([0; PAGE_FILE_CLUSTER as usize * PAGE_SIZE]));
 
     /// The PageFile arm on the target: the faulting page's slot read back, together with the
     /// neighbours whose entries name the slots next to it ([`page_file_cluster`]), in one transfer
@@ -347,7 +322,7 @@ pub mod target {
         let Some(frame) = fresh_frame(pages, relieve) else {
             return false;
         };
-        let mut cluster = ClusterBuf::claim();
+        let mut cluster = CLUSTER_BUF.try_claim();
         let mut single = match cluster {
             Some(_) => None,
             None => match PageBuf::claim() {
@@ -359,7 +334,7 @@ pub mod target {
             },
         };
         let (buf, max) = match (&mut cluster, &mut single) {
-            (Some(cluster), _) => (cluster.as_mut(), PAGE_FILE_CLUSTER),
+            (Some(cluster), _) => (&mut cluster.0[..], PAGE_FILE_CLUSTER),
             (None, Some(single)) => (&mut single.as_mut()[..], 1),
             (None, None) => unreachable!("a buffer was claimed"),
         };

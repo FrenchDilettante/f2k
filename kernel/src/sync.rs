@@ -1,7 +1,7 @@
 //! Kernel state that is not a level cell's: values set once at boot ([`InitOnce`]), static buffers
-//! handed out once ([`StaticBuf`]), and the short lock for passive-level state ([`ShortLock`],
-//! Windows 2000's fast mutex). The wait lock, which its holder may keep across a wait, is
-//! [`crate::block::lock::DeviceLock`].
+//! handed out once ([`StaticBuf`]) or claimed for a while ([`ClaimBuf`]), and the short lock for
+//! passive-level state ([`ShortLock`], Windows 2000's fast mutex). The wait lock, which its holder
+//! may keep across a wait, is [`crate::block::lock::DeviceLock`].
 //!
 //! # The short lock
 //!
@@ -162,6 +162,65 @@ impl<T> StaticBuf<T> {
         // SAFETY: the swap above made this the one take, so this is the only reference to the
         // value, and the buffer lives for 'static.
         unsafe { &mut *self.value.get() }
+    }
+}
+
+/// A static buffer claimed for a while and given back: a transfer buffer whose disk I/O waits (a
+/// switch can happen inside it), so it cannot be borrowed from a stack. [`ClaimBuf::try_claim`]
+/// hands out the buffer behind a guard, or none while another holder has it; the guard's drop gives
+/// it back.
+pub struct ClaimBuf<T> {
+    claimed: AtomicBool,
+    value: UnsafeCell<T>,
+}
+
+// SAFETY: the value is reached only through the guard of the one claim that flipped `claimed`, so
+// it has one user at a time; `T: Send` because that user may be on any thread.
+unsafe impl<T: Send> Sync for ClaimBuf<T> {}
+
+impl<T> ClaimBuf<T> {
+    /// A buffer holding `value`, not claimed.
+    pub const fn new(value: T) -> Self {
+        ClaimBuf {
+            claimed: AtomicBool::new(false),
+            value: UnsafeCell::new(value),
+        }
+    }
+
+    /// The buffer, exclusively until the guard is dropped; none while it is claimed already.
+    pub fn try_claim(&self) -> Option<Claimed<'_, T>> {
+        self.claimed
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_ok()
+            .then_some(Claimed { buf: self })
+    }
+}
+
+/// A claimed [`ClaimBuf`]: its value, until the drop gives it back.
+pub struct Claimed<'a, T> {
+    buf: &'a ClaimBuf<T>,
+}
+
+impl<T> Deref for Claimed<'_, T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        // SAFETY: this guard's claim is the only one until its drop, and the reference is bounded
+        // by the guard's borrow.
+        unsafe { &*self.buf.value.get() }
+    }
+}
+
+impl<T> DerefMut for Claimed<'_, T> {
+    fn deref_mut(&mut self) -> &mut T {
+        // SAFETY: as `deref`; `&mut self` makes this the guard's only reference.
+        unsafe { &mut *self.buf.value.get() }
+    }
+}
+
+impl<T> Drop for Claimed<'_, T> {
+    fn drop(&mut self) {
+        self.buf.claimed.store(false, Ordering::Release);
     }
 }
 
@@ -554,6 +613,20 @@ mod tests {
         let buffer: &'static StaticBuf<u32> = Box::leak(Box::new(StaticBuf::new(0)));
         let _first = buffer.take();
         let _second = buffer.take();
+    }
+
+    /// A claimed buffer is refused to a second claim until the first guard goes; what the holder
+    /// wrote stays written for the next.
+    #[test]
+    fn a_claimed_buffer_has_one_holder_at_a_time() {
+        let buffer = ClaimBuf::new([0u8; 4]);
+        {
+            let mut first = buffer.try_claim().expect("an unclaimed buffer is claimed");
+            first[1] = 9;
+            assert!(buffer.try_claim().is_none(), "claimed twice");
+        }
+        let second = buffer.try_claim().expect("given back by the drop");
+        assert_eq!(*second, [0, 9, 0, 0]);
     }
 
     /// The holder runs at the APC level with the value; the drop releases the lock and lowers.
