@@ -5,10 +5,17 @@
 //! The lock owns the state it guards, reached only while it is held. Its owner is recorded, and an
 //! owner that takes it again is refused: the second acquisition would wait for itself.
 //!
-//! The lock is a synchronization event created signaled. Acquiring it is a wait on the event (the
-//! satisfied wait consumes the signal); releasing it sets the event, which hands the lock straight
-//! to the oldest waiter, or leaves it free when nobody waits. A partition's reads land on its
-//! disk, so they take the disk's lock.
+//! The lock is Windows 2000's fast mutex, kept across waits: a count and a synchronization event.
+//! The count is 1 when the lock is free, 0 when it is held, and one lower for each thread waiting
+//! for it. A take decrements it in one interlocked step (ExAcquireFastMutex's
+//! InterlockedDecrement), and finding it was 1 is the whole of an uncontended take: no dispatcher,
+//! no wait. A take that finds it held waits on the event. A release increments it
+//! (ExReleaseFastMutex's InterlockedIncrement), and when that finds waiters it sets the event
+//! under the dispatcher lock, which hands the lock straight to the oldest. The waiter may not have
+//! parked yet (it decremented on another processor and is on its way to the wait): the set then
+//! leaves the event signaled, and the wait consumes it at once. Between the release that hands
+//! over and the waiter's wake the lock is never free: the count stays below 1. A partition's reads
+//! land on its disk, so they take the disk's lock.
 //!
 //! The idle thread cannot block — and a lock held by a parked thread would never come back while
 //! the idle thread halts — so on the idle thread (the boot context) the lock must be free: taking
@@ -17,81 +24,141 @@
 //! Any other thread takes the lock only inside a critical region: its holder blocks under it (the
 //! drive's commands), and a termination must wait for it to release the lock rather than end it
 //! holding one.
+//!
+//! The event is reached only through the dispatcher (the wait, the set), as Windows 2000's
+//! KeWaitForSingleObject and KeSetEvent take KiDispatcherLock: raising the level excludes only the
+//! running processor, and the dispatcher's borrow is what excludes the others once its cell takes
+//! a spin lock (phase 1's level-cell slice).
 
 use core::cell::UnsafeCell;
 #[cfg(target_arch = "x86")]
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicI32, AtomicU8, AtomicUsize, Ordering};
 
 #[cfg(target_arch = "x86")]
 use crate::level::{At, Dispatch, Passive};
 use crate::sched::dispatcher::Dispatcher;
 use crate::sched::event::{Event, EventKind};
 use crate::sched::thread::ThreadId;
+#[cfg(target_arch = "x86")]
+use crate::sched::wait::WaitableId;
 use crate::sched::wait::{ClockStamp, WaitDisposition, WaitMode, WaitReason};
 
 /// The priority increment a release grants the waiter it hands the lock to: none.
 const HANDOFF_INCREMENT: i8 = 0;
 
+/// The event is not named yet: nothing may reach it.
+const UNNAMED: u8 = 0;
+/// [`DeviceLock::init`] is naming the event.
+const NAMING: u8 = 1;
+/// The event is named, for good.
+const NAMED: u8 = 2;
+
 /// A wait lock over `T` (nothing, for a lock that guards a device rather than data).
 pub struct DeviceLock<T = ()> {
+    /// 1 when free; 0 when held; one lower for each thread waiting for it (FAST_MUTEX's Count).
+    count: AtomicI32,
+    /// The event the waiters wait on: a synchronization event, created clear, set by a release
+    /// that finds waiters, which hands the lock to the oldest.
     event: UnsafeCell<Event>,
-    initialized: AtomicBool,
+    /// [`UNNAMED`], [`NAMING`] or [`NAMED`]: the event's naming ([`DeviceLock::init`]), published
+    /// only once it is done, so no processor reaches the event half-named.
+    initialized: AtomicU8,
     /// The holding thread ([`identity`]); 0 when nobody holds the lock, or while a release hands
     /// it to a waiter that has not run yet.
     owner: AtomicUsize,
     value: UnsafeCell<T>,
 }
 
-// SAFETY: one processor; every access to the event runs with interrupts masked or with the
-// dispatcher borrowed at the dispatch level (`acquire_for`, `release_with`), which serializes it,
-// and the value is reached only by the thread holding the lock,
-// which the event grants to one thread at a time. `T: Send`: the value is reached from whichever
-// thread holds the lock.
+// SAFETY: the value is reached only by the thread holding the lock, which the count grants to one
+// thread at a time: every change to it is one interlocked read-modify-write, so two processors'
+// takes cannot both find it free. The take's acquire and the release's release ordering on the
+// count, or the handoff through the dispatcher lock, order one holder's writes before the next
+// holder's reads. The event is named once (`init`, published before any use reads it) and
+// afterwards reached only through the dispatcher (the waiter's wait, the release's set), whose
+// lock serializes it with every other processor's reach into the header. `T: Send`: the value is
+// reached from whichever thread holds the lock.
 unsafe impl<T: Send> Sync for DeviceLock<T> {}
 
 impl<T> DeviceLock<T> {
     /// A free lock holding `value`. Call [`DeviceLock::init`] once it is at its final address.
     pub const fn new(value: T) -> Self {
         DeviceLock {
-            event: UnsafeCell::new(Event::new(EventKind::Synchronization, true)),
-            initialized: AtomicBool::new(false),
+            count: AtomicI32::new(1),
+            event: UnsafeCell::new(Event::new(EventKind::Synchronization, false)),
+            initialized: AtomicU8::new(UNNAMED),
             owner: AtomicUsize::new(0),
             value: UnsafeCell::new(value),
         }
     }
 
-    /// Close the event's waiters list; once, at the lock's final address.
+    /// Close the event's waiters list; once, at the lock's final address (KeInitializeEvent, as
+    /// ExInitializeFastMutex runs it). The lock reads as initialized only once the naming is done
+    /// (a release store, which every use's acquire load pairs with), so a use on another processor
+    /// never finds the event half-named.
     pub fn init(&self) {
         assert!(
-            !self.initialized.swap(true, Ordering::SeqCst),
+            self.initialized
+                .compare_exchange(UNNAMED, NAMING, Ordering::Acquire, Ordering::Relaxed)
+                .is_ok(),
             "device lock initialized twice"
         );
-        // SAFETY: nothing can wait on the lock before it is initialized.
+        // SAFETY: nothing can wait on the lock before it is initialized: every use checks for
+        // NAMED first, and this is the one naming (the exchange above).
         unsafe { (*self.event.get()).init() };
+        self.initialized.store(NAMED, Ordering::Release);
     }
 
-    /// Run `f` on the event, once the lock is initialized.
-    fn with_event<R>(&self, f: impl FnOnce(&Event) -> R) -> R {
-        assert!(
-            self.initialized.load(Ordering::SeqCst),
+    /// Refuse a lock whose event [`DeviceLock::init`] has not named yet.
+    fn check_named(&self) {
+        assert_eq!(
+            self.initialized.load(Ordering::Acquire),
+            NAMED,
             "device lock used before init"
         );
-        // SAFETY: see the Sync impl: accesses are serialized, and the reference ends with `f`.
-        f(unsafe { &*self.event.get() })
     }
 
-    /// Whether nobody holds the lock. Masked, as every reach into the event outside the dispatcher
-    /// is (see the `Sync` impl): a caller at the passive level (the idle thread's check before a
-    /// load) would otherwise hold the event's reference where an interrupt's deferred work can
-    /// reach the header through the dispatcher.
+    /// The event's name, for the dispatcher: what every reach into the event goes through (see
+    /// the `Sync` impl).
+    fn event(&self) -> crate::sched::wait::WaitableId {
+        self.check_named();
+        // SAFETY: named (checked above), and read for that name only; nothing writes the name
+        // again while the lock lives.
+        unsafe { (*self.event.get()).id() }
+    }
+
+    /// Whether nobody holds the lock: the count reads 1.
     pub fn is_free(&self) -> bool {
-        let _masked = crate::pcr::pcr().mask_guard();
-        self.with_event(|event| event.signaled())
+        self.check_named();
+        self.count.load(Ordering::Acquire) == 1
+    }
+
+    /// Count the taker in: true when the lock was free and is now its, false when another holds
+    /// it and the taker must wait for the handoff.
+    fn claim(&self) -> bool {
+        self.count.fetch_sub(1, Ordering::AcqRel) == 1
+    }
+
+    /// Give the lock up: true when a waiter is owed the handoff (the event's set), false when the
+    /// lock is free again.
+    ///
+    /// # Panics
+    ///
+    /// The lock was free.
+    fn unclaim(&self) -> bool {
+        self.owner.store(0, Ordering::SeqCst);
+        let count = self.count.fetch_add(1, Ordering::AcqRel);
+        assert!(count < 1, "releasing a device lock nobody holds");
+        count != 0
     }
 
     /// Take the lock for `thread`, which must be inside a critical region: at once if it is free,
-    /// otherwise park `thread` on it (the switch away is the caller's business, as with any wait).
+    /// otherwise park `thread` on its event (the switch away is the caller's business, as with any
+    /// wait). Counts the taker in, so a taker parked here is not to come back through it: its
+    /// wake is the handoff.
+    // The dispatcher-borrowing forms of the take and the release: what the host tests drive. The
+    // target's own paths split the count from the dispatcher (`acquire`, `release`).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn acquire_for(
         &self,
         dispatcher: &mut Dispatcher,
@@ -109,7 +176,11 @@ impl<T> DeviceLock<T> {
             taker,
             "a wait lock taken again by its owner"
         );
-        let event = self.with_event(|event| event.id());
+        let event = self.event();
+        if self.claim() {
+            self.owner.store(taker, Ordering::SeqCst);
+            return WaitDisposition::Complete(crate::status::STATUS_SUCCESS);
+        }
         let disposition = dispatcher.wait_single(
             thread,
             event,
@@ -125,12 +196,13 @@ impl<T> DeviceLock<T> {
         disposition
     }
 
-    /// Give the lock up: the oldest waiter gets it, or it is left free.
+    /// Give the lock up, the dispatcher borrowed: the oldest waiter gets it, or it is left free.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn release_with(&self, dispatcher: &mut Dispatcher) {
-        assert!(!self.is_free(), "releasing a device lock nobody holds");
-        self.owner.store(0, Ordering::SeqCst);
-        let event = self.with_event(|event| event.id());
-        dispatcher.set_event(event, HANDOFF_INCREMENT);
+        let event = self.event();
+        if self.unclaim() {
+            dispatcher.set_event(event, HANDOFF_INCREMENT);
+        }
     }
 
     /// Run `body` on the value, holding the lock.
@@ -164,22 +236,17 @@ impl<T> DeviceLock<T> {
             running,
             "a wait lock taken again by its owner"
         );
+        let event = self.event();
         if crate::sched::idle::on_idle_thread() {
-            masked(|| {
-                assert!(
-                    self.is_free(),
-                    "the idle thread cannot wait for a held device lock"
-                );
-                self.with_event(|event| event.reset());
-            });
+            assert!(
+                self.count
+                    .compare_exchange(1, 0, Ordering::AcqRel, Ordering::Relaxed)
+                    .is_ok(),
+                "the idle thread cannot wait for a held device lock"
+            );
             self.owner.store(running, Ordering::SeqCst);
             return;
         }
-        // A free lock is taken in place, masked, without entering the wait: as Windows 2000's
-        // fast mutex and ERESOURCE are taken when nobody holds them (an interlocked step, no
-        // KeWaitForSingleObject). A wait satisfied at once is charged against the quantum, so
-        // entering one for every uncontended take ran a thread doing file reads off its quantum in
-        // a handful of them, an equal-priority thread taking the processor at each sixth.
         // Checked in debug builds only: the check raises to the dispatch level and lowers again,
         // which a `debug_assert!` argument may not (a release build compiles it out).
         if cfg!(debug_assertions) {
@@ -191,54 +258,52 @@ impl<T> DeviceLock<T> {
             });
             assert!(critical, "a device lock taken outside a critical region");
         }
-        let taken = masked(|| {
-            self.with_event(|event| {
-                let free = event.signaled();
-                if free {
-                    event.reset();
-                }
-                free
-            })
-        });
-        if taken {
-            self.owner.store(running, Ordering::SeqCst);
-            return;
+        // A free lock is taken by the count alone, without entering the wait: a wait satisfied at
+        // once is charged against the quantum, so entering one for every uncontended take ran a
+        // thread doing file reads off its quantum in a handful of them, an equal-priority thread
+        // taking the processor at each sixth.
+        if !self.claim() {
+            self.wait_for_handoff(event);
         }
+        // Taken at once, or handed over by a release: either way this thread holds it now.
+        self.owner.store(running, Ordering::SeqCst);
+    }
+
+    /// Wait on the event until a release hands the lock over. The count already holds this
+    /// thread's place: an APC break re-enters the wait alone, never the count.
+    #[cfg(target_arch = "x86")]
+    fn wait_for_handoff(&self, event: WaitableId) {
         let status = crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, replay| {
-            // An untimed lock wait never replays differently: the APC break re-enters the same
-            // acquisition attempt.
+            // An untimed lock wait never replays differently.
             let _ = replay;
-            self.acquire_for(dispatcher, thread, stamp)
+            dispatcher.wait_single(
+                thread,
+                event,
+                WaitReason::Executive,
+                WaitMode::Kernel,
+                false,
+                None,
+                stamp,
+            )
         });
         assert_eq!(
             status,
             crate::status::STATUS_SUCCESS,
             "an untimed lock wait completes only by the handoff"
         );
-        // Taken at once, or handed over by a release: either way this thread holds it now.
-        self.owner.store(running, Ordering::SeqCst);
     }
 
-    /// Release the lock held by the running thread. With nobody waiting, the lock goes back free
-    /// in place, masked, as the idle thread's take does: the dispatcher is needed only to hand it
-    /// to a waiter (Windows 2000's fast mutex release takes the same shortcut). A masked holder
-    /// stays masked through such a release.
+    /// Release the lock held by the running thread: with nobody waiting, the count alone frees it
+    /// (no dispatcher); with a waiter, the event's set under the dispatcher lock hands it over
+    /// (ExReleaseFastMutex's KeSetEventBoostPriority).
     #[cfg(target_arch = "x86")]
     fn release(&self) {
-        let handed = masked(|| {
-            self.with_event(|event| {
-                if event.waitable.has_waiters() {
-                    return true;
-                }
-                assert!(!event.signaled(), "releasing a device lock nobody holds");
-                self.owner.store(0, Ordering::SeqCst);
-                event.waitable.set_signal_state(1);
-                false
-            })
-        });
-        if handed {
+        let event = self.event();
+        if self.unclaim() {
             crate::level::raised::<Dispatch, _>(|dispatch| {
-                self.release_with(crate::sched::DISPATCHER.get(dispatch))
+                crate::sched::DISPATCHER
+                    .get(dispatch)
+                    .set_event(event, HANDOFF_INCREMENT);
             });
         }
     }
@@ -279,13 +344,6 @@ impl<T> Drop for WaitGuard<'_, T> {
     fn drop(&mut self) {
         self.lock.release();
     }
-}
-
-/// Run `body` with interrupts masked, then put the flag back as found.
-#[cfg(target_arch = "x86")]
-fn masked<R>(body: impl FnOnce() -> R) -> R {
-    let _masked = crate::pcr::pcr().mask_guard();
-    body()
 }
 
 #[cfg(test)]
@@ -389,6 +447,42 @@ mod tests {
 
         lock.release_with(&mut d);
         assert!(lock.is_free(), "the last release frees it");
+    }
+
+    /// A waiter counts itself in, and the release hands off before it has parked (it is on its way
+    /// to the wait on another processor): the set leaves the event signaled, and the wait that
+    /// follows completes at once, holding the lock.
+    #[test]
+    fn a_handoff_before_the_waiter_parks_is_kept_for_it() {
+        let mut d = dispatcher();
+        let lock = lock();
+        let (first, second) = (thread(), thread());
+        assert!(matches!(
+            lock.acquire_for(&mut d, first, NOW),
+            WaitDisposition::Complete(_)
+        ));
+        assert!(
+            !lock.claim(),
+            "held: the second taker is counted in to wait"
+        );
+        lock.release_with(&mut d);
+        assert!(!lock.is_free(), "handed over, never free in between");
+        let event = lock.event();
+        assert_eq!(
+            d.wait_single(
+                second,
+                event,
+                WaitReason::Executive,
+                WaitMode::Kernel,
+                false,
+                None,
+                NOW
+            ),
+            WaitDisposition::Complete(STATUS_SUCCESS)
+        );
+        assert_eq!(second.state(), ThreadState::Running);
+        lock.release_with(&mut d);
+        assert!(lock.is_free());
     }
 
     /// A thread holding the lock may block under it (the drive's commands): it must be inside a

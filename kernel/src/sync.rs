@@ -51,6 +51,11 @@ use crate::level::{Apc, At, Passive, Raised};
 use crate::pcr::pcr;
 use crate::sched::event::{Event, EventKind};
 
+// The spin lock (KSPIN_LOCK): what the level cells, the dispatcher and the DPC queues take on a
+// multiprocessor. Unused on the target until phase 1's slices take it.
+#[cfg_attr(target_arch = "x86", allow(dead_code))]
+pub mod spin;
+
 /// A value set once, at boot, then read freely: `get` hands out `&T` for the kernel's lifetime.
 ///
 /// Setting it twice panics, and so does reading it before it is set: both are boot-order bugs.
@@ -276,6 +281,11 @@ pub struct ShortLock<T> {
     /// The event the waiters wait on: a synchronization event, set by a release that finds
     /// waiters, which hands the lock to the oldest.
     event: UnsafeCell<Event>,
+    /// The event's naming ([`EMPTY`], [`SETTING`], [`SET`], as [`InitOnce`]'s state): done once,
+    /// by the first thread that needs the event — [`ShortLock::write_in_place`] at the lock's
+    /// creation, as ExInitializeFastMutex initializes the event, or else the first waiter or the
+    /// release handing off to it, whichever comes first — and published only once it is done.
+    named: AtomicU8,
     value: UnsafeCell<MaybeUninit<T>>,
     /// What builds the value at the first acquisition; none once it is built (from the start, for
     /// a lock made with its value). Reached only by the lock's holder, as the value is.
@@ -283,10 +293,14 @@ pub struct ShortLock<T> {
 }
 
 // SAFETY: the value and its build slot are reached only through a guard, and a guard exists only
-// while its thread holds the lock, which the count (changed with interrupts masked, on one
-// processor) grants to one thread at a time. The event is touched only with interrupts masked or
-// inside the wait discipline, which serializes it. `T: Send`: the value is reached from whichever
-// thread holds the lock.
+// while its thread holds the lock, which the count grants to one thread at a time: every change to
+// it is one interlocked read-modify-write (FAST_MUTEX's InterlockedDecrement and
+// InterlockedIncrement), so two processors' takes cannot both read it free. The take's acquire and
+// the release's release ordering on the count, or the handoff through the dispatcher lock, order
+// one holder's writes before the next holder's reads. The event is named once, before any thread
+// reads its name (`name_event`'s published state), and afterwards reached only through the
+// dispatcher (the waiter's wait, the handoff's set), whose lock serializes it. `T: Send`: the value
+// is reached from whichever thread holds the lock.
 unsafe impl<T: Send> Sync for ShortLock<T> {}
 
 #[cfg_attr(not(any(test, target_arch = "x86")), allow(dead_code))]
@@ -299,6 +313,7 @@ impl<T> ShortLock<T> {
             contention: AtomicU32::new(0),
             owner: AtomicU32::new(0),
             event: UnsafeCell::new(Event::new(EventKind::Synchronization, false)),
+            named: AtomicU8::new(EMPTY),
             value: UnsafeCell::new(MaybeUninit::new(value)),
             build: UnsafeCell::new(None),
         }
@@ -318,6 +333,7 @@ impl<T> ShortLock<T> {
             contention: AtomicU32::new(0),
             owner: AtomicU32::new(0),
             event: UnsafeCell::new(Event::new(EventKind::Synchronization, false)),
+            named: AtomicU8::new(EMPTY),
             value: UnsafeCell::new(MaybeUninit::uninit()),
             build: UnsafeCell::new(Some(build)),
         }
@@ -334,7 +350,9 @@ impl<T> ShortLock<T> {
     pub unsafe fn write_in_place(lock: *mut Self, build: unsafe fn(*mut T)) {
         use core::ptr::addr_of_mut;
         // SAFETY: the caller's contract; every field but the value is written, and the value is
-        // left to `build`, which the first acquisition runs before any guard reads it.
+        // left to `build`, which the first acquisition runs before any guard reads it. The naming
+        // at the end reads the lock through a shared reference once every field is written (the
+        // value is a `MaybeUninit`, valid uninitialized).
         unsafe {
             addr_of_mut!((*lock).count).write(AtomicI32::new(1));
             addr_of_mut!((*lock).contention).write(AtomicU32::new(0));
@@ -343,7 +361,11 @@ impl<T> ShortLock<T> {
                 EventKind::Synchronization,
                 false,
             )));
+            addr_of_mut!((*lock).named).write(AtomicU8::new(EMPTY));
             addr_of_mut!((*lock).build).write(UnsafeCell::new(Some(build)));
+            // Named here, at the lock's final address, as ExInitializeFastMutex initializes its
+            // event: no waiter or release need do it later.
+            (*lock).name_event();
         }
     }
 
@@ -394,39 +416,61 @@ impl<T> ShortLock<T> {
         self.contention.load(Ordering::SeqCst)
     }
 
-    /// Count this thread in, masked: true when another holds the lock and this thread must wait for
-    /// the handoff. A lock taken at once counts as held in the same masked step: no dispatch
-    /// decision comes between the two.
+    /// Count this thread in (ExAcquireFastMutex's InterlockedDecrement): true when another holds
+    /// the lock and this thread must wait for the handoff. One interlocked step decides it, so two
+    /// processors cannot both find the lock free. Masked, so a lock taken at once counts as held
+    /// ([`HOLDS`]) before this processor makes any dispatch decision.
     fn claim(&self) -> bool {
         let _masked = pcr().mask_guard();
-        let count = self.count.load(Ordering::SeqCst);
-        self.count.store(count - 1, Ordering::SeqCst);
+        let count = self.count.fetch_sub(1, Ordering::AcqRel);
         if count == 1 {
             HOLDS.fetch_add(1, Ordering::SeqCst);
             return false;
         }
-        if count == 0 {
-            // The first waiter: nobody is on the event's waiters list, and the lock cannot move
-            // while it is borrowed, so the list is closed here, where the lock is now.
-            // SAFETY: interrupts are masked, and no thread waits on the event (the count was 0:
-            // a holder and no waiter), so this is the only reference to it.
-            unsafe { (*self.event.get()).init() };
-        }
-        self.contention.fetch_add(1, Ordering::SeqCst);
+        self.contention.fetch_add(1, Ordering::Relaxed);
+        self.name_event();
         true
     }
 
-    /// Give the lock up, masked: hand it to the oldest waiter — the hold passes to it, still
-    /// counted, before it runs — or leave it free.
+    /// Give the lock up (ExReleaseFastMutex's InterlockedIncrement): hand it to the oldest waiter —
+    /// the hold passes to it, still counted, before it runs — or leave it free. Masked, as the
+    /// claim is.
     fn release(&self) {
         self.owner.store(0, Ordering::SeqCst);
         let _masked = pcr().mask_guard();
-        let count = self.count.load(Ordering::SeqCst) + 1;
-        self.count.store(count, Ordering::SeqCst);
+        let count = self.count.fetch_add(1, Ordering::AcqRel) + 1;
         if count != 1 {
             self.hand_off();
         } else {
             HOLDS.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    /// Name the event at its address, once, before anyone reads its name: the first waiter's claim
+    /// and the release handing off to it may come on two processors in either order (the waiter's
+    /// decrement is what the release sees, before the waiter has gone on to name it), so either
+    /// names it and the other waits for the naming to be published. Never named again: the waiters
+    /// list empties itself as each waiter is woken, and a later contention's naming could land
+    /// while a release on another processor still hands off through the event.
+    fn name_event(&self) {
+        if self.named.load(Ordering::Acquire) == SET {
+            return;
+        }
+        if self
+            .named
+            .compare_exchange(EMPTY, SETTING, Ordering::Acquire, Ordering::Acquire)
+            .is_ok()
+        {
+            // SAFETY: the exchange made this the one naming, and nothing reads the event before
+            // the state reads SET (every reader comes through here first), so no thread waits on
+            // it and this is the only reference to it.
+            unsafe { (*self.event.get()).init() };
+            self.named.store(SET, Ordering::Release);
+            return;
+        }
+        // Another processor is naming it: the few stores that takes, masked there as here.
+        while self.named.load(Ordering::Acquire) != SET {
+            core::hint::spin_loop();
         }
     }
 
@@ -437,8 +481,8 @@ impl<T> ShortLock<T> {
             !crate::sched::idle::on_idle_thread(),
             "the idle thread cannot wait for a held short lock"
         );
-        // SAFETY: the event was named at its address by the first waiter's claim, and is read for
-        // that name only; nothing writes the name again while the lock lives.
+        // SAFETY: the claim named the event (`name_event`) before this, and it is read for that
+        // name only; nothing writes the name again while the lock lives.
         let event = unsafe { (*self.event.get()).id() };
         let status = crate::sched::wait::wait_current_with(|dispatcher, thread, stamp, _replay| {
             dispatcher.wait_for(
@@ -464,12 +508,15 @@ impl<T> ShortLock<T> {
         unreachable!("a short lock contended on the host");
     }
 
-    /// Set the event for the oldest waiter, from the release (interrupts masked by the caller): at
-    /// the dispatch level, where nothing else runs on the processor until the set is done.
+    /// Set the event for the oldest waiter, from the release (interrupts masked by the caller):
+    /// under the dispatcher lock, as ExReleaseFastMutex's KeSetEventBoostPriority takes
+    /// KiDispatcherLock. The waiter may not have parked yet (it decremented the count on another
+    /// processor and is on its way to the wait): the set then leaves the synchronization event
+    /// signaled, and the waiter's wait consumes it at once.
     #[cfg(target_arch = "x86")]
     fn hand_off(&self) {
-        // SAFETY: interrupts are masked (the caller's guard), and the event's name was written by
-        // the first waiter's claim, before any release could hand off; it is read, nothing more.
+        self.name_event();
+        // SAFETY: named just above (or before), and read for that name only.
         let event = unsafe { (*self.event.get()).id() };
         crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
             crate::sched::DISPATCHER
@@ -722,5 +769,56 @@ mod tests {
         assert_eq!(std::rc::Rc::strong_count(&kept), 2);
         drop(lock);
         assert_eq!(std::rc::Rc::strong_count(&kept), 1, "dropped with the lock");
+    }
+
+    /// The first waiter and the handoff to it may both reach for the event on two processors at
+    /// once: exactly one names it, and none reads it before the naming is published.
+    #[test]
+    fn processors_racing_to_name_the_event_name_it_once() {
+        const PROCESSORS: usize = if cfg!(miri) { 3 } else { 8 };
+        // Leaked, as a static lock lives: shared by reference (the lock is `Sync`, not `Send`).
+        let lock: &'static ShortLock<()> = Box::leak(Box::new(ShortLock::new(())));
+        let start = std::sync::Arc::new(std::sync::Barrier::new(PROCESSORS));
+        let threads: Vec<_> = (0..PROCESSORS)
+            .map(|_| {
+                let start = std::sync::Arc::clone(&start);
+                std::thread::spawn(move || {
+                    start.wait();
+                    lock.name_event();
+                    assert_eq!(lock.named.load(Ordering::Acquire), SET);
+                    // SAFETY: named, and read for the name only.
+                    let id = unsafe { (*lock.event.get()).id() };
+                    assert!(matches!(id, crate::sched::wait::WaitableId::Embedded(_)));
+                })
+            })
+            .collect();
+        for thread in threads {
+            thread.join().expect("a racing processor panicked");
+        }
+    }
+
+    /// A lock written in place names its event at once, where it lives, as ExInitializeFastMutex
+    /// initializes the event: the first waiter finds it named.
+    #[test]
+    fn a_lock_written_in_place_is_named_at_its_creation() {
+        /// The build: a zero.
+        ///
+        /// # Safety
+        ///
+        /// `at` is valid for writes and aligned.
+        unsafe fn build(at: *mut u32) {
+            // SAFETY: the caller's contract.
+            unsafe { at.write(0) };
+        }
+        let mut slot = Box::<ShortLock<u32>>::new_uninit();
+        // SAFETY: the box's storage is valid for writes and aligned; `build` writes a whole value.
+        let lock = unsafe {
+            ShortLock::write_in_place(slot.as_mut_ptr(), build);
+            slot.assume_init()
+        };
+        assert_eq!(lock.named.load(Ordering::Acquire), SET);
+        let mut passive = passive_for_test();
+        *lock.lock(&mut passive) += 3;
+        assert_eq!(*lock.lock(&mut passive), 3);
     }
 }
