@@ -278,8 +278,12 @@ pub fn create_process(
             // The creator's process group, until its announcement says otherwise (see
             // `crate::csr`'s base server).
             child.set_process_group(creator.process_group());
+            // A handle that finds no page refuses the creation; the deletion closes those taken.
             if inherit_object_table {
-                child.inherit_handles(creator);
+                if let Err(status) = child.inherit_handles(creator) {
+                    child.delete();
+                    return Err(status);
+                }
             }
             let process = call.process();
             let Some(handle) = crate::ob::open(

@@ -105,7 +105,7 @@ use crate::mem::phys::PhysAddr;
 use crate::mem::quota::CommitQuota;
 use crate::mem::vm::AddressSpace;
 use crate::mem::ws::WorkingSet;
-use crate::sched::object::{HandleTable, HANDLE_SHIFT, HANDLE_SLOTS};
+use crate::sched::object::{HandleTable, FIRST_HANDLE_INDEX, HANDLE_SHIFT};
 use crate::sched::process::{PinnedProcess, SchedProcess};
 use crate::sync::ShortLock;
 
@@ -409,7 +409,7 @@ impl Process {
         Process {
             sched: PinnedProcess::new(0, crate::sched::NORMAL_BASE),
             identity: IdentityCell::new(Identity::NONE),
-            handles: ShortLock::new(HandleTable::empty()),
+            handles: ShortLock::new(HandleTable::new()),
             space: ShortLock::new(AddressSpace::new()),
             working_set: ShortLock::new(WorkingSet::with_default_limits()),
             state: ShortLock::new(ProcessState::fresh()),
@@ -573,7 +573,8 @@ impl Process {
         self.with_handles(|table| table.lookup(handle))
     }
 
-    /// Whether every slot of the handle table is taken: the next insert would find none.
+    /// Whether the handle table can take no handle more: no slot is free and no page is left for
+    /// the next one (the table grows on demand, with no cap of its own).
     pub fn handles_full(&self) -> bool {
         self.with_handles(|table| table.is_full())
     }
@@ -776,8 +777,9 @@ impl Process {
     }
 
     /// Reserve a slot of the handle table for a handle to come (see
-    /// [`crate::sched::object::HandleTable::reserve`]); none when the table is full. The reserving
-    /// call fills it ([`Process::fill_reserved`]) or drops it ([`Process::unreserve_handle`]).
+    /// [`crate::sched::object::HandleTable::reserve`]); none when no slot is to be had. The
+    /// reserving call fills it ([`Process::fill_reserved`]) or drops it
+    /// ([`Process::unreserve_handle`]).
     pub fn reserve_handle(&self) -> Option<core::num::NonZeroU32> {
         core::num::NonZeroU32::new(self.with_handles(|table| table.reserve()))
     }
@@ -816,20 +818,27 @@ impl Process {
     /// created with InheritObjectTable (CreateProcess's bInheritHandles) — each object counting its
     /// new handle. (The console handles are not the table's: NtCreateProcess hands every child the
     /// parent's inheritable ones.) Returns how many handles were taken. The tables are walked a
-    /// step of [`HANDLE_STEP`] slots at a time, each lock held for its own part of the step: the
-    /// parent's entries read, the directory counting the ones taken, the child's slots taking them.
+    /// step of [`HANDLE_STEP`] slots at a time, up to the parent's highest slot, each lock held for
+    /// its own part of the step: the parent's entries read, the directory counting the ones taken,
+    /// the child's slots taking them (its table growing to them).
+    ///
+    /// STATUS_INSUFFICIENT_RESOURCES when no page is left for a slot (Windows 2000's answer when
+    /// the handle table's duplication fails): the handles from there on are not taken, their
+    /// counts given back, and the caller deletes the child, which closes those taken.
     #[cfg(target_arch = "x86")]
-    pub fn inherit_handles(&self, parent: &Process) -> usize {
+    pub fn inherit_handles(&self, parent: &Process) -> Result<usize, crate::status::NtStatus> {
         let mut taken = 0;
-        for first in (1..HANDLE_SLOTS).step_by(HANDLE_STEP) {
-            let slots = first..(first + HANDLE_STEP).min(HANDLE_SLOTS);
+        let mut refused = false;
+        let mut first = FIRST_HANDLE_INDEX;
+        loop {
             let mut step = [None; HANDLE_STEP];
-            parent.with_handles(|table| {
-                for (entry, index) in step.iter_mut().zip(slots.clone()) {
+            let end = parent.with_handles(|table| {
+                for (entry, index) in step.iter_mut().zip(first..) {
                     *entry = table
-                        .lookup((index as u32) << HANDLE_SHIFT)
+                        .lookup(index << HANDLE_SHIFT)
                         .filter(|entry| entry.inherit);
                 }
+                table.high_water()
             });
             // A handle names a live object (it holds it), so the count always takes.
             crate::ob::locked(|directory| {
@@ -843,32 +852,53 @@ impl Process {
                 }
             });
             self.with_handles(|table| {
-                for (entry, index) in step.iter().zip(slots) {
-                    if let Some(entry) = *entry {
-                        table.inherit_entry(index, entry);
-                        taken += 1;
+                for (entry, index) in step.iter_mut().zip(first..) {
+                    if let Some(taking) = *entry {
+                        refused = refused || !table.inherit_entry(index, taking);
+                        if !refused {
+                            *entry = None;
+                            taken += 1;
+                        }
                     }
                 }
             });
+            // What found no slot: its count given back.
+            for entry in step.into_iter().flatten() {
+                self.release_entry(entry);
+            }
+            first += HANDLE_STEP as u32;
+            if refused || first >= end {
+                break;
+            }
         }
         self.with_handles(HandleTable::end_inheritance);
-        taken
+        if refused {
+            Err(crate::status::STATUS_INSUFFICIENT_RESOURCES)
+        } else {
+            Ok(taken)
+        }
     }
 
     /// Release every handle at once: the process-exit step. Each closes as a CloseHandle would, in
     /// slot order: a step of [`HANDLE_STEP`] slots is taken out of the table in one hold, and what
-    /// they named released after it.
+    /// they named released after it, up to the table's highest slot. The emptied table gives its
+    /// pages back.
     pub fn release_handles(&self) {
-        for first in (1..HANDLE_SLOTS).step_by(HANDLE_STEP) {
-            let slots = first..(first + HANDLE_STEP).min(HANDLE_SLOTS);
+        let mut first = FIRST_HANDLE_INDEX;
+        loop {
             let mut step = [None; HANDLE_STEP];
-            self.with_handles(|table| {
-                for (entry, index) in step.iter_mut().zip(slots) {
-                    *entry = table.close((index as u32) << HANDLE_SHIFT);
+            let end = self.with_handles(|table| {
+                for (entry, index) in step.iter_mut().zip(first..) {
+                    *entry = table.close(index << HANDLE_SHIFT);
                 }
+                table.high_water()
             });
             for entry in step.into_iter().flatten() {
                 self.release_entry(entry);
+            }
+            first += HANDLE_STEP as u32;
+            if first >= end {
+                break;
             }
         }
         self.with_handles(|table| table.drain(|_| {}));
@@ -944,16 +974,16 @@ unsafe impl crate::slots::Record for Process {
     /// Write a record no process holds at `record`, part by part: the in-place form of
     /// [`Process::empty`], for a record made at its final address in the process pool's side
     /// table (by value it would pass through the caller's stack, which is smaller than it). The
-    /// handle table, the address space and the working set are built in place at their locks'
-    /// first acquisitions.
+    /// address space and the working set are built in place at their locks' first acquisitions;
+    /// the handle table holds no page until its first insert, so it is small enough to write.
     unsafe fn write_fresh(record: *mut Process, _: u32) {
         use core::ptr::addr_of_mut;
-        // SAFETY: the caller's contract; every field is written, the three large ones in place.
+        // SAFETY: the caller's contract; every field is written, the two large ones in place.
         unsafe {
             addr_of_mut!((*record).sched).write(PinnedProcess::new(0, crate::sched::NORMAL_BASE));
             addr_of_mut!((*record).identity).write(IdentityCell::new(Identity::NONE));
             addr_of_mut!((*record).state).write(ShortLock::new(ProcessState::fresh()));
-            ShortLock::write_in_place(addr_of_mut!((*record).handles), HandleTable::write_empty);
+            addr_of_mut!((*record).handles).write(ShortLock::new(HandleTable::new()));
             ShortLock::write_in_place(addr_of_mut!((*record).space), AddressSpace::write_empty);
             ShortLock::write_in_place(addr_of_mut!((*record).working_set), WorkingSet::write_empty);
         }
@@ -1771,16 +1801,30 @@ mod tests {
         )
     }
 
-    /// A create's slot is its own from its reservation on: with the table one slot from full, an
-    /// insert between the reservation and the fill finds the table full (and fails, as a table
-    /// full does) rather than taking the slot the create counted on, whose caller then panicked on
-    /// a null handle. A dropped reservation frees its slot.
+    /// A handle table growing from `pages` pages only: past them it refuses as when the nonpaged
+    /// pool is spent.
+    fn budgeted_handles(process: &Process, pages: usize) -> &'static crate::slots::HostPages {
+        let pages = Box::leak(Box::new(crate::slots::HostPages::with_budget(pages)));
+        process.with_handles(|table| {
+            table.reset();
+            *table = HandleTable::on(pages);
+        });
+        pages
+    }
+
+    /// A create's slot is its own from its reservation on: with the table one slot from full (its
+    /// one page's slots taken but one, and no page left), an insert between the reservation and
+    /// the fill finds the table full (and fails, as a table full does) rather than taking the slot
+    /// the create counted on, whose caller then panicked on a null handle. A dropped reservation
+    /// frees its slot.
     #[test]
     fn a_reserved_handle_survives_a_racing_insert() {
         let process = fresh_process();
+        budgeted_handles(&process, 1);
         process.with_handles(|table| {
-            for _ in 1..HANDLE_SLOTS - 1 {
-                table.insert(event_entry());
+            // Slot 0 is never handed out; the page's last slot is the reservation's.
+            for _ in 1..crate::sched::object::SLOTS_PER_PAGE - 1 {
+                assert_ne!(table.insert(event_entry()), 0);
             }
         });
         let reserved = process.reserve_handle().expect("the last slot");
@@ -1800,14 +1844,20 @@ mod tests {
     #[test]
     fn the_exit_step_releases_every_handle() {
         let process = fresh_process();
+        let pages = budgeted_handles(&process, usize::MAX);
         let handle = process.with_handles(|table| table.insert(event_entry()));
         process.with_handles(|table| {
-            // Past the first step of the walk, too.
-            for _ in 0..2 * HANDLE_STEP {
+            // Past the first step of the walk, and past the old fixed table's 1,024 slots.
+            for _ in 0..1_100 {
                 table.insert(event_entry());
             }
         });
+        let last = process.with_handles(|table| table.high_water() - 1) << HANDLE_SHIFT;
+        assert!(process.lookup_handle(last).is_some());
+        assert!(pages.held() > 1, "the table grew");
         process.release_handles();
+        assert_eq!(pages.held(), 0, "the emptied table's pages given back");
+        assert!(process.lookup_handle(last).is_none());
         assert_eq!(process.with_handles(|table| table.live()), 0);
         assert!(process.lookup_handle(handle).is_none());
         assert!(!process.close_handle(handle), "closed already");

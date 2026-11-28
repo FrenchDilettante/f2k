@@ -3,6 +3,8 @@
 # The plan's handle-table fixture, captured on the 2026-11-27 VM trip.
 description = "manyhndl - many handles in one process: 100,000 DuplicateHandle copies of one event, their values as relations (multiples of 4, distinct), and the value a duplicate takes after one close and after two, Windows 2000's handle-table reuse (dup)."
 kind = "sectioned"
+# Served since the growable handle table (slot-pool slice 15).
+gate = true
 timeout = 60
 
 [pins]
