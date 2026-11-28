@@ -49,6 +49,10 @@ pub mod level;
 // processor's threads
 mod pcr;
 
+// The processors the boot started: KeNumberProcessors and the active set, the one source every
+// processor-count answer reads
+mod processors;
+
 // Memory management: physical frame allocator
 mod mem;
 

@@ -405,7 +405,7 @@ pub fn query_information_process(
             QueryClass::Basic => information.cast().write(ProcessBasicInformation {
                 exit_status: target.exit_status(),
                 peb_base_address: crate::user::PEB_PAGE,
-                affinity_mask: super::thread::SYSTEM_AFFINITY,
+                affinity_mask: crate::processors::active(),
                 base_priority: record.base_priority() as i32,
                 unique_process_id: record.id(),
                 inherited_from_unique_process_id: record.parent_id(),
@@ -440,9 +440,9 @@ pub fn query_information_process(
 /// NtSetInformationProcess: the hard-error mode (kept for its round trip: no hard-error or fault
 /// dialog exists to suppress), the priority class (every thread's priority moves with the process's
 /// base, their increments kept; the realtime class needs no privilege here) and the affinity (a
-/// non-empty subset of the one processor: nothing to change), of any process whose handle grants
-/// PROCESS_SET_INFORMATION. The handle is checked first, then the value.
-/// STATUS_INVALID_INFO_CLASS for the classes F2K does not answer.
+/// non-empty subset of the started processors, checked; no narrower mask is kept yet), of any
+/// process whose handle grants PROCESS_SET_INFORMATION. The handle is checked first, then the
+/// value. STATUS_INVALID_INFO_CLASS for the classes F2K does not answer.
 pub fn set_information_process(
     call: &mut NtCall,
     process: Handle,
@@ -669,10 +669,10 @@ mod tests {
     }
 
     /// The affinity: the class's exact length, the calling process alone, and a non-empty subset of
-    /// the one processor (SetProcessAffinityMask's ERROR_INVALID_PARAMETER and
-    /// ERROR_INVALID_HANDLE).
+    /// the started processors, the boot-set count's mask (SetProcessAffinityMask's
+    /// ERROR_INVALID_PARAMETER and ERROR_INVALID_HANDLE).
     #[test]
-    fn the_affinity_is_the_one_processor() {
+    fn the_affinity_is_within_the_started_processors() {
         use std::cell::RefCell;
         use std::rc::Rc;
 
@@ -695,7 +695,8 @@ mod tests {
                 Err(STATUS_ACCESS_VIOLATION)
             }
         }
-        let memory = Rc::new(RefCell::new(Word(1u32.to_le_bytes().to_vec())));
+        let active = crate::processors::active();
+        let memory = Rc::new(RefCell::new(Word(active.to_le_bytes().to_vec())));
         let _installed = install(memory.clone());
         let mut frame = crate::user::TrapFrame::default();
         let mut passive = crate::level::passive_for_test();
@@ -718,7 +719,7 @@ mod tests {
             set_information_process(&mut call, Handle(0x44), 21, at, 4),
             Err(STATUS_INVALID_HANDLE)
         );
-        for mask in [0u32, 2, 3] {
+        for mask in [0, active << 1, active << 1 | active] {
             memory.borrow_mut().0 = mask.to_le_bytes().to_vec();
             assert_eq!(
                 set_information_process(&mut call, me, 21, at, 4),

@@ -813,7 +813,7 @@ mod tests {
                     (
                         expected_vector,
                         Irql(27 - level as u8),
-                        routing::ACTIVE_PROCESSORS
+                        crate::processors::active()
                     ),
                     "interface {interface} level {level}"
                 );
@@ -827,7 +827,7 @@ mod tests {
         ] {
             assert_eq!(
                 get_interrupt_vector(interface, bus, 5, 5),
-                (0x35, Irql(22), routing::ACTIVE_PROCESSORS),
+                (0x35, Irql(22), crate::processors::active()),
                 "interface {interface} bus {bus}"
             );
         }
@@ -836,8 +836,8 @@ mod tests {
             get_interrupt_vector(INTERFACE_PCI_BUS, 0, 11, 0x0B),
             get_interrupt_vector(INTERFACE_ISA, 0, 11, 11)
         );
-        // Active processors: the one processor's bit, as KeQueryActiveProcessors reports it.
-        assert_eq!(routing::ACTIVE_PROCESSORS, 1);
+        // The boot-set active processors, as KeQueryActiveProcessors reports them: halvec's bit 0.
+        assert_eq!(crate::processors::active(), 1);
 
         let (vector, irql, affinity) = get_interrupt_vector(INTERFACE_ISA, 0, 16, 16);
         assert_eq!((vector, affinity), (0, 0), "a line past the band fails");

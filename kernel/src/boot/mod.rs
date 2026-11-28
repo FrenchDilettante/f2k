@@ -278,6 +278,8 @@ fn cpu() {
     // SAFETY: boot CPU, ring 0, interrupts disabled, before any code that might fault.
     unsafe { crate::cpu::init() };
     crate::serial_println!("F2K: GDT and IDT initialized");
+    // The boot processor counts itself among the started ones (KiInitializeKernel's part).
+    crate::processors::start(0);
     // Every thread's floating-point state is saved with `fxsave`: enabled before the first switch.
     // SAFETY: boot CPU, ring 0, before any thread exists.
     unsafe { crate::cpu::fpu::init() };

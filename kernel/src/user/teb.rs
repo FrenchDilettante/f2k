@@ -140,11 +140,12 @@ pub const CSD_VERSION_BUFFER: u32 = 0xA00;
 
 /// A fresh PEB, for the PEB at `peb`: the image's base, the process parameters, the heap list's
 /// room (its array, empty, and its size: ntdll's LdrInitializeThunk makes the process heap, the
-/// list's first entry), the system's version (GetVersion's: 5.0, build 2195, service pack 4, NT),
-/// the image's subsystem and its version, and the service pack's name (its text on the PEB's page,
-/// [`map_peb`]'s). The loader's module lists, the process heap, the PEB lock, the loader lock and
-/// the TLS bitmaps' headers are ntdll's to make (their fields stay null until its process
-/// initialization), and every TLS index is free.
+/// list's first entry), the processors the boot started (KeNumberProcessors, as MmCreatePeb copies
+/// it: ntdll's critical sections read it to decide whether to spin), the system's version
+/// (GetVersion's: 5.0, build 2195, service pack 4, NT), the image's subsystem and its version, and
+/// the service pack's name (its text on the PEB's page, [`map_peb`]'s). The loader's module lists,
+/// the process heap, the PEB lock, the loader lock and the TLS bitmaps' headers are ntdll's to make
+/// (their fields stay null until its process initialization), and every TLS index is free.
 pub fn fresh_peb(peb: u32, init: &PebInit) -> Peb<u32> {
     let length = 2 * CSD_VERSION_TEXT.len() as u16;
     Peb {
@@ -152,6 +153,7 @@ pub fn fresh_peb(peb: u32, init: &PebInit) -> Peb<u32> {
         process_parameters: init.parameters,
         maximum_number_of_heaps: HEAPS,
         process_heaps: peb + PROCESS_HEAPS_ARRAY,
+        number_of_processors: crate::processors::count(),
         os_major_version: VERSION & 0xFF,
         os_minor_version: (VERSION >> 8) & 0xFF,
         os_build_number: (VERSION >> 16 & 0x7FFF) as u16,
@@ -294,8 +296,8 @@ mod tests {
     }
 
     /// A fresh PEB's version fields (SEH-11c): the system's — 5.0, build 2195, service pack 4.0
-    /// (OSCSDVersion's major byte high), the NT platform — and the image's subsystem and its
-    /// version, from its optional header.
+    /// (OSCSDVersion's major byte high), the NT platform — the image's subsystem and its version,
+    /// from its optional header, and the boot-set processor count.
     #[test]
     fn fresh_peb_version_fields() {
         let peb = fresh_peb(0x7FFD_F000, &CONSOLE_4_0);
@@ -310,6 +312,12 @@ mod tests {
         assert_eq!(word(&peb, 0xB4), 3, "ImageSubsystem: the console");
         assert_eq!(word(&peb, 0xB8), 4, "ImageSubsystemMajorVersion");
         assert_eq!(word(&peb, 0xBC), 0, "ImageSubsystemMinorVersion");
+        let processors = crate::processors::count();
+        assert_eq!(
+            word(&peb, 0x64),
+            processors,
+            "NumberOfProcessors: KeNumberProcessors"
+        );
         assert_eq!(
             word(&peb, 0x1DC),
             28 | 30 << 16,
@@ -352,15 +360,15 @@ mod tests {
         assert_eq!(peb.tls_bitmap_bits, [0; 2], "every index free");
         assert_eq!(peb.fast_peb_lock, 0, "ntdll's to make");
         assert_eq!(peb.loader_lock, 0, "ntdll's to make");
-        // Nothing else: eleven nonzero dwords, the four above, the version's three, the
-        // subsystem's two and the name's two (OSMinorVersion and the subsystem's minor version are
-        // zero).
+        // Nothing else: twelve nonzero dwords, the four above, the processor count, the version's
+        // three, the subsystem's two and the name's two (OSMinorVersion and the subsystem's minor
+        // version are zero).
         let nonzero = peb
             .as_bytes()
             .chunks_exact(4)
             .filter(|word| word.iter().any(|&byte| byte != 0))
             .count();
-        assert_eq!(nonzero, 11);
+        assert_eq!(nonzero, 12);
         // The service pack's name sits past the heap-handle array, and fits the page.
         assert!(CSD_VERSION_BUFFER >= PROCESS_HEAPS_ARRAY + 4 * HEAPS);
         assert!(CSD_VERSION_BUFFER as usize + 2 * CSD_VERSION_TEXT.len() + 2 <= 0x1000);

@@ -94,9 +94,10 @@ fn memory_numbers() -> MemoryNumbers {
     }
 }
 
-/// SYSTEM_BASIC_INFORMATION for `pages` pages of memory numbered up to `highest`: one processor,
-/// 4 KiB pages on the 64 KiB granularity, the application range 0x10000..=0x7FFEFFFF, the physical
-/// pages numbered from 1 (frame 0 is never used).
+/// SYSTEM_BASIC_INFORMATION for `pages` pages of memory numbered up to `highest`: the processors
+/// the boot started ([`crate::processors`]), 4 KiB pages on the 64 KiB granularity, the
+/// application range 0x10000..=0x7FFEFFFF, the physical pages numbered from 1 (frame 0 is never
+/// used).
 pub fn basic_information(pages: u32, highest: u32) -> SystemBasicInformation {
     SystemBasicInformation {
         timer_resolution: TIMER_RESOLUTION,
@@ -107,8 +108,8 @@ pub fn basic_information(pages: u32, highest: u32) -> SystemBasicInformation {
         allocation_granularity: GRANULARITY,
         minimum_user_mode_address: USER_LOW,
         maximum_user_mode_address: USER_HIGH - 1,
-        active_processors_affinity_mask: 1,
-        number_of_processors: 1,
+        active_processors_affinity_mask: crate::processors::active(),
+        number_of_processors: crate::processors::count() as u8,
         ..Default::default()
     }
 }
@@ -386,7 +387,8 @@ mod tests {
     }
 
     /// The facts the memory fixture's sysinfo block prints come from the basic information: 4 KiB
-    /// pages, 64 KiB granularity, the application range 0x00010000..0x7FFEFFFF, one processor.
+    /// pages, 64 KiB granularity, the application range 0x00010000..0x7FFEFFFF, and the boot-set
+    /// processor count and mask (one processor, bit 0, on the captured machine).
     #[test]
     fn the_basic_information_is_the_captured_machine() {
         let basic = query(0, 44, numbers(0x4000, 0x1000, 0x4000, 0x3000)).unwrap();

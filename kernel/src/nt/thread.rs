@@ -93,9 +93,6 @@ pub const SATURATION: i32 = 16;
 #[cfg(target_arch = "x86")]
 const LPC_RELEASE_WAIT_INCREMENT: i8 = 1;
 
-/// The processors there are: the one.
-pub const SYSTEM_AFFINITY: u32 = 1;
-
 /// The lowest and highest priorities (LOW_PRIORITY + 1, HIGH_PRIORITY): ThreadPriority's range.
 const LOWEST_PRIORITY: i32 = 1;
 const HIGHEST_PRIORITY: i32 = 31;
@@ -133,10 +130,10 @@ pub fn zero_tls_cell(current: bool, index: u32) -> Result<u32, NtStatus> {
     Ok(index)
 }
 
-/// An affinity mask a thread or process takes: a non-empty subset of the system's processors;
-/// STATUS_INVALID_PARAMETER otherwise.
+/// An affinity mask a thread or process takes: a non-empty subset of the started processors
+/// ([`crate::processors::active`]); STATUS_INVALID_PARAMETER otherwise.
 pub fn affinity_mask(mask: u32) -> Result<u32, NtStatus> {
-    if mask == 0 || mask & !SYSTEM_AFFINITY != 0 {
+    if mask == 0 || mask & !crate::processors::active() != 0 {
         Err(STATUS_INVALID_PARAMETER)
     } else {
         Ok(mask)
@@ -157,7 +154,8 @@ pub struct BasicInformation {
     pub base_priority: i32,
 }
 
-/// THREAD_BASIC_INFORMATION of a thread: its facts, on the one processor.
+/// THREAD_BASIC_INFORMATION of a thread: its facts; its affinity, the started processors (no
+/// narrower mask is kept yet).
 pub fn basic_information(info: &BasicInformation) -> ThreadBasicInformation {
     ThreadBasicInformation {
         exit_status: info.exit_status,
@@ -166,7 +164,7 @@ pub fn basic_information(info: &BasicInformation) -> ThreadBasicInformation {
             unique_process: info.process_id,
             unique_thread: info.thread_id,
         },
-        affinity_mask: SYSTEM_AFFINITY,
+        affinity_mask: crate::processors::active(),
         priority: info.priority,
         base_priority: info.base_priority,
     }
@@ -701,7 +699,8 @@ pub fn query_information_thread(
 /// base priority's increment, -2..2 or a saturation value: the kernel's base-priority machinery
 /// requeues, boosts or preempts as the thread's state requires — a raised Ready thread requests the
 /// processor, and the service boundary delivers the request before the caller returns),
-/// ThreadAffinityMask (a non-empty subset of the one processor: nothing to change),
+/// ThreadAffinityMask (a non-empty subset of the started processors, checked; no narrower mask is
+/// kept yet, so the thread stays on every started processor),
 /// ThreadZeroTlsCell (the index's slot zeroed in every thread of the process that has one; the
 /// calling thread's handle only, STATUS_INVALID_PARAMETER otherwise and past the last index) and
 /// ThreadPriorityBoost (disable or re-enable the dynamic boosts). The value is read and checked
@@ -787,13 +786,18 @@ mod tests {
         assert!(priority_value(0).is_err() && priority_value(32).is_err());
     }
 
-    /// The one processor: its mask alone is a valid affinity (the sched fixture's
-    /// SetProcessAffinityMask(1)).
+    /// A valid affinity names started processors alone, and at least one: the boot-set count's
+    /// mask is (the sched fixture's SetProcessAffinityMask(1)), a processor past it is not.
     #[test]
-    fn affinity_is_the_one_processor() {
-        assert_eq!(affinity_mask(1), Ok(1));
+    fn affinity_is_within_the_started_processors() {
+        let active = crate::processors::active();
+        assert_eq!(active, 1, "the boot starts one processor");
+        assert_eq!(affinity_mask(active), Ok(active));
         assert_eq!(affinity_mask(0), Err(STATUS_INVALID_PARAMETER));
-        assert_eq!(affinity_mask(3), Err(STATUS_INVALID_PARAMETER));
+        assert_eq!(
+            affinity_mask(active << 1 | active),
+            Err(STATUS_INVALID_PARAMETER)
+        );
     }
 
     /// THREAD_BASIC_INFORMATION's layout, as kernel32's GetExitCodeThread and GetThreadPriority

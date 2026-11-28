@@ -11,9 +11,9 @@
 //!
 //! The interrupt controller's band stays sixteen device lines: a line outside it routes
 //! nowhere. The vector is the HAL's mapping ([`hal::interrupt_vector`]); the line's IRQL is
-//! [`line_irql`], and the affinity is the active processors (the one there is today). Together
-//! they are what the HAL contract's vector query reports ([`line_vector`]), save for the cascade
-//! line, which Windows 2000's query answers with vector 0.
+//! [`line_irql`], and the affinity is the started processors ([`crate::processors::active`]).
+//! Together they are what the HAL contract's vector query reports ([`line_vector`]), save for the
+//! cascade line, which Windows 2000's query answers with vector 0.
 //!
 //! The controller side stays behind the interrupt core's
 //! [`Controller`](crate::interrupt::Controller) seam, which the IO APIC slice joins later: routing
@@ -26,11 +26,6 @@ use crate::interrupt::irql::{Irql, PROFILE};
 
 /// The largest device line the HAL's vector band holds (line 15).
 pub const MAX_LINE: u8 = hal::LAST_VECTOR - hal::FIRST_VECTOR;
-
-/// The affinity every routed line carries: the active processors, as KeQueryActiveProcessors
-/// reports them — the one processor there is today, bit 0 (halvec's capture: every level's
-/// affinity is "the active processors").
-pub const ACTIVE_PROCESSORS: u32 = 1;
 
 /// The line the slave controller cascades into the master on: no device's line.
 pub const CASCADE_LINE: u8 = 2;
@@ -90,7 +85,9 @@ pub fn line_vector(line: u8) -> Option<LineVector> {
             hal::interrupt_vector(line)
         },
         irql: line_irql(line),
-        affinity: ACTIVE_PROCESSORS,
+        // Every line reaches every started processor, as KeQueryActiveProcessors reports them
+        // (halvec's capture: every level's affinity is "the active processors").
+        affinity: crate::processors::active(),
     })
 }
 
@@ -182,7 +179,7 @@ mod tests {
             let vector = if line == 2 { 0x00 } else { 0x30 + line };
             assert_eq!(mapped.vector, vector, "line {line}");
             assert_eq!(mapped.irql, Irql(27 - line), "line {line}");
-            assert_eq!(mapped.affinity, ACTIVE_PROCESSORS);
+            assert_eq!(mapped.affinity, crate::processors::active());
             assert!(mapped.irql > PASSIVE && mapped.irql <= HIGH);
         }
         assert_eq!(line_vector(0).unwrap().vector, hal::FIRST_VECTOR);

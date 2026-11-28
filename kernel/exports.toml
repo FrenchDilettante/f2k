@@ -81,6 +81,22 @@ ordinal = 452
 note = "the running thread's stand-in (dev::io: F2K's threads are no KTHREADs); PsGetCurrentThread is the DDK's macro over it"
 
 [[export]]
+name = "KeNumberProcessors"
+group = "ke"
+impl = { native = "KeNumberProcessors" }
+data = true
+ordinal = 486
+note = "a CCHAR: the processors the boot started (kernel/src/processors.rs)"
+
+[[export]]
+name = "KeQueryActiveProcessors"
+group = "ke"
+args = []
+impl = { native = "KeQueryActiveProcessors" }
+ordinal = 490
+note = "the started processors' KAFFINITY (kernel/src/processors.rs)"
+
+[[export]]
 name = "IoCreateDevice"
 group = "io"
 args = ["ptr DriverObject", "u32 DeviceExtensionSize", "ptr DeviceName", "u32 DeviceType", "u32 DeviceCharacteristics", "boolean Exclusive", "ptr DeviceObject"]
@@ -282,10 +298,6 @@ name = "KeInitializeTimer"
 
 [[export]]
 name = "KeInsertQueueDpc"
-
-[[export]]
-name = "KeNumberProcessors"
-data = true
 
 [[export]]
 name = "KeQuerySystemTime"
@@ -2306,10 +2318,6 @@ ordinal = 488
 name = "KePulseEvent"
 ordinal = 489
 note = "the event object implements it (nt/sync.rs, sched/event.rs); the DDK-named entry point is not wired yet"
-
-[[export]]
-name = "KeQueryActiveProcessors"
-ordinal = 490
 
 [[export]]
 name = "KeQueryInterruptTime"
