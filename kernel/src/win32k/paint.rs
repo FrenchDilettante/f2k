@@ -11,21 +11,28 @@
 //!
 //! InvalidateRect and InvalidateRgn add to the update region of a window that is shown (it and
 //! every parent up to the desktop window have WS_VISIBLE; a hidden window has none, as Windows
-//! 2000's has none), and to its children's, through their client areas, unless it clips its
-//! children (WS_CLIPCHILDREN, RedrawWindow's rule when it names neither RDW_ALLCHILDREN nor
-//! RDW_NOCHILDREN). ValidateRect and ValidateRgn take out the same way. A window with an update
-//! region makes a WM_PAINT when its thread's read finds nothing before it ([`super::queue::take`]);
-//! the message stays until the window is validated. BeginPaint hands out a DC whose visible region
-//! is cut to the update region ([`super::dc::paint_dc`]), the region's box in the PAINTSTRUCT's
-//! rcPaint, and validates the window; EndPaint releases the DC. GetUpdateRgn copies the region into
-//! a region object.
+//! 2000's has none), and to its shown children's, unless it clips its children (WS_CLIPCHILDREN,
+//! RedrawWindow's rule when it names neither RDW_ALLCHILDREN nor RDW_NOCHILDREN). A window that
+//! does not clip its children draws over them (its DC is not cut by them: [`visible_region`]), so
+//! a child its invalidation reaches is invalidated over its whole window rectangle: its client
+//! part, its erase and its frame's painting (WM_NCPAINT, which BeginPaint sends first), whatever
+//! the caller asked, as the redraw capture shows. The WM_PAINT search takes a parent before its
+//! children, so they paint over what it painted. ValidateRect and ValidateRgn take out the same
+//! way. A window with an update region (or a frame to paint, or RedrawWindow's internal paint)
+//! makes a WM_PAINT when its thread's read finds nothing before it ([`super::queue::take`]); the
+//! message stays until the window is validated. BeginPaint hands out a DC whose visible region is
+//! the window's cut to the update region ([`super::dc::paint_dc`]), the region's box in the
+//! PAINTSTRUCT's rcPaint, and validates the window; EndPaint releases the DC. GetUpdateRgn copies
+//! the region into a region object.
 //!
 //! The erase: Windows 2000's BeginPaint (and GetUpdateRect, asked to erase) sends WM_ERASEBKGND
 //! itself. Sending is the receiving thread's own work here ([`super::queue`]), so the services
 //! report the pending erase instead — PAINTSTRUCT's fErase, GetUpdateRect's [`UPDATE_ERASE`] — and
 //! user32 sends WM_ERASEBKGND with the DC, fErase then saying whether the procedure left it
-//! undone. UpdateWindow's WM_PAINT is a message the window manager sends, queued for the window's
-//! thread as the others are.
+//! undone. The frame alike: PAINTSTRUCT's fRestore, GetUpdateRect's [`UPDATE_FRAME`], and user32
+//! sends WM_NCPAINT before the erase. UpdateWindow's WM_PAINTs (the window's, then its
+//! descendants') are messages the window manager sends, queued for the window's thread as the
+//! others are.
 //!
 //! The services, user32's calls (F2K's argument lists, see [`crate::win32k`]):
 //!
@@ -45,12 +52,35 @@
 //!   [`UPDATE_ERASE`] bit as GetUpdateRect's (the result's high half);
 //! - NtUserBeginPaint(handle Window, ptr Paint): the PAINTSTRUCT, its DC made;
 //! - NtUserEndPaint(handle Window, ptr Paint): the PAINTSTRUCT's DC released;
-//! - NtUserCallHwndLock(handle Window, u32 Routine): UpdateWindow ([`HWND_LOCK_UPDATE_WINDOW`]).
+//! - NtUserCallHwndLock(handle Window, u32 Routine): UpdateWindow ([`HWND_LOCK_UPDATE_WINDOW`]);
+//! - NtUserRedrawWindow(handle Window, ptr Rect, handle Region, u32 Flags): RedrawWindow
+//!   ([`redraw`], [`update_window`]).
 
 use rtl::gdi::Rect;
 #[cfg(doc)]
 use rtl::user::HWND_LOCK_UPDATE_WINDOW;
-use rtl::user::{QS_PAINT, UPDATE_ERASE, UPDATE_NOT_EMPTY, WM_PAINT, WS_CLIPCHILDREN, WS_VISIBLE};
+use rtl::user::{
+    QS_PAINT,
+    RDW_ALLCHILDREN,
+    RDW_ERASE,
+    RDW_FRAME,
+    RDW_INTERNALPAINT,
+    RDW_INVALIDATE,
+    RDW_NOCHILDREN,
+    RDW_NOERASE,
+    RDW_NOFRAME,
+    RDW_NOINTERNALPAINT,
+    RDW_UPDATENOW,
+    RDW_VALIDATE,
+    UPDATE_ERASE,
+    UPDATE_FRAME,
+    UPDATE_NOT_EMPTY,
+    WM_PAINT,
+    WS_CHILD,
+    WS_CLIPCHILDREN,
+    WS_CLIPSIBLINGS,
+    WS_VISIBLE,
+};
 
 use super::queue::Filter;
 use super::region::OwnedRegion;
@@ -68,6 +98,11 @@ struct Update {
     region: OwnedRegion,
     /// The background is to be erased.
     erase: bool,
+    /// The frame is to be painted: BeginPaint's WM_NCPAINT, before the erase (the part of the
+    /// update region over the non-client area, which F2K keeps as this flag alone).
+    frame: bool,
+    /// A WM_PAINT is due even with nothing to paint (RedrawWindow's RDW_INTERNALPAINT).
+    internal: bool,
 }
 
 impl Update {
@@ -76,6 +111,8 @@ impl Update {
         thread: ThreadId(0),
         region: OwnedRegion::empty(),
         erase: false,
+        frame: false,
+        internal: false,
     };
 }
 
@@ -276,9 +313,9 @@ fn client_part(area: &[Rect], client: Rect) -> Option<OwnedRegion> {
 }
 
 /// InvalidateRect over a window: `rect` (client coordinates; the client area for none) added to
-/// the update region of the window, when it is shown, and of its shown children through their
-/// client areas (see the module notes), `erase` asking their backgrounds erased. Each thread
-/// given a region to paint is woken.
+/// the update region of the window, when it is shown, and of its shown children (see the module
+/// notes), `erase` asking the window's background erased. Each thread given a region to paint is
+/// woken.
 pub fn invalidate(windows: &mut Windows, window: WindowId, rect: Option<Rect>, erase: bool) {
     match rect {
         Some(rect) => invalidate_region(windows, window, Some(rect_rects(&rect)), erase),
@@ -288,37 +325,120 @@ pub fn invalidate(windows: &mut Windows, window: WindowId, rect: Option<Rect>, e
 
 /// InvalidateRgn over a window: [`invalidate`] of the region `region` (banded rectangles, client
 /// coordinates; the client area for none).
+///
+/// A child the area reaches is invalidated over its whole window rectangle, its frame and its
+/// background included, whatever `erase` says: its parent's painting, which does not clip its
+/// children, draws over all of it (the redraw capture: RedrawWindow's RDW_INVALIDATE over the whole
+/// window, with or without RDW_ERASE, RDW_FRAME or RDW_NOFRAME, brings the child WM_NCPAINT,
+/// WM_ERASEBKGND and WM_PAINT; a rectangle outside the child, nothing).
 pub fn invalidate_region(
     windows: &mut Windows,
     window: WindowId,
     region: Option<&[Rect]>,
     erase: bool,
 ) {
+    let flags = RDW_INVALIDATE | if erase { RDW_ERASE } else { 0 };
+    redraw(windows, window, region, flags);
+}
+
+/// Whether a RedrawWindow of `flags` goes on from the window to its children: not with
+/// RDW_NOCHILDREN; with RDW_ALLCHILDREN; otherwise unless the window clips its children.
+fn redraw_reaches_children(windows: &Windows, window: WindowId, flags: u32) -> bool {
+    flags & RDW_NOCHILDREN == 0
+        && (flags & RDW_ALLCHILDREN != 0 || reaches_children(windows, window))
+}
+
+/// RedrawWindow's invalidations and validations over a window (its WM_PAINT sends, RDW_UPDATENOW,
+/// and erases, RDW_ERASENOW, are the caller's): `region` (client coordinates; the client area for
+/// none) and the window's children as RDW_NOCHILDREN, RDW_ALLCHILDREN and WS_CLIPCHILDREN say.
+///
+/// - RDW_INVALIDATE adds the area to the update region of the window, when it is shown, its erase
+///   asked with RDW_ERASE, its frame's painting with RDW_FRAME over the whole window; a child the
+///   area reaches is invalidated over its whole window rectangle, its frame and its erase asked
+///   whatever the flags say when its parent does not clip it (see [`invalidate_region`]);
+/// - RDW_INTERNALPAINT asks a WM_PAINT of each, even with nothing to paint;
+/// - RDW_VALIDATE takes the area out (see [`validate_region`]), the pending erase with RDW_NOERASE,
+///   the pending frame's painting with RDW_NOFRAME; RDW_NOINTERNALPAINT takes the internal paint
+///   back.
+///
+/// The redraw capture's `redraw` block is each of these, flag by flag.
+pub fn redraw(windows: &mut Windows, window: WindowId, region: Option<&[Rect]>, flags: u32) {
     if !is_shown(windows, window) {
         return;
     }
     let area = screen_region(windows, window, region);
-    if area.is_empty() {
-        return;
-    }
-    walk(windows, window, |windows, w| {
-        if w != window && windows.window_style(w) & WS_VISIBLE == 0 {
-            return false;
-        }
-        let client = windows.client_rect(w);
-        let part = client_part(area.rects(), client).unwrap_or_else(|| {
-            let bounds = area.bounds().intersect(client);
-            OwnedRegion::rect(bounds.saturating_offset_back(client.left, client.top))
+    if flags & RDW_INVALIDATE != 0 && (!area.is_empty() || region.is_none()) {
+        let whole_frame = flags & RDW_FRAME != 0 && region.is_none();
+        walk(windows, window, |windows, w| {
+            if w != window && windows.window_style(w) & WS_VISIBLE == 0 {
+                return false;
+            }
+            let client = windows.client_rect(w);
+            let part = client_part(area.rects(), client).unwrap_or_else(|| {
+                let bounds = area.bounds().intersect(client);
+                OwnedRegion::rect(bounds.saturating_offset_back(client.left, client.top))
+            });
+            if w == window {
+                if !part.is_empty() || whole_frame {
+                    add(windows, w, part, flags & RDW_ERASE != 0, whole_frame);
+                }
+            } else if reaches(area.rects(), windows.window_rect(w)) {
+                let covered = windows
+                    .parent_of(w)
+                    .is_some_and(|p| reaches_children(windows, p));
+                let erase = covered || flags & RDW_ERASE != 0;
+                let frame = covered || flags & RDW_FRAME != 0;
+                add(windows, w, part, erase, frame);
+            }
+            redraw_reaches_children(windows, w, flags)
         });
-        if !part.is_empty() {
-            add(windows, w, part, erase);
-        }
-        reaches_children(windows, w)
-    });
+    }
+    if flags & RDW_INTERNALPAINT != 0 {
+        walk(windows, window, |windows, w| {
+            if w != window && windows.window_style(w) & WS_VISIBLE == 0 {
+                return false;
+            }
+            add(windows, w, OwnedRegion::empty(), false, false);
+            if let Some(record) = windows.queues.updates.record_mut(w) {
+                record.internal = true;
+            }
+            redraw_reaches_children(windows, w, flags)
+        });
+    }
+    if flags & (RDW_VALIDATE | RDW_NOINTERNALPAINT) != 0 {
+        walk(windows, window, |windows, w| {
+            if flags & RDW_VALIDATE != 0 {
+                validate_one(windows, window, w, &area, region.is_none());
+                if let Some(record) = windows.queues.updates.record_mut(w) {
+                    record.erase &= flags & RDW_NOERASE == 0;
+                    record.frame &= flags & RDW_NOFRAME == 0;
+                }
+            }
+            if flags & RDW_NOINTERNALPAINT != 0 {
+                if let Some(record) = windows.queues.updates.record_mut(w) {
+                    record.internal = false;
+                }
+            }
+            drop_if_done(windows, w);
+            redraw_reaches_children(windows, w, flags)
+        });
+    }
 }
 
-/// Add `part` (client coordinates, not empty) to the window's update region.
-fn add(windows: &mut Windows, window: WindowId, part: OwnedRegion, erase: bool) {
+/// Whether the screen region `area` covers any of `rect`.
+fn reaches(area: &[Rect], rect: Rect) -> bool {
+    area.iter().any(|r| !r.intersect(rect).is_empty())
+}
+
+/// Whether the screen region `area` covers all of `rect` (false when the pool has no room to
+/// tell).
+fn covers(area: &[Rect], rect: Rect) -> bool {
+    OwnedRegion::combined(rect_rects(&rect), area, |a, b| a && !b).is_some_and(|l| l.is_empty())
+}
+
+/// Add `part` (client coordinates; empty only with `frame`, or for an internal paint) to the
+/// window's update region, its erase and its frame asked when `erase` and `frame` say.
+fn add(windows: &mut Windows, window: WindowId, part: OwnedRegion, erase: bool, frame: bool) {
     let thread = windows.window_thread(window);
     let updates = &mut windows.queues.updates;
     let id = match updates.find(window) {
@@ -339,19 +459,21 @@ fn add(windows: &mut Windows, window: WindowId, part: OwnedRegion, erase: bool) 
     let Some(record) = updates.records.get_mut(id) else {
         return;
     };
-    record.region = if record.region.is_empty() {
-        part
-    } else {
-        OwnedRegion::combined(record.region.rects(), part.rects(), |a, b| a || b)
-            .unwrap_or_else(|| OwnedRegion::rect(record.region.bounds().union(part.bounds())))
-    };
+    if record.region.is_empty() {
+        record.region = part;
+    } else if !part.is_empty() {
+        record.region = OwnedRegion::combined(record.region.rects(), part.rects(), |a, b| a || b)
+            .unwrap_or_else(|| OwnedRegion::rect(record.region.bounds().union(part.bounds())));
+    }
     record.erase |= erase;
+    record.frame |= frame;
     windows.queues.wake_thread(thread, QS_PAINT);
 }
 
 /// ValidateRect over a window: `rect` (client coordinates; the whole region for none) taken out
 /// of the update region of the window and of its children through their client areas (see the
-/// module notes). A region left empty goes, and its erase with it.
+/// module notes); a child whose whole window rectangle the area covers loses its frame's painting
+/// too. A region left empty goes, and its erase with it.
 pub fn validate(windows: &mut Windows, window: WindowId, rect: Option<Rect>) {
     match rect {
         Some(rect) => validate_region(windows, window, Some(rect_rects(&rect))),
@@ -364,17 +486,47 @@ pub fn validate(windows: &mut Windows, window: WindowId, rect: Option<Rect>) {
 pub fn validate_region(windows: &mut Windows, window: WindowId, region: Option<&[Rect]>) {
     let area = screen_region(windows, window, region);
     walk(windows, window, |windows, w| {
-        if region.is_none() && w == window {
-            take_out(windows, w, None);
-        } else if let Some(cut) = client_part(area.rects(), windows.client_rect(w)) {
-            take_out(windows, w, Some(cut.rects()));
-        }
+        validate_one(windows, window, w, &area, region.is_none());
+        drop_if_done(windows, w);
         reaches_children(windows, w)
     });
 }
 
-/// Take `cut` (client coordinates; everything for none) out of the window's update region; when
-/// the pool has no room for what is left, nothing is taken out.
+/// A validation's work on one window `w` of the walk from `window`: the screen region `area` taken
+/// out of its update region; all of it (its frame's painting too) for the window itself when
+/// `all`, and for a child whose whole window rectangle the area covers.
+fn validate_one(
+    windows: &mut Windows,
+    window: WindowId,
+    w: WindowId,
+    area: &OwnedRegion,
+    all: bool,
+) {
+    if all && w == window || w != window && covers(area.rects(), windows.window_rect(w)) {
+        take_out(windows, w, None);
+    } else if let Some(cut) = client_part(area.rects(), windows.client_rect(w)) {
+        take_out(windows, w, Some(cut.rects()));
+    }
+}
+
+/// The window's record freed when it is left with nothing to paint: no region, no frame, no
+/// internal paint.
+fn drop_if_done(windows: &mut Windows, window: WindowId) {
+    let updates = &mut windows.queues.updates;
+    if let Some(id) = updates.find(window) {
+        if updates
+            .records
+            .get(id)
+            .is_some_and(|u| u.region.is_empty() && !u.frame && !u.internal)
+        {
+            updates.free(id);
+        }
+    }
+}
+
+/// Take `cut` (client coordinates; everything, the erase and the frame's painting included, for
+/// none) out of the window's update region; when the pool has no room for what is left, nothing is
+/// taken out. A record left with nothing to paint goes ([`drop_if_done`]); an internal paint stays.
 fn take_out(windows: &mut Windows, window: WindowId, cut: Option<&[Rect]>) {
     let updates = &mut windows.queues.updates;
     let Some(id) = updates.find(window) else {
@@ -383,19 +535,19 @@ fn take_out(windows: &mut Windows, window: WindowId, cut: Option<&[Rect]>) {
     let Some(record) = updates.records.get_mut(id) else {
         return;
     };
-    let left = match cut {
-        None => OwnedRegion::empty(),
+    match cut {
+        None => {
+            record.region = OwnedRegion::empty();
+            record.erase = false;
+            record.frame = false;
+        }
         Some([]) => return,
         Some(cut) => match OwnedRegion::combined(record.region.rects(), cut, |a, b| a && !b) {
-            Some(left) => left,
+            Some(left) => record.region = left,
             None => return,
         },
-    };
-    if left.is_empty() {
-        updates.free(id);
-    } else {
-        record.region = left;
     }
+    drop_if_done(windows, window);
 }
 
 /// The InvalidateRect and ValidateRect of a null window: every shown top-level window of
@@ -422,44 +574,81 @@ pub fn update_region_of(windows: &Windows, window: WindowId) -> Option<&OwnedReg
     Some(&windows.queues.updates.record(window)?.region)
 }
 
-/// GetUpdateRgn over a window: a copy of the update region (the empty region for none), and
-/// [`UPDATE_ERASE`] when `erase` asks the erase and one was pending (handed to the caller, as
-/// [`update_rect`]'s); none when the pool has no room for the copy.
+/// The pending painting GetUpdateRect and GetUpdateRgn hand to a caller that asks the erase
+/// (Windows 2000's sends WM_NCPAINT and WM_ERASEBKGND then): [`UPDATE_FRAME`] when the frame was to
+/// be painted, [`UPDATE_ERASE`] when an erase was pending over a region not empty; neither pending
+/// any more. A record left with nothing to paint goes.
+fn hand_over(windows: &mut Windows, window: WindowId) -> u32 {
+    let Some(record) = windows.queues.updates.record_mut(window) else {
+        return 0;
+    };
+    let mut bits = 0;
+    if record.frame {
+        record.frame = false;
+        bits |= UPDATE_FRAME;
+    }
+    if record.erase && !record.region.is_empty() {
+        record.erase = false;
+        bits |= UPDATE_ERASE;
+    }
+    drop_if_done(windows, window);
+    bits
+}
+
+/// GetUpdateRgn over a window: a copy of the update region (the empty region for none), and, when
+/// `erase` asks it, what [`hand_over`] hands the caller; none when the pool has no room for the
+/// copy.
 pub fn update_region(
     windows: &mut Windows,
     window: WindowId,
     erase: bool,
 ) -> Option<(OwnedRegion, u32)> {
-    let Some(record) = windows.queues.updates.record_mut(window) else {
+    let Some(record) = windows.queues.updates.record(window) else {
         return Some((OwnedRegion::empty(), 0));
     };
     let copy = record.region.duplicate()?;
-    let mut bits = UPDATE_NOT_EMPTY;
-    if erase && record.erase {
-        record.erase = false;
-        bits |= UPDATE_ERASE;
+    let mut bits = if copy.is_empty() { 0 } else { UPDATE_NOT_EMPTY };
+    if erase {
+        bits |= hand_over(windows, window);
     }
     Some((copy, bits))
 }
 
 /// GetUpdateRect over a window: the region's box (zeros for none) and the answer's bits —
-/// [`UPDATE_NOT_EMPTY`], and [`UPDATE_ERASE`] when `erase` asks the erase and one was pending (no
-/// longer pending: the caller sends WM_ERASEBKGND).
+/// [`UPDATE_NOT_EMPTY`] when the region is not empty (a window with its frame alone to paint has
+/// nothing of its client area to report), and, when `erase` asks it, what [`hand_over`] hands the
+/// caller.
 pub fn update_rect(windows: &mut Windows, window: WindowId, erase: bool) -> (Rect, u32) {
-    let Some(record) = windows.queues.updates.record_mut(window) else {
+    let Some(record) = windows.queues.updates.record(window) else {
         return (Rect::EMPTY, 0);
     };
-    let mut bits = UPDATE_NOT_EMPTY;
-    if erase && record.erase {
-        record.erase = false;
-        bits |= UPDATE_ERASE;
+    let bounds = record.region.bounds();
+    let mut bits = if record.region.is_empty() {
+        0
+    } else {
+        UPDATE_NOT_EMPTY
+    };
+    if erase {
+        bits |= hand_over(windows, window);
     }
-    (record.region.bounds(), bits)
+    (bounds, bits)
 }
 
-/// The next window of `thread`'s the filter takes a WM_PAINT for: one with an update region.
+/// The next window of `thread`'s the filter takes a WM_PAINT for: one with an update region, its
+/// outermost ancestor with one of `thread`'s the filter takes before it, so that a parent paints
+/// before the children its painting covers (the redraw capture: the window's WM_PAINT, then the
+/// child's).
 pub fn next_paint(windows: &Windows, thread: ThreadId, filter: &Filter) -> Option<Hwnd> {
-    windows
+    let takes = |w: WindowId| {
+        windows
+            .queues
+            .updates
+            .record(w)
+            .is_some_and(|u| u.thread == thread)
+            && windows.is_live(w)
+            && filter.takes_window(windows.handle_of(w))
+    };
+    let found = windows
         .queues
         .updates
         .records
@@ -467,20 +656,35 @@ pub fn next_paint(windows: &Windows, thread: ThreadId, filter: &Filter) -> Optio
         .map(|(_, u)| u)
         .filter(|u| u.thread == thread)
         .filter_map(|u| u.window)
-        .filter(|&w| windows.is_live(w))
-        .map(|w| windows.handle_of(w))
-        .find(|&hwnd| filter.takes_window(hwnd))
+        .find(|&w| takes(w))?;
+    let mut best = found;
+    let mut at = windows.parent_of(found);
+    while let Some(w) = at {
+        if !windows.is_live(w) {
+            break;
+        }
+        if takes(w) {
+            best = w;
+        }
+        at = windows.parent_of(w);
+    }
+    Some(windows.handle_of(best))
 }
 
 /// What BeginPaint paints: the region's box in client coordinates (zeros for none), whether the
-/// erase is pending, the update region its DC's visible region is cut to (client coordinates,
-/// within the client area), and the client area on the screen (the DC's origin its top left).
+/// erase is pending (never over nothing: the redraw capture's `lock`, a WM_PAINT of an empty
+/// rcPaint has no WM_ERASEBKGND before it), whether the frame is to be painted first (WM_NCPAINT),
+/// the update region its DC's visible region is cut to (client coordinates, within the client
+/// area), the client area on the screen (the DC's origin its top left), and the window's visible
+/// region the DC is cut to as well ([`visible_region`], screen coordinates).
 #[derive(Debug, PartialEq, Eq)]
 pub struct PaintArea {
     pub paint: Rect,
     pub erase: bool,
+    pub frame: bool,
     pub update: OwnedRegion,
     pub client: Rect,
+    pub visible: OwnedRegion,
 }
 
 /// BeginPaint's look at the window, before its DC is made: see [`PaintArea`]. When the pool has
@@ -488,40 +692,208 @@ pub struct PaintArea {
 pub fn paint_area(windows: &Windows, window: WindowId) -> PaintArea {
     let client = windows.client_rect(window);
     let local = Rect::new(0, 0, client.width(), client.height());
-    let erase = update_of(windows, window).is_some_and(|(_, erase)| erase);
+    let record = windows.queues.updates.record(window);
+    let frame = record.is_some_and(|u| u.frame);
     let update = match update_region_of(windows, window) {
         None => OwnedRegion::empty(),
         Some(region) => OwnedRegion::combined(region.rects(), rect_rects(&local), |a, b| a && b)
             .unwrap_or_else(|| OwnedRegion::rect(region.bounds().intersect(local))),
     };
+    let erase = record.is_some_and(|u| u.erase) && !update.is_empty();
     PaintArea {
         paint: update.bounds(),
         erase,
+        frame,
         update,
         client,
+        visible: visible_region(windows, window, Clipping::style(windows, window, false)),
     }
 }
 
-/// BeginPaint's validation: the window's own update region goes, whole (its children keep
-/// theirs).
+/// BeginPaint's validation: the window's own update region goes, whole, its internal paint too
+/// (its children keep theirs).
 pub fn begin_validate(windows: &mut Windows, window: WindowId) {
-    take_out(windows, window, None);
+    if let Some(id) = windows.queues.updates.find(window) {
+        windows.queues.updates.free(id);
+    }
 }
 
-/// UpdateWindow: a WM_PAINT sent to the window when its update region is not empty, through the
-/// session as the window manager's sends go.
-pub fn update_window(s: &mut dyn Session, window: WindowId) {
-    if update_of(s.windows(), window).is_some() {
-        s.send(
-            window,
-            &mut Message {
-                message: WM_PAINT,
-                wparam: 0,
-                lparam: 0,
-                payload: Payload::None,
-            },
-        );
+/// UpdateWindow: a WM_PAINT sent to the window when it has an update region, then to each of its
+/// descendants of the same thread that has one, parents before children, through the session as
+/// the window manager's sends go (the redraw capture: RDW_UPDATENOW paints the window, then the
+/// child, before it returns); the window alone without `children` (RDW_NOCHILDREN). A window a
+/// procedure destroys meanwhile ends the walk.
+pub fn update_window(s: &mut dyn Session, window: WindowId, children: bool) {
+    let thread = s.windows().window_thread(window);
+    let mut at = window;
+    loop {
+        let windows = s.windows();
+        if !windows.is_live(at) {
+            return;
+        }
+        if update_of(windows, at).is_some() && (at == window || windows.window_thread(at) == thread)
+        {
+            s.send(
+                at,
+                &mut Message {
+                    message: WM_PAINT,
+                    wparam: 0,
+                    lparam: 0,
+                    payload: Payload::None,
+                },
+            );
+        }
+        let windows = s.windows();
+        if !windows.is_live(at) || !windows.is_live(window) || !children {
+            return;
+        }
+        // The next window, parents before children.
+        if let Some(child) = windows.first_child(at) {
+            at = child;
+            continue;
+        }
+        loop {
+            if at == window {
+                return;
+            }
+            if let Some(next) = windows.next_sibling(at) {
+                at = next;
+                break;
+            }
+            match windows.parent_of(at) {
+                Some(parent) => at = parent,
+                None => return,
+            }
+        }
     }
+}
+
+/// The window's frame to be painted when it shows anew (SetWindowPos's show, size or frame
+/// change): true when it is painted now, by the caller's WM_NCPAINT; false when an ancestor whose
+/// painting draws over it has an update region still to paint, the frame's painting then left to
+/// the window's own WM_PAINT, after that ancestor's (Windows 2000 holds back such a window's
+/// synchronous painting while its parent needs painting: the parent's erase would cover it).
+pub fn frame_now(windows: &mut Windows, window: WindowId) -> bool {
+    let mut at = window;
+    let mut covered = false;
+    while let Some(parent) = windows.parent_of(at) {
+        if !windows.is_live(parent) || windows.window_style(at) & WS_CHILD == 0 {
+            break;
+        }
+        if windows.window_style(parent) & WS_CLIPCHILDREN == 0
+            && update_region_of(windows, parent).is_some_and(|r| !r.is_empty())
+        {
+            covered = true;
+            break;
+        }
+        at = parent;
+    }
+    if !covered {
+        return true;
+    }
+    add(windows, window, OwnedRegion::empty(), false, true);
+    false
+}
+
+// --- Visible regions -----------------------------------------------------------------------------
+
+/// What a window's DC is clipped by beyond its area: GetDCEx's DCX_CLIPCHILDREN and
+/// DCX_CLIPSIBLINGS, the window's WS_CLIPCHILDREN and WS_CLIPSIBLINGS for DCX_USESTYLE (GetDC's,
+/// GetWindowDC's and BeginPaint's), and whether the DC is of the window rectangle (DCX_WINDOW).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Clipping {
+    pub whole: bool,
+    pub children: bool,
+    pub siblings: bool,
+}
+
+impl Clipping {
+    /// The window's own clipping (DCX_USESTYLE): its WS_CLIPCHILDREN and WS_CLIPSIBLINGS.
+    pub fn style(windows: &Windows, window: WindowId, whole: bool) -> Clipping {
+        let style = windows.window_style(window);
+        Clipping {
+            whole,
+            children: style & WS_CLIPCHILDREN != 0,
+            siblings: style & WS_CLIPSIBLINGS != 0,
+        }
+    }
+}
+
+/// The window's visible region, screen coordinates: its client area (its window rectangle with
+/// `clip.whole`) within each ancestor's client area, less
+///
+/// - its shown children's window rectangles, with `clip.children` (WS_CLIPCHILDREN): without it the
+///   parent draws over its children, which paint again after it ([`invalidate_region`]);
+/// - its shown siblings' above it, with `clip.siblings` (WS_CLIPSIBLINGS), and each ancestor's
+///   shown siblings above it when that ancestor has WS_CLIPSIBLINGS, up to the top-level window.
+///
+/// Top-level windows are not cut by one another: F2K repaints nothing a z-order change uncovers
+/// yet, so a window raised over another must draw all of itself. When the pool has no room for a
+/// cut, the region is left without it (the window may draw more than it should, never less).
+pub fn visible_region(windows: &Windows, window: WindowId, clip: Clipping) -> OwnedRegion {
+    let (desktop, message) = windows.desktop_roots(window);
+    let own = if clip.whole {
+        windows.window_rect(window)
+    } else {
+        windows.client_rect(window)
+    };
+    // The area within every ancestor's client area.
+    let mut area = own;
+    let mut at = window;
+    while let Some(parent) = windows.parent_of(at) {
+        if Some(parent) == desktop
+            || Some(parent) == message
+            || windows.window_style(at) & WS_CHILD == 0
+        {
+            break;
+        }
+        area = area.intersect(windows.client_rect(parent));
+        at = parent;
+    }
+    let mut region = OwnedRegion::rect(area);
+    let cut = |region: &mut OwnedRegion, rect: Rect| {
+        if region.is_empty() || rect.intersect(region.bounds()).is_empty() {
+            return;
+        }
+        if let Some(left) = OwnedRegion::combined(region.rects(), rect_rects(&rect), |a, b| a && !b)
+        {
+            *region = left;
+        }
+    };
+    if clip.children {
+        let mut child = windows.first_child(window);
+        while let Some(c) = child {
+            if windows.window_style(c) & WS_VISIBLE != 0 {
+                cut(&mut region, windows.window_rect(c));
+            }
+            child = windows.next_sibling(c);
+        }
+    }
+    let mut at = window;
+    let mut siblings = clip.siblings;
+    while let Some(parent) = windows.parent_of(at) {
+        if Some(parent) == desktop
+            || Some(parent) == message
+            || windows.window_style(at) & WS_CHILD == 0
+        {
+            break;
+        }
+        if siblings {
+            let mut above = windows.first_child(parent);
+            while let Some(s) = above {
+                if s == at {
+                    break;
+                }
+                if windows.window_style(s) & WS_VISIBLE != 0 {
+                    cut(&mut region, windows.window_rect(s));
+                }
+                above = windows.next_sibling(s);
+            }
+        }
+        at = parent;
+        siblings = windows.window_style(at) & WS_CLIPSIBLINGS != 0;
+    }
+    region
 }
 
 // --- The services --------------------------------------------------------------------------------
@@ -645,7 +1017,7 @@ mod services {
 
     /// NtUserGetUpdateRgn(Window, Region, Erase, Result): see [`update_region`]; the region
     /// object made the copy, `Result` the region's complexity in its low half and [`UPDATE_ERASE`]
-    /// in its high half.
+    /// and [`UPDATE_FRAME`] in its high half.
     pub fn get_update_rgn(
         call: &mut NtCall,
         window: Handle,
@@ -660,7 +1032,7 @@ mod services {
         })?;
         crate::win32k::region::assign(call, region, &copy)?;
         let complexity = copy.complexity() as u32 & 0xFFFF;
-        result.write(complexity | ((bits & UPDATE_ERASE) << 16))?;
+        result.write(complexity | ((bits & (UPDATE_ERASE | UPDATE_FRAME)) << 16))?;
         Ok(STATUS_SUCCESS)
     }
 
@@ -685,11 +1057,12 @@ mod services {
         Ok(STATUS_SUCCESS)
     }
 
-    /// NtUserBeginPaint(Window, Paint): the PAINTSTRUCT, its DC clipped to the update region, its
-    /// erase the pending one, its rcPaint the region's box; the window validated, the caller's
-    /// caret taken off the screen when the paint covers it ([`crate::win32k::caret`]). The DC is
-    /// made before the window is validated, and closed again when the PAINTSTRUCT cannot be
-    /// written.
+    /// NtUserBeginPaint(Window, Paint): the PAINTSTRUCT, its DC clipped to the update region and
+    /// the window's visible region, its erase the pending one, its rcPaint the region's box, its
+    /// fRestore 1 when the frame is to be painted first (user32 sends WM_NCPAINT and clears it);
+    /// the window validated, the caller's caret taken off the screen when the paint covers it
+    /// ([`crate::win32k::caret`]). The DC is made before the window is validated, and closed again
+    /// when the PAINTSTRUCT cannot be written.
     pub fn begin_paint(call: &mut NtCall, window: Handle, paint: UserAddr) -> NtResult {
         let caller = gui_thread(call)?.thread;
         let paint = paint.cast::<PaintStruct>();
@@ -697,7 +1070,7 @@ mod services {
             let id = window_of(&m.windows, window)?;
             Ok::<_, NtStatus>(paint_area(&m.windows, id))
         })?;
-        let hdc = crate::win32k::dc::paint_dc(call, area.client, &area.update)?;
+        let hdc = crate::win32k::dc::paint_dc(call, area.client, &area.update, &area.visible)?;
         with_manager(call.passive(), |m| {
             if let Some(id) = m.windows.window_from_handle(window.raw()) {
                 begin_validate(&mut m.windows, id);
@@ -708,6 +1081,7 @@ mod services {
             hdc,
             erase: area.erase as i32,
             paint: area.paint,
+            restore: area.frame as i32,
             ..PaintStruct::default()
         });
         if written.is_err() {
@@ -732,6 +1106,45 @@ mod services {
         Ok(STATUS_SUCCESS)
     }
 
+    /// NtUserRedrawWindow(Window, Rect, Region, Flags): see [`redraw`] (the rectangle, client
+    /// coordinates, when given; the region otherwise; the client area for neither), then, with
+    /// RDW_UPDATENOW, [`update_window`] (the window alone with RDW_NOCHILDREN). A null window is
+    /// the caller's desktop window. RDW_ERASENOW's erase is user32's.
+    pub fn redraw_window(
+        call: &mut NtCall,
+        window: Handle,
+        rect: UserAddr,
+        region: Handle,
+        flags: u32,
+    ) -> NtResult {
+        let caller = gui_thread(call)?.thread;
+        let rect = read_rect(rect)?;
+        let region = match rect {
+            Some(_) => None,
+            None => read_region(call, region)?,
+        };
+        crate::win32k::queue::with_session(call.passive(), |s| {
+            let id = if window.raw() == 0 {
+                s.windows()
+                    .thread_desktop_window(caller)
+                    .ok_or(STATUS_INVALID_HANDLE)?
+            } else {
+                window_of(s.windows(), window)?
+            };
+            let rects = match (&rect, &region) {
+                (Some(rect), _) => Some(rect_rects(rect)),
+                (None, Some(region)) => Some(region.rects()),
+                (None, None) => None,
+            };
+            redraw(s.windows(), id, rects, flags);
+            if flags & RDW_UPDATENOW != 0 {
+                update_window(s, id, flags & RDW_NOCHILDREN == 0);
+            }
+            Ok::<_, NtStatus>(())
+        })?;
+        Ok(STATUS_SUCCESS)
+    }
+
     /// NtUserCallHwndLock(Window, Routine): UpdateWindow ([`update_window`]), and the focus and
     /// activation routines ([`crate::win32k::focus::call_hwnd_lock`]); STATUS_INVALID_PARAMETER
     /// for another routine.
@@ -741,7 +1154,7 @@ mod services {
             let id = window_of(s.windows(), window)?;
             match routine {
                 HWND_LOCK_UPDATE_WINDOW => {
-                    update_window(s, id);
+                    update_window(s, id, true);
                     Ok(())
                 }
                 _ => crate::win32k::focus::call_hwnd_lock(s, caller, id, routine)
@@ -762,6 +1175,7 @@ pub use services::{
     get_update_rgn,
     invalidate_rect,
     invalidate_rgn,
+    redraw_window,
     validate_rect,
 };
 
@@ -813,6 +1227,10 @@ mod services {
     }
 
     pub fn call_hwnd_lock(_: &mut NtCall, _: Handle, _: u32) -> NtResult {
+        Err(STATUS_NOT_IMPLEMENTED)
+    }
+
+    pub fn redraw_window(_: &mut NtCall, _: Handle, _: UserAddr, _: Handle, _: u32) -> NtResult {
         Err(STATUS_NOT_IMPLEMENTED)
     }
 }
@@ -887,8 +1305,10 @@ mod tests {
             PaintArea {
                 paint: Rect::EMPTY,
                 erase: false,
+                frame: false,
                 update: OwnedRegion::empty(),
                 client: m.windows.client_rect(w),
+                visible: OwnedRegion::rect(m.windows.client_rect(w)),
             }
         );
         assert_eq!(read(m, t, &all(), 0), Taken::Nothing { due: None });
@@ -943,8 +1363,10 @@ mod tests {
             PaintArea {
                 paint: Rect::new(0, 0, 320, 200),
                 erase: true,
+                frame: false,
                 update: OwnedRegion::rect(Rect::new(0, 0, 320, 200)),
                 client: Rect::new(30, 40, 350, 240),
+                visible: OwnedRegion::rect(Rect::new(30, 40, 350, 240)),
             }
         );
         assert_eq!(
@@ -1085,7 +1507,7 @@ mod tests {
             let WindowManager {
                 windows, classes, ..
             } = m;
-            update_window(&mut QueueSession::new(windows, classes), w);
+            update_window(&mut QueueSession::new(windows, classes), w, true);
         };
         update(m);
         assert_eq!(deliver(m, t), vec![]);
@@ -1235,5 +1657,373 @@ mod tests {
             update_region(&mut m.windows, w, false).map(|(r, bits)| (r.complexity(), bits)),
             Some((rtl::gdi::NULLREGION, 0))
         );
+    }
+
+    /// A shown child of `parent` (a handle) at (`x`, `y`) in its client area, `cx` by `cy`, with
+    /// `style` besides WS_CHILD and a frame `inset` wide: its id.
+    #[allow(clippy::too_many_arguments)]
+    fn child_of(
+        m: &mut WindowManager,
+        atom: class::Atom,
+        t: ThreadId,
+        parent: Hwnd,
+        style: u32,
+        (x, y, cx, cy): (i32, i32, i32, i32),
+        inset: i32,
+    ) -> WindowId {
+        let h = window_at(m, atom, t, WS_CHILD | style, parent, x, y, cx, cy);
+        deliver(m, t);
+        let w = m.windows.window_from_handle(h).unwrap();
+        m.windows.set_visible_for_tests(w, true);
+        m.windows.set_frame_for_tests(w, inset);
+        w
+    }
+
+    /// The redraw capture's `redraw`: an invalidation of the parent that reaches a child brings
+    /// the child its frame's painting and its erase whatever the parent's erase says
+    /// (RDW_INVALIDATE alone: the child's WM_NCPAINT, WM_ERASEBKGND, WM_PAINT); a rectangle outside
+    /// the child reaches nothing; one over the child's frame alone leaves the child a WM_PAINT with
+    /// an empty rcPaint, no erase, its frame painted, and GetUpdateRect and GetUpdateRgn see
+    /// nothing.
+    #[test]
+    fn a_parents_invalidation_paints_its_childrens_frames() {
+        let (m, atom) = manager();
+        let t = thread(m, 1, 0x100);
+        let (parent, ph) = shown(m, atom, t, 0, 0);
+        let child = child_of(m, atom, t, ph, 0, (100, 50, 40, 30), 2);
+        let child_h = m.windows.handle_of(child);
+
+        invalidate(
+            &mut m.windows,
+            parent,
+            Some(Rect::new(200, 100, 300, 200)),
+            false,
+        );
+        assert_eq!(
+            update_of(&m.windows, child),
+            None,
+            "a rectangle outside the child"
+        );
+        assert_eq!(
+            update_of(&m.windows, parent),
+            Some((Rect::new(200, 100, 300, 200), false))
+        );
+        validate(&mut m.windows, parent, None);
+
+        invalidate(&mut m.windows, parent, None, false);
+        let area = paint_area(&m.windows, child);
+        assert_eq!(
+            (area.paint, area.erase, area.frame),
+            (Rect::new(0, 0, 36, 26), true, true)
+        );
+        assert!(
+            !paint_area(&m.windows, parent).frame,
+            "the parent's own frame is not asked"
+        );
+        validate(&mut m.windows, parent, None);
+        assert_eq!(
+            update_of(&m.windows, child),
+            None,
+            "the parent's validation takes it all"
+        );
+
+        // The child's frame alone: its top-left corner, the frame's two pixels.
+        invalidate(
+            &mut m.windows,
+            parent,
+            Some(Rect::new(90, 40, 101, 51)),
+            true,
+        );
+        assert_eq!(update_rect(&mut m.windows, child, false), (Rect::EMPTY, 0));
+        assert_eq!(
+            update_region(&mut m.windows, child, false).map(|(r, b)| (r.is_empty(), b)),
+            Some((true, 0))
+        );
+        let area = paint_area(&m.windows, child);
+        assert_eq!(
+            (area.paint, area.erase, area.frame),
+            (Rect::EMPTY, false, true)
+        );
+        begin_validate(&mut m.windows, parent);
+        let paint = msg_of(read(m, t, &all(), 0));
+        assert_eq!((paint.hwnd, paint.message), (child_h, WM_PAINT));
+        begin_validate(&mut m.windows, child);
+        assert_eq!(read(m, t, &all(), 0), Taken::Nothing { due: None });
+
+        // GetUpdateRect asked to erase hands the frame over (WM_NCPAINT, as Windows 2000's sends
+        // it), and the erase only over a region not empty; nothing is left to paint then.
+        invalidate(
+            &mut m.windows,
+            parent,
+            Some(Rect::new(90, 40, 101, 51)),
+            true,
+        );
+        assert_eq!(
+            update_rect(&mut m.windows, child, true),
+            (Rect::EMPTY, UPDATE_FRAME)
+        );
+        assert_eq!(update_of(&m.windows, child), None);
+        invalidate(&mut m.windows, parent, None, false);
+        assert_eq!(
+            update_rect(&mut m.windows, child, true),
+            (
+                Rect::new(0, 0, 36, 26),
+                UPDATE_NOT_EMPTY | UPDATE_ERASE | UPDATE_FRAME
+            )
+        );
+        assert_eq!(
+            update_of(&m.windows, child),
+            Some((Rect::new(0, 0, 36, 26), false))
+        );
+    }
+
+    /// The WM_PAINT search takes a parent before its child, however their records were taken (the
+    /// redraw capture: the window's WM_PAINT, then the child's).
+    #[test]
+    fn a_parent_paints_before_its_child() {
+        let (m, atom) = manager();
+        let t = thread(m, 1, 0x100);
+        let (parent, ph) = shown(m, atom, t, 0, 0);
+        let child = child_of(m, atom, t, ph, 0, (10, 10, 40, 30), 0);
+        invalidate(&mut m.windows, child, None, true);
+        invalidate(&mut m.windows, parent, None, true);
+        assert_eq!(next_paint(&m.windows, t, &all()), Some(ph));
+        begin_validate(&mut m.windows, parent);
+        assert_eq!(
+            next_paint(&m.windows, t, &all()),
+            Some(m.windows.handle_of(child))
+        );
+    }
+
+    /// A child shown while its parent, which does not clip its children, has an update region:
+    /// its frame is left to its WM_PAINT, after the parent's; with WS_CLIPCHILDREN, or nothing for
+    /// the parent to paint, it is painted at once.
+    #[test]
+    fn a_childs_frame_waits_for_its_parents_painting() {
+        let (m, atom) = manager();
+        let t = thread(m, 1, 0x100);
+        let (parent, ph) = shown(m, atom, t, 0, 0);
+        let child = child_of(m, atom, t, ph, 0, (10, 10, 40, 30), 2);
+        assert!(
+            frame_now(&mut m.windows, child),
+            "nothing for the parent to paint"
+        );
+        invalidate(&mut m.windows, parent, Some(Rect::new(0, 0, 5, 5)), true);
+        assert!(!frame_now(&mut m.windows, child));
+        assert!(paint_area(&m.windows, child).frame);
+
+        let ch = window_at(m, atom, t, WS_POPUP | WS_CLIPCHILDREN, 0, 0, 0, 320, 200);
+        deliver(m, t);
+        let clipping = m.windows.window_from_handle(ch).unwrap();
+        m.windows.set_visible_for_tests(clipping, true);
+        let inner = child_of(m, atom, t, ch, 0, (10, 10, 40, 30), 2);
+        invalidate(&mut m.windows, clipping, None, true);
+        assert!(frame_now(&mut m.windows, inner));
+        assert_eq!(update_of(&m.windows, inner), None);
+    }
+
+    /// The visible regions: a window's client area within its parent's client area; less its
+    /// shown children only with WS_CLIPCHILDREN (DCX_CLIPCHILDREN); less its shown siblings
+    /// above it only with WS_CLIPSIBLINGS, never those below; top-level windows not cut by one
+    /// another; a window DC's (DCX_WINDOW) its whole rectangle.
+    #[test]
+    fn visible_regions_follow_the_clipping_styles() {
+        let (m, atom) = manager();
+        let t = thread(m, 1, 0x100);
+        let (parent, ph) = shown(m, atom, t, 0, 0);
+        // Created first: the top of the z-order, above `lower` (a new child goes under its
+        // siblings, as a dialog's controls go, the first at the top).
+        let upper = child_of(m, atom, t, ph, WS_CLIPSIBLINGS, (60, 30, 100, 50), 2);
+        let lower = child_of(m, atom, t, ph, WS_CLIPSIBLINGS, (10, 10, 100, 50), 2);
+        assert_eq!(m.windows.first_child(parent), Some(upper));
+        let hidden = child_of(m, atom, t, ph, 0, (200, 100, 20, 20), 0);
+        m.windows.set_visible_for_tests(hidden, false);
+        shown(m, atom, t, 100, 0);
+        let vis = |m: &WindowManager, w, clip| visible_region(&m.windows, w, clip).rects().to_vec();
+        let plain = |whole| Clipping {
+            whole,
+            children: false,
+            siblings: false,
+        };
+
+        assert_eq!(vis(m, parent, plain(false)), [Rect::new(0, 0, 320, 200)]);
+        assert_eq!(
+            vis(
+                m,
+                parent,
+                Clipping {
+                    children: true,
+                    ..plain(false)
+                }
+            ),
+            [
+                Rect::new(0, 0, 320, 10),
+                Rect::new(0, 10, 10, 30),
+                Rect::new(110, 10, 320, 30),
+                Rect::new(0, 30, 10, 60),
+                Rect::new(160, 30, 320, 60),
+                Rect::new(0, 60, 60, 80),
+                Rect::new(160, 60, 320, 80),
+                Rect::new(0, 80, 320, 200),
+            ],
+            "the shown children's window rectangles, not the hidden one's"
+        );
+        assert_eq!(
+            vis(m, parent, Clipping::style(&m.windows, parent, false)),
+            [Rect::new(0, 0, 320, 200)],
+            "a top-level window: WS_CLIPSIBLINGS, but not cut by the other top-level window"
+        );
+        assert_eq!(
+            vis(m, lower, Clipping::style(&m.windows, lower, false)),
+            [Rect::new(12, 12, 108, 30), Rect::new(12, 30, 60, 58)],
+            "the lower child's client area less the upper one"
+        );
+        assert_eq!(
+            vis(m, lower, plain(false)),
+            [Rect::new(12, 12, 108, 58)],
+            "without WS_CLIPSIBLINGS"
+        );
+        assert_eq!(
+            vis(m, upper, Clipping::style(&m.windows, upper, true)),
+            [Rect::new(60, 30, 160, 80)],
+            "the upper child's window rectangle: nothing above it"
+        );
+        // A child past its parent's client area is cut to it.
+        let past = child_of(m, atom, t, ph, 0, (300, 190, 50, 50), 0);
+        assert_eq!(vis(m, past, plain(true)), [Rect::new(300, 190, 320, 200)]);
+    }
+
+    /// The redraw capture's `redraw` block on the update records (its popup with a border, its
+    /// child 40x30 at (10, 10) without one): each RDW_* flag's erase, frame and internal paint for
+    /// the window and its child.
+    #[test]
+    fn redraw_window_flags_as_captured() {
+        use rtl::user::{
+            RDW_ALLCHILDREN,
+            RDW_ERASE,
+            RDW_FRAME,
+            RDW_INTERNALPAINT,
+            RDW_INVALIDATE,
+            RDW_NOCHILDREN,
+            RDW_NOERASE,
+            RDW_NOFRAME,
+            RDW_NOINTERNALPAINT,
+            RDW_VALIDATE,
+        };
+        let (m, atom) = manager();
+        let t = thread(m, 1, 0x100);
+        let (top, th) = shown(m, atom, t, 0, 0);
+        m.windows.set_frame_for_tests(top, 1);
+        let child = child_of(m, atom, t, th, 0, (10, 10, 40, 30), 0);
+        // (region's box, erase, frame) of each, after `flags`; then everything validated.
+        let state = |m: &WindowManager, w| {
+            let a = paint_area(&m.windows, w);
+            let pending = m
+                .windows
+                .queues
+                .updates
+                .record(w)
+                .map(|u| (u.erase, u.internal));
+            (a.paint, pending, a.frame)
+        };
+        let mut check =
+            |m: &mut WindowManager, rect: Option<Rect>, flags: u32, want_top, want_child| {
+                let rects = rect.map(|r| std::vec![r]);
+                redraw(&mut m.windows, top, rects.as_deref(), flags);
+                assert_eq!(
+                    (state(m, top), state(m, child)),
+                    (want_top, want_child),
+                    "flags {flags:#x}"
+                );
+                redraw(
+                    &mut m.windows,
+                    top,
+                    None,
+                    RDW_VALIDATE | RDW_NOINTERNALPAINT | RDW_ALLCHILDREN,
+                );
+                assert_eq!(
+                    m.windows.queues.updates.live(),
+                    0,
+                    "flags {flags:#x}: all validated"
+                );
+            };
+        let client = Rect::new(0, 0, 318, 198);
+        let child_client = Rect::new(0, 0, 40, 30);
+        let none = (Rect::EMPTY, None, false);
+        // A rectangle outside the child: the window alone, no erase.
+        check(
+            m,
+            Some(Rect::new(60, 40, 80, 60)),
+            RDW_INVALIDATE,
+            (Rect::new(60, 40, 80, 60), Some((false, false)), false),
+            none,
+        );
+        // The whole window: the child's frame and erase whatever the flags say.
+        let child_all = (child_client, Some((true, false)), true);
+        check(
+            m,
+            None,
+            RDW_INVALIDATE | RDW_ERASE,
+            (client, Some((true, false)), false),
+            child_all,
+        );
+        check(
+            m,
+            None,
+            RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN,
+            (client, Some((true, false)), false),
+            child_all,
+        );
+        check(
+            m,
+            None,
+            RDW_INVALIDATE | RDW_NOCHILDREN,
+            (client, Some((false, false)), false),
+            none,
+        );
+        check(
+            m,
+            None,
+            RDW_INVALIDATE | RDW_FRAME,
+            (client, Some((false, false)), true),
+            child_all,
+        );
+        check(
+            m,
+            None,
+            RDW_INVALIDATE | RDW_NOFRAME,
+            (client, Some((false, false)), false),
+            child_all,
+        );
+        // An internal paint: a WM_PAINT for each, nothing to paint.
+        let internal = (Rect::EMPTY, Some((false, true)), false);
+        check(m, None, RDW_INTERNALPAINT, internal, internal);
+        // A validation of a rectangle leaves the rest; RDW_NOERASE and RDW_NOFRAME take the
+        // pending erase and frame back.
+        redraw(
+            &mut m.windows,
+            top,
+            None,
+            RDW_INVALIDATE | RDW_ERASE | RDW_FRAME,
+        );
+        redraw(
+            &mut m.windows,
+            top,
+            Some(&[Rect::new(60, 40, 80, 60)]),
+            RDW_VALIDATE,
+        );
+        assert_eq!(
+            update_region_of(&m.windows, top).unwrap().complexity(),
+            COMPLEXREGION
+        );
+        assert_eq!(state(m, child), child_all, "the rectangle misses the child");
+        redraw(
+            &mut m.windows,
+            top,
+            Some(&[Rect::new(60, 40, 80, 60)]),
+            RDW_VALIDATE | RDW_NOERASE | RDW_NOFRAME | RDW_NOCHILDREN,
+        );
+        assert_eq!(state(m, top), (client, Some((false, false)), false));
+        assert_eq!(state(m, child), child_all, "RDW_NOCHILDREN");
     }
 }

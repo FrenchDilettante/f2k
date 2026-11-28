@@ -6,12 +6,8 @@
 //! - An LBS_MULTIPLESEL list box with a border: five items, the first and the fourth selected.
 //! - A disabled list box with a border: two items, their text greyed.
 //!
-//! F2K's window manager does not clip a window's DC to its children, nor take a child's frame into
-//! the update region when its parent's client area is invalidated (kernel/src/win32k/dc.rs,
-//! paint.rs): the parent's first paint covers its children's frames (their client edges, the
-//! scroll bar), which nothing paints again. So the program paints the parent first (UpdateWindow)
-//! and then has each list box's frame drawn anew (SetWindowPos, SWP_FRAMECHANGED), as Windows 2000
-//! draws them after the parent.
+//! The window does not clip its children (no WS_CLIPCHILDREN), so its painting covers the list
+//! boxes; each paints after it, its frame (its client edge, its scroll bar) included.
 //!
 //! It prints `listboxshow: ready` once the window shows and its queue is idle; Alt+F4 closes the
 //! window (the default procedure's SC_CLOSE), which ends it with 0.
@@ -119,26 +115,12 @@ mod ffi {
         pub fn DispatchMessageW(msg: *const Msg) -> isize;
         pub fn SetForegroundWindow(window: usize) -> i32;
         pub fn SetFocus(window: usize) -> usize;
-        pub fn UpdateWindow(window: usize) -> i32;
-        pub fn SetWindowPos(
-            window: usize,
-            after: usize,
-            x: i32,
-            y: i32,
-            cx: i32,
-            cy: i32,
-            flags: u32,
-        ) -> i32;
         pub fn PostQuitMessage(code: i32);
     }
 }
 
 /// The window's styles: a caption with its system menu, a fixed frame.
 const STYLE: u32 = WS_CAPTION | WS_SYSMENU | WS_VISIBLE;
-
-/// SetWindowPos's flags for a frame drawn anew and nothing else: SWP_NOSIZE, SWP_NOMOVE,
-/// SWP_NOZORDER, SWP_NOACTIVATE, SWP_FRAMECHANGED.
-const FRAME_ONLY: u32 = 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0020;
 
 /// The line printed once the window shows and the queue is idle.
 const READY: &str = "listboxshow: ready";
@@ -306,10 +288,6 @@ fn main() -> u32 {
         ffi::SendMessageW(multiple, LB_SETSEL, 1, 3);
         ffi::SetForegroundWindow(window);
         ffi::SetFocus(single);
-        ffi::UpdateWindow(window);
-        for list in [single, multiple, disabled] {
-            ffi::SetWindowPos(list, 0, 0, 0, 0, 0, FRAME_ONLY);
-        }
     }
     let mut ready = false;
     let mut msg = ffi::Msg::default();

@@ -4,10 +4,22 @@
 //! The erase: Windows 2000's BeginPaint (and GetUpdateRect, asked to erase) sends WM_ERASEBKGND
 //! itself. win32k cannot send it (it calls no user-mode code), so its services report the pending
 //! erase and user32 sends the message here, with a DC of the window: PAINTSTRUCT's fErase then
-//! says whether the procedure left the erase undone (it answered 0).
+//! says whether the procedure left the erase undone (it answered 0). The frame alike: a window
+//! whose frame is to be painted (a child its parent's invalidation reached) gets WM_NCPAINT from
+//! BeginPaint before the erase, win32k marking it in the PAINTSTRUCT's fRestore, which user32
+//! clears.
 
 use rtl::gdi::Rect;
-use rtl::user::{PaintStruct, UPDATE_ERASE, UPDATE_NOT_EMPTY, WM_ERASEBKGND};
+use rtl::user::{
+    PaintStruct,
+    RDW_ERASENOW,
+    RDW_UPDATENOW,
+    UPDATE_ERASE,
+    UPDATE_FRAME,
+    UPDATE_NOT_EMPTY,
+    WM_ERASEBKGND,
+    WM_NCPAINT,
+};
 
 use crate::imports;
 use crate::{answered, message, Out};
@@ -28,20 +40,55 @@ pub extern "system" fn validate_rect(window: usize, rect: *const Rect) -> u32 {
 }
 
 /// GetUpdateRect: the update region's box into the RECT (zeros for none; the RECT may be NULL);
-/// with `erase`, a pending erase carried out (WM_ERASEBKGND sent with a DC of the window). TRUE
+/// with `erase`, a pending frame's painting and erase carried out ([`paint_handed_over`]). TRUE
 /// when the region is not empty; FALSE, with 1400 for a handle naming no window.
 #[unsafe(export_name = "f2k_export_GetUpdateRect")]
 pub extern "system" fn get_update_rect(window: usize, rect: *mut Rect, erase: u32) -> u32 {
     let Some(bits) = answered(imports::update_rect(window, rect as usize, erase != 0)) else {
         return 0;
     };
+    paint_handed_over(window, bits);
+    (bits & UPDATE_NOT_EMPTY != 0) as u32
+}
+
+/// The painting win32k handed over (its answer bits): WM_NCPAINT for [`UPDATE_FRAME`], then
+/// WM_ERASEBKGND with a DC of the window for [`UPDATE_ERASE`], as Windows 2000's GetUpdateRect
+/// asked to erase sends them.
+fn paint_handed_over(window: usize, bits: u32) {
+    if bits & UPDATE_FRAME != 0 {
+        let _ = message::send(window, WM_NCPAINT, 1, 0);
+    }
     if bits & UPDATE_ERASE != 0 {
         if let Ok(dc) = imports::get_dc(window) {
             let _ = message::send(window, WM_ERASEBKGND, dc, 0);
             let _ = imports::delete_dc(dc as usize);
         }
     }
-    (bits & UPDATE_NOT_EMPTY != 0) as u32
+}
+
+/// RedrawWindow: the window's update region changed as the RDW_* flags say (RDW_INVALIDATE,
+/// RDW_ERASE, RDW_FRAME, RDW_INTERNALPAINT, RDW_VALIDATE, RDW_NOERASE, RDW_NOFRAME,
+/// RDW_NOINTERNALPAINT; its children as RDW_ALLCHILDREN and RDW_NOCHILDREN say), over the rectangle
+/// (client coordinates), else the region, else the client area; RDW_UPDATENOW's WM_PAINTs sent
+/// before it returns; with RDW_ERASENOW alone, the window's pending frame and erase carried out
+/// (WM_NCPAINT, WM_ERASEBKGND; its children's wait for its WM_PAINT, which paints over them). TRUE,
+/// or FALSE with 1400 for a handle naming no window.
+#[unsafe(export_name = "f2k_export_RedrawWindow")]
+pub extern "system" fn redraw_window(
+    window: usize,
+    rect: *const Rect,
+    region: usize,
+    flags: u32,
+) -> u32 {
+    if answered(imports::redraw_window(window, rect as usize, region, flags)).is_none() {
+        return 0;
+    }
+    if flags & RDW_ERASENOW != 0 && flags & RDW_UPDATENOW == 0 && window != 0 {
+        if let Some(bits) = answered(imports::update_rect(window, 0, true)) {
+            paint_handed_over(window, bits);
+        }
+    }
+    1
 }
 
 /// InvalidateRgn: the region (client coordinates; NULL: the whole client area) added to the
@@ -64,16 +111,10 @@ pub extern "system" fn validate_rgn(window: usize, region: usize) -> u32 {
 /// region's complexity; ERROR, with 1400 for a handle naming no window.
 #[unsafe(export_name = "f2k_export_GetUpdateRgn")]
 pub extern "system" fn get_update_rgn(window: usize, region: usize, erase: u32) -> i32 {
-    let Some((complexity, erased)) = answered(imports::update_rgn(window, region, erase != 0))
-    else {
+    let Some((complexity, bits)) = answered(imports::update_rgn(window, region, erase != 0)) else {
         return rtl::gdi::ERROR;
     };
-    if erased {
-        if let Ok(dc) = imports::get_dc(window) {
-            let _ = message::send(window, WM_ERASEBKGND, dc, 0);
-            let _ = imports::delete_dc(dc as usize);
-        }
-    }
+    paint_handed_over(window, bits);
     complexity
 }
 
@@ -100,6 +141,12 @@ fn begin(window: usize, mut paint: Option<Out<'_, PaintStruct>>) -> usize {
             return 0;
         };
         let mut filled = paint.get();
+        if filled.restore != 0 {
+            // The frame first: win32k's BeginPaint marks it in fRestore, which is user32's.
+            filled.restore = 0;
+            paint.set(filled);
+            let _ = message::send(window, WM_NCPAINT, 1, 0);
+        }
         if filled.erase != 0 {
             let erased = message::send(window, WM_ERASEBKGND, filled.hdc, 0).unwrap_or(0);
             filled.erase = (erased == 0) as i32;

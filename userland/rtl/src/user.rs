@@ -762,6 +762,24 @@ pub const THREAD_STATE_CURSOR: u32 = 6;
 /// window WM_ERASEBKGND (it asked for the erase, and one was pending).
 pub const UPDATE_NOT_EMPTY: u32 = 0x1;
 pub const UPDATE_ERASE: u32 = 0x2;
+/// NtUserGetUpdateRect's and NtUserGetUpdateRgn's answer bit (F2K's): the caller is to send the
+/// window WM_NCPAINT, before any WM_ERASEBKGND (it asked for the erase, and its frame was to be
+/// painted).
+pub const UPDATE_FRAME: u32 = 0x4;
+
+/// RedrawWindow's flags (winuser.h's RDW_*).
+pub const RDW_INVALIDATE: u32 = 0x0001;
+pub const RDW_INTERNALPAINT: u32 = 0x0002;
+pub const RDW_ERASE: u32 = 0x0004;
+pub const RDW_VALIDATE: u32 = 0x0008;
+pub const RDW_NOINTERNALPAINT: u32 = 0x0010;
+pub const RDW_NOERASE: u32 = 0x0020;
+pub const RDW_NOCHILDREN: u32 = 0x0040;
+pub const RDW_ALLCHILDREN: u32 = 0x0080;
+pub const RDW_UPDATENOW: u32 = 0x0100;
+pub const RDW_ERASENOW: u32 = 0x0200;
+pub const RDW_FRAME: u32 = 0x0400;
+pub const RDW_NOFRAME: u32 = 0x0800;
 
 #[cfg(test)]
 mod tests {

@@ -1988,6 +1988,20 @@ impl Windows {
             w.style &= !WS_VISIBLE;
         }
     }
+
+    /// Give the window a frame `inset` pixels wide on every side: its client area its window
+    /// rectangle less the inset (the paint layer's tests' stand-in for WM_NCCALCSIZE's answer).
+    #[cfg(test)]
+    pub fn set_frame_for_tests(&mut self, id: WindowId, inset: i32) {
+        let w = self.at_mut(id);
+        let r = w.window_rect;
+        w.client_rect = Rect::new(
+            r.left + inset,
+            r.top + inset,
+            r.right - inset,
+            r.bottom - inset,
+        );
+    }
 }
 
 // --- The decision logic
@@ -4466,11 +4480,13 @@ impl Windows {
             super::paint::invalidate(windows, window, None, false);
         }
 
-        // The frame, painted where it shows anew: the window shown, sized, or its frame changed.
+        // The frame, painted where it shows anew: the window shown, sized, or its frame changed;
+        // left to the window's WM_PAINT when a parent still to paint would draw over it.
         if windows.pool.is_live(window)
             && (sized || flags & (SWP_SHOWWINDOW | SWP_FRAMECHANGED) != 0)
             && super::paint::is_shown(windows, window)
             && windows.has_frame(window)
+            && super::paint::frame_now(windows, window)
         {
             s.paint_frame(window);
         }

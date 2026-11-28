@@ -2095,6 +2095,27 @@ pub unsafe extern "system" fn NtUserValidateRect(window: usize, _rect: usize) ->
     wm(|wm| status(wm.window(window).map(|w| w.update = None)))
 }
 
+/// RedrawWindow: the host's windows keep no frames or children; RDW_INVALIDATE is InvalidateRect's,
+/// RDW_VALIDATE ValidateRect's.
+pub unsafe extern "system" fn NtUserRedrawWindow(
+    window: usize,
+    rect: usize,
+    _region: usize,
+    flags: u32,
+) -> u32 {
+    if flags & rtl::user::RDW_INVALIDATE != 0 {
+        // SAFETY: the caller's rectangle, or none.
+        return unsafe {
+            NtUserInvalidateRect(window, rect, (flags & rtl::user::RDW_ERASE != 0) as u32)
+        };
+    }
+    if flags & rtl::user::RDW_VALIDATE != 0 {
+        // SAFETY: as above.
+        return unsafe { NtUserValidateRect(window, rect) };
+    }
+    wm(|wm| status(wm.window(window).map(|_| ())))
+}
+
 /// InvalidateRgn: the host's regions are none, so the whole client area.
 pub unsafe extern "system" fn NtUserInvalidateRgn(
     window: usize,

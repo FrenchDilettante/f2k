@@ -9,10 +9,9 @@ kind = "sectioned"
 gate = true
 
 [pending]
-# U5 (.scratch/plans/user32-gdi32-completeness.md): redraw.exe imports RedrawWindow,
-# ExcludeUpdateRgn, LockWindowUpdate, SetWindowRgn, GetWindowRgn and ScrollDC, which F2K's user32
-# has as stubs only; drop each entry once its block passes.
-redraw = "RedrawWindow is a stub"
+# U5 (.scratch/plans/user32-gdi32-completeness.md): redraw.exe imports ExcludeUpdateRgn,
+# LockWindowUpdate, SetWindowRgn, GetWindowRgn and ScrollDC, which F2K's user32 has as stubs only;
+# drop each entry once its block passes.
 validate = "ExcludeUpdateRgn is a stub"
 lock = "LockWindowUpdate is a stub; and the shown window's GetDC clip box is NULLREGION from the start, where Windows 2000's is the client area (no graphics mode is set: the fixture does not boot under FiSH)"
 wrgn = "SetWindowRgn and GetWindowRgn are stubs; no window regions in hit-testing or visible regions"

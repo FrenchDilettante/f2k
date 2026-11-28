@@ -19,9 +19,11 @@
 //!   GetDCEx of a window ([`get_dc`], [`get_dc_ex`]) a DC of its client area, GetWindowDC
 //!   ([`get_window_dc`]) and GetDCEx with DCX_WINDOW of its window rectangle, and BeginPaint
 //!   ([`paint_dc`]) one of its client area clipped to the update region: the DC's origin is the
-//!   area's top left, its visible region the area on the screen (cut to the update region for
-//!   BeginPaint's). A window's visible region is not cut by the windows above it or by its
-//!   children, whatever WS_CLIPCHILDREN says: F2K does not yet work out windows' visible regions;
+//!   area's top left, its visible region the area on the screen within the window's visible region
+//!   ([`super::paint::visible_region`]: within its ancestors' client areas, less its shown children
+//!   with WS_CLIPCHILDREN or DCX_CLIPCHILDREN, less its siblings above it with WS_CLIPSIBLINGS or
+//!   DCX_CLIPSIBLINGS; GetDC, GetWindowDC and BeginPaint clip as the window's style says), cut to
+//!   the update region for BeginPaint's. Top-level windows do not cut one another's yet;
 //! - the coordinates a drawing service takes are logical: the DC's page transform takes them to
 //!   device coordinates ([`super::mapping`]: the mapping mode, the window's and viewport's origins
 //!   and extents, attributes), and the DC's origin onto the surface ([`Dc::screen_point`], the one
@@ -907,8 +909,13 @@ pub fn create_compatible_dc(call: &mut NtCall, dc: Handle, out: UserPtr<u32>) ->
 pub const DCX_WINDOW: u32 = 0x0000_0001;
 /// GetDCEx's flag for a DC out of the DC cache.
 pub const DCX_CACHE: u32 = 0x0000_0002;
-/// GetDCEx's flag for the DC its window's class style picks (GetDC's and GetWindowDC's own).
+/// GetDCEx's flag for the DC its window's class style picks (GetDC's and GetWindowDC's own), its
+/// clipping the window's style's (WS_CLIPCHILDREN, WS_CLIPSIBLINGS).
 pub const DCX_USESTYLE: u32 = 0x0001_0000;
+/// GetDCEx's flag for a DC that does not draw over the window's shown children.
+pub const DCX_CLIPCHILDREN: u32 = 0x0000_0008;
+/// GetDCEx's flag for a DC that does not draw over the window's shown siblings above it.
+pub const DCX_CLIPSIBLINGS: u32 = 0x0000_0010;
 
 /// Whether GetDCEx with `flags` has a DC to answer for a window whose class style is
 /// `class_style`. Windows 2000's _GetDCEx takes a DC out of its cache for DCX_CACHE, and for
@@ -923,13 +930,14 @@ pub fn answers_dc(flags: u32, class_style: u32) -> bool {
 
 /// NtUserGetDC(Window, Dc): a DC of the window's client area (the screen's for no window).
 pub fn get_dc(call: &mut NtCall, window: Handle, out: UserPtr<u32>) -> NtResult {
-    window_dc(call, window, false, out)
+    window_dc(call, window, DCX_USESTYLE, out)
 }
 
 /// NtUserGetDCEx(Window, Region, Flags, Dc): GetDC's DC, or GetWindowDC's with DCX_WINDOW; 0 (and
 /// success: Windows 2000 sets no error) for a window that has no DC for `flags` (see
-/// [`answers_dc`]). The region and the clipping flags are not looked at: there are no visible
-/// regions to clip to yet.
+/// [`answers_dc`]). The DC clips as DCX_CLIPCHILDREN and DCX_CLIPSIBLINGS say, or as the window's
+/// style says with DCX_USESTYLE ([`super::paint::visible_region`]); the region and its flags are
+/// not looked at.
 pub fn get_dc_ex(
     call: &mut NtCall,
     window: Handle,
@@ -941,13 +949,13 @@ pub fn get_dc_ex(
         out.write(0)?;
         return Ok(STATUS_SUCCESS);
     }
-    window_dc(call, window, flags & DCX_WINDOW != 0, out)
+    window_dc(call, window, flags, out)
 }
 
 /// NtUserGetWindowDC(Window, Dc): a DC of the window's rectangle, its non-client area included
 /// (the screen's for no window).
 pub fn get_window_dc(call: &mut NtCall, window: Handle, out: UserPtr<u32>) -> NtResult {
-    window_dc(call, window, true, out)
+    window_dc(call, window, DCX_WINDOW | DCX_USESTYLE, out)
 }
 
 /// NtGdiDeleteObjectApp(Object): a DC's, a brush's, a font's, a bitmap's or a region's handle
@@ -1532,31 +1540,58 @@ fn screen_dc(call: &mut NtCall, out: UserPtr<u32>) -> NtResult {
     hand_out(call, Dc::screen(width, height), out)
 }
 
-/// A new DC of the window `window` names, of its rectangle when `whole` and of its client area
-/// otherwise (the screen's for a null handle), its handle into `out` (see [`screen_dc`]);
-/// STATUS_INVALID_HANDLE for a handle that names no window.
+/// The clipping GetDCEx's `flags` ask of the window's DC (see [`super::paint::Clipping`]).
+pub fn clipping_of(
+    windows: &super::window::Windows,
+    id: super::window::WindowId,
+    flags: u32,
+) -> super::paint::Clipping {
+    let whole = flags & DCX_WINDOW != 0;
+    let mut clip = super::paint::Clipping {
+        whole,
+        children: flags & DCX_CLIPCHILDREN != 0,
+        siblings: flags & DCX_CLIPSIBLINGS != 0,
+    };
+    if flags & DCX_USESTYLE != 0 {
+        let style = super::paint::Clipping::style(windows, id, whole);
+        clip.children |= style.children;
+        clip.siblings |= style.siblings;
+    }
+    clip
+}
+
+/// A new DC of the window `window` names, of its rectangle with DCX_WINDOW in `flags` and of its
+/// client area otherwise, its visible region cut as the flags say ([`clipping_of`]), (the
+/// screen's for a null handle), its handle into `out` (see [`screen_dc`]); STATUS_INVALID_HANDLE
+/// for a handle that names no window, STATUS_NO_MEMORY when the pool has no room for the region.
 #[cfg(target_arch = "x86")]
-fn window_dc(call: &mut NtCall, window: Handle, whole: bool, out: UserPtr<u32>) -> NtResult {
+fn window_dc(call: &mut NtCall, window: Handle, flags: u32, out: UserPtr<u32>) -> NtResult {
     if window.raw() == 0 {
         return screen_dc(call, out);
     }
-    let area = crate::win32k::queue::with_manager(call.passive(), |m| {
+    let (area, visible) = crate::win32k::queue::with_manager(call.passive(), |m| {
         let id = m.windows.window_from_handle(window.raw())?;
-        Some(if whole {
+        let clip = clipping_of(&m.windows, id, flags);
+        let area = if clip.whole {
             m.windows.window_rect(id)
         } else {
             m.windows.client_rect(id)
-        })
+        };
+        Some((area, super::paint::visible_region(&m.windows, id, clip)))
     })
     .ok_or(STATUS_INVALID_HANDLE)?;
-    let area = Rect {
-        left: area.left,
-        top: area.top,
-        right: area.right,
-        bottom: area.bottom,
-    };
     let (width, height) = screen_extent();
-    hand_out(call, Dc::window(width, height, area), out)
+    let mut dc = Dc::window(width, height, area);
+    let Some(cut) = OwnedRegion::combined(Dc::rects_of(&dc.vis), visible.rects(), |a, b| a && b)
+    else {
+        dc.release_regions();
+        return Err(STATUS_NO_MEMORY);
+    };
+    if !dc.set_vis(cut) {
+        dc.release_regions();
+        return Err(STATUS_NO_MEMORY);
+    }
+    hand_out(call, dc, out)
 }
 
 /// The class style of the window `window` names; STATUS_INVALID_HANDLE for a handle that names
@@ -1587,7 +1622,8 @@ fn hand_out(call: &mut NtCall, dc: Dc, out: UserPtr<u32>) -> NtResult {
 }
 
 /// BeginPaint's DC: a DC of the window's client area `client` (screen coordinates), its visible
-/// region cut to `update` (the update region, client coordinates), its handle the calling
+/// region cut to `update` (the update region, client coordinates) and to `visible` (the window's
+/// visible region, screen coordinates: [`super::paint::visible_region`]), its handle the calling
 /// process's; STATUS_INSUFFICIENT_RESOURCES when the DCs' pool or the GDI table is full,
 /// STATUS_NO_MEMORY when the pool has no room for the region.
 #[cfg(target_arch = "x86")]
@@ -1595,10 +1631,13 @@ pub(super) fn paint_dc(
     call: &mut NtCall,
     client: Rect,
     update: &OwnedRegion,
+    visible: &OwnedRegion,
 ) -> Result<u32, NtStatus> {
     let (width, height) = screen_extent();
     let mut dc = Dc::window(width, height, client);
-    let painted = paint_vis(&dc, update).ok_or(STATUS_NO_MEMORY);
+    let painted = paint_vis(&dc, update)
+        .and_then(|painted| OwnedRegion::combined(painted.rects(), visible.rects(), |a, b| a && b))
+        .ok_or(STATUS_NO_MEMORY);
     let painted = match painted {
         Ok(painted) => painted,
         Err(status) => {
@@ -1790,7 +1829,7 @@ fn screen_dc(_: &mut NtCall, _: UserPtr<u32>) -> NtResult {
 }
 
 #[cfg(not(target_arch = "x86"))]
-fn window_dc(_: &mut NtCall, _: Handle, _: bool, _: UserPtr<u32>) -> NtResult {
+fn window_dc(_: &mut NtCall, _: Handle, _: u32, _: UserPtr<u32>) -> NtResult {
     Err(STATUS_NOT_IMPLEMENTED)
 }
 

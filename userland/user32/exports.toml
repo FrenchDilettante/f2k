@@ -1811,6 +1811,13 @@ impl = { syscall = "crate::win32k::paint::get_update_rect" }
 internal = true
 
 [[export]]
+name = "NtUserRedrawWindow"
+group = "message"
+args = ["handle Window", "ptr Rect", "handle Region", "u32 Flags"]
+impl = { syscall = "crate::win32k::paint::redraw_window" }
+internal = true
+
+[[export]]
 name = "NtUserInvalidateRgn"
 group = "message"
 args = ["handle Window", "handle Region", "bool Erase"]
@@ -5062,7 +5069,7 @@ ordinal = 501
 name = "RedrawWindow"
 group = "message"
 args = ["handle hWnd", "ptr lprcUpdate", "handle hrgnUpdate", "u32 flags"]
-impl = { stub = "not yet implemented" }
+impl = { native = "RedrawWindow" }
 ordinal = 502
 fails = "FALSE"
 

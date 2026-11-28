@@ -620,6 +620,8 @@ mod raw {
         pub fn NtUserValidateRect(window: usize, rect: usize) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserInvalidateRgn"]
         pub fn NtUserInvalidateRgn(window: usize, region: usize, erase: u32) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserRedrawWindow"]
+        pub fn NtUserRedrawWindow(window: usize, rect: usize, region: usize, flags: u32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserGetUpdateRgn"]
         pub fn NtUserGetUpdateRgn(
             window: usize,
@@ -2378,6 +2380,18 @@ pub fn invalidate_rgn(window: usize, region: usize, erase: bool) -> Result<(), N
     checked(unsafe { raw::NtUserInvalidateRgn(window, region, erase as u32) })
 }
 
+/// NtUserRedrawWindow: RedrawWindow's invalidations and validations of `window` (the rectangle at
+/// `rect`, or the region `region`, or the client area for neither) and its WM_PAINT sends.
+pub fn redraw_window(
+    window: usize,
+    rect: usize,
+    region: usize,
+    flags: u32,
+) -> Result<(), NtStatus> {
+    // SAFETY: the kernel reads the rectangle through its fault-tolerant copies.
+    checked(unsafe { raw::NtUserRedrawWindow(window, rect, region, flags) })
+}
+
 /// NtUserCallHwndParamLock's ValidateRgn: the region `region` (zero: all of it) taken out of
 /// `window`'s update region.
 pub fn validate_rgn(window: usize, region: usize) -> Result<(), NtStatus> {
@@ -2390,14 +2404,15 @@ pub fn validate_rgn(window: usize, region: usize) -> Result<(), NtStatus> {
 }
 
 /// NtUserGetUpdateRgn: `region` made a copy of `window`'s update region; its complexity, and
-/// whether a pending erase was handed over (asked with `erase`).
-pub fn update_rgn(window: usize, region: usize, erase: bool) -> Result<(i32, bool), NtStatus> {
+/// the pending painting handed over (asked with `erase`): rtl::user's UPDATE_ERASE and
+/// UPDATE_FRAME.
+pub fn update_rgn(window: usize, region: usize, erase: bool) -> Result<(i32, u32), NtStatus> {
     let mut result = 0u32;
     // SAFETY: the kernel writes the answer into the local.
     checked(unsafe { raw::NtUserGetUpdateRgn(window, region, erase as u32, &mut result) })?;
     Ok((
         (result & 0xFFFF) as u16 as i16 as i32,
-        (result >> 16) & rtl::user::UPDATE_ERASE != 0,
+        (result >> 16) & (rtl::user::UPDATE_ERASE | rtl::user::UPDATE_FRAME),
     ))
 }
 
