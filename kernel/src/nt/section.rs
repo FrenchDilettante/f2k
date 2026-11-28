@@ -1265,9 +1265,6 @@ mod target {
         protect: u32,
         maximum: crate::mem::vm::Maximum,
     ) -> Result<u32, NtStatus> {
-        if !process.with_space(|space| space.has_view_room()) {
-            return Err(STATUS_NO_MEMORY);
-        }
         let section = ob::locked(|directory| {
             *directory
                 .section(object)
@@ -1327,22 +1324,24 @@ mod target {
         // the view is recorded, as from then on another thread may unmap it and drop it.
         let held = ob::locked(|directory| directory.reference(object));
         debug_assert!(held, "a section being mapped lives");
-        keep_view(process, table, base, offset, ob::Mapping::Section(object))?;
+        keep_view(process, base, offset, ob::Mapping::Section(object))?;
         Ok(base)
     }
 
     /// Record the view just mapped at `base` from `offset` of `mapping`, whose reference the
-    /// caller took for it (see [`crate::mem::vm::AddressSpace::record_view`]). The room checked
-    /// before the mapping may have gone since, to another thread of the process: the view is
-    /// released then, its reference dropped, STATUS_NO_MEMORY.
+    /// caller took for it, in its region's record (see
+    /// [`crate::mem::vm::AddressSpace::add_view_at`]): no count of views bounds it, the region's
+    /// record being there since its reservation. A region that is gone or records another view —
+    /// no thread frees a view's region, so never — drops the reference again: STATUS_NO_MEMORY.
     fn keep_view(
         process: &crate::process::Process,
-        table: &mut CurrentPages,
         base: u32,
         offset: u32,
         mapping: ob::Mapping,
     ) -> Result<(), NtStatus> {
-        if process.with_space(|space| space.record_view(table, base, offset, mapping)) {
+        let recorded = process.with_space(|space| space.add_view_at(base, offset, mapping));
+        debug_assert!(recorded, "a mapper's region records its view");
+        if recorded {
             return Ok(());
         }
         ob::release_mapping(mapping);
@@ -1397,9 +1396,6 @@ mod target {
     ) -> Result<ImageView, NtStatus> {
         use crate::exec::loader::page_protect;
         use crate::mem::vm::PAGE_EXECUTE_WRITECOPY;
-        if !process.with_space(|space| space.has_view_room()) {
-            return Err(STATUS_NO_MEMORY);
-        }
         // The file as its record holds it now (the segment keeps it open).
         let record = ob::locked(|directory| {
             let file_object = directory
@@ -1481,7 +1477,7 @@ mod target {
         // recorded: see `map_view`).
         let held = ob::locked(|directory| directory.reference_segment(segment));
         debug_assert!(held, "a segment being mapped lives");
-        keep_view(process, table, base, 0, ob::Mapping::Image(segment))?;
+        keep_view(process, base, 0, ob::Mapping::Image(segment))?;
         Ok(ImageView {
             base,
             at_base: base == image.image_base(),

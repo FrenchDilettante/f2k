@@ -2,17 +2,17 @@
 //! VirtualFree, VirtualProtect and VirtualQuery see — and the one writer of user page-table
 //! entries.
 //!
-//! A process's address space is a table of regions — each a reservation `[base, base + size)` with
-//! the protection it was allocated with and a kind (private memory, a mapped view, an image) — and
-//! the page tables,
-//! which hold each page's state, as [`pte`] classifies it. A committed page the program may touch
-//! is usually a present entry naming its frame; its exact protection rides in the entry's three
-//! software bits (zero meaning "read-write if writable, else read-only", for entries written before
-//! the protection was recorded). A committed page not mapped yet is a demand-zero entry: the
-//! committed marker, no frame — the first touch faults a zeroed frame in. A committed page the
-//! program may not touch — PAGE_NOACCESS, or a guard page — is a non-present entry that still names
-//! its frame, marked as committed, its protection (the guard flag apart) in the same bits. An
-//! uncommitted page has no entry.
+//! A process's address space is its regions — each a reservation `[base, base + size)` with the
+//! protection it was allocated with and a kind (private memory, a mapped view, an image), its
+//! record holding its view when it is one (Windows 2000's VADs, kept in address order and grown on
+//! demand: no count bounds them) — and the page tables, which hold each page's state, as [`pte`]
+//! classifies it. A committed page the program may touch is usually a present entry naming its
+//! frame; its exact protection rides in the entry's three software bits (zero meaning "read-write
+//! if writable, else read-only", for entries written before the protection was recorded). A
+//! committed page not mapped yet is a demand-zero entry: the committed marker, no frame — the first
+//! touch faults a zeroed frame in. A committed page the program may not touch — PAGE_NOACCESS, or a
+//! guard page — is a non-present entry that still names its frame, marked as committed, its
+//! protection (the guard flag apart) in the same bits. An uncommitted page has no entry.
 //!
 //! Every user page lies in a region: the loader seeds the image and the system areas before it maps
 //! anything, and every mapping, commit, guard and release goes through [`AddressSpace`], so a
@@ -462,11 +462,6 @@ pub trait Pages {
     }
 }
 
-/// How many regions a process can hold: the kernel's own areas (about a dozen), and every
-/// reservation, thread stack, heap segment, big block and view the program makes. A fixed table:
-/// exhausting it is the program's ERROR_NOT_ENOUGH_MEMORY.
-pub const REGIONS: usize = 1024;
-
 fn page_down(va: u32) -> u32 {
     va & !(PAGE - 1)
 }
@@ -475,11 +470,12 @@ fn page_up(va: u64) -> u64 {
     (va + PAGE as u64 - 1) & !(PAGE as u64 - 1)
 }
 
-/// How many mapped views a process can hold at once: every DLL a program loads is one (an
-/// explorer-class program maps forty and more), and every MapViewOfFile. A full table refuses the
-/// map (STATUS_NO_MEMORY). The table is the process's own, in its record, so one process filling
-/// it takes nothing from another.
-pub const VIEWS: usize = 128;
+/// The pages a space's region records grow from: the nonpaged pool on target, the host allocator
+/// in the host builds (whose tests may hand a space a budgeted one: [`AddressSpace::on`]).
+#[cfg(target_arch = "x86")]
+pub type KernelPages = crate::slots::NonpagedPages;
+#[cfg(not(target_arch = "x86"))]
+pub type KernelPages = crate::slots::HostPages;
 
 /// One mapped view: its region's base, the section offset it maps from (zero for an image), and
 /// what it maps — a data section, or an image's segment — whose frames it maps (the view holds a
@@ -491,11 +487,165 @@ pub struct View {
     pub mapping: crate::ob::Mapping,
 }
 
-/// A process's regions, its mapped views (on NT, the VADs a view's section hangs off), and its
-/// commit quota. All `None` is the empty space, with nothing charged.
+/// What a view's region records of its view: the section offset and what it maps.
+#[derive(Clone, Copy)]
+struct Mapped {
+    offset: u32,
+    mapping: crate::ob::Mapping,
+}
+
+/// One region's record, Windows 2000's VAD: the reservation and, for a mapped view, the view
+/// (a VAD's control area): the view lives and goes with its region's record, so a process holds
+/// as many views as it holds regions.
+#[derive(Clone, Copy)]
+struct Vad {
+    region: Region,
+    view: Option<Mapped>,
+}
+
+/// How many records a page of them holds.
+const VADS_PER_PAGE: usize = PAGE as usize / core::mem::size_of::<Vad>();
+
+/// A space's region records, sorted by base — Windows 2000 keeps its VADs in a tree ordered by
+/// address, so the fault path's look-up (MiLocateAddress) is a search, not a walk: one run of
+/// pages from the nonpaged pool, made at the first reservation and doubled when full (the old run
+/// copied over and given back), kept at its peak until the space is emptied. No count is fixed:
+/// a reservation fails only when no page is left for the records, the program's
+/// ERROR_NOT_ENOUGH_MEMORY, as Windows 2000's when no pool is left for a VAD.
+struct Vads {
+    /// The records, `len` of them, in a run of `pages` pages; null with no page.
+    at: *mut Vad,
+    len: u32,
+    pages: u32,
+    from: &'static KernelPages,
+}
+
+// SAFETY: the records are the space's alone (its run is no one else's), reached only through it:
+// moving the space to another processor moves them with it.
+unsafe impl Send for Vads {}
+
+impl Vads {
+    const fn on(from: &'static KernelPages) -> Vads {
+        Vads {
+            at: core::ptr::null_mut(),
+            len: 0,
+            pages: 0,
+            from,
+        }
+    }
+
+    /// Every record, lowest base first.
+    fn all(&self) -> &[Vad] {
+        if self.at.is_null() {
+            return &[];
+        }
+        // SAFETY: the run holds `len` written records, the space's alone.
+        unsafe { core::slice::from_raw_parts(self.at, self.len as usize) }
+    }
+
+    /// Every record, to change (never its base: the order holds).
+    fn all_mut(&mut self) -> &mut [Vad] {
+        if self.at.is_null() {
+            return &mut [];
+        }
+        // SAFETY: as `all`, borrowed mutably through the space.
+        unsafe { core::slice::from_raw_parts_mut(self.at, self.len as usize) }
+    }
+
+    /// The record of the region holding `va`.
+    fn holding(&self, va: u32) -> Option<usize> {
+        let all = self.all();
+        let index = all
+            .partition_point(|vad| vad.region.base <= va)
+            .checked_sub(1)?;
+        let region = &all[index].region;
+        (va - region.base < region.size).then_some(index)
+    }
+
+    /// The record of the region based at `base`.
+    fn based(&self, base: u32) -> Option<usize> {
+        self.all()
+            .binary_search_by_key(&base, |vad| vad.region.base)
+            .ok()
+    }
+
+    /// Insert `vad` in its place among the records (its region meets none of theirs), growing
+    /// the run when it is full; no page for a larger run is VmError::NoMemory, the records as
+    /// they were.
+    fn insert(&mut self, vad: Vad) -> Result<(), VmError> {
+        let place = self
+            .all()
+            .partition_point(|other| other.region.base < vad.region.base);
+        if self.len as usize == self.pages as usize * VADS_PER_PAGE {
+            self.grow()?;
+        }
+        // SAFETY: the run has room for one more record past `len`; the tail moves up one place
+        // (`copy` allows the overlap) and the new record is written into the gap.
+        unsafe {
+            let at = self.at.add(place);
+            core::ptr::copy(at, at.add(1), self.len as usize - place);
+            at.write(vad);
+        }
+        self.len += 1;
+        Ok(())
+    }
+
+    /// Take the record at `index` out, the ones above it moving down.
+    fn remove(&mut self, index: usize) -> Vad {
+        assert!(index < self.len as usize, "a record of the space");
+        // SAFETY: `index` names a written record; the tail above it moves down one place.
+        let vad = unsafe {
+            let at = self.at.add(index);
+            let vad = at.read();
+            core::ptr::copy(at.add(1), at, self.len as usize - index - 1);
+            vad
+        };
+        self.len -= 1;
+        vad
+    }
+
+    /// A run twice the size (a page at first), the records copied over and the old run given
+    /// back.
+    fn grow(&mut self) -> Result<(), VmError> {
+        let pages = match self.pages {
+            0 => 1,
+            pages => pages.checked_mul(2).ok_or(VmError::NoMemory)?,
+        };
+        let at = crate::slots::Pages::take(self.from, pages as usize)
+            .ok_or(VmError::NoMemory)?
+            .cast::<Vad>()
+            .as_ptr();
+        if let Some(old) = core::ptr::NonNull::new(self.at) {
+            // SAFETY: the old run's `len` records into the new, larger run (two distinct runs);
+            // the old run was `from`'s, taken with `self.pages` pages, and nothing refers to it
+            // any more.
+            unsafe {
+                core::ptr::copy_nonoverlapping(old.as_ptr(), at, self.len as usize);
+                crate::slots::Pages::give(self.from, old.cast(), self.pages as usize);
+            }
+        }
+        self.at = at;
+        self.pages = pages;
+        Ok(())
+    }
+
+    /// Forget every record, the run given back.
+    fn clear(&mut self) {
+        if let Some(at) = core::ptr::NonNull::new(self.at) {
+            // SAFETY: the run was `from`'s, taken with `self.pages` pages; the records are copies
+            // of plain values, so nothing refers to it once it goes.
+            unsafe { crate::slots::Pages::give(self.from, at.cast(), self.pages as usize) };
+        }
+        self.at = core::ptr::null_mut();
+        self.len = 0;
+        self.pages = 0;
+    }
+}
+
+/// A process's regions — each with its mapped view, when it is one (on NT, the VADs a view's
+/// section hangs off) — and its commit quota. No region is the empty space, with nothing charged.
 pub struct AddressSpace {
-    regions: [Option<Region>; REGIONS],
-    views: [Option<View>; VIEWS],
+    vads: Vads,
     /// The process's commit charge against the system's commit limit (see [`super::quota`]),
     /// taken from the limit when the space is made for a process ([`Self::reset`]): a commit
     /// charges it, a decommit or release discharges it. Guarded by the space's own lock, like the
@@ -504,186 +654,171 @@ pub struct AddressSpace {
 }
 
 impl AddressSpace {
-    /// The empty space: a process record's from the kernel's build on (the pool's records are
-    /// built at compile time), and the tests'.
+    /// The empty space, holding no page: a process record's from the kernel's build on, and the
+    /// tests'.
     pub const fn new() -> AddressSpace {
+        AddressSpace::on(&crate::slots::KERNEL_PAGES)
+    }
+
+    /// The empty space, its region records growing from `pages`: a test's, whose budget makes a
+    /// reservation find no page.
+    pub const fn on(pages: &'static KernelPages) -> AddressSpace {
         AddressSpace {
-            regions: [None; REGIONS],
-            views: [None; VIEWS],
+            vads: Vads::on(pages),
             quota: CommitQuota::new(0),
         }
     }
 
-    /// Write the empty space at `space`, element by element: the in-place form of [`Self::new`],
-    /// for a space built inside a process record at its final address (by value it would pass
-    /// through the caller's stack).
+    /// Write the empty space at `space`: the in-place form of [`Self::new`], for a space built
+    /// inside a process record at its final address.
     ///
     /// # Safety
     ///
     /// `space` is valid for writes and aligned; its previous contents are overwritten, not dropped.
     pub unsafe fn write_empty(space: *mut AddressSpace) {
-        use core::ptr::addr_of_mut;
-        // SAFETY: the caller's contract; both tables are written element by element.
-        unsafe {
-            let regions = addr_of_mut!((*space).regions) as *mut Option<Region>;
-            for index in 0..REGIONS {
-                regions.add(index).write(None);
-            }
-            let views = addr_of_mut!((*space).views) as *mut Option<View>;
-            for index in 0..VIEWS {
-                views.add(index).write(None);
-            }
-            addr_of_mut!((*space).quota).write(CommitQuota::new(0));
-        }
+        // SAFETY: the caller's contract.
+        unsafe { space.write(AddressSpace::new()) };
     }
 
-    /// Whether another view can be recorded.
-    pub fn has_view_room(&self) -> bool {
-        self.views.iter().any(Option::is_none)
-    }
-
-    /// Record the view just mapped at `base` from `offset` of `mapping`, in the same hold of the
-    /// space as the check for room: false when the table is full — another thread of the process
-    /// took its last record since the mapper looked — and the view's region is released then, its
-    /// pages' holds with it, so the mapper is left nothing to undo but the reference it took for
-    /// the view.
-    pub fn record_view(
-        &mut self,
-        pages: &mut impl Pages,
-        base: u32,
-        offset: u32,
-        mapping: crate::ob::Mapping,
-    ) -> bool {
-        if self.add_view_at(base, offset, mapping) {
-            return true;
-        }
-        let _ = self.release(pages, base);
-        false
-    }
-
-    /// Record a view mapped at `base` of `mapping` (from offset zero); false when the view table
-    /// is full.
+    /// Record a view mapped at `base` of `mapping` (from offset zero) in the region based there;
+    /// false when no region starts there, or its record holds a view already.
     pub fn add_view(&mut self, base: u32, mapping: crate::ob::Mapping) -> bool {
         self.add_view_at(base, 0, mapping)
     }
 
-    /// Record a view mapped at `base` from `offset` of `mapping`; false when the view table is
-    /// full.
+    /// Record a view mapped at `base` from `offset` of `mapping` in the region based there — the
+    /// mapper's last step, once the region is reserved and its pages mapped: false when no region
+    /// starts there, or its record holds a view already (neither can happen to a mapper's own
+    /// region: no other thread frees a view's region, and an unmap finds no view to take before
+    /// this).
     pub fn add_view_at(&mut self, base: u32, offset: u32, mapping: crate::ob::Mapping) -> bool {
-        match self.views.iter_mut().find(|view| view.is_none()) {
-            Some(slot) => {
-                *slot = Some(View {
-                    base,
-                    offset,
-                    mapping,
-                });
-                true
-            }
-            None => false,
+        let Some(index) = self.vads.based(base) else {
+            return false;
+        };
+        let vad = &mut self.vads.all_mut()[index];
+        if vad.view.is_some() {
+            return false;
         }
+        vad.view = Some(Mapped { offset, mapping });
+        true
     }
 
     /// What the view at `base` maps; none when no view starts there.
     pub fn view_at(&self, base: u32) -> Option<crate::ob::Mapping> {
-        self.views
-            .iter()
-            .flatten()
-            .find(|view| view.base == base)
-            .map(|view| view.mapping)
+        let index = self.vads.based(base)?;
+        self.vads.all()[index].view.map(|view| view.mapping)
     }
 
-    /// Forget the view at `base`, returning it whole; none when no view starts there.
+    /// Forget the view at `base`, returning it whole; none when no view starts there. Its region
+    /// stays until its release.
     pub fn take_view(&mut self, base: u32) -> Option<View> {
-        self.views
-            .iter_mut()
-            .find(|view| view.is_some_and(|view| view.base == base))?
-            .take()
+        let index = self.vads.based(base)?;
+        let view = self.vads.all_mut()[index].view.take()?;
+        Some(View {
+            base,
+            offset: view.offset,
+            mapping: view.mapping,
+        })
     }
 
-    /// Forget every view, handing each to `release` — its base, for its pages to go, and what it
-    /// mapped, for the reference the view held.
-    pub fn drop_views(&mut self, mut release: impl FnMut(View)) {
-        for slot in self.views.iter_mut() {
-            if let Some(view) = slot.take() {
-                release(view);
-            }
-        }
+    /// Forget the lowest view based at `from` or above, returning it whole (its region stays
+    /// until its release); none when there is none. The views go one at a time this way, lowest
+    /// first — the address order Windows 2000's MmCleanProcessAddressSpace takes them in — each
+    /// one's reference dropped outside the space's lock before the next is taken.
+    pub fn take_view_from(&mut self, from: u32) -> Option<View> {
+        let start = self
+            .vads
+            .all()
+            .partition_point(|vad| vad.region.base < from);
+        self.vads.all_mut()[start..]
+            .iter_mut()
+            .find_map(|vad| Some((vad.region.base, vad.view.take()?)))
+            .map(|(base, view)| View {
+                base,
+                offset: view.offset,
+                mapping: view.mapping,
+            })
     }
 
     /// The bytes every region reserves together (VM_COUNTERS' VirtualSize).
     pub fn reserved_size(&self) -> u32 {
-        self.regions
-            .iter()
-            .flatten()
-            .map(|region| region.size)
-            .sum()
+        self.vads.all().iter().map(|vad| vad.region.size).sum()
     }
 
-    /// Empty the space in place, whatever it held (by value it would pass the caller's stack): a
-    /// process record taken for a new process. The commit quota starts over at the system's
-    /// commit limit ([`super::system_commit_limit`]).
+    /// Empty the space in place, whatever it held, its records' pages given back: a process record
+    /// taken for a new process. The commit quota starts over at the system's commit limit
+    /// ([`super::system_commit_limit`]).
     pub fn reset(&mut self) {
-        self.regions.fill(None);
-        self.views.fill(None);
+        self.vads.clear();
         self.quota = CommitQuota::new(super::system_commit_limit());
+    }
+
+    /// Forget every region, their records' pages given back: the teardown's, once the views have
+    /// gone and the page tables' walk has given every page back.
+    pub fn forget_regions(&mut self) {
+        self.vads.clear();
     }
 
     /// The region containing `va`.
     pub fn region_at(&self, va: u32) -> Option<Region> {
-        self.regions
-            .iter()
-            .flatten()
-            .find(|r| va >= r.base && va - r.base < r.size)
-            .copied()
+        let index = self.vads.holding(va)?;
+        Some(self.vads.all()[index].region)
     }
 
-    /// Whether `[base, end)` meets any region.
+    /// Whether `[base, end)` meets any region: the last region based below `end` is the one
+    /// reaching highest (the regions are disjoint).
     fn overlaps(&self, base: u32, end: u64) -> bool {
-        self.regions
-            .iter()
-            .flatten()
-            .any(|r| (base as u64) < r.base as u64 + r.size as u64 && (r.base as u64) < end)
+        let all = self.vads.all();
+        let below = all.partition_point(|vad| (vad.region.base as u64) < end);
+        below.checked_sub(1).is_some_and(|index| {
+            all[index].region.base as u64 + all[index].region.size as u64 > base as u64
+        })
     }
 
     /// A granularity-aligned base where `size` bytes fit between the regions, below `placement`'s
-    /// end: the lowest, or the highest for a top-down placement.
+    /// end: the lowest, or the highest for a top-down placement. One sweep of the records in
+    /// address order, a candidate moving past each region it meets.
     fn free_range(&self, size: u32, placement: Placement) -> Option<u32> {
         let end = placement.end as u64;
-        let meets = |candidate: u64| {
-            self.regions.iter().flatten().filter(move |r| {
-                candidate < r.base as u64 + r.size as u64
-                    && (r.base as u64) < candidate + size as u64
-            })
-        };
+        let size = size as u64;
+        let granule = GRANULARITY as u64 - 1;
+        let all = self.vads.all();
+        let reach = |vad: &Vad| vad.region.base as u64 + vad.region.size as u64;
         if placement.top_down {
-            let mut candidate = end.checked_sub(size as u64)? & !(GRANULARITY as u64 - 1);
+            let mut candidate = end.checked_sub(size)? & !granule;
+            // The records below `next` are the ones not yet passed.
+            let mut next = all.len();
             loop {
                 if candidate < USER_LOW as u64 {
                     return None;
                 }
-                match meets(candidate).map(|r| r.base as u64).min() {
+                while next > 0 && all[next - 1].region.base as u64 >= candidate + size {
+                    next -= 1;
+                }
+                // The regions the candidate meets are a run down from `next`: it moves below the
+                // lowest of them.
+                let mut lowest = None;
+                while next > 0 && reach(&all[next - 1]) > candidate {
+                    next -= 1;
+                    lowest = Some(all[next].region.base as u64);
+                }
+                match lowest {
                     None => return Some(candidate as u32),
-                    Some(below) => {
-                        candidate = below.checked_sub(size as u64)? & !(GRANULARITY as u64 - 1);
-                    }
+                    Some(below) => candidate = below.checked_sub(size)? & !granule,
                 }
             }
         }
         let mut candidate = USER_LOW as u64;
-        loop {
-            if candidate + size as u64 > end {
-                return None;
+        for vad in all {
+            if reach(vad) <= candidate {
+                continue;
             }
-            match meets(candidate)
-                .map(|r| r.base as u64 + r.size as u64)
-                .max()
-            {
-                None => return Some(candidate as u32),
-                Some(past) => {
-                    candidate = past.div_ceil(GRANULARITY as u64) * GRANULARITY as u64;
-                }
+            if vad.region.base as u64 >= candidate + size {
+                break;
             }
+            candidate = reach(vad).div_ceil(GRANULARITY as u64) * GRANULARITY as u64;
         }
+        (candidate + size <= end).then_some(candidate as u32)
     }
 
     /// Record a region exactly as given (the kernel's own areas: the image, stacks, staged pages).
@@ -691,13 +826,7 @@ impl AddressSpace {
         if self.overlaps(region.base, region.base as u64 + region.size as u64) {
             return Err(VmError::InvalidAddress);
         }
-        let slot = self
-            .regions
-            .iter_mut()
-            .find(|r| r.is_none())
-            .ok_or(VmError::NoMemory)?;
-        *slot = Some(region);
-        Ok(())
+        self.vads.insert(Vad { region, view: None })
     }
 
     /// Reserve `size` bytes at `address` (rounded down to the granularity, the end up to a page)
@@ -948,12 +1077,9 @@ impl AddressSpace {
         pages: &mut impl Pages,
         address: u32,
     ) -> Result<(Region, u32), VmError> {
-        let slot = self
-            .regions
-            .iter_mut()
-            .find(|r| r.is_some_and(|r| r.base == address))
-            .ok_or(VmError::InvalidAddress)?;
-        let region = slot.take().unwrap();
+        let index = self.vads.based(address).ok_or(VmError::InvalidAddress)?;
+        let Vad { region, view } = self.vads.remove(index);
+        debug_assert!(view.is_none(), "a view's region goes after its view");
         let charged = self.drop_pages(pages, region.base, region.base + region.size);
         Ok((region, charged))
     }
@@ -1094,14 +1220,10 @@ impl AddressSpace {
     pub fn query(&self, pages: &impl Pages, address: u32) -> Info {
         let start = page_down(address);
         let Some(region) = self.region_at(start) else {
-            let next = self
-                .regions
-                .iter()
-                .flatten()
-                .filter(|r| r.base > start)
-                .map(|r| r.base)
-                .min()
-                .unwrap_or(USER_HIGH);
+            let all = self.vads.all();
+            let next = all
+                .get(all.partition_point(|vad| vad.region.base <= start))
+                .map_or(USER_HIGH, |vad| vad.region.base);
             return Info {
                 base: start,
                 allocation_base: 0,
@@ -1536,21 +1658,51 @@ mod tests {
         }
     }
 
-    /// The views a space records: one per base, found by its base, the table's capacity enforced,
-    /// and every one handed back (with its section) when the space goes.
+    /// A budget of pages for a space's records, leaked for the test's life.
+    fn budget(pages: usize) -> &'static crate::slots::HostPages {
+        Box::leak(Box::new(crate::slots::HostPages::with_budget(pages)))
+    }
+
+    /// A data section's mapping, numbered.
+    fn section(index: u16) -> crate::ob::Mapping {
+        crate::ob::Mapping::Section(crate::ob::ObjectId {
+            kind: crate::ob::ObjectType::Section,
+            index,
+            generation: 0,
+        })
+    }
+
+    /// Reserve a view's region at `base`, a granule.
+    fn view_region(space: &mut AddressSpace, base: u32) {
+        space
+            .reserve(
+                Some(base),
+                GRANULARITY,
+                PAGE_READWRITE,
+                Kind::Mapped(Maximum::Write),
+            )
+            .unwrap();
+    }
+
+    /// The views a space records, each in its region's record: one per region, found by its
+    /// base, none without a region, as many as there are regions (past the 128 a fixed table
+    /// held), and every one handed back, lowest first, when the space goes.
     #[test]
     fn the_space_records_its_views() {
-        use crate::ob::{Mapping, ObjectId, ObjectType, SegmentId};
-        let section = |index| {
-            Mapping::Section(ObjectId {
-                kind: ObjectType::Section,
-                index,
-                generation: 0,
-            })
-        };
+        use crate::ob::{Mapping, SegmentId};
         let mut space = Box::new(AddressSpace::new());
+        assert!(
+            !space.add_view_at(0x30_0000, 0, section(1)),
+            "no region, no view"
+        );
+        view_region(&mut space, 0x30_0000);
+        view_region(&mut space, 0x31_0000);
         assert!(space.add_view_at(0x30_0000, 0, section(1)));
         assert!(space.add_view_at(0x31_0000, 0x10000, section(2)));
+        assert!(
+            !space.add_view_at(0x30_0000, 0, section(9)),
+            "one view a region"
+        );
         assert_eq!(
             space.take_view(0x30_1000),
             None,
@@ -1559,14 +1711,16 @@ mod tests {
         let taken = space.take_view(0x30_0000).unwrap();
         assert_eq!((taken.offset, taken.mapping), (0, section(1)));
         assert_eq!(space.take_view(0x30_0000), None, "a view goes once");
-        for index in 1..VIEWS as u16 {
-            assert!(space.add_view_at(0x40_0000 + index as u32 * 0x1_0000, 0, section(3)));
-        }
-        assert!(!space.has_view_room());
         assert!(
-            !space.add_view_at(0x7000_0000, 0, section(4)),
-            "the table is full"
+            space.region_at(0x30_0000).is_some(),
+            "its region stays until its release"
         );
+        // Far past the old table's 128, reserved top-down so the records insert below the others.
+        for index in (1..300u32).rev() {
+            let base = 0x40_0000 + index * GRANULARITY;
+            view_region(&mut space, base);
+            assert!(space.add_view_at(base, 0, section(3)));
+        }
         let image = Mapping::Image(SegmentId {
             index: 5,
             generation: 1,
@@ -1579,21 +1733,179 @@ mod tests {
             space.add_view_at(0x41_0000, 0, image),
             "an image's view maps its segment"
         );
+        assert_eq!(space.view_at(0x41_0000), Some(image));
         let mut released = Vec::new();
-        space.drop_views(|view| released.push(view.mapping));
-        assert_eq!(released.len(), VIEWS);
+        let mut from = 0;
+        while let Some(view) = space.take_view_from(from) {
+            from = view.base + 1;
+            released.push(view);
+        }
+        assert_eq!(released.len(), 300);
+        assert!(
+            released.windows(2).all(|pair| pair[0].base < pair[1].base),
+            "lowest first"
+        );
+        assert_eq!(released[0].mapping, section(2));
+        assert_eq!(released[1].mapping, image);
+        assert!(space.take_view_from(0).is_none() && space.view_at(0x31_0000).is_none());
+    }
+
+    /// The records grow a page at a time past any fixed count, sorted by base whatever the order
+    /// they came in; with no page for a larger run a reservation is ERROR_NOT_ENOUGH_MEMORY and
+    /// the space stays as it was; the space's reset gives every page back.
+    #[test]
+    fn the_records_grow_and_give_their_pages_back() {
+        let pages = budget(usize::MAX);
+        let mut vm = Box::new(AddressSpace::on(pages));
+        assert_eq!(pages.held(), 0, "an empty space holds no page");
+        // Every other granule from the top down, then the ones between from the bottom up.
+        let count = 1_100u32;
+        for i in (0..count).rev() {
+            vm.reserve(
+                Some(0x0100_0000 + 2 * i * GRANULARITY),
+                PAGE,
+                PAGE_READWRITE,
+                Kind::Private,
+            )
+            .unwrap();
+        }
+        for i in 0..count {
+            vm.reserve(
+                Some(0x0101_0000 + 2 * i * GRANULARITY),
+                PAGE,
+                PAGE_READWRITE,
+                Kind::Private,
+            )
+            .unwrap();
+        }
+        let bases: Vec<u32> = vm.vads.all().iter().map(|vad| vad.region.base).collect();
+        assert_eq!(bases.len(), 2 * count as usize);
+        assert!(bases.windows(2).all(|pair| pair[0] < pair[1]), "sorted");
+        let held = pages.held();
+        assert!(held >= 2 * count as usize / VADS_PER_PAGE);
+        for i in 0..2 * count {
+            assert_eq!(
+                vm.region_at(0x0100_0000 + i * GRANULARITY + 0x123)
+                    .map(|r| r.base),
+                Some(0x0100_0000 + i * GRANULARITY)
+            );
+            assert_eq!(vm.region_at(0x0100_0000 + i * GRANULARITY + PAGE), None);
+        }
+        // Fill the run, then find no page for the next.
+        pages.set_budget(0);
+        let mut more = 0;
+        while vm
+            .reserve(None, GRANULARITY, PAGE_READWRITE, Kind::Private)
+            .is_ok()
+        {
+            more += 1;
+        }
         assert_eq!(
-            released
-                .iter()
-                .filter(|&&mapping| mapping == section(2))
-                .count(),
-            1
+            more,
+            vm.vads.pages as usize * VADS_PER_PAGE - 2 * count as usize
         );
         assert_eq!(
-            released.iter().filter(|&&mapping| mapping == image).count(),
-            1
+            vm.reserve(None, GRANULARITY, PAGE_READWRITE, Kind::Private),
+            Err(VmError::NoMemory)
         );
-        assert!(space.has_view_room() && space.take_view(0x31_0000).is_none());
+        assert_eq!(vm.vads.len as usize, 2 * count as usize + more);
+        assert_eq!(pages.held(), held, "a refused growth keeps the run");
+        // A release makes room again without a page.
+        vm.release(&mut Fake::default(), 0x0100_0000).unwrap();
+        assert!(vm
+            .reserve(None, GRANULARITY, PAGE_READWRITE, Kind::Private)
+            .is_ok());
+        vm.reset();
+        assert_eq!(pages.held(), 0, "the reset gives the pages back");
+        assert_eq!(vm.region_at(0x0100_0000), None);
+        pages.set_budget(1);
+        vm.reserve(None, GRANULARITY, PAGE_READWRITE, Kind::Private)
+            .unwrap();
+        vm.forget_regions();
+        assert_eq!(pages.held(), 0, "so does the teardown's");
+    }
+
+    /// The sweep for a free range picks what a search against every region would, bottom-up and
+    /// top-down, among regions of any alignment (the kernel's own areas are pages).
+    #[test]
+    fn the_free_range_sweep_finds_what_a_full_search_finds() {
+        /// The search over every region the space made before its records were sorted.
+        fn reference(regions: &[Region], size: u32, placement: Placement) -> Option<u32> {
+            let end = placement.end as u64;
+            let meets = |candidate: u64| {
+                regions.iter().filter(move |r| {
+                    candidate < r.base as u64 + r.size as u64
+                        && (r.base as u64) < candidate + size as u64
+                })
+            };
+            if placement.top_down {
+                let mut candidate = end.checked_sub(size as u64)? & !(GRANULARITY as u64 - 1);
+                loop {
+                    if candidate < USER_LOW as u64 {
+                        return None;
+                    }
+                    match meets(candidate).map(|r| r.base as u64).min() {
+                        None => return Some(candidate as u32),
+                        Some(below) => {
+                            candidate = below.checked_sub(size as u64)? & !(GRANULARITY as u64 - 1);
+                        }
+                    }
+                }
+            }
+            let mut candidate = USER_LOW as u64;
+            loop {
+                if candidate + size as u64 > end {
+                    return None;
+                }
+                match meets(candidate)
+                    .map(|r| r.base as u64 + r.size as u64)
+                    .max()
+                {
+                    None => return Some(candidate as u32),
+                    Some(past) => {
+                        candidate = past.div_ceil(GRANULARITY as u64) * GRANULARITY as u64;
+                    }
+                }
+            }
+        }
+        let mut seed = 0x2545_F491u32;
+        let mut next = move |bound: u32| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed % bound
+        };
+        let rounds = if cfg!(miri) { 4 } else { 60 };
+        for _ in 0..rounds {
+            let mut vm = Box::new(AddressSpace::new());
+            // Regions of pages packed into a small window near either end, so the sizes asked
+            // for meet several of them.
+            for _ in 0..next(40) {
+                let low = next(2) == 0;
+                let page = next(0x200);
+                let base = if low {
+                    USER_LOW + page * PAGE
+                } else {
+                    USER_HIGH - 0x20_0000 + page * PAGE
+                };
+                let _ = vm.insert(Region {
+                    base,
+                    size: (1 + next(24)) * PAGE,
+                    alloc_protect: PAGE_READWRITE,
+                    kind: Kind::Private,
+                });
+            }
+            let regions: Vec<Region> = vm.vads.all().iter().map(|vad| vad.region).collect();
+            for _ in 0..40 {
+                let size = (1 + next(48)) * PAGE;
+                let placement = Placement::of(next(4) * 6, next(2) == 0).unwrap();
+                assert_eq!(
+                    vm.free_range(size, placement),
+                    reference(&regions, size, placement),
+                    "{size:#x} {placement:?} {regions:x?}"
+                );
+            }
+        }
     }
 
     /// A guard page fires once, keeping its base protection and frame.
@@ -2183,35 +2495,6 @@ mod tests {
         assert_eq!(vm.query(&pages, 0x31_0000).state, MEM_FREE);
     }
 
-    /// A program reserving in a loop gets its reservations until the table is full, well past the
-    /// few hundred a smaller table allowed; the next one is ERROR_NOT_ENOUGH_MEMORY.
-    #[test]
-    fn the_region_table_holds_a_thousand_reservations() {
-        let mut vm = space();
-        for i in 0..12 {
-            vm.insert(Region {
-                base: 0x7000_0000 + i * GRANULARITY,
-                size: PAGE,
-                alloc_protect: PAGE_READWRITE,
-                kind: Kind::Private,
-            })
-            .unwrap();
-        }
-        let mut reserved = 0;
-        while vm
-            .reserve(None, GRANULARITY, PAGE_READWRITE, Kind::Private)
-            .is_ok()
-        {
-            reserved += 1;
-        }
-        assert_eq!(reserved, REGIONS - 12);
-        assert!(reserved > 1000);
-        assert_eq!(
-            vm.reserve(None, GRANULARITY, PAGE_READWRITE, Kind::Private),
-            Err(VmError::NoMemory)
-        );
-    }
-
     /// Unaddressed reservations take the lowest free granule past the regions; free memory reports
     /// up to the next region.
     #[test]
@@ -2251,6 +2534,7 @@ mod tests {
             index: 1,
             generation: 0,
         });
+        view_region(&mut vm, 0x30_0000);
         assert!(vm.add_view(0x30_0000, section));
         vm.reset();
         assert_eq!(vm.region_at(USER_LOW), None);
@@ -2258,7 +2542,16 @@ mod tests {
             vm.query(&Fake::default(), USER_LOW).size,
             USER_HIGH - USER_LOW
         );
-        assert!(vm.has_view_room());
+        assert_eq!(vm.view_at(0x30_0000), None);
+        // In place, over whatever was there.
+        let mut space = core::mem::MaybeUninit::<AddressSpace>::uninit();
+        // SAFETY: a space's room, written whole.
+        let space = unsafe {
+            AddressSpace::write_empty(space.as_mut_ptr());
+            space.assume_init_mut()
+        };
+        assert_eq!(space.region_at(USER_LOW), None);
+        assert_eq!(space.reserved_size(), 0);
     }
 
     /// A commit is all or nothing: one that runs out of frames midway gives back every frame it
@@ -2396,41 +2689,36 @@ mod tests {
         assert_eq!(vm.query(&pages, high).state, MEM_RESERVE);
     }
 
-    /// A view recorded once its pages are mapped: when another thread took the table's last
-    /// record meanwhile, the view's region goes, its pages' holds on the section's frames with it.
+    /// A view is recorded in its region once its pages are mapped; with no region at its base, or
+    /// one recording another view, the view is refused and the space left as it was; the view's
+    /// region goes after its view, its pages' holds on the section's frames with it.
     #[test]
-    fn a_view_the_table_has_no_room_for_goes() {
-        use crate::ob::{Mapping, ObjectId, ObjectType};
-        let section = Mapping::Section(ObjectId {
-            kind: ObjectType::Section,
-            index: 1,
-            generation: 0,
-        });
+    fn a_view_recorded_in_its_region() {
         let mut vm = space();
         let mut pages = Fake::default();
-        for index in 0..VIEWS as u32 {
-            assert!(vm.add_view(0x4000_0000 + index * GRANULARITY, section));
-        }
+        assert!(!vm.add_view_at(0x4000_0000, 0, section(1)));
         let view = vm
             .reserve(None, PAGE, PAGE_READWRITE, Kind::Mapped(Maximum::Write))
             .unwrap();
         pages.holders.insert(0x0070_0000, 0);
         vm.map_shared(&mut pages, view, 0x0070_0000, PAGE_READWRITE)
             .unwrap();
-        assert!(!vm.record_view(&mut pages, view, 0, section));
+        assert!(vm.add_view_at(view, 0x20000, section(1)));
+        assert_eq!(vm.view_at(view), Some(section(1)));
+        assert!(
+            !vm.add_view_at(view, 0, section(2)),
+            "the region records a view already"
+        );
+        assert_eq!(vm.view_at(view), Some(section(1)), "which stays");
+        assert!(pages.frame_shared(0x0070_0000));
+        assert_eq!(
+            vm.take_view(view).map(|v| (v.offset, v.mapping)),
+            Some((0x20000, section(1)))
+        );
+        vm.release(&mut pages, view).unwrap();
         assert_eq!(vm.query(&pages, view).state, MEM_FREE);
         assert!(!pages.frame_shared(0x0070_0000), "the view's hold went");
         assert!(!pages.freed.contains(&0x0070_0000), "the section keeps it");
-        vm.take_view(0x4000_0000);
-        let view = vm
-            .reserve(None, PAGE, PAGE_READWRITE, Kind::Mapped(Maximum::Write))
-            .unwrap();
-        assert!(vm.record_view(&mut pages, view, 0x20000, section));
-        assert_eq!(vm.view_at(view), Some(section));
-        assert_eq!(
-            vm.take_view(view).map(|v| (v.offset, v.mapping)),
-            Some((0x20000, section))
-        );
     }
 
     /// A demand commit charges instead of mapping: fresh pages get demand-zero entries, no frame

@@ -485,6 +485,8 @@ RAW_ACCESS_ALLOWED = {
     "kernel/src/mem/paging.rs": "the page tables and frames, through the kernel's own windows",
     "kernel/src/mem/pool.rs": "the nonpaged pool's blocks, kernel memory mapped in the shared"
     " tables",
+    "kernel/src/mem/vm.rs": "an address space's region records (its VADs), a run of pages of the"
+    " nonpaged pool (the host tests' heap): no program's memory",
     "kernel/src/perf.rs": "(perf-trace builds only) the frame-pointer walk of a sampled stack, each"
     " frame checked against the kernel window or the live page tables first",
     "kernel/src/user/syscall.rs": "the copy primitives themselves and the attribution flag",

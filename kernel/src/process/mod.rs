@@ -1203,19 +1203,16 @@ impl Process {
     /// finds the files its views mapped closed. The rest of the address space goes at the
     /// teardown.
     pub fn unmap_views(&self) {
-        use crate::mem::vm::{CurrentPages, VIEWS};
-        let mut gone = [None; VIEWS];
-        self.with_space(|space| {
-            let mut count = 0;
-            space.drop_views(|view| {
-                gone[count] = Some(view);
-                count += 1;
-            });
-            for view in gone[..count].iter().flatten() {
-                let _ = space.release(&mut CurrentPages, view.base);
-            }
-        });
-        for view in gone.iter().flatten() {
+        use crate::mem::vm::CurrentPages;
+        // One view a hold of the space, lowest first: its region and pages go under the lock, its
+        // reference outside it.
+        let mut from = 0;
+        while let Some(view) = self.with_space(|space| {
+            let view = space.take_view_from(from)?;
+            let _ = space.release(&mut CurrentPages, view.base);
+            Some(view)
+        }) {
+            from = view.base + 1;
             crate::ob::release_mapping(view.mapping);
         }
     }
@@ -1441,16 +1438,10 @@ fn release_address_space_of(process: &Process) {
     // threadless one's go here, each dropping its reference on its section or image segment (one
     // nothing else references goes with it, dropping its hold on its frames) once the address
     // space has let go of them. Their pages are the walk's.
-    let mut gone = [None; crate::mem::vm::VIEWS];
-    process.with_space(|space| {
-        let mut count = 0;
-        space.drop_views(|view| {
-            gone[count] = Some(view.mapping);
-            count += 1;
-        });
-    });
-    for mapping in gone.iter().flatten() {
-        crate::ob::release_mapping(*mapping);
+    let mut from = 0;
+    while let Some(view) = process.with_space(|space| space.take_view_from(from)) {
+        from = view.base + 1;
+        crate::ob::release_mapping(view.mapping);
     }
     // Out of the list of live directories before its frame goes: a kernel table made from here on
     // is not installed in it (it is never loaded again).
@@ -1464,6 +1455,8 @@ fn release_address_space_of(process: &Process) {
             }
         });
     });
+    // Every page has gone with the walk: the region records' pages go back to the pool.
+    process.with_space(crate::mem::vm::AddressSpace::forget_regions);
 }
 
 /// The object audit. With its handles closed, its waits returned and its threads ended, the
