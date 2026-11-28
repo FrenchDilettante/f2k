@@ -1,6 +1,6 @@
-//! The locale and the character functions: setlocale, the `isw*` classes, the `tow*` mappings and
-//! toupper, and the conversions between a narrow character and a wide one the formatter and the
-//! scanner use.
+//! The locale and the character functions: setlocale, the `isw*` classes, the `tow*` mappings,
+//! toupper and tolower, and the conversions between a narrow character and a wide one the formatter
+//! and the scanner use.
 //!
 //! As wide's capture shows them:
 //!
@@ -622,6 +622,16 @@ pub extern "C" fn toupper(c: i32) -> i32 {
     }
 }
 
+/// tolower: `c`'s small letter, in the LC_CTYPE locale (the "C" locale's ASCII letters alone); a
+/// value that is not an unsigned char's (EOF among them) unchanged.
+#[unsafe(export_name = "f2k_export_tolower")]
+pub extern "C" fn tolower(c: i32) -> i32 {
+    match u8::try_from(c) {
+        Ok(byte) => byte_lower(byte) as i32,
+        Err(_) => c,
+    }
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -757,6 +767,23 @@ pub(crate) mod tests {
         set(LC_ALL, b"");
         assert_eq!(toupper(0xE9), 0xC9);
         assert_eq!(toupper(b'q' as i32), b'Q' as i32);
+        set(LC_ALL, b"C");
+    }
+
+    /// tolower lowers the "C" locale's ASCII letters alone, the user locale's code page 1252
+    /// letters too; a value outside an unsigned char's passes unchanged.
+    #[test]
+    fn tolower_lowers_in_the_locale() {
+        let _locale = LOCALE.lock().unwrap();
+        set(LC_ALL, b"C");
+        assert_eq!(
+            [b'A', b'Z', b'a', b'1', b'[', 0xC9].map(|c| tolower(c as i32)),
+            [b'a', b'z', b'a', b'1', b'[', 0xC9].map(i32::from)
+        );
+        assert_eq!([-1, 0x141, -55].map(|c| tolower(c)), [-1, 0x141, -55]);
+        set(LC_ALL, b"");
+        assert_eq!(tolower(0xC9), 0xE9);
+        assert_eq!(tolower(b'Q' as i32), b'q' as i32);
         set(LC_ALL, b"C");
     }
 }

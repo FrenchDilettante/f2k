@@ -4091,7 +4091,7 @@ ordinal = 744
 name = "tolower"
 group = "characters"
 args = ["i32 c"]
-impl = { stub = "not yet implemented" }
+impl = { native = "tolower" }
 ordinal = 745
 fails = "never"
 
