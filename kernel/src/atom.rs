@@ -26,6 +26,8 @@
 //! frees it with the entry). Like the clipboard's data, the block outlives the process that made
 //! its atoms: a program that ends with atoms of its own in the table leaves the block taken.
 
+use rtl::text::same_atom_name;
+
 use crate::level::{At, Passive};
 use crate::status::*;
 use crate::sync::ShortLock;
@@ -119,22 +121,6 @@ fn integer_value(name: &[u16]) -> Option<u32> {
     })
 }
 
-/// Whether two names match: unit for unit, ASCII letters in either case.
-fn same_name(a: impl Iterator<Item = u16>, b: &[u16]) -> bool {
-    let fold = |unit: u16| match unit {
-        0x61..=0x7A => unit - 0x20,
-        _ => unit,
-    };
-    let mut count = 0;
-    for (x, &y) in a.zip(b) {
-        if fold(x) != fold(y) {
-            return false;
-        }
-        count += 1;
-    }
-    count == b.len()
-}
-
 /// The decimal digits of an integer atom's name ("#" and its value).
 fn integer_name(atom: Atom, out: &mut [u16; 6]) -> usize {
     let mut digits = [0u16; 5];
@@ -218,7 +204,7 @@ impl AtomTable {
             let entry = &self.entries[index];
             entry.is_live()
                 && usize::from(entry.length) == name.len()
-                && same_name(self.name(index), name)
+                && same_atom_name(self.name(index), name.iter().copied())
         })
     }
 

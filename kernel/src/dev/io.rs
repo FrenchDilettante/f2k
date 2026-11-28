@@ -109,6 +109,7 @@
 use core::mem::size_of;
 
 use rtl::cstr::ascii_into;
+use rtl::text::eq_ignore_case as same_name;
 
 use super::ntddk::{
     IoStackLocation,
@@ -123,7 +124,6 @@ use super::ntddk::{
     SL_INVOKE_ON_SUCCESS,
     SL_PENDING_RETURNED,
 };
-use crate::cm::same_name;
 use crate::status::*;
 
 // --- The names ---------------------------------------------------------------------------------
@@ -455,7 +455,7 @@ pub fn push_object_component(
     let pushed = push(component)?;
     if index < 3 {
         for unit in &mut out[pushed] {
-            *unit = rtl::path::upcase(*unit);
+            *unit = rtl::text::upcase(*unit);
         }
     }
     Some(())

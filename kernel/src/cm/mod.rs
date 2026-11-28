@@ -3,7 +3,7 @@
 //!
 //! The registry is a tree of keys, each holding named values of a type and some bytes. Names are
 //! case-insensitive and case-preserving: a lookup folds both sides' units to upper case
-//! (`rtl::path::upcase`), while a key or a value keeps the spelling it was made with. A key's
+//! (`rtl::text::upcase`), while a key or a value keeps the spelling it was made with. A key's
 //! subkeys are listed in their folded names' order, as Windows 2000's hives index them; its values
 //! in the order they were first set.
 //!
@@ -62,6 +62,7 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU32, Ordering as Atomic};
 
 use rtl::cstr::ascii_units;
+use rtl::text::{cmp_ignore_case, eq_ignore_case};
 
 #[cfg(target_arch = "x86")]
 use crate::level::{self, High, LevelCell};
@@ -453,18 +454,6 @@ pub struct ValueInfo<'a> {
     pub kind: u32,
     pub name: &'a [u8],
     pub data: &'a [u8],
-}
-
-/// Two names' order, as the registry compares them: unit by unit, folded to upper case.
-pub fn compare(a: &[u16], b: &[u16]) -> Ordering {
-    a.iter()
-        .map(|&unit| rtl::path::upcase(unit))
-        .cmp(b.iter().map(|&unit| rtl::path::upcase(unit)))
-}
-
-/// Whether two names are the same name.
-pub fn same_name(a: &[u16], b: &[u16]) -> bool {
-    a.len() == b.len() && compare(a, b) == Ordering::Equal
 }
 
 /// A relative path's key names, checked: one trailing separator is ignored; an empty name
@@ -893,7 +882,7 @@ impl Registry {
     /// The live subkey of record `parent` named `name`.
     fn child(&self, parent: u16, name: &[u16]) -> Option<u16> {
         self.children(parent)
-            .find(|&index| same_name(self.name(index), name))
+            .find(|&index| eq_ignore_case(self.name(index), name))
     }
 
     /// The key `path` names below `from` ("" names `from` itself): STATUS_OBJECT_NAME_NOT_FOUND
@@ -1011,7 +1000,9 @@ impl Registry {
         let index = self.check(key)?;
         let before = |child: u16| {
             self.children(index)
-                .filter(|&other| compare(self.name(other), self.name(child)) == Ordering::Less)
+                .filter(|&other| {
+                    cmp_ignore_case(self.name(other), self.name(child)) == Ordering::Less
+                })
                 .count()
         };
         Ok(self
@@ -1053,7 +1044,7 @@ impl Registry {
     fn find_value(&self, key: u16, name: &[u16]) -> Option<u32> {
         self.values
             .iter()
-            .find(|(_, value)| value.key == key && same_name(self.units(value.name), name))
+            .find(|(_, value)| value.key == key && eq_ignore_case(self.units(value.name), name))
             .map(|(slot, _)| slot)
     }
 
@@ -1588,6 +1579,26 @@ mod tests {
             r.create(user, &long, &[], false, 0),
             Err(STATUS_OBJECT_NAME_INVALID)
         );
+    }
+
+    /// Beyond Latin-1's block too: ÿ, œ, š and ž fold to Ÿ, Œ, Š and Ž (NT's upcase rule), so a
+    /// key named with one is opened by the other case.
+    #[test]
+    fn names_fold_the_letters_beyond_latin_1() {
+        let r = registry();
+        let user = r.open(r.root(), &wide("USER\\jeb")).unwrap();
+        let (made, created) = r.create(user, &wide("Mašina"), &[], false, 0).unwrap();
+        assert!(created);
+        assert_eq!(r.open(user, &wide("MAŠINA")).unwrap(), made);
+        let (again, created) = r.create(user, &wide("MAŠINA"), &[], false, 0).unwrap();
+        assert_eq!((again, created), (made, false));
+        assert_eq!(
+            r.open(user, &wide("Masina")),
+            Err(STATUS_OBJECT_NAME_NOT_FOUND),
+            "s is not š"
+        );
+        let (made, _) = r.create(user, &wide("œÿž"), &[], false, 0).unwrap();
+        assert_eq!(r.open(user, &wide("ŒŸŽ")).unwrap(), made);
     }
 
     #[test]

@@ -275,10 +275,10 @@ pub fn enumerated<B: Storage>(
     let mut seen = 0;
     for (number, (_, face)) in table.visible(process).enumerate() {
         match name {
-            Some(name) if !mapper::same_name(face.family.units(), name) => continue,
+            Some(name) if !rtl::text::eq_ignore_case(face.family.units(), name) => continue,
             // Every family once: its first face.
             None if table.visible(process).take(number).any(|(_, earlier)| {
-                mapper::same_name(earlier.family.units(), face.family.units())
+                rtl::text::eq_ignore_case(earlier.family.units(), face.family.units())
             }) =>
             {
                 continue

@@ -369,7 +369,9 @@ pub fn trim(line: &[u16]) -> &[u16] {
     trim_blanks(without_break(line))
 }
 
-/// `unit` upper-cased when it is an ASCII letter: how variable names compare.
+/// `unit` upper-cased when it is an ASCII letter: how variable names compare. cmd's own compares
+/// (variable names, labels, switches, extensions, paths) are its C runtime's (`_wcsicmp`), not
+/// NT's upcase rule (`rtl::text`), so they stay apart from it; no capture has a non-ASCII name yet.
 pub(crate) fn fold(unit: u16) -> u16 {
     if (u16::from(b'a')..=u16::from(b'z')).contains(&unit) {
         unit - 32

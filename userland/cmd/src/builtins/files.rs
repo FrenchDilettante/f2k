@@ -605,7 +605,7 @@ pub fn is_dots(name: &[u16]) -> bool {
 
 /// Whether two full paths name the same file, whatever the case of their ASCII letters.
 pub fn same_path(a: &[u16], b: &[u16]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).all(|(&a, &b)| fold(a) == fold(b))
+    crate::same_name(a, b)
 }
 
 /// The new name a wildcard `mask` gives the file `name`, as `ren` and `copy` give it, in `out`

@@ -70,19 +70,11 @@ pub const PRIVILEGES: [(&str, u32); 26] = [
     ("SeEnableDelegationPrivilege", 27),
 ];
 
-/// Whether `units` spell `text` (ASCII), case-insensitively.
-fn same_name(units: &[u16], text: &str) -> bool {
-    units.len() == text.len()
-        && units.iter().zip(text.bytes()).all(|(&unit, byte)| {
-            u8::try_from(unit).is_ok_and(|unit| unit.eq_ignore_ascii_case(&byte))
-        })
-}
-
 /// The LUID of the privilege named `name`, case-insensitively; none for a name no privilege has.
 pub fn privilege_luid(name: &[u16]) -> Option<u32> {
     PRIVILEGES
         .iter()
-        .find(|(known, _)| same_name(name, known))
+        .find(|(known, _)| rtl::text::eq_ignore_case_str(name, known))
         .map(|&(_, luid)| luid)
 }
 

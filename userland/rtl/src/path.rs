@@ -259,16 +259,6 @@ pub fn path_type(path: &[u16]) -> PathType {
     }
 }
 
-/// A unit upper-cased as the case-insensitive comparisons fold it (ASCII and Latin-1 letters).
-pub fn upcase(unit: u16) -> u16 {
-    match unit {
-        0x61..=0x7A => unit - 0x20,
-        0xE0..=0xFE if unit != 0xF7 => unit - 0x20,
-        0xFF => 0x178,
-        _ => unit,
-    }
-}
-
 /// RtlDosPathNameToNtPathName_U's answer, the NT path itself in the caller's buffer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NtName {
@@ -416,10 +406,7 @@ pub fn dos_path_to_nt(
     let relative = (kind == PathType::Relative
         && current_open
         && current.len() <= full.len()
-        && current
-            .iter()
-            .zip(full)
-            .all(|(&a, &b)| upcase(a) == upcase(b)))
+        && crate::text::eq_ignore_case(current, &full[..current.len()]))
     .then_some(4 + current.len());
     Ok(NtName {
         length,
@@ -698,9 +685,6 @@ mod tests {
             Some(PathError::TooLong),
             "past MAX_PATH once made absolute"
         );
-        assert_eq!(upcase(u16::from(b'a')), u16::from(b'A'));
-        assert_eq!(upcase(0xE9), 0xC9);
-        assert_eq!(upcase(0xF7), 0xF7, "the division sign");
     }
 
     /// A `\\?\` path is bounded by its caller's room alone, not MAX_PATH (ntdll sizes its buffer

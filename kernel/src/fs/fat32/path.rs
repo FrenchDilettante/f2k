@@ -11,7 +11,8 @@
 //! listing shows a stored byte in 1252 again ([`oem_to_ansi`]).
 
 use rtl::codepage::{decode_byte, encode_unit, CodePage};
-use rtl::cp1252::{map_case, MB_TO_WC};
+use rtl::cp1252::MB_TO_WC;
+use rtl::text::upcase;
 
 use super::dirent::stored_name;
 
@@ -48,7 +49,7 @@ pub fn oem_upper(byte: u8) -> Option<u8> {
     if byte.is_ascii() {
         return Some(byte.to_ascii_uppercase());
     }
-    let unit = map_case(MB_TO_WC[byte as usize], true);
+    let unit = upcase(MB_TO_WC[byte as usize]);
     encode_unit(CodePage::Oem, unit, true).filter(|&oem| decode_byte(CodePage::Oem, oem) == unit)
 }
 
@@ -58,7 +59,7 @@ pub fn oem_upper_fit(byte: u8) -> Option<u8> {
     if byte.is_ascii() {
         return Some(byte.to_ascii_uppercase());
     }
-    encode_unit(CodePage::Oem, map_case(MB_TO_WC[byte as usize], true), true)
+    encode_unit(CodePage::Oem, upcase(MB_TO_WC[byte as usize]), true)
 }
 
 /// A stored code page 437 byte in code page 1252: exactly, by best fit, or `?`.

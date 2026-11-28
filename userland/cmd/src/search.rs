@@ -2,7 +2,7 @@
 //! would add only `.exe`): the current directory, then each PATH directory, trying the extensions
 //! PATHEXT lists.
 
-use crate::{fold, QUOTE};
+use crate::{same_name, QUOTE};
 
 /// PATHEXT's value when the variable is not set.
 pub const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
@@ -13,11 +13,6 @@ pub const PROGRAM_PATH: usize = 260;
 /// Whether `unit` separates a path's components, or ends a drive (`:`).
 fn is_separator(unit: u16) -> bool {
     unit == u16::from(b'\\') || unit == u16::from(b'/') || unit == u16::from(b':')
-}
-
-/// Whether two texts are the same, ignoring the case of their ASCII letters.
-fn same(a: &[u16], b: &[u16]) -> bool {
-    a.len() == b.len() && a.iter().zip(b).all(|(&a, &b)| fold(a) == fold(b))
 }
 
 /// A name's extension, its dot included: None for a last component without a dot.
@@ -36,14 +31,15 @@ pub fn extension(name: &[u16]) -> Option<&[u16]> {
 pub fn is_batch(path: &[u16]) -> bool {
     let bat: [u16; 4] = b".BAT".map(u16::from);
     let cmd: [u16; 4] = b".CMD".map(u16::from);
-    extension(path).is_some_and(|extension| same(extension, &bat) || same(extension, &cmd))
+    extension(path)
+        .is_some_and(|extension| same_name(extension, &bat) || same_name(extension, &cmd))
 }
 
 /// Whether a batch file is a `.cmd` script, whose `set`, `path` and `prompt` set the ERRORLEVEL
 /// to 0 when they succeed (a `.bat` file's leave it).
 pub fn is_cmd_script(path: &[u16]) -> bool {
     let cmd: [u16; 4] = b".CMD".map(u16::from);
-    extension(path).is_some_and(|extension| same(extension, &cmd))
+    extension(path).is_some_and(|extension| same_name(extension, &cmd))
 }
 
 /// A list's entries (PATH's directories, PATHEXT's extensions): separated by `;`, each without

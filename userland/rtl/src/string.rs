@@ -290,9 +290,9 @@ pub fn free_unicode_string(string: &mut UnicodeString, free: impl FnOnce(*mut u8
     };
 }
 
-/// RtlUpcaseUnicodeString: `source` upper-cased into `destination`, each unit as LCMapString's
-/// LCMAP_UPPERCASE maps it ([`cp1252::map_case`]), no terminator added. With `allocate`, the buffer
-/// comes from `heap`, its room the string's length: STATUS_NO_MEMORY when it has none. Otherwise
+/// RtlUpcaseUnicodeString: `source` upper-cased into `destination`, each unit by NT's upcase rule
+/// ([`crate::text::upcase`]), no terminator added. With `allocate`, the buffer comes from `heap`,
+/// its room the string's length: STATUS_NO_MEMORY when it has none. Otherwise
 /// `destination`'s own buffer, which may be `source`'s (the string upper-cased in place):
 /// STATUS_BUFFER_OVERFLOW, nothing written, when its room is short of the string's length.
 ///
@@ -325,7 +325,7 @@ pub unsafe fn upcase_unicode_string(
             destination
                 .buffer
                 .add(index)
-                .write(cp1252::map_case(unit, true));
+                .write(crate::text::upcase(unit));
         }
     }
     STATUS_SUCCESS
