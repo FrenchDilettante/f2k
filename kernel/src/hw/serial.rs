@@ -1,4 +1,7 @@
-//! The serial line: a 16550 UART, COM1 at 0x3F8, the kernel's debugging output.
+//! The serial line: a 16550 UART, COM1 at 0x3F8, the kernel's debug port under QEMU.
+//!
+//! Only a build with the `debugport` feature has it ([`crate::log`]): outside QEMU, COM1 is never
+//! used, and the kernel carries no UART code.
 //!
 //! The driver reaches the chip's registers through [`Io`], as the other drivers do, so its
 //! programming runs unchanged on the target against the real ports and in the host tests against
@@ -99,24 +102,6 @@ pub fn init() {
 #[cfg(target_arch = "x86")]
 pub fn write_byte_blocking(byte: u8) {
     com1().write_byte(byte);
-}
-
-/// Print to COM1, formatted.
-#[macro_export]
-macro_rules! serial_print {
-    ($($arg:tt)*) => {
-        let mut writer = $crate::hw::serial::com1();
-        core::fmt::write(&mut writer, format_args!($($arg)*)).unwrap();
-    };
-}
-
-/// Print a line to COM1, formatted.
-#[macro_export]
-macro_rules! serial_println {
-    ($($arg:tt)*) => {
-        $crate::serial_print!($($arg)*);
-        $crate::hw::serial::write_byte_blocking(b'\n');
-    };
 }
 
 #[cfg(test)]

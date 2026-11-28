@@ -82,7 +82,6 @@ pub fn run() {
     use crate::fs::fat32::volume::{boot_mount, with_boot_volume};
     use crate::hw::ide::disk;
     use crate::hw::ide::regs::SECTOR_SIZE;
-    use crate::serial_println;
     use crate::sync::StaticBuf;
 
     /// The disk image the disk build lays down: 64 MiB, one FAT32 partition at 1 MiB.
@@ -141,8 +140,10 @@ pub fn run() {
         },
         "disk-smoke: the disk's description"
     );
-    serial_println!(
-        "F2K: disk-smoke: drive detected (LBA supported, {} sectors)",
+    crate::klog!(
+        Debug,
+        "smoke",
+        "disk-smoke: drive detected (LBA supported, {} sectors)",
         identity.sectors
     );
 
@@ -156,8 +157,10 @@ pub fn run() {
         unreachable!()
     };
     let volume = partition_entry.device();
-    serial_println!(
-        "F2K: disk-smoke: block devices: {} = ATA disk ({} sectors of {} bytes), {} = partition {} of device {} ({} sectors)",
+    crate::klog!(
+        Debug,
+        "smoke",
+        "disk-smoke: block devices: {} = ATA disk ({} sectors of {} bytes), {} = partition {} of device {} ({} sectors)",
         disk_id.0,
         disk_device.info().sectors,
         disk_device.info().sector_size,
@@ -177,8 +180,10 @@ pub fn run() {
         (0, 0x0C, VOLUME_START, VOLUME_SECTORS),
         "disk-smoke: partition 0"
     );
-    serial_println!(
-        "F2K: disk-smoke: MBR ok (signature {:#06X}, partition 0 type {:#04X} at LBA {}, {} sectors)",
+    crate::klog!(
+        Debug,
+        "smoke",
+        "disk-smoke: MBR ok (signature {:#06X}, partition 0 type {:#04X} at LBA {}, {} sectors)",
         mbr_signature,
         entry.kind,
         entry.start,
@@ -207,8 +212,10 @@ pub fn run() {
     );
     let data_region = bpb.data_region(entry.start as u32);
     assert_eq!(data_region, 4066, "disk-smoke: data region");
-    serial_println!(
-        "F2K: disk-smoke: volume boot sector ok (signature {:#06X}, {} bytes/sector, {} sector/cluster, {} reserved, {} FATs, {} sectors/FAT, root cluster {}, data region at LBA {})",
+    crate::klog!(
+        Debug,
+        "smoke",
+        "disk-smoke: volume boot sector ok (signature {:#06X}, {} bytes/sector, {} sector/cluster, {} reserved, {} FATs, {} sectors/FAT, root cluster {}, data region at LBA {})",
         volume_signature,
         bpb.bytes_per_sector,
         bpb.sectors_per_cluster,
@@ -239,8 +246,10 @@ pub fn run() {
         (127_006, 32, 2018, 2),
         "disk-smoke: mount state"
     );
-    serial_println!(
-        "F2K: disk-smoke: mount ok ({} clusters, FAT at LBA {}, data at LBA {}, root cluster {})",
+    crate::klog!(
+        Debug,
+        "smoke",
+        "disk-smoke: mount ok ({} clusters, FAT at LBA {}, data at LBA {}, root cluster {})",
         layout.cluster_count,
         entry.start + layout.fat_start,
         entry.start + layout.data_start,
@@ -249,8 +258,10 @@ pub fn run() {
     assert_eq!(cluster_3, Ok(FatEntry::Next(4)), "disk-smoke: FAT[3]");
     assert_eq!(cluster_2, Ok(FatEntry::EndOfChain), "disk-smoke: FAT[2]");
     for (cluster, fat_entry) in [(3, cluster_3), (2, cluster_2)] {
-        serial_println!(
-            "F2K: disk-smoke: FAT cluster {} -> {}",
+        crate::klog!(
+            Debug,
+            "smoke",
+            "disk-smoke: FAT cluster {} -> {}",
             cluster,
             fat_entry.unwrap()
         );
@@ -271,8 +282,10 @@ pub fn run() {
         (3, 28_672, false),
         "disk-smoke: HELLO.EXE's entry"
     );
-    serial_println!(
-        "F2K: disk-smoke: HELLO.EXE: {} bytes, first cluster {}",
+    crate::klog!(
+        Debug,
+        "smoke",
+        "disk-smoke: HELLO.EXE: {} bytes, first cluster {}",
         hello.size,
         hello.first_cluster
     );
@@ -282,8 +295,10 @@ pub fn run() {
         "disk-smoke: HELLO.EXE read failed with status {:#010x}",
         status.0
     );
-    serial_println!(
-        "F2K: disk-smoke: HELLO.EXE via chain: CRC-32 {:#010X}",
+    crate::klog!(
+        Debug,
+        "smoke",
+        "disk-smoke: HELLO.EXE via chain: CRC-32 {:#010X}",
         crc32(&file_buffer[..hello.size as usize])
     );
 
@@ -292,8 +307,10 @@ pub fn run() {
     let file_sector = bpb.cluster_lba(0, FIRST_FILE_CLUSTER) as u64;
     let file_lba = entry.start + file_sector;
     read(volume, file_sector, &mut sector);
-    serial_println!(
-        "F2K: disk-smoke: LBA {} CRC-32 {:#010X}",
+    crate::klog!(
+        Debug,
+        "smoke",
+        "disk-smoke: LBA {} CRC-32 {:#010X}",
         file_lba,
         crc32(&sector)
     );
@@ -304,8 +321,10 @@ pub fn run() {
         &sector[..],
         "disk-smoke: the run's first sector"
     );
-    serial_println!(
-        "F2K: disk-smoke: LBA {}+{} CRC-32 {:#010X}",
+    crate::klog!(
+        Debug,
+        "smoke",
+        "disk-smoke: LBA {}+{} CRC-32 {:#010X}",
         file_lba,
         RUN_SECTORS,
         crc32(run)
@@ -315,8 +334,10 @@ pub fn run() {
     // the boot scan's MBR read, the boot mount's boot-sector read, and the file's directory and
     // cluster reads included — and none unasked for.
     let verdict = crate::interrupt::audit();
-    serial_println!(
-        "F2K: disk-smoke: IRQ14 serviced {} interrupts ({} unsolicited), interrupt audit: {}",
+    crate::klog!(
+        Debug,
+        "smoke",
+        "disk-smoke: IRQ14 serviced {} interrupts ({} unsolicited), interrupt audit: {}",
         disk::serviced(),
         disk::unsolicited(),
         if verdict.is_ok() { "ok" } else { "FAILED" }

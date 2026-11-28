@@ -1238,14 +1238,14 @@ impl Client for Dual<'_> {
     }
 }
 
-/// One byte to the serial line: COM1.
-#[cfg(target_arch = "x86")]
+/// One byte to the debug port: COM1, in a build with one (`debugport`).
+#[cfg(all(target_arch = "x86", feature = "debugport"))]
 fn serial_byte(byte: u8) {
     crate::hw::serial::write_byte_blocking(byte);
 }
 
-/// Host builds have no serial line.
-#[cfg(not(target_arch = "x86"))]
+/// Host builds, and builds without the debug port, have no serial line.
+#[cfg(not(all(target_arch = "x86", feature = "debugport")))]
 fn serial_byte(_byte: u8) {}
 
 #[cfg(test)]

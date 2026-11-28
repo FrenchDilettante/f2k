@@ -19,6 +19,12 @@ path = "src/main.rs"
 test = false
 doctest = false
 
+# The debug port, as the kernel's (kernel/Cargo.toml): with it, an image the loader refuses is
+# reported on COM1 before the halt; without it the loader has no UART code and just halts. QEMU's
+# builds turn it on (the Makefile's DEBUGPORT); outside QEMU, COM1 is never used.
+[features]
+debugport = []
+
 # The image's headers, as the runtime library defines them.
 [dependencies]
 rtl = { path = "../../userland/rtl" }

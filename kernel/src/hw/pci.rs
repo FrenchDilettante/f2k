@@ -172,7 +172,7 @@ pub fn init() {
     scan_into(&mut cfg, devices);
     SCAN_REF.set(&*devices);
     let routes = PirqRoutes::read(&mut cfg, devices);
-    crate::serial_println!("F2K: pci: {} devices", devices.len());
+    crate::klog!(Debug, "pci", "pci: {} devices", devices.len());
     for d in devices.iter() {
         let irq = if d.interrupt_pin == 0 {
             None
@@ -181,34 +181,34 @@ pub fn init() {
                 .as_ref()
                 .and_then(|r| route(d.bus, d.dev, d.func, d.interrupt_pin, r))
         };
-        if let Some(irq) = irq {
-            crate::serial_println!(
-                "F2K: pci: {:02x}:{:02x}.{} {:04x}:{:04x} class {:06x} rev {:02x} pin {} irq {}",
-                d.bus,
-                d.dev,
-                d.func,
-                d.vendor,
-                d.device,
-                d.class_code,
-                d.revision,
-                d.interrupt_pin,
-                irq
-            );
-        } else {
-            crate::serial_println!(
-                "F2K: pci: {:02x}:{:02x}.{} {:04x}:{:04x} class {:06x} rev {:02x} pin {} irq -",
-                d.bus,
-                d.dev,
-                d.func,
-                d.vendor,
-                d.device,
-                d.class_code,
-                d.revision,
-                d.interrupt_pin
-            );
-        }
+        crate::klog!(
+            Debug,
+            "pci",
+            "pci: {:02x}:{:02x}.{} {:04x}:{:04x} class {:06x} rev {:02x} pin {} irq {}",
+            d.bus,
+            d.dev,
+            d.func,
+            d.vendor,
+            d.device,
+            d.class_code,
+            d.revision,
+            d.interrupt_pin,
+            Irq(irq)
+        );
     }
     ROUTES.set(routes);
+}
+
+/// A function's routed line as the scan's report shows it: its number, or `-` for none.
+struct Irq(Option<u8>);
+
+impl core::fmt::Display for Irq {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self.0 {
+            Some(irq) => write!(f, "{irq}"),
+            None => f.write_str("-"),
+        }
+    }
 }
 
 /// One base address register, decoded and sized.

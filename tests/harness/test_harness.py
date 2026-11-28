@@ -302,6 +302,19 @@ def test_a_kernel_rebuilt_after_its_disk_is_refused(tmp_path):
     assert why is not None and "irq-smoke" in why
 
 
+def test_a_build_without_the_debug_port_is_refused(tmp_path):
+    # `make vbox-image`, or `make disk DEBUGPORT=0`: no COM1 lines for the boots to read.
+    build = built(tmp_path, "", "")
+    f2kboot.stamp_path(build.kernel).write_text("features=\ndebugport=0\nprofile=dev\n")
+    why = f2kboot.build_mismatch(build, [], profile="dev")
+    assert why is not None and "debug port" in why
+
+
+def test_the_suite_builds_with_the_debug_port():
+    assert "DEBUGPORT=1" in f2kboot.make_arguments([])
+    assert "DEBUGPORT=1" in f2kboot.make_arguments(["irq-smoke"])
+
+
 def test_a_build_without_stamps_is_refused(tmp_path):
     why = f2kboot.build_mismatch(built(tmp_path, None, None), [], profile="dev")
     assert why is not None and "make disk" in why

@@ -22,6 +22,8 @@ pub mod pic;
 pub mod pit;
 pub mod portio;
 pub mod rtc;
+// The debug port's UART: only a build with the debug port has one (crate::log).
+#[cfg(any(test, feature = "debugport"))]
 pub mod serial;
 pub mod vbe;
 pub mod vga;

@@ -319,9 +319,11 @@ def prebuild(feature_sets: list[list[str]], run_id: str, stop: threading.Event) 
 
 def make_arguments(features: list[str]) -> list[str]:
     """The make that builds `features`: the disk for the plain build, the kernel alone for the
-    others (their disk is the plain one's, the kernel swapped in)."""
+    others (their disk is the plain one's, the kernel swapped in). Every build has the debug port,
+    COM1, which the boots log (the Makefile's DEBUGPORT)."""
     target = "kernel" if features else "disk"
-    return ["make", target, f"CARGO_FEATURES={','.join(features)}", f"KERNEL_PROFILE={PROFILE}"]
+    return ["make", target, f"CARGO_FEATURES={','.join(features)}", f"KERNEL_PROFILE={PROFILE}",
+            "DEBUGPORT=1"]
 
 
 def swap_kernel(base: Path, files: Path, disk: Path) -> None:
@@ -439,6 +441,11 @@ def build_mismatch(build: Build, features: list[str], profile: str | None = None
         if built_profile != profile:
             return (f"{path.name} was built with the {built_profile} profile; this run boots {profile} "
                     f"(KERNEL_PROFILE, F2K_KERNEL_PROFILE)")
+    for path in (build.kernel, build.disk):
+        # A stamp from before the switch has no line: those builds always had the port.
+        if read_stamp(path).get("debugport", "1") != "1":
+            return (f"{path.name} was built without the debug port, which the boots log "
+                    f"(`make disk`, DEBUGPORT=1, or run without --no-build)")
     want = feature_set(features)
     kernel = feature_set(read_stamp(build.kernel).get("features", ""))
     disk = feature_set(read_stamp(build.disk).get("features", ""))

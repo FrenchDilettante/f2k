@@ -356,22 +356,39 @@ fn resolve_or_end(frame: &mut ExceptionFrame) {
     // frame. Ring-0 frames report zeroes.
     let (user_esp, user_ss) = ring3_tail(frame).unwrap_or((0, 0));
 
-    crate::serial_println!("CPU EXCEPTION: vector {} ({})", frame.vector, name);
-    crate::serial_println!(
+    // The screen's class: a kernel fault's stop (the bugcheck screen will take these lines over).
+    crate::klog!(
+        Screen,
+        "cpu",
+        raw,
+        "CPU EXCEPTION: vector {} ({})",
+        frame.vector,
+        name
+    );
+    crate::klog!(
+        Screen,
+        "cpu",
+        raw,
         "  error code {:#010x}  EIP {:#010x}  CS {:#04x}  EFLAGS {:#010x}",
         frame.error_code,
         frame.eip,
         frame.cs,
         frame.eflags,
     );
-    crate::serial_println!(
+    crate::klog!(
+        Screen,
+        "cpu",
+        raw,
         "  EAX {:#010x}  EBX {:#010x}  ECX {:#010x}  EDX {:#010x}",
         frame.eax,
         frame.ebx,
         frame.ecx,
         frame.edx
     );
-    crate::serial_println!(
+    crate::klog!(
+        Screen,
+        "cpu",
+        raw,
         "  ESI {:#010x}  EDI {:#010x}  EBP {:#010x}  ESP {:#010x}",
         frame.esi,
         frame.edi,
@@ -382,7 +399,10 @@ fn resolve_or_end(frame: &mut ExceptionFrame) {
     // kernel's DS/ES).
     // SAFETY: `frame` is the pointer the common stub passed, above its saved segments.
     let segments = unsafe { SavedSegments::below(&*frame) };
-    crate::serial_println!(
+    crate::klog!(
+        Screen,
+        "cpu",
+        raw,
         "  DS {:#04x}  ES {:#04x}  FS {:#04x}  GS {:#04x}",
         segments.ds & 0xFFFF,
         segments.es & 0xFFFF,
@@ -390,14 +410,17 @@ fn resolve_or_end(frame: &mut ExceptionFrame) {
         segments.gs & 0xFFFF
     );
     if from_user {
-        crate::serial_println!(
+        crate::klog!(
+            Screen,
+            "cpu",
+            raw,
             "  raised from ring 3: user ESP {:#010x}  user SS {:#04x}",
             user_esp,
             user_ss
         );
     }
     if frame.vector == 14 {
-        crate::serial_println!("  CR2 (faulting address) {:#010x}", cr2);
+        crate::klog!(Screen, "cpu", raw, "  CR2 (faulting address) {:#010x}", cr2);
     }
     // Classify the fault by origin. A fault raised by user code (or, while the kernel copies
     // syscall arguments, by a bad user pointer on the kernel's behalf) ends the user process, not

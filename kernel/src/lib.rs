@@ -17,6 +17,9 @@
 #[cfg(all(not(test), not(target_arch = "x86")))]
 extern crate std;
 
+// The kernel's log: klog!, and the debug port's sink (the debugport feature)
+mod log;
+
 // Boot module (the image's entry point and the boot's phases)
 mod boot;
 
@@ -157,13 +160,13 @@ mod c_lib;
 #[cfg(target_arch = "x86")]
 use core::arch::asm;
 
-/// Print the panic message on COM1 and halt.
+/// Print the panic message on the debug port and halt.
 ///
 /// The `#[panic_handler]` must be defined exactly once, in the final binary (a library must not
 /// define one); the binary's handler forwards here so both crates share this one code path.
 #[cfg(all(not(test), target_arch = "x86"))]
 pub fn panic(info: &core::panic::PanicInfo) -> ! {
-    serial_println!("KERNEL PANIC: {}", info);
+    klog!(Screen, "cpu", raw, "KERNEL PANIC: {}", info);
     halt()
 }
 

@@ -15,7 +15,8 @@
 //! The Multiboot loader's modules (the test boots' disk image) stay where it put them: the loader
 //! refuses a module in the memory it writes, its own or the image's, before it writes any.
 //!
-//! An image the loader refuses is reported on COM1, and the machine halts.
+//! An image the loader refuses is reported on COM1 in a build with the debug port (the `debugport`
+//! feature, QEMU's builds), and the machine halts.
 
 #![no_std]
 #![no_main]
@@ -261,12 +262,17 @@ fn map_window() -> u32 {
     directory.as_ptr() as u32
 }
 
-/// Report `why` on COM1 and halt.
+/// Report `why` on COM1, in a build with the debug port, and halt.
 fn fail(why: &str) -> ! {
-    com1::init();
-    com1::write(b"F2K loader: ");
-    com1::write(why.as_bytes());
-    com1::write(b"\r\n");
+    #[cfg(feature = "debugport")]
+    {
+        com1::init();
+        com1::write(b"F2K loader: ");
+        com1::write(why.as_bytes());
+        com1::write(b"\r\n");
+    }
+    #[cfg(not(feature = "debugport"))]
+    let _ = why;
     halt()
 }
 
@@ -280,6 +286,7 @@ fn halt() -> ! {
 }
 
 /// COM1, for the loader's one report: polled, at the kernel's line settings.
+#[cfg(feature = "debugport")]
 mod com1 {
     const BASE: u16 = 0x3F8;
 

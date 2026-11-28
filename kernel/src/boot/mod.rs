@@ -106,8 +106,10 @@ pub fn start_on_demand(needs: u32) -> Result<(), u32> {
             .with(|()| state.start_on_demand(&subsys::SUBSYSTEMS, needs, &mut init_on_demand))
     })?;
     if started != 0 {
-        crate::serial_println!(
-            "F2K: subsystems started on demand: {} ({} of {})",
+        crate::klog!(
+            File,
+            "boot",
+            "subsystems started on demand: {} ({} of {})",
             subsys::Names(&subsys::SUBSYSTEMS, started),
             state.started_set().count_ones(),
             subsys::Subsystem::COUNT
@@ -147,10 +149,14 @@ fn report_subsystems(started: u32, on_demand: u32) {
     let names = subsys::Names(&subsys::SUBSYSTEMS, started);
     let (count, of) = (started.count_ones(), subsys::Subsystem::COUNT);
     if on_demand == 0 {
-        crate::serial_println!("F2K: subsystems: {names} ({count} of {of})");
+        crate::klog!(File, "boot", "subsystems: {names} ({count} of {of})");
     } else {
         let later = subsys::Names(&subsys::SUBSYSTEMS, on_demand);
-        crate::serial_println!("F2K: subsystems: {names} ({count} of {of}), on demand: {later}");
+        crate::klog!(
+            File,
+            "boot",
+            "subsystems: {names} ({count} of {of}), on demand: {later}"
+        );
     }
 }
 
@@ -267,8 +273,8 @@ fn com1() {
         core::arch::asm!("out 0x80, al", in("al") 0xFEu8, options(nomem, nostack, preserves_flags));
     }
 
-    // Initialize serial port first (for debugging)
-    crate::hw::serial::init();
+    // The debug port first, in a build with one (crate::log).
+    crate::log::init();
 }
 
 /// The CPU tables (so faults print diagnostics on COM1 instead of triple-faulting) and the
@@ -277,7 +283,6 @@ fn com1() {
 fn cpu() {
     // SAFETY: boot CPU, ring 0, interrupts disabled, before any code that might fault.
     unsafe { crate::cpu::init() };
-    crate::serial_println!("F2K: GDT and IDT initialized");
     // The boot processor counts itself among the started ones (KiInitializeKernel's part).
     crate::processors::start(0);
     // Every thread's floating-point state is saved with `fxsave`: enabled before the first switch.
@@ -291,22 +296,29 @@ fn cpu() {
 #[cfg(target_arch = "x86")]
 fn memory(magic: u32, multiboot_info: u32) {
     if magic != MULTIBOOT_BOOTLOADER_MAGIC {
-        crate::serial_println!(
-            "F2K: not started by a Multiboot loader (EAX = {:#010x})",
+        crate::klog!(
+            Screen,
+            "boot",
+            "not started by a Multiboot loader (EAX = {:#010x})",
             magic
         );
         crate::halt();
     }
 
-    crate::serial_println!("F2K Booted Successfully");
-    crate::serial_println!("Fenêtre 2000 - Windows 2000 compatible OS in Rust");
-    crate::serial_println!("Phase 1: Foundation complete");
-    crate::serial_println!("Multiboot info at {:#010x}", multiboot_info);
+    crate::klog!(Screen, "boot", raw, "F2K Booted Successfully");
+    crate::klog!(
+        Screen,
+        "boot",
+        raw,
+        "Fenêtre 2000 - Windows 2000 compatible OS in Rust"
+    );
     // The command line first: it lives in loader memory the frame allocator reclaims next.
     cmdline::capture(multiboot_info);
     if let Some(line) = cmdline::user_command_line(cmdline::kernel_command_line()) {
-        crate::serial_println!(
-            "F2K: command line: {}",
+        crate::klog!(
+            Debug,
+            "boot",
+            "command line: {}",
             core::str::from_utf8(line).unwrap_or("(not ASCII)")
         );
     }
@@ -315,20 +327,19 @@ fn memory(magic: u32, multiboot_info: u32) {
     // image's, the database's own and, for now, the boot loader's) to the frame allocator.
     crate::mem::bootmem::boot_init(multiboot_info);
     crate::mem::bootmem::with_frame_db(|db| {
-        crate::serial_println!(
-            "F2K: physical memory: {} free frames ({} MiB)",
-            db.available(),
-            db.available() / 256
-        );
         let pages = crate::mem::bootmem::physical_pages();
-        crate::serial_println!(
-            "F2K: frame database: {} frames for {} physical pages ({} MiB)",
+        crate::klog!(
+            Screen,
+            "mm",
+            "frame database: {} frames for {} physical pages ({} MiB)",
             db.frame_count(),
             pages,
             pages / 256
         );
-        crate::serial_println!(
-            "F2K: frame database audit: {}",
+        crate::klog!(
+            Debug,
+            "mm",
+            "frame database audit: {}",
             if db.audit().is_ok() { "ok" } else { "FAILED" }
         );
     });
@@ -341,10 +352,6 @@ fn memory(magic: u32, multiboot_info: u32) {
     // The memory map is consumed: remove the low identity window. Nothing below KERNEL_BASE is
     // mapped from here on.
     crate::mem::paging::teardown_low_identity();
-    crate::serial_println!(
-        "F2K: paging on: kernel at {:#010x}, low identity removed",
-        crate::mem::layout::NTOSKRNL_BASE
-    );
     // Install the runtime table access (self-map, scratch table).
     crate::mem::paging::init_table_access();
     // The kernel stack region's and the nonpaged pool's tables are made on demand, as stacks and
@@ -377,11 +384,13 @@ fn device_tree() {
     // table to its ISA line and its vector in the HAL's band. Reported on COM1, one line per
     // routed pin; the firmware routing table's override seam stays with the ACPI slice.
     let nodes = crate::dev::init_nodes_from_pci();
-    crate::serial_println!("F2K: dev: {} nodes", nodes.len());
+    crate::klog!(Debug, "dev", "dev: {} nodes", nodes.len());
     for node in nodes.iter() {
         if let Some(interrupt) = node.interrupt {
-            crate::serial_println!(
-                "F2K: dev: {:02x}:{:02x}.{} pin {} irq {} vector {:#04x}",
+            crate::klog!(
+                Debug,
+                "dev",
+                "dev: {:02x}:{:02x}.{} pin {} irq {} vector {:#04x}",
                 node.address.bus,
                 node.address.dev,
                 node.address.func,

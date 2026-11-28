@@ -51,19 +51,21 @@ pub fn cpu_faults() {
     {
         use core::arch::asm;
 
-        crate::serial_println!(
-            "F2K: GDT after load: {:#018x} {:#018x}",
+        crate::klog!(
+            Debug,
+            "smoke",
+            "GDT after load: {:#018x} {:#018x}",
             crate::cpu::gdt::debug_descriptor(1),
             crate::cpu::gdt::debug_descriptor(2)
         );
         let esp: u32;
         // SAFETY: copying ESP into a register reads no memory and changes no state.
         unsafe { asm!("mov {}, esp", out(reg) esp, options(nomem, nostack)) };
-        crate::serial_println!("F2K: ESP before fault: {:#010x}", esp);
+        crate::klog!(Debug, "smoke", "ESP before fault: {:#010x}", esp);
     }
     #[cfg(feature = "fault-test-ud")]
     {
-        crate::serial_println!("F2K: fault test: forcing #UD (no error code)");
+        crate::klog!(Debug, "smoke", "fault test: forcing #UD (no error code)");
         // SAFETY: a deliberate fault in a test-only build: `ud2` raises #UD, whose handler dumps
         // the frame and halts, so execution never continues past it.
         unsafe { core::arch::asm!("ud2", options(nomem, nostack)) };
@@ -73,7 +75,7 @@ pub fn cpu_faults() {
         // Selector 0x38 lies one past the seven-entry GDT limit (0x37): #GP with the CPU-pushed
         // error code 0x38 — the EXC_STUB_ERR path. Segment registers can only be loaded from a
         // general-purpose register.
-        crate::serial_println!("F2K: fault test: forcing #GP (error code path)");
+        crate::klog!(Debug, "smoke", "fault test: forcing #GP (error code path)");
         // SAFETY: a deliberate fault in a test-only build: loading the out-of-limit selector
         // raises #GP before DS changes, and its handler dumps the frame and halts, so execution
         // never continues past it.

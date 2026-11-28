@@ -26,13 +26,28 @@ NTOSKRNL_EXE = $(OUT_DIR)/ntoskrnl.exe
 # on-target suite passes them per case; manual builds accept them too
 # (e.g. `make disk CARGO_FEATURES=run-ret0`).
 CARGO_FEATURES ?=
-FEATURE_FLAGS = $(if $(CARGO_FEATURES),--features $(CARGO_FEATURES),)
+# The debug port: DEBUGPORT=1 builds the kernel and its boot loader with their `debugport` cargo
+# feature, COM1 as the port a kernel debugger sits on (Windows 2000's /DEBUGPORT=COM1), where the
+# kernel's log lines and the console's output copy go; DEBUGPORT=0 builds them with no UART code at
+# all, as a free build's KdPrint. Outside QEMU, COM1 is never used: real machines have no COM port.
+#   On, for QEMU: kernel, disk, cmd-disk and run, and the on-target suite (test, check-all), whose
+#   harness passes DEBUGPORT=1 itself. `make disk` is also the only disk image there is today, so
+#   it stays on; an image of it for a real machine is made with `make disk DEBUGPORT=0`.
+#   Off, for machines other than QEMU: vbox-image (VirtualBox), and the USB-key image to come.
+# Recorded in the build stamps (debugport=), so a build without the port is never booted by the
+# suite. The perf-trace feature turns the port on too: its dump is the port's.
+DEBUGPORT ?= 1
+comma := ,
+KERNEL_FEATURES = $(CARGO_FEATURES)$(if $(filter 1,$(DEBUGPORT)),$(if $(CARGO_FEATURES),$(comma))debugport)
+FEATURE_FLAGS = $(if $(KERNEL_FEATURES),--features $(KERNEL_FEATURES),)
+# The boot loader's (kernel/loader): it reports a refused image on the same port.
+LOADER_FEATURE_FLAGS = $(if $(filter 1,$(DEBUGPORT)),--features debugport,)
 # The build stamps: what the boot image and the disk image were built with, beside each (the
 # suite's --no-build refuses a build whose stamps differ from what a test needs). Removed before a
 # build, written once it succeeded.
 KERNEL_STAMP = $(KERNEL_ELF).build
 DISK_STAMP = $(DISK_IMG).build
-BUILD_STAMP = features=$(CARGO_FEATURES)\nprofile=$(KERNEL_PROFILE)
+BUILD_STAMP = features=$(CARGO_FEATURES)\ndebugport=$(DEBUGPORT)\nprofile=$(KERNEL_PROFILE)
 
 # The perf-trace build forces frame pointers for its stack walk. Cargo's RUSTFLAGS replaces the
 # target's rustflags in .cargo/config.toml, so the whole set is spelled out here — keep them in
@@ -164,6 +179,7 @@ help:
 	@echo "  run          - Boot the cmd disk in a QEMU window: cmd.exe, or what CMDLINE names"
 	@echo "                 (keyboard and screen in the window, COM1 on the terminal)"
 	@echo "  vbox-image   - The cmd disk as a VirtualBox VDI, vbox-image/'s files laid over its volume"
+	@echo "                 (built without the debug port: DEBUGPORT=0)"
 	@echo "  clean        - Clean build artifacts"
 	@echo "  clobber      - Remove all build artifacts"
 	@echo ""
@@ -171,6 +187,7 @@ help:
 	@echo "  ARCH=x86             - Target architecture (default: x86)"
 	@echo "  TARGET=x86-f2k       - Rust target (default: x86-f2k)"
 	@echo "  DISK_IMG=...         - Disk image path"
+	@echo "  DEBUGPORT=1          - The kernel's debug port, COM1 (QEMU only): 1 (the default) or 0"
 	@echo "  CMDLINE='...'        - What make run and make vbox-image boot into: the program's path"
 	@echo "                         on the volume and its arguments (default: F2K's cmd.exe)"
 	@echo "  KERNEL_PROFILE=release - Kernel cargo profile: release (the default), checked (release, checks on), or dev"
@@ -205,7 +222,7 @@ kernel: userland
 	rm -f $(KERNEL_STAMP)
 	cd $(KERNEL_DIR) && cargo build --profile $(KERNEL_PROFILE) $(FEATURE_FLAGS)
 	cd $(LOADER_DIR) && F2K_KERNEL_LINK_CHECKSUM="$$(cksum < $(abspath $(OUT_DIR))/ntoskrnl)" \
-		cargo build --profile $(KERNEL_PROFILE)
+		cargo build --profile $(KERNEL_PROFILE) $(LOADER_FEATURE_FLAGS)
 	printf '$(BUILD_STAMP)\n' > $(KERNEL_STAMP)
 	@echo "Kernel built: $(NTOSKRNL_EXE), booted as $(KERNEL_ELF)"
 
@@ -297,8 +314,10 @@ run: cmd-disk
 	$(QEMU) $(QEMU_FLAGS) -drive file=$(CMD_DISK_IMG),format=raw,if=ide
 
 # The cmd disk as a VirtualBox VDI, vbox-image/'s files laid over its volume after cmd.exe (so
-# `vbox-image/WINNT/system32/cmd.exe` replaces F2K's).
+# `vbox-image/WINNT/system32/cmd.exe` replaces F2K's). VirtualBox is not QEMU: its kernel is built
+# without the debug port (DEBUGPORT above), and so are the cmd disk and the disk it is made from.
 .PHONY: vbox-image
+vbox-image: DEBUGPORT = 0
 vbox-image: cmd-disk
 	python3 $(SCRIPTS_DIR)/vbox_image.py $(CMD_DISK_IMG) $(VBOX_EXTRAS) $(VBOX_VDI)
 
@@ -461,11 +480,14 @@ CLIPPY_LINTS = -D clippy::debug_assert_with_mut_call
 check: userland
 	@echo "Checking code..."
 	cd $(USERLAND_DIR) && cargo clippy --release -- $(CLIPPY_LINTS)
+	# The kernel twice: without the debug port (an image for a real machine) and with it (QEMU's).
 	cd $(KERNEL_DIR) && cargo clippy -- $(CLIPPY_LINTS)
+	cd $(KERNEL_DIR) && cargo clippy --features debugport -- $(CLIPPY_LINTS)
 	# The loader's build script reads the kernel's dev link (target/x86-f2k/debug/ntoskrnl) for its
 	# exports, so build that link first: a stale one fails the check on a new export.
 	cd $(KERNEL_DIR) && cargo build
 	cd $(LOADER_DIR) && cargo clippy -- $(CLIPPY_LINTS)
+	cd $(LOADER_DIR) && cargo clippy --features debugport -- $(CLIPPY_LINTS)
 
 # Copy-paste detection: jscpd over the Rust sources, its config and baseline in tools/jscpd/. Not
 # part of check; run by hand. The script builds jscpd with cargo install into target/tools/jscpd/

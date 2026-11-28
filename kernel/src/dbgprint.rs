@@ -69,13 +69,13 @@ pub fn unhandled(
     args: core::fmt::Arguments<'_>,
     reason: core::fmt::Arguments<'_>,
 ) {
-    #[cfg(target_arch = "x86")]
+    #[cfg(all(target_arch = "x86", feature = "debugport"))]
     {
         let mut com1 = crate::hw::serial::com1();
         let _ = write_unhandled(&mut com1, module, service, args, reason);
         crate::hw::serial::write_byte_blocking(b'\n');
     }
-    #[cfg(not(target_arch = "x86"))]
+    #[cfg(not(all(target_arch = "x86", feature = "debugport")))]
     let _ = (module, service, args, reason);
 }
 
@@ -97,7 +97,7 @@ pub fn unhandled_once<const N: usize>(
 }
 
 /// [`unhandled`]'s line, without its line end.
-#[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+#[cfg_attr(not(all(target_arch = "x86", feature = "debugport")), allow(dead_code))]
 fn write_unhandled(
     out: &mut impl Write,
     module: &str,

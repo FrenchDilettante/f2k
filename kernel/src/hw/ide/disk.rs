@@ -69,7 +69,6 @@ mod target {
     use crate::pcr::pcr;
     use crate::sched::event::{Event, EventKind};
     use crate::sched::wait::WaitReason;
-    use crate::serial_println;
     use crate::status::{NtStatus, STATUS_SUCCESS};
     use crate::sync::InitOnce;
 
@@ -244,12 +243,19 @@ mod target {
                 mode,
             );
             if !set.is_success() {
-                serial_println!("F2K: ide: DMA mode {:#04x} refused, PIO only", mode);
+                crate::klog!(
+                    Debug,
+                    "ide",
+                    "ide: DMA mode {:#04x} refused, PIO only",
+                    mode
+                );
                 crate::mem::dma::free(table.length, table.bus, table.va);
                 return None;
             }
-            serial_println!(
-                "F2K: ide: bus master at port {:#06x}, multiword DMA mode {}",
+            crate::klog!(
+                Debug,
+                "ide",
+                "ide: bus master at port {:#06x}, multiword DMA mode {}",
                 port,
                 mode & 0x07
             );
@@ -297,7 +303,7 @@ mod target {
         /// The bring-up proper, on the held channel; reports the outcome on COM1.
         fn bring_up(&'static self, channel: &mut Channel<Ports>) -> Option<Identity> {
             if !channel.detect() {
-                serial_println!("F2K: ide: no disk on the primary master");
+                crate::klog!(Debug, "ide", "ide: no disk on the primary master");
                 return None;
             }
             // Acknowledge anything the firmware left asserted before the line is enabled.
@@ -308,14 +314,16 @@ mod target {
             );
             match identify::bring_up(channel, &self.latch, &mut EventWait(&self.event)) {
                 Ok(identity) => {
-                    serial_println!(
-                        "F2K: ide: primary master: LBA28, {} sectors",
+                    crate::klog!(
+                        Debug,
+                        "ide",
+                        "ide: primary master: LBA28, {} sectors",
                         identity.sectors
                     );
                     Some(identity)
                 }
                 Err(absent) => {
-                    serial_println!("F2K: ide: primary master unusable ({:?})", absent);
+                    crate::klog!(Screen, "ide", "ide: primary master unusable ({:?})", absent);
                     None
                 }
             }

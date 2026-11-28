@@ -60,8 +60,10 @@ pub unsafe fn init() {
         asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
     }
     let Some((cr0, cr4)) = control_registers(features, cr0, cr4) else {
-        crate::serial_println!(
-            "F2K: the processor has no FXSAVE/FXRSTOR (CPUID.1:EDX {:#010x}): a thread's SSE state \
+        crate::klog!(
+            Screen,
+            "cpu",
+            "the processor has no FXSAVE/FXRSTOR (CPUID.1:EDX {:#010x}): a thread's SSE state \
              cannot be saved, not booting",
             features
         );

@@ -21,6 +21,12 @@ test = false
 doctest = false
 
 [features]
+# The debug port: COM1, as Windows 2000's /DEBUGPORT=COM1 with a kernel debugger attached. With
+# it, the kernel's log lines (crate::log) and the console's output copy go to COM1, which the
+# on-target suite reads; without it the kernel has no UART code at all and those writes compile to
+# nothing, as a free build's KdPrint. Every QEMU build turns it on (the Makefile's DEBUGPORT);
+# an image for a real machine is built without it: outside QEMU, COM1 is never used.
+debugport = []
 # Test-only fault injection (see kmain): raise a CPU exception right after
 # boot so the exception stubs and the COM1 dump can be verified on target
 # by the fault-ud / fault-gp cases of tests/core/kernel/test_kernel.py.
@@ -107,8 +113,9 @@ callback-smoke = []
 # buffer, and the boot's end dumps it on COM1 before the line the harness
 # stops the boot on. The suite's `--perf-trace` builds with it (forcing frame
 # pointers, per the Makefile) and turns each boot's log into a
-# profiler.firefox.com profile. Nothing of the trace compiles without it.
-perf-trace = []
+# profiler.firefox.com profile. Nothing of the trace compiles without it. The dump is the debug
+# port's, so the trace turns the port on.
+perf-trace = ["debugport"]
 
 # The build script generates the kernel's service registry from the system DLLs' export specs
 # (userland/<dll>/exports.toml) and points the kernel at the DLLs it embeds.

@@ -454,7 +454,6 @@ mod target {
     use crate::interrupt::dpc::{self, Dpc};
     use crate::interrupt::InterruptObject;
     use crate::level::{self, At, Dispatch, Keyboard as KeyboardLevel, LevelCell};
-    use crate::serial_println;
 
     /// How long bring-up waits for each of the keyboard's answers: 50 ticks, about half a second
     /// (a real keyboard's self-test takes a few hundred milliseconds).
@@ -497,8 +496,10 @@ mod target {
         while let Some(byte) = RING.pop() {
             let received = EXTENSION.get(dispatch).controller.receive(byte);
             #[cfg(feature = "kbd-smoke")]
-            serial_println!(
-                "F2K: kbd: byte {:#04x}{}",
+            crate::klog!(
+                Debug,
+                "kbd",
+                "kbd: byte {:#04x}{}",
                 byte,
                 if received == Received::Reply {
                     " (reply)"
@@ -519,8 +520,10 @@ mod target {
         let lost = RING.lost();
         let reported = &mut EXTENSION.get(dispatch).reported_lost;
         if lost != *reported {
-            serial_println!(
-                "F2K: kbd: {} byte(s) lost to a full ring",
+            crate::klog!(
+                Debug,
+                "kbd",
+                "kbd: {} byte(s) lost to a full ring",
                 lost.wrapping_sub(*reported)
             );
             *reported = lost;
@@ -543,7 +546,7 @@ mod target {
         // runs as it always has.
         let mut controller = Controller::new(Ports);
         let Ok(found) = controller.bring_up(rtl::console::input::BOOT_TOGGLES, &mut expired) else {
-            serial_println!("F2K: kbd: no i8042 controller answered");
+            crate::klog!(Screen, "kbd", "kbd: no i8042 controller answered");
             return;
         };
         // The controller, brought up, is the DPC's from here.
@@ -555,20 +558,26 @@ mod target {
         let translation = if found.translation() { "on" } else { "off" };
         match found.keyboard {
             Keyboard::Ready => {
-                serial_println!(
-                    "F2K: kbd: keyboard ready on IRQ 1 (translation {})",
+                crate::klog!(
+                    Debug,
+                    "kbd",
+                    "kbd: keyboard ready on IRQ 1 (translation {})",
                     translation
                 );
             }
             Keyboard::Silent => {
-                serial_println!(
-                    "F2K: kbd: no keyboard answered the reset (IRQ 1 connected, translation {})",
+                crate::klog!(
+                    Screen,
+                    "kbd",
+                    "kbd: no keyboard answered the reset (IRQ 1 connected, translation {})",
                     translation
                 );
             }
             Keyboard::Failed(byte) => {
-                serial_println!(
-                    "F2K: kbd: the keyboard's self-test answered {:#04x} (IRQ 1 connected, \
+                crate::klog!(
+                    Screen,
+                    "kbd",
+                    "kbd: the keyboard's self-test answered {:#04x} (IRQ 1 connected, \
                      translation {})",
                     byte,
                     translation
