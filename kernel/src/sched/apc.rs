@@ -36,8 +36,9 @@
 //! takes it itself.
 //!
 //! The APC records are the dispatcher database's: a thread's builtin suspend APC, a waitable
-//! timer's completion APC, and the user-APC records QueueUserAPC takes (each process its own
-//! share of them). The queues link them by name.
+//! timer's completion APC, and the user-APC records QueueUserAPC takes, one for each queuing,
+//! given back as they leave their queue (delivered or run down), as Windows 2000 allocates a KAPC
+//! from the nonpaged pool and frees it. The queues link them by name.
 //!
 //! One processor, no locking: every method runs serialized, like the rest of the scheduler.
 
@@ -85,8 +86,10 @@ pub enum ApcId {
     Exit(ThreadId),
     /// The completion APC of the waitable timer at its pool index.
     Timer(u16),
-    /// A user-APC record: its process object's index, and its place among the process's
-    /// [`crate::sched::database::USER_APCS`].
+    /// A user-APC record (NtQueueApcThread's, Windows 2000's KAPC from the nonpaged pool): its
+    /// chunk of the dispatcher's user-APC records, and its place among the chunk's
+    /// [`crate::sched::database::USER_APCS`]. Taken for one queuing
+    /// ([`Dispatcher::allocate_user_apc`]), given back as it leaves its queue.
     User(u16, u8),
 }
 
@@ -167,6 +170,9 @@ pub struct Apc {
     pub(crate) inserted: bool,
     /// The record's own name in the database.
     pub(crate) id: ApcId,
+    /// A free user-APC record's successor on the dispatcher's free list (see
+    /// [`Dispatcher::allocate_user_apc`]); none otherwise.
+    pub(crate) next_free: Option<ApcId>,
 }
 
 impl Apc {
@@ -184,6 +190,7 @@ impl Apc {
             system_argument2: 0,
             inserted: false,
             id,
+            next_free: None,
         }
     }
 
@@ -370,7 +377,8 @@ impl Dispatcher {
     }
 
     /// Take an APC out of its queue. Returns whether it was queued. When the removal empties the
-    /// queue, the mode's pending flag clears.
+    /// queue, the mode's pending flag clears. A user-APC record goes back to the free records: its
+    /// queuing is over (the delivery has copied what it runs).
     pub fn remove_apc(&mut self, apc: impl Into<ApcId>) -> bool {
         let apc = apc.into();
         let record = self.apc_mut(apc);
@@ -387,18 +395,25 @@ impl Dispatcher {
                 ApcMode::User => thread.user_apc_pending = false,
             }
         }
+        if let ApcId::User(..) = apc {
+            self.free_user_apc(apc);
+        }
         true
     }
 
     /// Empty `thread`'s APC queue of `mode`, marking every entry not inserted; the pending flags
     /// are untouched (an armed flag over an empty queue is a harmless residue — the delivery's loop
-    /// test never runs). Returns how many were queued. A termination's request and the exit's own
-    /// start discard the thread's queues through this.
+    /// test never runs), and the user-APC records go back to the free records (Windows 2000's
+    /// rundown routine frees the KAPC). Returns how many were queued. A termination's request and
+    /// the exit's own start discard the thread's queues through this.
     pub fn flush_apcs(&mut self, thread: ThreadId, mode: ApcMode) -> usize {
         let queue = ApcQueue { thread, mode };
         let mut flushed = 0;
         while let Some(apc) = list::pop_front(self, queue) {
             self.apc_mut(apc).inserted = false;
+            if let ApcId::User(..) = apc {
+                self.free_user_apc(apc);
+            }
             flushed += 1;
         }
         flushed
@@ -991,6 +1006,57 @@ mod tests {
         d.queue_apc(s2, 0, 0, 0);
         d.queue_apc(n2, 0, 0, 0);
         assert_eq!(queued(t), vec![s1.id(), s2.id(), n1.id(), n2.id()]);
+    }
+
+    /// Well past the 64 records a process once had: hundreds of user APCs queued on one thread
+    /// from one process, every queuing taking a record, delivered in the order queued (each
+    /// delivery takes the head off the queue and its call frame, as `user::apc`'s does), the
+    /// records given back as they leave, so as many again take no new chunk. A run-down queue
+    /// gives its records back too.
+    #[test]
+    fn hundreds_of_user_apcs_deliver_in_the_order_queued() {
+        const COUNT: usize = 300;
+        let pages = &crate::slots::KERNEL_PAGES;
+        let mut d = dispatcher();
+        let t = thread(process(8));
+        run(d, t);
+        let queue_all = |mut d: crate::sched::testkit::Disp| {
+            for n in 0..COUNT {
+                let apc = d.allocate_user_apc(pages).expect("the host's pages");
+                crate::user::apc::init(d.apc_mut(apc), t.id(), 0x0040_1000, n as u32);
+                assert!(d.queue_apc(apc, n, !n, 0), "APC {n} queued");
+            }
+        };
+        queue_all(d);
+        let chunks = d.db.user_apc_chunks;
+        assert!(chunks as usize * crate::sched::database::USER_APCS >= COUNT);
+        assert_eq!(queued_of(t, ApcMode::User).len(), COUNT);
+
+        let mut delivered = Vec::new();
+        while let Some(apc) = d.first_apc(t.id(), ApcMode::User) {
+            delivered.push(crate::user::apc::call_frame(d.apc(apc)));
+            assert!(d.remove_apc(apc));
+        }
+        let expected: Vec<[u32; 4]> = (0..COUNT)
+            .map(|n| [0x0040_1000, n as u32, n as u32, !n as u32])
+            .collect();
+        assert_eq!(delivered, expected, "every one, in the order queued");
+
+        queue_all(d);
+        assert_eq!(d.db.user_apc_chunks, chunks, "the records came back");
+        d.close_apc_queue(t.id());
+        assert!(queued_of(t, ApcMode::User).is_empty());
+        let mut free = 0;
+        let mut next = d.db.free_user_apcs;
+        while let Some(apc) = next {
+            free += 1;
+            next = d.apc(apc).next_free;
+        }
+        assert_eq!(
+            free,
+            chunks as usize * crate::sched::database::USER_APCS,
+            "the run-down gave every record back"
+        );
     }
 
     /// B3: there is no front-insert special case for user-mode normals — every normal queues at

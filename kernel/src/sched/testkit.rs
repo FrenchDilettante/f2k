@@ -41,8 +41,8 @@ impl Drop for Made {
 std::thread_local! {
     /// The dispatchers this thread made, kept until it ends.
     static MADE: RefCell<Made> = const { RefCell::new(Made(Vec::new())) };
-    /// The next free records of the installed dispatcher: thread, mutex, timer, user APC.
-    static NEXT: Cell<[u16; 4]> = const { Cell::new([0; 4]) };
+    /// The next free records of the installed dispatcher: thread, mutex, timer.
+    static NEXT: Cell<[u16; 3]> = const { Cell::new([0; 3]) };
 }
 
 /// A record kind the rig hands out, and the name each record of it has.
@@ -228,7 +228,7 @@ pub fn dispatcher() -> Disp {
     // level cell.
     let cell = Box::into_raw(unsafe { LevelCell::boxed_in_place(Dispatcher::write_empty) });
     MADE.with(|all| all.borrow_mut().0.push(cell));
-    NEXT.with(|next| next.set([super::database::SYSTEM_THREADS, 0, 0, 0]));
+    NEXT.with(|next| next.set([super::database::SYSTEM_THREADS, 0, 0]));
     // SAFETY: the cell lives until the thread ends, at its address.
     let cell = unsafe { &*cell };
     super::install_host(cell);
@@ -246,7 +246,7 @@ pub fn installed() -> Disp {
     Disp(root())
 }
 
-/// Take the next record of kind `kind` (0 threads, 1 mutexes, 2 timers, 3 user APCs).
+/// Take the next record of kind `kind` (0 threads, 1 mutexes, 2 timers).
 fn take(kind: usize) -> u16 {
     NEXT.with(|next| {
         let mut all = next.get();
@@ -352,13 +352,12 @@ fn side<T: Record>(address: Option<core::ptr::NonNull<T>>) -> Rec<T> {
     Rec(record, id)
 }
 
-/// A fresh user-APC record of the installed dispatcher, unbound.
+/// A fresh user-APC record of the installed dispatcher, unbound: the free record its allocation
+/// hands out.
 pub fn apc() -> Rec<Apc> {
-    use super::database::USER_APCS;
-    let index = take(3);
-    let process = index / USER_APCS as u16;
-    let id = ApcId::User(process, (index % USER_APCS as u16) as u8);
-    made(WaitableId::Process(process));
+    let id = installed()
+        .allocate_user_apc(&crate::slots::KERNEL_PAGES)
+        .expect("the host's pages");
     let apc = side(installed().user_apc_address(id));
     // SAFETY: a record of the installed dispatcher, no borrow of which is live.
     unsafe { *apc.as_ptr() = Apc::new(id) };

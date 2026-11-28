@@ -925,8 +925,8 @@ pub fn duplicate_object(
 /// NtQueueApcThread: queue `routine` on the thread's user-APC queue, with its three arguments; it
 /// runs when that thread next waits alertably (or before its first instruction, if it never ran),
 /// and a thread waiting alertably now is woken for it. STATUS_INVALID_HANDLE for a handle
-/// naming no thread, STATUS_NO_MEMORY with no free APC record, STATUS_UNSUCCESSFUL for a thread
-/// that has ended.
+/// naming no thread, STATUS_NO_MEMORY when no page is left for the APC's record (Windows 2000's
+/// KAPC from the nonpaged pool), STATUS_UNSUCCESSFUL for a thread that has ended.
 pub fn queue_apc_thread(
     call: &mut NtCall,
     thread: Handle,
@@ -948,9 +948,9 @@ pub fn queue_apc_thread(
     let target = reference.thread();
     let mut dispatch = call.passive().raise::<Dispatch>();
     let dispatcher = DISPATCHER.get(&mut dispatch);
-    let apc = calling_process()
-        .free_apc(dispatcher)
-        .ok_or(STATUS_NO_MEMORY)?;
+    let apc = dispatcher
+        .allocate_user_apc(&crate::slots::KERNEL_PAGES)
+        .map_err(|_| STATUS_NO_MEMORY)?;
     crate::user::apc::init(
         dispatcher.apc_mut(apc),
         target,
@@ -960,6 +960,7 @@ pub fn queue_apc_thread(
     if dispatcher.queue_apc(apc, argument2.raw() as usize, argument3.raw() as usize, 0) {
         Ok(STATUS_SUCCESS)
     } else {
+        dispatcher.free_user_apc(apc);
         Err(STATUS_UNSUCCESSFUL)
     }
 }

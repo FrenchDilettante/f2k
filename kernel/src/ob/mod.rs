@@ -1434,9 +1434,9 @@ impl Directory {
 
     /// A process object for a new process, unsignaled and still active, holding the process's own
     /// reference, with every thread ordinal free, at the lowest free index ([`ProcessIndex`]);
-    /// none when no page is left for its record, its ordinals, its body or its user-APC records
-    /// (made at its index the first time a process takes it, and kept: nothing is made then, the
-    /// record free again), or every u16 index is in use. Its index is the process record's, never
+    /// none when no page is left for its record, its ordinals or its body (made at its index the
+    /// first time a process takes it, and kept: nothing is made then, the record free again), or
+    /// every u16 index is in use. Its index is the process record's, never
     /// the System process's.
     pub fn create_process(&mut self) -> Option<ObjectId> {
         let fallback = security::default_sd(ObjectType::Process)?;

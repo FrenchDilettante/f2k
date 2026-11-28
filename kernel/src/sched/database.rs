@@ -6,11 +6,13 @@
 //! semaphore, mutex and waitable-timer bodies in side tables ([`SideTable`]) that grow a page at a
 //! time from the nonpaged pool, made at an index before the object directory hands that index out
 //! ([`Dispatcher::ensure_body`]) and kept at their peak, so a body never moves. A process object's
-//! body and its process's user-APC records are side tables' too, keyed by the process object's
-//! index, made with the object: Windows 2000 keeps a process's KPROCESS and its APCs with its
-//! EPROCESS, in the nonpaged pool. The thread records (KTHREAD) are a side table too, keyed by the
-//! thread object's index, made before the object directory hands the index out
-//! ([`Dispatcher::ensure_thread`]): no cap but memory, as Windows 2000's threads have none. The
+//! body is a side table's too, keyed by the process object's index, made with the object: Windows
+//! 2000 keeps a process's KPROCESS with its EPROCESS, in the nonpaged pool. The user-APC records
+//! (NtQueueApcThread's KAPCs, which Windows 2000 allocates from the nonpaged pool one queuing at a
+//! time) are a side table of page chunks, made as the free records run out, and a free list
+//! ([`Dispatcher::allocate_user_apc`]): no cap but memory. The thread records (KTHREAD) are a side
+//! table too, keyed by the thread object's index, made before the object directory hands the index
+//! out ([`Dispatcher::ensure_thread`]): no cap but memory, as Windows 2000's threads have none. The
 //! system threads, which no object names, hold its first indices ([`SYSTEM_THREADS`]). The object
 //! directory keeps the objects' headers (liveness, generation, counts) and names a body by its
 //! index, which is the same in both.
@@ -126,12 +128,34 @@ const _: () = assert!(
     "a chunk's pages align its records"
 );
 
-/// How many user-APC records each process has (QueueUserAPC's, across its threads).
-pub const USER_APCS: usize = 64;
+/// How many user-APC records a chunk holds: a page's worth (its entry's index word first), at most
+/// what [`ApcId::User`]'s byte names.
+pub const USER_APCS: usize = {
+    // The entry's index word, padded to a record's alignment.
+    let head = if core::mem::align_of::<Apc>() > 4 {
+        core::mem::align_of::<Apc>()
+    } else {
+        4
+    };
+    let per_page = (crate::slots::PAGE - head) / core::mem::size_of::<Apc>();
+    if per_page < 256 {
+        per_page
+    } else {
+        256
+    }
+};
 
-/// One process's user-APC records, at its process object's index: the record `k` of them is
-/// [`ApcId::User`]`(process, k)`.
+/// A chunk of user-APC records, NtQueueApcThread's (Windows 2000 allocates each KAPC from the
+/// nonpaged pool): the record `k` of chunk `c` is [`ApcId::User`]`(c, k)`. The chunks are made as
+/// the free records run out ([`Dispatcher::allocate_user_apc`]) and kept at their peak, as the
+/// pool's lookaside lists keep theirs; no cap but memory (65,536 chunks would be the nonpaged
+/// pool's every page).
 pub struct UserApcs(pub(crate) [Apc; USER_APCS]);
+
+const _: () = assert!(
+    SideTable::<UserApcs, 1>::CHUNK_PAGES == 1,
+    "a chunk of user-APC records is one page"
+);
 
 /// The process objects' bodies to a chunk: a page's worth.
 const PROCESS_BODIES: usize = entries_per_page::<ProcessObject>();
@@ -144,7 +168,13 @@ pub struct Database {
     pub(crate) mutexes: SideTable<Mutex, { entries_per_page::<Mutex>() }>,
     pub(crate) timers: SideTable<WaitableTimer, { entries_per_page::<WaitableTimer>() }>,
     pub(crate) processes: SideTable<ProcessObject, PROCESS_BODIES>,
+    /// The user-APC records, a chunk an index.
     pub(crate) user_apcs: SideTable<UserApcs, 1>,
+    /// How many chunks of user-APC records are made: chunks `0..user_apc_chunks`.
+    pub(crate) user_apc_chunks: u32,
+    /// The user-APC records in no queue, a stack through their `next_free`: the last given back
+    /// first, as a lookaside list hands blocks out.
+    pub(crate) free_user_apcs: Option<ApcId>,
 }
 
 impl Database {
@@ -165,6 +195,8 @@ impl Database {
             addr_of_mut!((*database).timers).write(SideTable::new());
             addr_of_mut!((*database).processes).write(SideTable::new());
             addr_of_mut!((*database).user_apcs).write(SideTable::new());
+            addr_of_mut!((*database).user_apc_chunks).write(0);
+            addr_of_mut!((*database).free_user_apcs).write(None);
         }
     }
 }
@@ -380,7 +412,7 @@ impl Dispatcher {
             ApcId::Suspend(thread) => &self.thread(thread).suspend_apc,
             ApcId::Exit(thread) => &self.thread(thread).exit_apc,
             ApcId::Timer(index) => &made(self.db.timers.get(index.into())).apc,
-            ApcId::User(process, k) => &made(self.db.user_apcs.get(process.into())).0[k as usize],
+            ApcId::User(chunk, k) => &made(self.db.user_apcs.get(chunk.into())).0[k as usize],
         }
     }
 
@@ -390,8 +422,8 @@ impl Dispatcher {
             ApcId::Suspend(thread) => &mut self.thread_mut(thread).suspend_apc,
             ApcId::Exit(thread) => &mut self.thread_mut(thread).exit_apc,
             ApcId::Timer(index) => &mut made(self.db.timers.get_mut(index.into())).apc,
-            ApcId::User(process, k) => {
-                &mut made(self.db.user_apcs.get_mut(process.into())).0[k as usize]
+            ApcId::User(chunk, k) => {
+                &mut made(self.db.user_apcs.get_mut(chunk.into())).0[k as usize]
             }
         }
     }
@@ -426,24 +458,79 @@ impl Dispatcher {
         made(self.db.processes.get_mut(index.into()))
     }
 
-    /// The address of the user-APC record `apc` names, made with its process; none for another
-    /// kind of APC, or a process index never made. Takes no borrow beyond the call.
+    /// The address of the user-APC record `apc` names; none for another kind of APC, or a chunk
+    /// never made. Takes no borrow beyond the call.
     pub fn user_apc_address(&self, apc: ApcId) -> Option<core::ptr::NonNull<Apc>> {
-        let ApcId::User(process, k) = apc else {
+        let ApcId::User(chunk, k) = apc else {
             return None;
         };
-        let records = self.db.user_apcs.address(process.into())?;
+        let records = self.db.user_apcs.address(chunk.into())?;
         // SAFETY: a made record's element: only the address is taken.
         Some(unsafe {
             core::ptr::NonNull::new_unchecked(records.as_ptr().cast::<Apc>().add(k as usize))
         })
     }
 
+    /// A user-APC record in no queue, for one queuing (NtQueueApcThread's KAPC, which Windows 2000
+    /// allocates from the nonpaged pool): the record given back last, or, with none free, the first
+    /// of a new chunk made from `pages`. The record is the caller's until it binds and queues it;
+    /// leaving its queue gives it back ([`Dispatcher::remove_apc`], [`Dispatcher::flush_apcs`]),
+    /// and one never queued goes back through [`Dispatcher::free_user_apc`]. Fails with nothing
+    /// taken when no page is left (or, never before memory, every chunk index is spent).
+    pub fn allocate_user_apc(&mut self, pages: &impl Pages) -> Result<ApcId, Exhausted> {
+        let apc = match self.db.free_user_apcs {
+            Some(apc) => apc,
+            None => self.grow_user_apcs(pages)?,
+        };
+        let record = self.apc_mut(apc);
+        let next = record.next_free.take();
+        debug_assert!(!record.inserted && record.thread.is_none(), "a free record");
+        self.db.free_user_apcs = next;
+        Ok(apc)
+    }
+
+    /// Make the next chunk of user-APC records from `pages`, every record free: the free list's
+    /// new head, the chunk's first record.
+    #[cold]
+    #[inline(never)]
+    fn grow_user_apcs(&mut self, pages: &impl Pages) -> Result<ApcId, Exhausted> {
+        let chunk = self.db.user_apc_chunks;
+        if chunk > u16::MAX.into() {
+            return Err(Exhausted::Limit);
+        }
+        self.db.user_apcs.ensure(chunk, pages)?;
+        self.db.user_apc_chunks = chunk + 1;
+        // Stacked last to first, so the chunk hands its records out in order.
+        for k in (0..USER_APCS).rev() {
+            let apc = ApcId::User(chunk as u16, k as u8);
+            let next = self.db.free_user_apcs;
+            self.apc_mut(apc).next_free = next;
+            self.db.free_user_apcs = Some(apc);
+        }
+        Ok(ApcId::User(chunk as u16, 0))
+    }
+
+    /// Give back the user-APC record `apc`, in no queue: the next allocation takes it first.
+    ///
+    /// # Panics
+    ///
+    /// `apc` is no user-APC record (debug builds: or it is queued, or already free).
+    pub fn free_user_apc(&mut self, apc: ApcId) {
+        assert!(matches!(apc, ApcId::User(..)), "a user-APC record");
+        let next = self.db.free_user_apcs;
+        let record = self.apc_mut(apc);
+        debug_assert!(!record.inserted, "off its queue");
+        debug_assert!(record.thread.is_some(), "taken, and bound once");
+        record.thread = None;
+        record.next_free = next;
+        self.db.free_user_apcs = Some(apc);
+    }
+
     // --- Fresh bodies for new objects ---
 
     /// Make the body record `object` names, with any page its side table needs from `pages`,
     /// before an object is handed its index: an event's, a semaphore's, a mutex's, a waitable
-    /// timer's, or a process object's with its process's user-APC records; a thread's (all three
+    /// timer's, or a process object's; a thread's (all three
     /// of its names: its object, its timer, its suspend semaphore) through
     /// [`Dispatcher::ensure_thread`].
     /// Takes no page once the record is made; no record is ever given back. Fails with the table as
@@ -454,12 +541,7 @@ impl Dispatcher {
             WaitableId::Semaphore(index) => self.db.semaphores.ensure(index.into(), pages),
             WaitableId::Mutex(index) => self.db.mutexes.ensure(index.into(), pages),
             WaitableId::Timer(index) => self.db.timers.ensure(index.into(), pages),
-            WaitableId::Process(index) => {
-                // Either may be made and the other not: what is made stays, for the next process
-                // at the index.
-                self.db.processes.ensure(index.into(), pages)?;
-                self.db.user_apcs.ensure(index.into(), pages)
-            }
+            WaitableId::Process(index) => self.db.processes.ensure(index.into(), pages),
             WaitableId::Thread(thread)
             | WaitableId::ThreadTimer(thread)
             | WaitableId::Suspend(thread) => self.ensure_thread(thread, pages),
@@ -678,18 +760,14 @@ mod tests {
         );
     }
 
-    /// A process object's body is made with its process's user-APC records, at its index, past
-    /// the fixed pools' old 64 processes; each APC record named by its process and its place.
+    /// A process object's body is made at its index, past the fixed pools' old 64 processes, and
+    /// takes no user-APC records with it: those come one queuing at a time.
     #[test]
-    fn a_process_body_comes_with_its_user_apcs() {
+    fn a_process_body_is_made_at_its_index() {
         let mut d = testkit::dispatcher();
         let pages = HostPages::new();
         d.ensure_body(WaitableId::Process(300), &pages).unwrap();
         let held = pages.held();
-        assert!(
-            held > SideTable::<UserApcs, 1>::CHUNK_PAGES,
-            "a chunk of bodies, the process's APCs, their directories' pages"
-        );
         d.ensure_body(WaitableId::Process(300), &pages).unwrap();
         assert_eq!(pages.held(), held, "made once");
         d.renew_process_object(300);
@@ -697,23 +775,59 @@ mod tests {
             d.waitable(WaitableId::Process(300)).id(),
             WaitableId::Process(300)
         );
-        let last = ApcId::User(300, USER_APCS as u8 - 1);
-        assert_eq!(d.apc(last).id(), last);
+        assert!(d.user_apc_address(ApcId::User(0, 0)).is_none(), "none made");
+    }
+
+    /// User-APC records come a chunk at a time, as the free ones run out, each chunk's in order;
+    /// a record given back is the next one taken; the chunks never move and are kept.
+    #[test]
+    fn user_apc_records_grow_a_chunk_at_a_time() {
+        let mut d = testkit::dispatcher();
+        let pages = HostPages::new();
+        let target = testkit::thread(testkit::process(8)).id();
+        let mut taken = Vec::new();
+        for _ in 0..3 * USER_APCS + 1 {
+            let apc = d.allocate_user_apc(&pages).unwrap();
+            crate::user::apc::init(d.apc_mut(apc), target, 0x0040_1000, 0);
+            taken.push(apc);
+        }
+        let expected: Vec<ApcId> = (0..3 * USER_APCS + 1)
+            .map(|n| ApcId::User((n / USER_APCS) as u16, (n % USER_APCS) as u8))
+            .collect();
+        assert_eq!(taken, expected, "chunk by chunk, each in order");
+        assert_eq!(d.db.user_apc_chunks, 4);
+        let first = d.user_apc_address(taken[0]);
+        let held = pages.held();
+        assert!(held >= 4 * SideTable::<UserApcs, 1>::CHUNK_PAGES);
+        for apc in &taken {
+            assert_eq!(d.apc(*apc).id(), *apc);
+        }
+
+        d.free_user_apc(taken[5]);
+        d.free_user_apc(taken[2 * USER_APCS + 1]);
         assert_eq!(
-            d.user_apc_address(last),
-            Some(core::ptr::NonNull::from(d.apc_mut(last)))
+            d.allocate_user_apc(&pages),
+            Ok(taken[2 * USER_APCS + 1]),
+            "the last given back"
         );
-        assert!(
-            d.user_apc_address(ApcId::User(301, 0)).is_none(),
-            "not made"
-        );
+        assert_eq!(d.allocate_user_apc(&pages), Ok(taken[5]));
+        assert_eq!(pages.held(), held, "no page taken while records are free");
+        assert_eq!(d.user_apc_address(taken[0]), first, "never moved");
+
+        // The rest of the last chunk, then a page short of the next.
         pages.set_budget(0);
-        assert_eq!(
-            d.ensure_body(WaitableId::Process(301), &pages),
-            Err(Exhausted::NoPages),
-            "the bodies' chunk is made, the APCs' finds no page"
+        while d.db.free_user_apcs.is_some() {
+            let apc = d.allocate_user_apc(&pages).unwrap();
+            crate::user::apc::init(d.apc_mut(apc), target, 0x0040_1000, 0);
+        }
+        assert_eq!(d.allocate_user_apc(&pages), Err(Exhausted::NoPages));
+        pages.set_budget(usize::MAX);
+        assert_eq!(d.db.user_apc_chunks, 4, "no chunk made without a page");
+        assert!(
+            d.allocate_user_apc(&pages).is_ok(),
+            "made once a page is there"
         );
-        assert!(d.user_apc_address(ApcId::User(301, 0)).is_none());
+        assert_eq!(d.db.user_apc_chunks, 5);
     }
 
     /// The tables grow past the caps the fixed pools had (256 events, 64 semaphores), a body

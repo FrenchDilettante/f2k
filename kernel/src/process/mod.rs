@@ -702,21 +702,6 @@ impl Process {
         locked(&self.state, |state| state.hard_error_mode = mode);
     }
 
-    /// A user-APC record of the process's that is in no queue in `dispatcher`, or none (every
-    /// record is queued). The records are the dispatcher database's (its APC queues link them by
-    /// name): each process has its share of them, [`crate::sched::database::USER_APCS`] at its
-    /// object's index, made with the object.
-    pub fn free_apc(
-        &self,
-        dispatcher: &mut crate::sched::dispatcher::Dispatcher,
-    ) -> Option<crate::sched::apc::ApcId> {
-        use crate::sched::database::USER_APCS;
-        let process = self.object().index;
-        (0..USER_APCS as u8)
-            .map(|k| crate::sched::apc::ApcId::User(process, k))
-            .find(|&apc| !dispatcher.apc_mut(apc).inserted())
-    }
-
     /// Close a handle: the table's claim ends — the object's handle, with its reference (the last
     /// handle cleans a file object up, the last reference deletes the object). False when the
     /// handle names nothing.
@@ -1648,51 +1633,6 @@ mod tests {
 
     fn fresh_process() -> Box<Process> {
         Box::new(record_at(0x0090_0000))
-    }
-
-    /// A process's user-APC share fills at [`USER_APCS`](crate::sched::database::USER_APCS)
-    /// records — the next QueueUserAPC finds none (NtQueueApcThread's STATUS_NO_MEMORY) — while
-    /// another process's share stays whole, and a record that leaves its queue serves the next.
-    #[test]
-    fn a_process_user_apc_share_fills_and_reuses() {
-        use crate::sched::apc::{nop_kernel_routine, ApcMode};
-        use crate::sched::database::USER_APCS;
-        fn normal(_: ThreadId, _: usize, _: usize, _: usize) {}
-
-        let mut dispatcher = crate::sched::testkit::dispatcher();
-        let target = crate::sched::testkit::thread(crate::sched::testkit::process(8));
-        for index in [0, 1] {
-            crate::sched::testkit::made(crate::sched::wait::WaitableId::Process(index));
-        }
-        let process = fresh_process();
-        let mut queued = Vec::new();
-        while let Some(apc) = process.free_apc(&mut dispatcher) {
-            dispatcher.apc_mut(apc).init(
-                target,
-                nop_kernel_routine,
-                Some(normal),
-                ApcMode::User,
-                0,
-            );
-            assert!(dispatcher.queue_apc(apc, 0, 0, 0));
-            queued.push(apc);
-        }
-        assert_eq!(queued.len(), USER_APCS, "the share is full");
-
-        let mut other = record_at(0x0091_0000);
-        other.identity.0.get_mut().object.index = 1;
-        assert!(
-            other
-                .free_apc(&mut dispatcher)
-                .is_some_and(|apc| !queued.contains(&apc)),
-            "another process's share is its own"
-        );
-
-        assert!(dispatcher.remove_apc(queued[USER_APCS / 2]));
-        assert_eq!(
-            process.free_apc(&mut dispatcher),
-            Some(queued[USER_APCS / 2])
-        );
     }
 
     /// A process's name: its image's file name without the extension, cut at fifteen bytes (the
