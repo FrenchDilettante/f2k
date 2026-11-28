@@ -1277,34 +1277,44 @@ def test_no_fingerprint_outside_a_checkout(tmp_path):
 
 @pytest.fixture
 def fake_make(tmp_path, monkeypatch):
-    """f2kboot.build with its make replaced: each call records its features and writes a kernel and
-    disk with their stamps, as `make disk` does; `sources` is what source_fingerprint returns
-    (None: git cannot tell), `fail` makes the next make fail."""
+    """f2kboot.build with its make replaced: each call records its target and features and writes
+    a kernel (and the kernel's image) and, for `make disk`, a disk, with their stamps, as make does;
+    a feature build's disk is the plain one's text with its kernel's appended (`swap_kernel`);
+    `sources` is what source_fingerprint returns (None: git cannot tell), `fail` makes the next make
+    fail."""
     work, built_dir = tmp_path / "qemu", tmp_path / "built"
     built_dir.mkdir()
     monkeypatch.setattr(f2kboot, "WORK", work)
     monkeypatch.setattr(f2kboot, "BUILT_KERNEL", built_dir / "f2k-kernel")
+    monkeypatch.setattr(f2kboot, "BUILT_NTOSKRNL", built_dir / "ntoskrnl.exe")
     monkeypatch.setattr(f2kboot, "BUILT_DISK", built_dir / "f2k-disk.img")
     state = SimpleNamespace(makes=[], sources="sources-1", fail=False)
     monkeypatch.setattr(f2kboot, "source_fingerprint", lambda root=None: state.sources)
     real_run = subprocess.run
 
     def run(arguments, **kwargs):
-        if arguments[:2] != ["make", "disk"]:
+        if arguments[0] != "make" or arguments[1] not in ("disk", "kernel"):
             return real_run(arguments, **kwargs)
         features = arguments[2].split("=", 1)[1]
-        state.makes.append(features)
+        state.makes.append(f"{arguments[1]} {features}".strip())
         if state.fail:
             state.fail = False
             return SimpleNamespace(returncode=2, stdout="error: the kernel did not build\n")
         stamp = f"features={features}\nprofile={f2kboot.PROFILE}\n"
-        for path in (f2kboot.BUILT_KERNEL, f2kboot.BUILT_DISK):
+        made = [f2kboot.BUILT_KERNEL, f2kboot.BUILT_NTOSKRNL]
+        if arguments[1] == "disk":
+            made.append(f2kboot.BUILT_DISK)
+        for path in made:
             path.unlink(missing_ok=True)
             path.write_text(f"{features} from {state.sources}")
             f2kboot.stamp_path(path).write_text(stamp)
         return SimpleNamespace(returncode=0, stdout="")
 
+    def swap_kernel(base, files, disk):
+        disk.write_text(f"{base.read_text()}; {(files / 'f2k-kernel').read_text()}")
+
     monkeypatch.setattr(f2kboot.subprocess, "run", run)
+    monkeypatch.setattr(f2kboot, "swap_kernel", swap_kernel)
     return state
 
 
@@ -1312,29 +1322,43 @@ def test_a_build_is_reused_across_runs_while_its_sources_are_unchanged(fake_make
     first = f2kboot.build(["irq-smoke"], "run-1")
     assert f2kboot.build(["irq-smoke"], "run-1") == first
     assert first.kernel.read_text() == "irq-smoke from sources-1"
-    assert fake_make.makes == ["irq-smoke"]
+    # The plain build's disk first, then the feature set's kernel, swapped onto a copy of it.
+    assert first.disk.read_text() == " from sources-1; irq-smoke from sources-1"
+    assert fake_make.makes == ["disk", "kernel irq-smoke"]
     # A later run, nothing changed: no make.
     assert f2kboot.build(["irq-smoke"], "run-2") == first
-    assert fake_make.makes == ["irq-smoke"]
+    assert fake_make.makes == ["disk", "kernel irq-smoke"]
     # The sources changed: built again, then reused within that run.
     fake_make.sources = "sources-2"
     assert f2kboot.build(["irq-smoke"], "run-3").kernel.read_text() == "irq-smoke from sources-2"
     f2kboot.build(["irq-smoke"], "run-3")
-    assert fake_make.makes == ["irq-smoke", "irq-smoke"]
-    # Each feature set is a build of its own.
     f2kboot.build([], "run-3")
-    assert fake_make.makes == ["irq-smoke", "irq-smoke", ""]
+    assert fake_make.makes == ["disk", "kernel irq-smoke"] * 2
+    # Each feature set is a build of its own.
+    f2kboot.build(["nest-smoke"], "run-3")
+    assert fake_make.makes == ["disk", "kernel irq-smoke"] * 2 + ["kernel nest-smoke"]
 
 
 def test_a_build_made_while_its_sources_changed_serves_its_run_alone(fake_make, monkeypatch):
     fingerprints = iter(["sources-1", "sources-1", "sources-2"])  # the run's, before, after make
     monkeypatch.setattr(f2kboot, "source_fingerprint", lambda root=None: next(fingerprints))
-    f2kboot.build(["irq-smoke"], "run-1")
-    f2kboot.build(["irq-smoke"], "run-1")
-    assert fake_make.makes == ["irq-smoke"]
+    f2kboot.build([], "run-1")
+    f2kboot.build([], "run-1")
+    assert fake_make.makes == ["disk"]
     fingerprints = iter(["sources-1", "sources-1", "sources-1"])
+    f2kboot.build([], "run-2")
+    assert fake_make.makes == ["disk", "disk"]
+
+
+def test_a_feature_build_on_a_disk_of_changing_sources_serves_its_run_alone(fake_make, monkeypatch):
+    # The plain disk built while the sources changed; the feature set's kernel after that.
+    fingerprints = iter(["sources-1", "sources-1", "sources-2", "sources-2", "sources-2"])
+    monkeypatch.setattr(f2kboot, "source_fingerprint", lambda root=None: next(fingerprints))
+    f2kboot.build(["irq-smoke"], "run-1")
+    assert fake_make.makes == ["disk", "kernel irq-smoke"]
+    monkeypatch.setattr(f2kboot, "source_fingerprint", lambda root=None: "sources-2")
     f2kboot.build(["irq-smoke"], "run-2")
-    assert fake_make.makes == ["irq-smoke", "irq-smoke"]
+    assert fake_make.makes == ["disk", "kernel irq-smoke"] * 2
 
 
 def test_nothing_is_reused_when_git_cannot_tell(fake_make):
@@ -1342,17 +1366,26 @@ def test_nothing_is_reused_when_git_cannot_tell(fake_make):
     f2kboot.build([], "run-1")
     f2kboot.build([], "run-1")
     f2kboot.build([], "run-2")
-    assert fake_make.makes == ["", ""]
+    assert fake_make.makes == ["disk", "disk"]
 
 
 def test_a_failed_build_fails_the_rest_of_its_run_and_is_retried_by_the_next(fake_make):
+    f2kboot.build([], "run-1")
     fake_make.fail = True
     for _ in range(2):
         with pytest.raises(f2kboot.BuildError, match="the kernel did not build"):
             f2kboot.build(["nest-smoke"], "run-1")
-    assert fake_make.makes == ["nest-smoke"]
+    assert fake_make.makes == ["disk", "kernel nest-smoke"]
     f2kboot.build(["nest-smoke"], "run-2")
-    assert fake_make.makes == ["nest-smoke", "nest-smoke"]
+    assert fake_make.makes == ["disk", "kernel nest-smoke", "kernel nest-smoke"]
+
+
+def test_a_failed_plain_build_fails_the_feature_builds_on_its_disk(fake_make):
+    fake_make.fail = True
+    for features in ([], ["nest-smoke"]):
+        with pytest.raises(f2kboot.BuildError, match="the kernel did not build"):
+            f2kboot.build(features, "run-1")
+    assert fake_make.makes == ["disk"]
 
 
 def test_a_build_of_another_profile_is_refused(tmp_path):

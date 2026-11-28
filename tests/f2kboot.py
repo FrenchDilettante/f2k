@@ -2,7 +2,8 @@
 
 Three pieces the test modules share:
 
-- builds: `make disk` with a set of cargo features, kept per feature set under target/qemu/builds
+- builds: `make disk`, and `make kernel` with each other set of cargo features, its disk the plain
+  one with the kernel swapped in (`swap_kernel`), kept per feature set under target/qemu/builds
   and reused for the rest of the test run, and by later runs while the sources are unchanged
   (`source_fingerprint`; the builds serialize across pytest-xdist workers on a file lock: they
   share cargo's target directory);
@@ -66,6 +67,7 @@ WORK = REPO_ROOT / "target" / "qemu"
 PROFILE = os.environ.get("F2K_KERNEL_PROFILE") or "dev-opt"
 BUILT = REPO_ROOT / "target" / "x86-f2k" / ("debug" if PROFILE == "dev" else PROFILE)
 BUILT_KERNEL = BUILT / "f2k-kernel"
+BUILT_NTOSKRNL = BUILT / "ntoskrnl.exe"
 BUILT_DISK = BUILT / "f2k-disk.img"
 
 
@@ -81,7 +83,7 @@ class Build:
 
 
 class BuildError(Exception):
-    """`make disk` failed; the message carries the output's tail."""
+    """A build's make failed; the message carries the output's tail."""
 
 
 def read_text(path: Path) -> str | None:
@@ -92,7 +94,7 @@ def read_text(path: Path) -> str | None:
         return None
 
 
-# How long one `make disk` may take before the build counts as failed (a cargo blocked on another
+# How long one build's make may take before the build counts as failed (a cargo blocked on another
 # holder of its own lock, for instance, would otherwise hang every worker). Seconds; overridable.
 BUILD_TIMEOUT = float(os.environ.get("F2K_BUILD_TIMEOUT", "1200"))
 
@@ -199,11 +201,20 @@ def run_fingerprint(run_id: str) -> str | None:
     return fingerprint
 
 
+# A feature build's disk differs from the plain build's only by the kernel's files on it: the boot
+# loader's ELF Limine boots and the kernel's image in the system directory (the Makefile's disk
+# target copies both). So a feature set is built with `make kernel` alone, and its disk is a copy
+# of the plain build's with those two files written over (`swap_kernel`), about 0.1 s instead of
+# the disk target's 1.3 s. Each is (the built file's name, its path on the volume).
+KERNEL_FILES = (("f2k-kernel", "::/f2k-kernel"), ("ntoskrnl.exe", "::/WINNT/system32/ntoskrnl.exe"))
+
+
 def build(features: list[str], run_id: str) -> Build:
     """The kernel and disk built with `features`, then reused: by the rest of the test run
     (`run_id`), and by later runs for as long as the sources are those it was built from
-    (`source_fingerprint`). A build that failed in this run fails every later request at once, with
-    its output."""
+    (`source_fingerprint`). The plain build is `make disk`; a feature build is `make kernel` and the
+    plain build's disk with its kernel swapped in (`KERNEL_FILES`). A build that failed in this run
+    fails every later request at once, with its output."""
     key = "+".join(features) or "default"
     if PROFILE != "dev":
         key = f"{PROFILE}-{key}"
@@ -212,13 +223,15 @@ def build(features: list[str], run_id: str) -> Build:
     marker = out / "run-id"
     sources = out / "sources"
     failed = WORK / "builds" / f"{key}.failed"
-    arguments = ["make", "disk", f"CARGO_FEATURES={','.join(features)}", f"KERNEL_PROFILE={PROFILE}"]
+    arguments = make_arguments(features)
     command = " ".join(arguments)
     # Already taken by this run: the marker is written only once the build's files are in place,
     # and nothing rewrites them within a run, so this check needs no lock (and does not wait behind
     # another worker's build of a different feature set).
     if read_text(marker) == run_id:
         return built
+    # The disk the kernel goes onto (taking the lock itself, so before this build takes it).
+    base = build([], run_id) if features else None
     WORK.mkdir(parents=True, exist_ok=True)
     with open(WORK / "build.lock", "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -234,6 +247,12 @@ def build(features: list[str], run_id: str) -> Build:
             marker.write_text(run_id)
             return built
         before = source_fingerprint()
+
+        def fail(error: str) -> BuildError:
+            failed.parent.mkdir(parents=True, exist_ok=True)
+            failed.write_text(f"{run_id}\n{error}")
+            return BuildError(error)
+
         try:
             made = subprocess.run(
                 arguments,
@@ -243,41 +262,64 @@ def build(features: list[str], run_id: str) -> Build:
                 text=True,
                 timeout=BUILD_TIMEOUT,
             )
-            error = None
             if made.returncode != 0:
                 tail = "\n".join(made.stdout.splitlines()[-40:])
-                error = f"{command} failed:\n{tail}"
+                raise fail(f"{command} failed:\n{tail}")
         except subprocess.TimeoutExpired:
-            error = f"{command} did not finish within {BUILD_TIMEOUT:.0f} s (F2K_BUILD_TIMEOUT)"
-        if error is not None:
-            failed.parent.mkdir(parents=True, exist_ok=True)
-            failed.write_text(f"{run_id}\n{error}")
-            raise BuildError(error)
-        # The stamps say what the make built: a concurrent `make disk` in the same tree would show.
-        mismatch = build_mismatch(last_build(), features)
+            raise fail(f"{command} did not finish within {BUILD_TIMEOUT:.0f} s (F2K_BUILD_TIMEOUT)") from None
+        # The stamps say what the make built: a concurrent `make` in the same tree would show.
+        mismatch = build_mismatch(Build(BUILT_KERNEL, BUILT_KERNEL if base else BUILT_DISK), features)
         if mismatch is not None:
-            error = f"{command} left another build: {mismatch}"
-            failed.parent.mkdir(parents=True, exist_ok=True)
-            failed.write_text(f"{run_id}\n{error}")
-            raise BuildError(error)
+            raise fail(f"{command} left another build: {mismatch}")
         after = source_fingerprint()
         shutil.rmtree(out, ignore_errors=True)
         out.mkdir(parents=True)
         shutil.copy2(BUILT_KERNEL, out / "f2k-kernel")
         shutil.copy2(stamp_path(BUILT_KERNEL), stamp_path(out / "f2k-kernel"))
-        shutil.copy2(stamp_path(BUILT_DISK), stamp_path(out / "f2k-disk.img"))
-        # The disk build deletes and recreates its image, so a hard link keeps this one intact
-        # through later builds (and costs no copy of the 64 MiB).
-        try:
-            os.link(BUILT_DISK, out / "f2k-disk.img")
-        except OSError:
-            shutil.copy2(BUILT_DISK, out / "f2k-disk.img")
+        if base is not None:
+            shutil.copy2(BUILT_NTOSKRNL, out / "ntoskrnl.exe")
+            try:
+                swap_kernel(base.disk, out, built.disk)
+            except RuntimeError as error:
+                raise fail(str(error)) from None
+            shutil.copy2(stamp_path(BUILT_KERNEL), stamp_path(built.disk))
+        else:
+            shutil.copy2(stamp_path(BUILT_DISK), stamp_path(built.disk))
+            # The disk build deletes and recreates its image, so a hard link keeps this one intact
+            # through later builds (and costs no copy of the 64 MiB).
+            try:
+                os.link(BUILT_DISK, built.disk)
+            except OSError:
+                shutil.copy2(BUILT_DISK, built.disk)
         # What it was built from, for the later runs: only when the sources held still through the
-        # build (an edit during it leaves a build of no one state, which this run alone uses).
-        if before is not None and before == after:
+        # build (an edit during it leaves a build of no one state, which this run alone uses), and,
+        # for a feature build, its disk came from those sources too.
+        if before is not None and before == after and (
+                base is None
+                or read_text(base.disk.parent / "sources") == f"{before}\n{' '.join(make_arguments([]))}"):
             sources.write_text(f"{before}\n{command}")
         marker.write_text(run_id)
     return built
+
+
+def make_arguments(features: list[str]) -> list[str]:
+    """The make that builds `features`: the disk for the plain build, the kernel alone for the
+    others (their disk is the plain one's, the kernel swapped in)."""
+    target = "kernel" if features else "disk"
+    return ["make", target, f"CARGO_FEATURES={','.join(features)}", f"KERNEL_PROFILE={PROFILE}"]
+
+
+def swap_kernel(base: Path, files: Path, disk: Path) -> None:
+    """Write `disk`: a copy of the disk image `base` with the kernel's files (`KERNEL_FILES`) from
+    the directory `files` written over its own."""
+    shutil.copyfile(base, disk)
+    for name, place in KERNEL_FILES:
+        try:
+            subprocess.run(["mcopy", "-o", "-i", f"{disk}{PARTITION}", str(files / name), place],
+                           check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        except subprocess.CalledProcessError as error:
+            disk.unlink(missing_ok=True)
+            raise RuntimeError(f"swapping {name} onto {disk.name} failed:\n{error.stdout}") from None
 
 
 # How long the leftovers are kept: a build directory serves every run while the sources it was
