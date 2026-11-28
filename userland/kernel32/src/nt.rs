@@ -7,16 +7,14 @@
 //! [`host`]. A stand-in records what it was given in thread-locals and fails on demand
 //! ([`host::FAIL_NEXT`]).
 
-/// The counted strings, UNICODE_STRING and ANSI_STRING (`rtl::string`'s, which ntdll
-/// converts), the TIME_FIELDS ntdll's time conversions fill and read, the RTL_BITMAP
-/// header its bitmap calls take, and the RTL_HANDLE_TABLE its handle-table calls take.
+/// rtl's UNICODE_STRING and ANSI_STRING, TIME_FIELDS, RTL_BITMAP and RTL_HANDLE_TABLE, as
+/// ntdll's calls take them.
 pub use rtl::bitmap::RtlBitmap;
 pub use rtl::handles::HandleTable;
 pub use rtl::string::{AnsiString, UnicodeString};
 pub use rtl::time::TimeFields;
 
-/// An OBJECT_ATTRIBUTES (`rtl::nt`'s): what names an object to the system services, its name and
-/// security pointers the process's own.
+/// An OBJECT_ATTRIBUTES (`rtl::nt`'s), its name and security pointers the process's own.
 pub type ObjectAttributes = rtl::nt::ObjectAttributes<u32, *const UnicodeString, *const u8>;
 
 /// RTL_RELATIVE_NAME, Windows 2000's: a name relative to a directory, and the directory's handle
@@ -864,12 +862,12 @@ pub mod host {
         pub static SHUTDOWN_PARAMETERS: Cell<(u32, u32)> = const { Cell::new((rtl::console::base::DEFAULT_SHUTDOWN_LEVEL, 0)) };
     }
 
-    /// The status the next service answers with: the one FAIL_NEXT holds (reset), or success.
+    /// The status FAIL_NEXT holds (reset), or success.
     fn answer() -> u32 {
         FAIL_NEXT.with(|fail| fail.replace(0))
     }
 
-    /// The arranged failure, if any (reset): the thread and process stand-ins' form of [`answer`].
+    /// [`answer`] as an option: the arranged failure, if any (reset).
     pub(crate) fn failure() -> Option<u32> {
         Some(answer()).filter(|&status| status != 0)
     }
@@ -1355,8 +1353,7 @@ pub mod host {
         }
     }
 
-    /// The handle tables' memory: page-aligned host allocations, never given back (a test's tables
-    /// live as long as it does).
+    /// The handle tables' memory: page-aligned host allocations, never given back.
     struct HostVm;
 
     impl rtl::heap::Vm for HostVm {
@@ -1993,11 +1990,10 @@ pub mod host {
         }
     }
 
-    /// CsrClientCallServer, over the console server's own rules (`rtl::console`, as the kernel
-    /// serves them): the data words the length names, answered in place; the ReturnValue. The
-    /// base server's announcement of a new process (`rtl::console::base`) is taken as the
-    /// kernel takes it, its process group the stand-in's to ignore; the process's shutdown level
-    /// and flags are kept, or left as they were, as the kernel's server keeps them.
+    /// CsrClientCallServer over `rtl::console`'s rules, as the kernel serves them: the data words
+    /// the length names answered in place, the ReturnValue returned. Of the base server's calls
+    /// (`rtl::console::base`), a new process's announcement is accepted and the shutdown level and
+    /// flags are kept (or left) as the kernel's server keeps them.
     pub unsafe extern "system" fn CsrClientCallServer(
         message: *mut super::ApiMessage,
         capture_buffer: *mut u8,
@@ -2049,9 +2045,8 @@ pub mod host {
 }
 
 /// The host tests' file services: one stand-in file, named by [`host::HANDLE`] (any other handle
-/// names nothing), the calls recorded for the scenarios to read; the current directory as ntdll
-/// keeps it (its DOS path, its trailing separator kept; open as [`CURRENT_DIRECTORY_HANDLE`]), and
-/// the runtime library's path code as ntdll runs it over it.
+/// names nothing), its calls recorded; the current directory as ntdll keeps it (a DOS path with
+/// its trailing separator, open as [`CURRENT_DIRECTORY_HANDLE`]), and rtl's path code over it.
 #[cfg(test)]
 #[allow(non_snake_case)]
 pub mod files {
@@ -2168,7 +2163,7 @@ pub mod files {
         })
     }
 
-    /// The calls taken since the last look, and none kept.
+    /// The calls taken since the last look.
     pub fn calls() -> Vec<Call> {
         CALLS.with(|calls| std::mem::take(&mut *calls.borrow_mut()))
     }
@@ -2283,8 +2278,7 @@ pub mod files {
         unsafe { opened(handle, access, attributes, io_status, share, 1, options, 0) }
     }
 
-    /// The stand-in file's answer for `handle`: the arranged failure, or STATUS_INVALID_HANDLE for
-    /// a handle naming no file.
+    /// The arranged failure, or STATUS_INVALID_HANDLE for a handle naming no file.
     fn checked(handle: u32) -> Result<(), u32> {
         if let Some(status) = failure() {
             return Err(status);
@@ -3442,8 +3436,7 @@ pub mod modules {
 /// The host tests' resources: a model of the modules' resource directories ([`RESOURCE_MODEL`]),
 /// and LdrFindResource_U and LdrAccessResource over it, recording each path they were given
 /// ([`RESOURCE_PATHS`]). The walk itself is `rtl::resource`'s, tested there: the stand-in matches
-/// as it does (numbers, names exactly, the language searched as `rtl::resource::languages` orders
-/// it), so the tests see what kernel32 hands ntdll and what it makes of the answers.
+/// as it does (numbers, names exactly, languages in `rtl::resource::languages`' order).
 #[cfg(test)]
 #[allow(non_snake_case)]
 pub mod resources {
@@ -4381,7 +4374,7 @@ pub mod pipes {
         pub static FAIL_AFTER_CREATE: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     }
 
-    /// The calls taken since the last look, and none kept.
+    /// The calls taken since the last look.
     pub fn pipe_calls() -> Vec<PipeCall> {
         PIPE_CALLS.with(|calls| std::mem::take(&mut *calls.borrow_mut()))
     }
@@ -4526,10 +4519,10 @@ pub mod pipes {
     }
 }
 
-/// The host tests' process listing and ToolHelp sections: the listing NtQuerySystemInformation's
-/// stand-in answers for SystemProcessInformation once a test installs one ([`install`]), built as
-/// the kernel builds it into the caller's buffer, and sections of the paging file backed by real
-/// memory meanwhile, so a snapshot's views hold what kernel32 writes into them.
+/// The host tests' process listing and ToolHelp sections: once a test installs a listing
+/// ([`install`]), NtQuerySystemInformation's stand-in answers SystemProcessInformation with it,
+/// built as the kernel builds it, and paging-file sections get real memory, so a snapshot's views
+/// hold what kernel32 writes into them.
 #[cfg(test)]
 pub mod toolhelp {
     use std::boxed::Box;
