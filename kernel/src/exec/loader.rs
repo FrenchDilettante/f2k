@@ -353,19 +353,14 @@ const BOOT_REGIONS: [SystemRegion; 3] = {
 };
 
 /// The fixed user regions every process's address space holds from its creation, in address
-/// order: ntdll's image, the TEB pages, the PEB, the shared data page.
-const PROCESS_REGIONS: [SystemRegion; 5] = {
+/// order: ntdll's image, the main thread's TEB, the PEB, the shared data page. A created thread's
+/// TEB is a region of its own, placed below them at its creation (`user::reserve_teb`).
+const PROCESS_REGIONS: [SystemRegion; 4] = {
     use crate::exec::modules::{NTDLL_BASE, NTDLL_SIZE};
-    use crate::user::{PEB_PAGE, TEB_PAGE, THREAD_TEB_REGION};
+    use crate::user::{PEB_PAGE, TEB_PAGE};
     const PAGE: u32 = crate::mem::paging::PAGE_SIZE;
-    const CHILDREN: u32 = crate::process::CHILD_THREADS as u32;
     [
         ("ntdll.dll image", NTDLL_BASE, NTDLL_BASE + NTDLL_SIZE),
-        (
-            "child thread TEBs",
-            THREAD_TEB_REGION,
-            THREAD_TEB_REGION + CHILDREN * PAGE,
-        ),
         ("main thread TEB", TEB_PAGE, TEB_PAGE + PAGE),
         ("process environment block", PEB_PAGE, PEB_PAGE + PAGE),
         (
@@ -1120,8 +1115,13 @@ mod tests {
             "the process heap's place, right above the stack"
         );
         assert_eq!(
-            system_region_overlapping(crate::user::THREAD_TEB_REGION, 0x1000),
-            Some("child thread TEBs")
+            system_region_overlapping(crate::user::TEB_PAGE, 0x1000),
+            Some("main thread TEB")
+        );
+        assert_eq!(
+            system_region_overlapping(crate::user::TEB_PAGE - 0x1000, 0x1000),
+            None,
+            "a created thread's TEB is placed at its creation"
         );
         assert_eq!(
             system_region_overlapping(0x7FFD_F000, 0x1000),

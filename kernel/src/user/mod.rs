@@ -78,10 +78,10 @@ pub const PARAMS_PAGE: u32 = 0x0002_0000;
 /// array and the service pack's name. The last page below KUSER_SHARED_DATA.
 pub const PEB_PAGE: u32 = 0x7FFD_F000;
 
-/// The region later threads' TEB pages come from: one page per child thread, downwards from the
-/// first thread's TEB page (the second thread's right below it, at 0x7FFDD000), this its lowest
-/// address. A process's first thread keeps the fixed TEB page above.
-pub const THREAD_TEB_REGION: u32 = TEB_PAGE - crate::process::CHILD_THREADS as u32 * 4096;
+/// One past the highest address a TEB (or any VAD the system places itself) takes: Windows 2000's
+/// MM_HIGHEST_VAD_ADDRESS, the highest user address less 64 KiB, so the PEB's page is the range's
+/// top and the shared data page above it is out of it.
+pub const HIGHEST_VAD_END: u32 = PEB_PAGE + 4096;
 
 /// The main thread's initial context for an image whose entry point is `entry`, as Windows 2000's
 /// CreateProcess builds it (BaseInitializeContext): EIP kernel32's BaseProcessStartThunk, EAX the
@@ -97,10 +97,20 @@ pub fn main_thread_start(entry: u32) -> crate::sched::startup::UserStart {
     }
 }
 
-/// The TEB page of the thread at `ordinal` in its process (see `process::ordinals`): the main
-/// thread's fixed page, then one page lower per ordinal, in every process alike.
-pub const fn thread_teb_va(ordinal: u32) -> u32 {
-    TEB_PAGE - ordinal * 4096
+/// Place a created thread's TEB in `space`, as Windows 2000's MmCreateTeb does: a page of its own
+/// (a [`Kind::System`](crate::mem::vm::Kind::System) region, secured as the TEB VAD is), the
+/// highest free one below [`HIGHEST_VAD_END`] — under the PEB and the main thread's TEB, the second
+/// thread's at 0x7FFDD000, each later one the next free page down, a page freed by an ended
+/// thread's TEB the first taken again. Returns its address; the page is mapped by the caller.
+pub fn reserve_teb(
+    space: &mut crate::mem::vm::AddressSpace,
+) -> Result<u32, crate::mem::vm::VmError> {
+    space.reserve_pages_down(
+        HIGHEST_VAD_END,
+        4096,
+        crate::mem::vm::PAGE_READWRITE,
+        crate::mem::vm::Kind::System,
+    )
 }
 
 /// An unmapped user address the bad-args stub passes as the syscall argument pointer: below the
@@ -683,29 +693,30 @@ mod tests {
         assert_eq!(addr_of!(frame.user_ss) as usize - base, 14 * 4);
     }
 
-    /// Per-thread TEB pages: the first thread keeps the loader's fixed page; later threads take
-    /// their own page downwards from it, so threads of one process never share a TEB.
+    /// Per-thread TEB pages, placed as Windows 2000's MmCreateTeb places them: the first thread
+    /// keeps the loader's fixed page; later threads take their own page, the highest free one
+    /// below the PEB, so threads of one process never share a TEB (`mem::vm`'s tests check that a
+    /// freed page is the next one taken).
     #[test]
-    fn per_thread_teb_pages_are_distinct() {
-        assert_eq!(thread_teb_va(0), TEB_PAGE);
-        let pages = [thread_teb_va(0), thread_teb_va(1), thread_teb_va(2)];
-        assert_eq!(pages[1], 0x7FFD_D000, "Windows 2000's second thread's TEB");
-        assert_eq!(pages[2], TEB_PAGE - 2 * 4096);
-        for index in 1..pages.len() {
-            for other in 0..index {
-                assert_ne!(pages[index], pages[other]);
-            }
-        }
-        // The last child's page is the region's lowest, far above the program's own reservations
-        // (they take the lowest free ranges).
+    fn per_thread_teb_pages_are_placed_top_down() {
+        use crate::mem::paging::PAGE_SIZE;
+        use crate::mem::vm::{AddressSpace, Kind};
+        assert_eq!(HIGHEST_VAD_END, 0x7FFE_0000, "MM_HIGHEST_VAD_ADDRESS + 1");
+        assert_eq!(HIGHEST_VAD_END, shared::USER_ADDRESS);
+        let mut space = Box::new(AddressSpace::new());
+        crate::exec::loader::seed_process_regions(&mut space);
+        let pages: Vec<u32> = (0..3).map(|_| reserve_teb(&mut space).unwrap()).collect();
         assert_eq!(
-            thread_teb_va(crate::process::CHILD_THREADS as u32),
-            THREAD_TEB_REGION
+            pages,
+            [0x7FFD_D000, 0x7FFD_C000, 0x7FFD_B000],
+            "Windows 2000's second thread's TEB, then one page lower each"
         );
-        assert!(THREAD_TEB_REGION > 0x7000_0000);
         for &page in &pages {
-            assert_eq!(page % 4096, 0);
-            assert!(page < PEB_PAGE);
+            let region = space.region_at(page).unwrap();
+            assert_eq!(
+                (region.base, region.size, region.kind),
+                (page, PAGE_SIZE, Kind::System)
+            );
         }
     }
 

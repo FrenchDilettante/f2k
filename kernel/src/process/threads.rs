@@ -3,16 +3,16 @@
 //!
 //! NtCreateThread behind kernel32's CreateThread and CreateProcess: a thread takes a thread record
 //! from the pool, a gate stack from the system's kernel stacks (mapped in every address space), an
-//! ordinal from its process (which places its own TEB page in the per-thread region), and a
-//! startup ladder the context switch enters — the same machinery the main thread's boot entry
-//! uses. Its user stack and initial context are its creator's (kernel32's BaseCreateStack and
-//! BaseInitializeContext, as on Windows 2000): a created thread enters user mode at kernel32's
-//! BaseThreadStartThunk, which calls the start routine and hands its return value to ExitThread.
-//! The first thread of a process another process created (NtCreateProcess makes none) is that
-//! process's main thread: it takes ordinal 0, the fixed TEB page, and kernel32's CreateProcess
-//! starts it at BaseProcessStartThunk, the image's entry point in EAX, as a boot's program's.
-//! Every thread's first user-mode work is ntdll's LdrInitializeThunk, which initializes the
-//! process on its first thread.
+//! ordinal from its process and a TEB page of its own (placed top-down below the PEB, as Windows
+//! 2000's MmCreateTeb places it), and a startup ladder the context switch enters — the same
+//! machinery the main thread's boot entry uses. Its user stack and initial context are its
+//! creator's (kernel32's BaseCreateStack and BaseInitializeContext, as on Windows 2000): a created
+//! thread enters user mode at kernel32's BaseThreadStartThunk, which calls the start routine and
+//! hands its return value to ExitThread. The first thread of a process another process created
+//! (NtCreateProcess makes none) is that process's main thread: it takes ordinal 0, the fixed TEB
+//! page, and kernel32's CreateProcess starts it at BaseProcessStartThunk, the image's entry point
+//! in EAX, as a boot's program's. Every thread's first user-mode work is ntdll's
+//! LdrInitializeThunk, which initializes the process on its first thread.
 //!
 //! Windows 2000 never ends a thread from outside: a termination queues an exit APC on the thread
 //! ([`crate::sched::dispatcher::Dispatcher::request_termination`]), and the thread runs its own
@@ -50,44 +50,55 @@ use crate::sched::DISPATCHER;
 /// A fresh thread object for a thread created in `process` over the user stack reserved at
 /// `stack`, with its record attached to the process and its ordinal in it. The record is any free
 /// one of the pool; the ordinal is the main thread's for a process that has none yet (its first
-/// thread), else the process's lowest free one, which places the thread's TEB — an ordinal a
-/// terminated thread held has its pages released first, in this process. The object holds the
-/// thread's own reference.
+/// thread, over the fixed TEB page: `teb` is none), else the process's lowest free one, over the
+/// TEB page placed at `teb` — an ordinal a terminated thread held has its pages released first, in
+/// this process. The object holds the thread's own reference. `Ok(None)`: `teb` is none, but
+/// another creation has taken the main thread's ordinal meanwhile (the caller places a TEB and
+/// asks again).
 ///
 /// The program-visible create failures: a process that takes no new thread (its end is decided, or
-/// its last thread is ending it: STATUS_PROCESS_IS_TERMINATING), every ordinal of the process held
-/// by a thread something still references, or every record of the pool in use (STATUS_NO_MEMORY).
+/// its last thread is ending it: STATUS_PROCESS_IS_TERMINATING), no page for the process's next
+/// ordinals, or every record of the pool in use (STATUS_NO_MEMORY).
 fn free_thread(
     process: &Process,
     stack: u32,
-) -> Result<(crate::ob::ObjectId, ThreadId, u16), crate::status::NtStatus> {
+    teb: Option<u32>,
+) -> Result<Option<(crate::ob::ObjectId, ThreadId, u16)>, crate::status::NtStatus> {
     use crate::status::{STATUS_NO_MEMORY, STATUS_PROCESS_IS_TERMINATING};
     // The ordinal, the record and the attach are one hold of the directory, which keeps the
     // process's ordinals with its object: the last-thread check of an ending thread, in a hold of
     // its own, counts the new thread, or closes the process before it (see `end_thread`). The
     // pages a reused ordinal left are released after the hold.
     let object = process.object();
-    let (id, thread, ordinal, leftover) = crate::ob::locked(|directory| {
+    let taken = crate::ob::locked(|directory| {
         let ordinals = directory.ordinals(object).ok_or(STATUS_NO_MEMORY)?;
         if ordinals.closed() {
             return Err(STATUS_PROCESS_IS_TERMINATING);
         }
         let has_main = ordinals.has_main();
-        let (id, ordinal, leftover) = if !has_main {
-            let id = directory.create_thread().ok_or(STATUS_NO_MEMORY)?;
-            directory
-                .ordinals(object)
-                .ok_or(STATUS_NO_MEMORY)?
-                .hold_main(id, stack);
-            (id, crate::process::ordinals::MAIN, None)
-        } else {
-            let ordinal = directory.free_ordinal(object).ok_or(STATUS_NO_MEMORY)?;
-            let id = directory.create_thread().ok_or(STATUS_NO_MEMORY)?;
-            let leftover = directory
-                .ordinals(object)
-                .ok_or(STATUS_NO_MEMORY)?
-                .hold(ordinal, id, stack);
-            (id, ordinal, leftover)
+        let (id, ordinal, leftover) = match (has_main, teb) {
+            (false, _) => {
+                debug_assert!(
+                    teb.is_none(),
+                    "a process's first thread takes the fixed TEB"
+                );
+                let id = directory.create_thread().ok_or(STATUS_NO_MEMORY)?;
+                directory
+                    .ordinals(object)
+                    .ok_or(STATUS_NO_MEMORY)?
+                    .hold_main(id, stack);
+                (id, crate::process::ordinals::MAIN, None)
+            }
+            (true, None) => return Ok(None),
+            (true, Some(teb)) => {
+                let ordinal = directory.free_ordinal(object).ok_or(STATUS_NO_MEMORY)?;
+                let id = directory.create_thread().ok_or(STATUS_NO_MEMORY)?;
+                let leftover = directory
+                    .ordinals(object)
+                    .ok_or(STATUS_NO_MEMORY)?
+                    .hold(ordinal, id, stack, teb);
+                (id, ordinal, leftover)
+            }
         };
         let thread = directory.renew_thread(id);
         raised::<Dispatch, _>(|dispatch| {
@@ -96,18 +107,82 @@ fn free_thread(
             // teardown follows the last one's end).
             unsafe { DISPATCHER.get(dispatch).attach(thread, process.sched_ptr()) };
         });
-        Ok((id, thread, ordinal, leftover))
+        Ok(Some((id, thread, ordinal, leftover)))
     })?;
+    let Some((id, thread, ordinal, leftover)) = taken else {
+        return Ok(None);
+    };
     if let Some(leftover) = leftover {
         release_thread_pages(process, leftover);
     }
-    Ok((id, thread, ordinal))
+    Ok(Some((id, thread, ordinal)))
 }
 
-/// Release the user pages a terminated thread left mapped at an ordinal of `process` that is about
-/// to be reused — its TEB page and its stack reservation — through the process's address space: a
-/// TEB the program made inaccessible gives its frame back too. The thread is created in the
-/// process, so its address space is the live one (the creator's own, or one it attached to).
+/// The ordinal and TEB page of a thread being created in `process` over the user stack reserved
+/// at `stack`, with its thread object and record (see [`free_thread`]): the main thread's fixed
+/// page for a process's first thread; else, the pages of its ended threads whose objects are gone
+/// released first (Windows 2000 frees a TEB at its thread's end), a page placed top-down below the
+/// PEB as MmCreateTeb places it ([`crate::user::reserve_teb`]). No page left for the TEB's region
+/// is STATUS_NO_MEMORY; a failure after the placement gives the page back.
+fn place_thread(
+    process: &Process,
+    stack: u32,
+) -> Result<(crate::ob::ObjectId, ThreadId, u16, u32), crate::status::NtStatus> {
+    use crate::status::STATUS_NO_MEMORY;
+    let object = process.object();
+    loop {
+        let has_main = crate::ob::locked(|directory| {
+            directory
+                .ordinals(object)
+                .map(|ordinals| ordinals.has_main())
+        })
+        .ok_or(STATUS_NO_MEMORY)?;
+        let teb = if has_main {
+            while let Some(leftover) =
+                crate::ob::locked(|directory| directory.vacate_ordinal(object))
+            {
+                release_thread_pages(process, leftover);
+            }
+            let placed = process.with_space(crate::user::reserve_teb);
+            Some(placed.map_err(|_| STATUS_NO_MEMORY)?)
+        } else {
+            None
+        };
+        match free_thread(process, stack, teb) {
+            Ok(Some((object, thread, ordinal))) => {
+                return Ok((
+                    object,
+                    thread,
+                    ordinal,
+                    teb.unwrap_or(crate::user::TEB_PAGE),
+                ));
+            }
+            // The main thread's ordinal taken meanwhile: this thread is a created one.
+            Ok(None) => continue,
+            Err(status) => {
+                if let Some(teb) = teb {
+                    release_teb(process, teb);
+                }
+                return Err(status);
+            }
+        }
+    }
+}
+
+/// Give back the TEB page placed at `teb` in `process` (its own region, never mapped yet or
+/// mapped by a thread that is gone), through the process's address space, the live one.
+fn release_teb(process: &Process, teb: u32) {
+    use crate::mem::vm::CurrentPages;
+    process.with_space(|space| {
+        let _ = space.release(&mut CurrentPages, teb);
+    });
+}
+
+/// Release the user pages a terminated thread left mapped at an ordinal of `process` that is
+/// vacated or about to be reused — its TEB page's region and its stack reservation — through the
+/// process's address space: a TEB the program made inaccessible gives its frame back too. The
+/// thread is created in the process, so its address space is the live one (the creator's own, or
+/// one it attached to).
 fn release_thread_pages(process: &Process, leftover: crate::process::ordinals::Leftover) {
     use crate::mem::vm::CurrentPages;
     assert!(
@@ -115,7 +190,7 @@ fn release_thread_pages(process: &Process, leftover: crate::process::ordinals::L
         "a reused ordinal's pages are released in its own process"
     );
     process.with_space(|space| {
-        let _ = space.decommit(&mut CurrentPages, leftover.teb, paging::PAGE_SIZE);
+        let _ = space.release(&mut CurrentPages, leftover.teb);
         if leftover.stack != 0 {
             let _ = space.release(&mut CurrentPages, leftover.stack);
         }
@@ -129,9 +204,10 @@ fn release_thread_pages(process: &Process, leftover: crate::process::ordinals::L
 /// The first thread of a process with none is its main thread (see [`free_thread`]). Returns the
 /// thread's object (holding the thread's own reference), its record, and its identifier (its
 /// client id, from the client-id table: see [`crate::process::cid`]). The program-visible
-/// failures: a process that takes no new thread (STATUS_PROCESS_IS_TERMINATING), no free ordinal
-/// in the process, no free record in the pool, no free slot in the kernel stack region, or no
-/// frame left for the TEB page (STATUS_NO_MEMORY); no page for the client-id table's next chunk
+/// failures: a process that takes no new thread (STATUS_PROCESS_IS_TERMINATING), no page for the
+/// process's next ordinals or its TEB's region, no free page below the PEB for the TEB, no free
+/// record in the pool, no free slot in the kernel stack region, or no frame left for the TEB page
+/// (STATUS_NO_MEMORY); no page for the client-id table's next chunk
 /// (STATUS_INSUFFICIENT_RESOURCES). `process`'s address space is the live one: the caller's own,
 /// or one it attached to.
 pub fn create(
@@ -157,7 +233,7 @@ pub fn create(
         paging::release_frame_phys(teb_frame);
         return Err(crate::status::STATUS_INSUFFICIENT_RESOURCES);
     };
-    let (object, thread, ordinal) = match free_thread(process, stack.allocation_base) {
+    let (object, thread, ordinal, teb_va) = match place_thread(process, stack.allocation_base) {
         Ok(made) => made,
         Err(status) => {
             crate::process::cid::unreserve(thread_id);
@@ -167,9 +243,7 @@ pub fn create(
         }
     };
 
-    // The TEB page: the per-thread region, one page, carrying the thread's identity and the stack
-    // its creator made.
-    let teb_va = crate::user::thread_teb_va(ordinal as u32);
+    // The TEB page (placed above), carrying the thread's identity and the stack its creator made.
     let created = crate::time::system_filetime();
     // The startup ladder: the stub calls the system routine (the startup's deliveries), then
     // enters ring 3 in the creator's context.
@@ -206,8 +280,8 @@ pub fn create(
         thread_id,
         peb: crate::user::PEB_PAGE,
     };
-    // The TEB page is empty: its region is the kernel's (see `crate::mem::vm::Kind::System`), and
-    // a reused ordinal's page was released above. Its window's page table is the PEB's.
+    // The TEB page is empty: its region is the kernel's (see `crate::mem::vm::Kind::System`), its
+    // own, placed above.
     paging::init_frame(teb_frame, 0, &[]);
     process.with_space(|space| {
         crate::mem::vm::map_prepared(space, teb_va, teb_frame, crate::mem::vm::PAGE_READWRITE)

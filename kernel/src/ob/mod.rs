@@ -1457,7 +1457,7 @@ impl Directory {
             self.kill(id);
             return None;
         }
-        self.ordinals_at(index).reset();
+        self.ordinals_at(index).reset(pages());
         Some(id)
     }
 
@@ -1823,17 +1823,36 @@ impl Directory {
     }
 
     /// The ordinal the next created thread of the process `process` names takes (see
-    /// [`crate::process::ordinals::Ordinals::free`]): its lowest one never taken, or held by a
-    /// thread whose object is gone. None when every ordinal is held by a thread something still
-    /// references, or `process` names no live process.
+    /// [`crate::process::ordinals::Ordinals::free`]): its lowest one free, or held by a thread
+    /// whose object is gone, else a new one. None when no page is left for a new one, or `process`
+    /// names no live process.
     pub fn free_ordinal(&mut self, process: ObjectId) -> Option<u16> {
         let index = self.body_index(process, ObjectType::Process)?;
         let threads = &self.threads;
         let ordinals = self
             .ordinals
-            .get(index.into())
+            .get_mut(index.into())
             .expect("a process's ordinals made with its object");
-        ordinals.free(|thread| {
+        ordinals.free(pages(), |thread| {
+            thread.kind == ObjectType::Thread && threads.get(slot_id(thread)).is_some()
+        })
+    }
+
+    /// Free the process `process`'s lowest ordinal held by a thread whose object is gone, handing
+    /// back the pages its thread left mapped (see
+    /// [`crate::process::ordinals::Ordinals::vacate`]); none when there is no such ordinal, or
+    /// `process` names no live process.
+    pub fn vacate_ordinal(
+        &mut self,
+        process: ObjectId,
+    ) -> Option<crate::process::ordinals::Leftover> {
+        let index = self.body_index(process, ObjectType::Process)?;
+        let threads = &self.threads;
+        let ordinals = self
+            .ordinals
+            .get_mut(index.into())
+            .expect("a process's ordinals made with its object");
+        ordinals.vacate(|thread| {
             thread.kind == ObjectType::Thread && threads.get(slot_id(thread)).is_some()
         })
     }
@@ -2062,9 +2081,16 @@ impl Directory {
                 crate::process::cid::destroy(thread_id, crate::process::cid::Named::Object(id));
                 None
             }
+            ObjectType::Process => {
+                // Its created threads' ordinals go back to the pool with it: nothing reaches them
+                // but through the live object.
+                if let Some(ordinals) = self.ordinals.get_mut(id.index.into()) {
+                    ordinals.release(pages());
+                }
+                None
+            }
             ObjectType::Event
             | ObjectType::Semaphore
-            | ObjectType::Process
             | ObjectType::Directory
             | ObjectType::WindowStation
             | ObjectType::Desktop

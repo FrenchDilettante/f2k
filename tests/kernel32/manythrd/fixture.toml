@@ -4,6 +4,9 @@
 # plan's thread-cap fixture, captured on the 2026-11-27 VM trip.
 description = "manythrd - many threads alive at once in one process: 2,000 threads each waiting on one event, their ids as relations (multiples of 4, distinct), their ends and exit codes, and OpenThread by an ended one's id (alive)."
 kind = "sectioned"
+# Gated since slot-pool slice 24: a process's threads uncapped, their TEBs placed as MmCreateTeb
+# places them.
+gate = true
 timeout = 60
 
 [pins]

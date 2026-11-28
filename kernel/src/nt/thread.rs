@@ -740,7 +740,7 @@ pub fn set_information_thread(
             }
             SetClass::ZeroTlsCell => {
                 zero_tls_cell(thread.raw() == CURRENT_THREAD, value)?;
-                for &teb in call.process().thread_tebs().iter() {
+                for teb in call.process().thread_tebs() {
                     if let Some(slot) = crate::user::tls::thread_slot(teb, value) {
                         // Each thread's slot, where it has one (its expansion slots are its own
                         // heap block); a slot the program made unwritable

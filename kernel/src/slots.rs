@@ -1393,6 +1393,18 @@ impl<T: Record, const PER: usize, D: ChunkDir> SideTable<T, PER, D> {
         Self::address_in(&self.chunks, index)
     }
 
+    /// Give back every chunk made and the directory's pages: the table as [`SideTable::new`]
+    /// left it.
+    ///
+    /// # Safety
+    ///
+    /// Nothing refers to its records any more (no address it handed out is used again), nothing
+    /// resolves through it meanwhile, and every page was taken from `pages`.
+    pub unsafe fn release(&mut self, pages: &impl Pages) {
+        // SAFETY: the caller's contract.
+        unsafe { self.chunks.release(Self::CHUNK_PAGES, pages) };
+    }
+
     /// [`SideTable::address`] through `chunks`, the directory the table was built on
     /// ([`SideTable::on`]), for a reader that cannot borrow the table.
     #[inline(always)]
@@ -1492,6 +1504,17 @@ impl<T: Record, const PER: usize, D: ChunkDir> Records<T, PER, D> {
             self.len = (self.len / PER as u32 + 1) * PER as u32;
         }
         Ok(())
+    }
+
+    /// Give back every record's chunk, `len()` zero again: [`SideTable::release`].
+    ///
+    /// # Safety
+    ///
+    /// As [`SideTable::release`]'s.
+    pub unsafe fn release(&mut self, pages: &impl Pages) {
+        // SAFETY: the caller's contract.
+        unsafe { self.table.release(pages) };
+        self.len = 0;
     }
 
     /// Record `index`, made; none past `len()`.
@@ -2408,6 +2431,16 @@ mod tests {
         pages.set_budget(0);
         assert_eq!(r.ensure(20, &pages), Err(Exhausted::NoPages));
         assert_eq!(r.len(), 8);
+        // Released: every page back, nothing made, and made again fresh.
+        let held = pages.held();
+        assert!(held > 0);
+        // SAFETY: no address of the records is kept, and their pages are `pages`'.
+        unsafe { r.release(&pages) };
+        assert_eq!((pages.held(), r.len()), (0, 0));
+        assert!(r.get(0).is_none());
+        pages.set_budget(usize::MAX);
+        r.ensure(1, &pages).unwrap();
+        assert_eq!(r[1].value, 0, "fresh");
     }
 
     #[test]

@@ -779,9 +779,17 @@ impl AddressSpace {
     /// end: the lowest, or the highest for a top-down placement. One sweep of the records in
     /// address order, a candidate moving past each region it meets.
     fn free_range(&self, size: u32, placement: Placement) -> Option<u32> {
+        self.free_range_aligned(size, placement, GRANULARITY)
+    }
+
+    /// [`free_range`](Self::free_range) at `align` (a power of two): Windows 2000's
+    /// MiFindEmptyAddressRange and MiFindEmptyAddressRangeDown, whose alignment the caller gives
+    /// (the granularity for a program's reservation, a page for a TEB).
+    fn free_range_aligned(&self, size: u32, placement: Placement, align: u32) -> Option<u32> {
+        debug_assert!(align.is_power_of_two());
         let end = placement.end as u64;
         let size = size as u64;
-        let granule = GRANULARITY as u64 - 1;
+        let granule = align as u64 - 1;
         let all = self.vads.all();
         let reach = |vad: &Vad| vad.region.base as u64 + vad.region.size as u64;
         if placement.top_down {
@@ -816,7 +824,7 @@ impl AddressSpace {
             if vad.region.base as u64 >= candidate + size {
                 break;
             }
-            candidate = reach(vad).div_ceil(GRANULARITY as u64) * GRANULARITY as u64;
+            candidate = reach(vad).div_ceil(align as u64) * align as u64;
         }
         (candidate + size <= end).then_some(candidate as u32)
     }
@@ -879,6 +887,34 @@ impl AddressSpace {
         self.insert(Region {
             base,
             size: (end - base as u64) as u32,
+            alloc_protect: protect,
+            kind,
+        })?;
+        Ok(base)
+    }
+
+    /// Reserve `size` bytes (rounded up to pages) at the highest page-aligned range free below
+    /// `end`, as Windows 2000's MiCreatePebOrTeb places a TEB: MiFindEmptyAddressRangeDown at page
+    /// alignment below MM_HIGHEST_VAD_ADDRESS, each TEB a VAD of its own. Returns the base;
+    /// VmError::NoMemory when no range is free, or no page is left for the record.
+    pub fn reserve_pages_down(
+        &mut self,
+        end: u32,
+        size: u32,
+        protect: u32,
+        kind: Kind,
+    ) -> Result<u32, VmError> {
+        let size = page_up(size.max(1) as u64);
+        let placement = Placement {
+            end: end.min(USER_HIGH),
+            top_down: true,
+        };
+        let base = self
+            .free_range_aligned(size as u32, placement, PAGE)
+            .ok_or(VmError::NoMemory)?;
+        self.insert(Region {
+            base,
+            size: size as u32,
             alloc_protect: protect,
             kind,
         })?;
@@ -1826,11 +1862,17 @@ mod tests {
     }
 
     /// The sweep for a free range picks what a search against every region would, bottom-up and
-    /// top-down, among regions of any alignment (the kernel's own areas are pages).
+    /// top-down, at the granularity or a page, among regions of any alignment (the kernel's own
+    /// areas are pages).
     #[test]
     fn the_free_range_sweep_finds_what_a_full_search_finds() {
         /// The search over every region the space made before its records were sorted.
-        fn reference(regions: &[Region], size: u32, placement: Placement) -> Option<u32> {
+        fn reference(
+            regions: &[Region],
+            size: u32,
+            placement: Placement,
+            align: u32,
+        ) -> Option<u32> {
             let end = placement.end as u64;
             let meets = |candidate: u64| {
                 regions.iter().filter(move |r| {
@@ -1839,7 +1881,7 @@ mod tests {
                 })
             };
             if placement.top_down {
-                let mut candidate = end.checked_sub(size as u64)? & !(GRANULARITY as u64 - 1);
+                let mut candidate = end.checked_sub(size as u64)? & !(align as u64 - 1);
                 loop {
                     if candidate < USER_LOW as u64 {
                         return None;
@@ -1847,7 +1889,7 @@ mod tests {
                     match meets(candidate).map(|r| r.base as u64).min() {
                         None => return Some(candidate as u32),
                         Some(below) => {
-                            candidate = below.checked_sub(size as u64)? & !(GRANULARITY as u64 - 1);
+                            candidate = below.checked_sub(size as u64)? & !(align as u64 - 1);
                         }
                     }
                 }
@@ -1863,7 +1905,7 @@ mod tests {
                 {
                     None => return Some(candidate as u32),
                     Some(past) => {
-                        candidate = past.div_ceil(GRANULARITY as u64) * GRANULARITY as u64;
+                        candidate = past.div_ceil(align as u64) * align as u64;
                     }
                 }
             }
@@ -1899,13 +1941,52 @@ mod tests {
             for _ in 0..40 {
                 let size = (1 + next(48)) * PAGE;
                 let placement = Placement::of(next(4) * 6, next(2) == 0).unwrap();
+                // A program's reservations at the granularity, a TEB's at a page.
+                let align = [GRANULARITY, PAGE][next(2) as usize];
                 assert_eq!(
-                    vm.free_range(size, placement),
-                    reference(&regions, size, placement),
-                    "{size:#x} {placement:?} {regions:x?}"
+                    vm.free_range_aligned(size, placement, align),
+                    reference(&regions, size, placement, align),
+                    "{size:#x} {placement:?} {align:#x} {regions:x?}"
                 );
             }
         }
+    }
+
+    /// A page-aligned top-down reservation (a TEB's): the highest free page below the end, each
+    /// its own region, skipping the pages in use; a released page is the next one taken again.
+    #[test]
+    fn pages_down_take_the_highest_free_page() {
+        let mut vm = space();
+        let mut pages = Fake::default();
+        let end = 0x7FFE_0000;
+        vm.insert(Region {
+            base: end - PAGE,
+            size: PAGE,
+            alloc_protect: PAGE_READWRITE,
+            kind: Kind::System,
+        })
+        .unwrap();
+        let take = |vm: &mut AddressSpace| {
+            vm.reserve_pages_down(end, PAGE, PAGE_READWRITE, Kind::System)
+                .unwrap()
+        };
+        assert_eq!(take(&mut vm), end - 2 * PAGE);
+        assert_eq!(take(&mut vm), end - 3 * PAGE);
+        // A program's region below them is skipped by the next.
+        vm.insert(Region {
+            base: end - 6 * PAGE,
+            size: 2 * PAGE,
+            alloc_protect: PAGE_READWRITE,
+            kind: Kind::Private,
+        })
+        .unwrap();
+        assert_eq!(take(&mut vm), end - 4 * PAGE);
+        assert_eq!(take(&mut vm), end - 7 * PAGE);
+        let region = vm.region_at(end - 7 * PAGE).unwrap();
+        assert_eq!((region.size, region.kind), (PAGE, Kind::System));
+        vm.release(&mut pages, end - 3 * PAGE).unwrap();
+        assert_eq!(take(&mut vm), end - 3 * PAGE, "the highest free page again");
+        assert_eq!(take(&mut vm), end - 8 * PAGE);
     }
 
     /// A guard page fires once, keeping its base protection and frame.

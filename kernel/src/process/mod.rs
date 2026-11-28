@@ -377,16 +377,6 @@ pub const NORMAL_PRIORITY_CLASS: u8 = crate::nt::process::PRIORITY_CLASS_NORMAL;
 /// CREATE_DEFAULT_ERROR_MODE's parent mode; kernel32's SetErrorMode reads it as mode 0).
 pub const DEFAULT_HARD_ERROR_MODE: u32 = 1;
 
-/// How many threads a process can have alive besides its main thread: its created threads'
-/// ordinals ([`ordinals`]). A terminated thread's ordinal is reused once nothing references its
-/// object, so this bounds the live threads, not the threads created. The threads fixture's scale
-/// block creates 100 fire-and-forget threads in a row, and its creator, in the foreground, runs on
-/// a stretched quantum (see [`foreground`]): all 100 may be alive at once, as on Windows 2000,
-/// which has no such bound (F2K's created threads' TEB pages are a fixed region below the main
-/// thread's, [`crate::user::THREAD_TEB_REGION`]). The system's threads have no bound but memory
-/// and the kernel-stack region's 12,743 stacks.
-pub const CHILD_THREADS: usize = 100;
-
 /// How many handle-table slots one hold of a table reaches where a walk of the whole table
 /// releases the lock between its steps (the exit's closing of every handle, an inheritance): few
 /// enough for a step's copy of them to sit on a kernel stack.
@@ -1072,7 +1062,7 @@ impl Process {
             record.gate_stack = stack;
             record.initial_stack = stack.top();
             record.ordinal = ordinals::MAIN;
-            record.teb_va = crate::user::thread_teb_va(ordinals::MAIN as u32);
+            record.teb_va = crate::user::TEB_PAGE;
             record.thread_id = thread_id;
             record.create_time = created;
             // SAFETY: the scheduling record is the pool's, at its final address, reached only
@@ -1197,18 +1187,21 @@ impl Process {
     }
 
     /// The TEB of every thread of this process that has one: the main thread's, then the created
-    /// threads' (terminated ones too: their pages stay mapped until the ordinal is reused), in
-    /// ordinal order. Another process's threads are never among them.
-    pub fn thread_tebs(&self) -> rtl::array_vec::ArrayVec<u32, { ordinals::ORDINALS }> {
-        let mut tebs = rtl::array_vec::ArrayVec::new();
-        crate::ob::locked(|directory| {
-            if let Some(ordinals) = directory.ordinals(self.object()) {
-                for (_, teb) in ordinals.tebs() {
-                    tebs.push(teb);
-                }
-            }
-        });
-        tebs
+    /// threads' (terminated ones too: their pages stay mapped until the ordinal is vacated), in
+    /// ordinal order, each found in a hold of the directory of its own. Another process's threads
+    /// are never among them.
+    pub fn thread_tebs(&self) -> impl Iterator<Item = u32> + '_ {
+        let mut from = 0;
+        core::iter::from_fn(move || {
+            let (ordinal, teb) = crate::ob::locked(|directory| {
+                directory
+                    .ordinals(self.object())?
+                    .tebs()
+                    .find(|&(ordinal, _)| ordinal >= from)
+            })?;
+            from = ordinal + 1;
+            Some(teb)
+        })
     }
 
     /// Attach the running thread to this process's address space until the guard drops (see

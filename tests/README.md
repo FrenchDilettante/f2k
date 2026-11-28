@@ -200,7 +200,7 @@ The fixtures:
   Captured on the 2026-11-27 VM trip; gated since the client-ID table (slot-pool slice 20), which `reuse` passes.
   `alive` stays pending: the capture's VM ran out of memory at child 551, where F2K, with no process cap (slice 19) or thread cap (slice 21), starts all 600.
 - `manythrd` - many threads alive at once in one process, linked with a 64 KiB stack reservation so that their stacks fit the address space: 2,000 threads each waiting on one event, their ids as relations (multiples of 4, distinct), their ends and exit codes, and `OpenThread` by an ended one's id once its handle is closed (`alive`).
-  Captured on the 2026-11-27 VM trip; not gated: the system's threads have no cap since the slot-pool plan's thread slice, but a process holds its main thread and 100 more (`CHILD_THREADS`: its threads' TEB pages are a fixed region below the main thread's), so F2K stops at thread 101 with err=8.
+  Captured on the 2026-11-27 VM trip; gated since slot-pool slice 24: neither the system's threads (slice 21) nor a process's have a cap, each created thread's TEB a page of its own placed top-down below the PEB, as Windows 2000's MmCreateTeb places it.
 - `manyhndl` - many handles in one process: 100,000 `DuplicateHandle` copies of one event, their values as relations (multiples of 4, distinct), and the value a new duplicate takes after one close and after two, Windows 2000's handle table reusing the last freed entry first (`dup`).
   Captured on the 2026-11-27 VM trip; not gated: F2K's handle table holds 1,024 handles until the slot-pool plan's handle-table slice.
 - `startup` - `GetStartupInfoA`'s `lpDesktop`/`lpTitle`/`lpReserved` converted from the process parameters, never NULL (`startup`).

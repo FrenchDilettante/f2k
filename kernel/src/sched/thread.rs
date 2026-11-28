@@ -199,8 +199,9 @@ pub struct Thread {
     /// first thread, CreateThread's start routine for another — as ThreadQuerySetWin32StartAddress
     /// reports it; zero for kernel threads.
     pub(crate) win32_start_address: u32,
-    /// The thread's ordinal within its process: what places its TEB page (0 for the main thread;
-    /// see `process::ordinals`, which also holds the pages a terminated thread leaves mapped).
+    /// The thread's ordinal within its process: its slot in the process's ledger, which names its
+    /// TEB page and stack (0 for the main thread; see `process::ordinals`, which also holds the
+    /// pages a terminated thread leaves mapped).
     /// Unrelated to the record's place in the pool.
     pub(crate) ordinal: u16,
     /// The thread's exit status: [`STILL_ACTIVE`] while it lives, then the status it ended with.

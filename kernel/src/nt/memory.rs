@@ -1363,22 +1363,22 @@ mod tests {
         );
     }
 
-    /// The kernel's own regions, as every process's space is seeded with them, are secured: a
-    /// program commits nothing in the child TEBs' region (STATUS_CONFLICTING_ADDRESSES, as where
-    /// Windows 2000 has no TEB yet), and frees or reprotects none of their pages
-    /// (STATUS_INVALID_PAGE_PROTECTION). A query still reports them private. The page a new
-    /// thread's TEB takes stays empty and in its region, so the kernel's map of it succeeds (the
-    /// commit or the release before a CreateThread used to make that map panic).
+    /// The kernel's own regions, as every process's space is seeded with them and a created
+    /// thread's TEB is placed, are secured: a program commits nothing in a placed TEB's region
+    /// before the kernel maps it (STATUS_CONFLICTING_ADDRESSES), and frees or reprotects none of
+    /// their pages (STATUS_INVALID_PAGE_PROTECTION). A query still reports them private. The page
+    /// a new thread's TEB takes stays empty and in its region, so the kernel's map of it succeeds
+    /// (the commit or the release before a CreateThread used to make that map panic).
     #[test]
     fn the_kernels_regions_are_secured() {
-        use crate::user::{thread_teb_va, PEB_PAGE, TEB_PAGE, THREAD_TEB_REGION};
+        use crate::user::{PEB_PAGE, TEB_PAGE};
         let (mut space, mut pages) = (AddressSpace::new(), Fake::default());
         space.quota = CommitQuota::new(1 << 40);
         crate::exec::loader::seed_process_regions(&mut space);
         let rw = vm::PAGE_READWRITE;
-        let teb = thread_teb_va(1);
+        let teb = crate::user::reserve_teb(&mut space).unwrap();
+        assert_eq!(teb, 0x7FFD_D000);
         for (address, protected) in [
-            (THREAD_TEB_REGION, false),
             (teb, false),
             (TEB_PAGE, true),
             (PEB_PAGE, true),

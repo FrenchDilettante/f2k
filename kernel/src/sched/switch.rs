@@ -386,7 +386,10 @@ mod tests {
     use crate::sched::process::SchedProcess;
     use crate::sched::testkit::Rec;
     use crate::sched::thread::{Thread, ThreadState};
-    use crate::user::thread_teb_va;
+    use crate::user::TEB_PAGE;
+
+    /// A created thread's TEB: the second thread's, below the main thread's.
+    const SECOND_TEB: u32 = TEB_PAGE - 4096;
 
     /// Two threads of one process and a third of another, with machine state filled in.
     fn threads() -> (Rec<Thread>, Rec<Thread>, Rec<Thread>) {
@@ -401,9 +404,9 @@ mod tests {
             t
         };
         (
-            of(p1 as *mut SchedProcess, thread_teb_va(0), 0),
-            of(p1 as *mut SchedProcess, thread_teb_va(1), 1),
-            of(p2 as *mut SchedProcess, thread_teb_va(0), 0),
+            of(p1 as *mut SchedProcess, TEB_PAGE, 0),
+            of(p1 as *mut SchedProcess, SECOND_TEB, 1),
+            of(p2 as *mut SchedProcess, TEB_PAGE, 0),
         )
     }
 
@@ -419,14 +422,14 @@ mod tests {
         let same_process = switch_plan(&a, &same, false);
         assert!(same_process.same_space);
         assert_eq!(same_process.cr3, None);
-        assert_eq!(same_process.teb_base, thread_teb_va(1));
+        assert_eq!(same_process.teb_base, SECOND_TEB);
         assert_eq!(same_process.esp0, same.initial_stack);
         assert_eq!(same_process.new_kernel_esp, same.kernel_stack);
 
         let cross_process = switch_plan(&a, &cross, false);
         assert!(!cross_process.same_space);
         assert_eq!(cross_process.cr3, Some(0x00B0_0000));
-        assert_eq!(cross_process.teb_base, thread_teb_va(0));
+        assert_eq!(cross_process.teb_base, TEB_PAGE);
     }
 
     /// A thread attached to another process switches as that process's threads do: away from its
