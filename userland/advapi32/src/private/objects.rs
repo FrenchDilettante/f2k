@@ -486,7 +486,6 @@ mod tests {
         GROUP_SECURITY_INFORMATION,
         OWNER_SECURITY_INFORMATION,
     };
-    use crate::imports::host::LAST_ERROR;
     use crate::private::testkit::{acl, control_of, parts_of, priv_sd, sid};
     use crate::sd::{
         long_align,
@@ -499,17 +498,10 @@ mod tests {
         SE_OWNER_DEFAULTED,
     };
     use crate::sid::{ptr_field, set_ptr_field, ERROR_INVALID_PRIMARY_GROUP};
+    use crate::testkit::{arm, last_error};
 
     const WANT: u32 =
         OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
-
-    fn last_error() -> u32 {
-        LAST_ERROR.with(|error| error.get())
-    }
-
-    fn arm() {
-        LAST_ERROR.with(|error| error.set(0xF2F2));
-    }
 
     /// CreatePrivateObjectSecurity(Ex): the new descriptor's components come from the creator
     /// when given, else the parent's; a parent sets the auto-inherit request flags; the Ex

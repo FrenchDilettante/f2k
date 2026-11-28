@@ -84,15 +84,7 @@ pub unsafe extern "system" fn build_explicit_access_with_name_w(
 mod tests {
     use super::*;
     use crate::explicit::{DENY_ACCESS, GRANT_ACCESS, SET_ACCESS};
-    use crate::imports::host::LAST_ERROR;
-
-    fn last_error() -> u32 {
-        LAST_ERROR.with(|error| error.get())
-    }
-
-    fn arm() {
-        LAST_ERROR.with(|error| error.set(0xF2F2));
-    }
+    use crate::testkit::{arm, last_error};
 
     fn zeroed_trustee() -> Trustee {
         Trustee {

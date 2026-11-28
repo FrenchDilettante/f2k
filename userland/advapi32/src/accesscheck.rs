@@ -1373,15 +1373,8 @@ mod tests {
         STATUS,
         TOKEN_REPLY,
     };
-    use crate::imports::host::{LAST_ERROR, TOKEN, TOKEN_CALLS, TOKEN_STATUS};
-
-    fn last_error() -> u32 {
-        LAST_ERROR.with(|error| error.get())
-    }
-
-    fn arm() {
-        LAST_ERROR.with(|error| error.set(0xF2F2));
-    }
+    use crate::imports::host::{TOKEN, TOKEN_CALLS, TOKEN_STATUS};
+    use crate::testkit::{arm, last_error};
 
     fn calls() -> Vec<(&'static str, u32, u32, u32)> {
         CALLS.with(|calls| calls.borrow().clone())

@@ -1693,7 +1693,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::testing::{narrow, wide};
+    use crate::testing::{look_up, narrow, put, variables_of, wide};
 
     #[test]
     fn a_line_loses_its_line_break_and_blanks() {
@@ -2097,10 +2097,7 @@ mod tests {
     impl Fake {
         fn new(variables: &[(&str, &str)]) -> Fake {
             Fake {
-                variables: variables
-                    .iter()
-                    .map(|(name, value)| (name.to_uppercase(), value.to_string()))
-                    .collect(),
+                variables: variables_of(variables),
                 directory: "C:\\WINNT".to_string(),
                 files: BTreeMap::new(),
                 short: BTreeMap::new(),
@@ -2108,21 +2105,9 @@ mod tests {
         }
     }
 
-    fn put(text: &str, value: &mut [u16]) -> Result<usize, TooLong> {
-        let units = wide(text);
-        value
-            .get_mut(..units.len())
-            .ok_or(TooLong)?
-            .copy_from_slice(&units);
-        Ok(units.len())
-    }
-
     impl Variables for Fake {
         fn get(&mut self, name: &[u16], value: &mut [u16]) -> Result<Option<usize>, TooLong> {
-            match self.variables.get(&narrow(name).to_uppercase()) {
-                Some(text) => put(text, value).map(Some),
-                None => Ok(None),
-            }
+            look_up(&self.variables, name, value)
         }
 
         fn current_directory(&mut self, value: &mut [u16]) -> Result<usize, TooLong> {

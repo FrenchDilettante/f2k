@@ -10,7 +10,6 @@
 //! as the last error.
 
 use rtl::heap::ProcessHeap as _;
-use rtl::pod::Pod;
 use rtl::status::{NtStatus, STATUS_BUFFER_TOO_SMALL};
 use rtl::winerror::{ERROR_INVALID_SID, ERROR_NOT_ENOUGH_MEMORY, ERROR_SUCCESS};
 
@@ -19,6 +18,7 @@ use crate::acl::caller_acl;
 use crate::acl::edit::valid_acl;
 use crate::filesec::{
     self,
+    give_part,
     DACL_SECURITY_INFORMATION,
     GROUP_SECURITY_INFORMATION,
     OWNER_SECURITY_INFORMATION,
@@ -145,30 +145,6 @@ struct ExOuts<'a> {
     audit: Option<Out<'a, usize>>,
     owner: Option<Out<'a, usize>>,
     group: Option<Out<'a, usize>>,
-}
-
-/// One out place's value from the descriptor `bytes` based at `base`: the component's address
-/// (base plus the header's dword offset) when the mask asked for it and the descriptor holds one
-/// there, null otherwise.
-fn give_part(
-    out: Option<&mut Out<'_, usize>>,
-    base: usize,
-    bytes: &[u8],
-    at: usize,
-    requested: bool,
-) {
-    if let Some(out) = out {
-        let offset = if requested {
-            u32::read_from(bytes, at).unwrap_or(0) as usize
-        } else {
-            0
-        };
-        out.set(if offset != 0 && offset < bytes.len() {
-            base + offset
-        } else {
-            0
-        });
-    }
 }
 
 /// GetSecurityInfoEx's core (a NULL provider): the object `handle`'s descriptor of the `info`
@@ -406,20 +382,12 @@ mod tests {
     use super::*;
     use crate::filesec::host as sec_host;
     use crate::filesec::SE_FILE_OBJECT;
-    use crate::imports::host::LAST_ERROR;
     use crate::private::testkit::{acl, sid};
     use crate::sd::{SD_TARGET_HEADER, SE_DACL_PRESENT, SE_SACL_PRESENT};
+    use crate::testkit::{arm, last_error};
 
     const WANT: u32 =
         OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
-
-    fn last_error() -> u32 {
-        LAST_ERROR.with(|error| error.get())
-    }
-
-    fn arm() {
-        LAST_ERROR.with(|error| error.set(0xF2F2));
-    }
 
     fn reset() {
         sec_host::SEC_REPLY.with(|reply| *reply.borrow_mut() = Err(STATUS_NOT_IMPLEMENTED));

@@ -1924,11 +1924,11 @@ mod tests {
     /// The handle the test client hands out for the input-wait event.
     const WAIT_HANDLE: u32 = 0x44;
 
-    /// The server's state and a client.
-    struct Server {
+    /// The server's state and a client: the test client, or a named program ([`Programs`]).
+    struct Server<C = Kept> {
         console: Box<Console>,
         handles: Handles,
-        client: Kept,
+        client: C,
     }
 
     impl Server {
@@ -1939,7 +1939,9 @@ mod tests {
                 client: Kept::default(),
             }
         }
+    }
 
+    impl<C: Client> Server<C> {
         /// The call's answer: its status and data words, the message sent `data` and zeros after
         /// it, as long as the message area.
         fn call(&mut self, api: impl Into<u32>, data: &[usize]) -> (u32, [usize; DATA_WORDS]) {
@@ -1955,7 +1957,9 @@ mod tests {
             );
             (status, words)
         }
+    }
 
+    impl Server {
         /// The status alone.
         fn status(&mut self, api: impl Into<u32>, data: &[usize]) -> u32 {
             self.call(api, data).0
@@ -3509,27 +3513,9 @@ mod tests {
     }
 
     /// The server's state and a named program as its client.
-    struct Programs {
-        console: Box<Console>,
-        handles: Handles,
-        client: Program,
-    }
+    type Programs = Server<Program>;
 
     impl Programs {
-        fn call(&mut self, api: Api, data: &[usize]) -> (u32, [usize; DATA_WORDS]) {
-            let mut words = [0; DATA_WORDS];
-            words[..data.len()].copy_from_slice(data);
-            let status = serve(
-                &mut self.console,
-                &mut self.handles,
-                &mut self.client,
-                api.into(),
-                &mut words,
-                DATA_WORDS * core::mem::size_of::<usize>(),
-            );
-            (status, words)
-        }
-
         /// Queue the keys `presses` on `handle`, then read up to `count` characters from it: the
         /// text read (none while the read waits).
         fn read(&mut self, handle: usize, presses: &[Vec<u8>], count: usize) -> Option<String> {

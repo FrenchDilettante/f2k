@@ -122,15 +122,8 @@ mod tests {
 
     use super::*;
     use crate::accesscheck::host::TOKEN_REPLY;
-    use crate::imports::host::{LAST_ERROR, TOKEN};
-
-    fn last_error() -> u32 {
-        LAST_ERROR.with(|error| error.get())
-    }
-
-    fn arm() {
-        LAST_ERROR.with(|error| error.set(0xF2F2));
-    }
+    use crate::imports::host::TOKEN;
+    use crate::testkit::{arm, last_error};
 
     /// ImpersonateSelf answers TRUE for each public level with the last error untouched, and
     /// FALSE with ERROR_INVALID_PARAMETER for a level outside the enum.

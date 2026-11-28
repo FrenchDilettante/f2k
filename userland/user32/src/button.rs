@@ -895,8 +895,8 @@ mod tests {
         message::default_procedure(window as usize, message, wparam, lparam, false)
     }
 
-    /// A dialog holding one shown BS_OWNERDRAW button of id 7: the dialog and the button.
-    fn dialog_with_owner_drawn_button() -> (usize, usize) {
+    /// A dialog holding one shown button of id 7 and the BS_* `kind`: the dialog and the button.
+    fn dialog_with_button(kind: u32) -> (usize, usize) {
         SYSTEM_CLASSES_WANTED.with(|wanted| wanted.set(true));
         let mut words: std::vec::Vec<u16> = std::vec::Vec::new();
         let dword = |words: &mut std::vec::Vec<u16>, value: u32| {
@@ -910,8 +910,8 @@ mod tests {
         if words.len() % 2 != 0 {
             words.push(0);
         }
-        // The control: a BS_OWNERDRAW button (class ordinal 0x80), id 7.
-        dword(&mut words, WS_CHILD | WS_VISIBLE | BS_OWNERDRAW);
+        // The control: a button (class ordinal 0x80) of the kind, id 7.
+        dword(&mut words, WS_CHILD | WS_VISIBLE | kind);
         dword(&mut words, 0);
         words.extend([5, 5, 60, 20, 7, 0xFFFF, 0x80, 0, 0]);
         // DWORD-aligned, as a template is.
@@ -941,7 +941,7 @@ mod tests {
     /// parent prepare the DC before it (controls `drawdc`).
     #[test]
     fn an_owner_drawn_buttons_paint_is_the_parents_draw_item() {
-        let (_dialog, button) = dialog_with_owner_drawn_button();
+        let (_dialog, button) = dialog_with_button(BS_OWNERDRAW);
         DRAWN.with(|drawn| drawn.borrow_mut().clear());
         SEQUENCE.with(|sequence| sequence.borrow_mut().clear());
         assert_eq!(button_proc_w(button, WM_PAINT, 0, 0), 0);
@@ -973,38 +973,7 @@ mod tests {
     /// A button of another kind paints itself and sends no WM_DRAWITEM.
     #[test]
     fn a_plain_buttons_paint_sends_no_draw_item() {
-        SYSTEM_CLASSES_WANTED.with(|wanted| wanted.set(true));
-        let mut words: std::vec::Vec<u16> = std::vec::Vec::new();
-        let dword = |words: &mut std::vec::Vec<u16>, value: u32| {
-            words.push(value as u16);
-            words.push((value >> 16) as u16);
-        };
-        dword(&mut words, WS_POPUP);
-        dword(&mut words, 0);
-        words.extend([1, 10, 20, 200, 100, 0, 0xFFFF, 0x8002, 0]);
-        if words.len() % 2 != 0 {
-            words.push(0);
-        }
-        dword(&mut words, WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON);
-        dword(&mut words, 0);
-        words.extend([5, 5, 60, 20, 7, 0xFFFF, 0x80, 0, 0]);
-        let template: std::vec::Vec<u32> = words
-            .chunks(2)
-            .map(|pair| u32::from(pair[0]) | u32::from(*pair.get(1).unwrap_or(&0)) << 16)
-            .collect();
-        // SAFETY: the template above, whole.
-        let dialog = unsafe {
-            dialog::create_dialog_indirect_param_w(
-                0x40_0000,
-                template.as_ptr().cast(),
-                0,
-                procedure(recorder) as usize,
-                0,
-            )
-        };
-        assert_ne!(dialog, 0);
-        let button = dialog::child_by_id(dialog, 7);
-        assert_ne!(button, 0);
+        let (_dialog, button) = dialog_with_button(BS_PUSHBUTTON);
         DRAWN.with(|drawn| drawn.borrow_mut().clear());
         assert_eq!(button_proc_w(button, WM_PAINT, 0, 0), 0);
         assert!(DRAWN.with(|drawn| drawn.borrow().is_empty()));

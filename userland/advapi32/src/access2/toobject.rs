@@ -205,21 +205,14 @@ mod tests {
     use crate::explicit::tests_support::{make_acl, sid};
     use crate::filesec::host::SEC_REPLY;
     use crate::filesec::SE_FILE_OBJECT;
-    use crate::imports::host::{LAST_ERROR, TOKEN, TOKEN_CALLS};
+    use crate::imports::host::{TOKEN, TOKEN_CALLS};
     use crate::sd::{
         initialize_security_descriptor,
         make_self_relative_sd,
         set_security_descriptor_dacl,
     };
+    use crate::testkit::{arm, last_error};
     use crate::trustee::{FORM_SID, TRUSTEE_FORM, TRUSTEE_NAME, TRUSTEE_SIZE};
-
-    fn last_error() -> u32 {
-        LAST_ERROR.with(|error| error.get())
-    }
-
-    fn arm() {
-        LAST_ERROR.with(|error| error.set(0xF2F2));
-    }
 
     fn clear() {
         CALLS.with(|calls| calls.borrow_mut().clear());

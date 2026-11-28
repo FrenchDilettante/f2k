@@ -184,23 +184,11 @@ mod tests {
     use super::*;
     use crate::testkit::{arm, last_error};
 
-    /// The bytes of the NUL-terminated narrow string at `block`.
-    fn narrow_of(block: *const u8) -> Vec<u8> {
-        // SAFETY: the tests pass blocks they got back, NUL-terminated.
-        unsafe { rtl::cstr::bytes_until_nul(block) }.to_vec()
-    }
-
     /// The units of the NUL-terminated wide string at `block`.
     fn wide_of(block: *const u16) -> Vec<u16> {
-        // SAFETY: as `narrow_of`'s.
+        // SAFETY: the tests pass blocks they got back, NUL-terminated.
         unsafe { rtl::cstr::units_until_nul(block) }.to_vec()
     }
-
-    /// ConvertSidToStringSidA/W print S-1-5-32-544 as a NUL-terminated string in a heap block
-    /// (TRUE, the last error ERROR_SUCCESS); a null SID or place is FALSE with
-    /// ERROR_INVALID_PARAMETER (87), a SID that does not print (a wrong revision) FALSE with
-    /// ERROR_INVALID_SID (1337).
-    #[test]
 
     /// ConvertStringSidToSidA/W parse "S-1-5-32-544" into the SID's bytes in a heap block (TRUE,
     /// the last error ERROR_SUCCESS); a `0x` prefix reads a number in hex; a string that is not

@@ -197,15 +197,7 @@ pub unsafe extern "system" fn privileged_service_audit_alarm_a(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::imports::host::LAST_ERROR;
-
-    fn last_error() -> u32 {
-        LAST_ERROR.with(|error| error.get())
-    }
-
-    fn arm() {
-        LAST_ERROR.with(|error| error.set(0xF2F2));
-    }
+    use crate::testkit::{arm, last_error};
 
     /// Every alarm form returns TRUE with the last error untouched and NULL string pointers
     /// accepted; GenerateOnClose is left alone (nothing is ever generated).

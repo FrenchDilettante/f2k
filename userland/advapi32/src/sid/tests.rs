@@ -256,6 +256,28 @@ fn a_sid_is_stringed() {
     );
 }
 
+/// ConvertSidToStringSidA/W's failures beyond a_sid_is_stringed's: the A form's null SID is
+/// ERROR_INVALID_PARAMETER (87) with the place left null, the W form's null place
+/// ERROR_INVALID_PARAMETER, and a SID that does not print (a wrong revision) ERROR_INVALID_SID
+/// (1337) with the place left null.
+#[test]
+fn a_sid_that_does_not_print_leaves_the_place_null() {
+    let admins = sid(5, &[32, 544]);
+    let mut out_a: *mut u8 = core::ptr::null_mut();
+    arm();
+    let ok = unsafe { convert_sid_to_string_sid_a(core::ptr::null(), &mut out_a) };
+    assert_eq!((ok, last_error(), out_a.is_null()), (0, 87, true));
+    arm();
+    let ok = unsafe { convert_sid_to_string_sid_w(admins.as_ptr(), core::ptr::null_mut()) };
+    assert_eq!((ok, last_error()), (0, 87));
+    let mut bad = admins.clone();
+    bad[0] = 2;
+    let mut out_w: *mut u16 = core::ptr::null_mut();
+    arm();
+    let ok = unsafe { convert_sid_to_string_sid_w(bad.as_ptr(), &mut out_w) };
+    assert_eq!((ok, last_error(), out_w.is_null()), (0, 1337, true));
+}
+
 /// CreateWellKnownSid asks the size it needs (ERROR_INSUFFICIENT_BUFFER, FALSE) and then
 /// builds S-1-5-32-544 for the builtin administrators and S-1-1-0 for the world; kind 99 is
 /// ERROR_INVALID_PARAMETER. IsWellKnownSid compares against the kind's SID, the last error

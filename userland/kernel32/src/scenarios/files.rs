@@ -1035,13 +1035,7 @@ fn temp_path_a() -> (u32, String) {
 fn the_temporary_path_is_tmp_then_temp_then_the_profile_then_windows() {
     use crate::files::temp::{get_temp_path_a, get_temp_path_w};
 
-    let root = b"C:\\WINNT\0\0";
-    for (at, pair) in root.chunks(2).enumerate() {
-        crate::shared::host::set(
-            crate::shared::NT_SYSTEM_ROOT + 4 * at,
-            u32::from(pair[0]) | u32::from(pair[1]) << 16,
-        );
-    }
+    crate::shared::host::set_system_root();
     CURRENT_DIRECTORY
         .with(|current| *current.borrow_mut() = "C:\\CORPUS\\".encode_utf16().collect());
     assert_eq!(temp_path_a(), (9, "C:\\WINNT\\".into()));

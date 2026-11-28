@@ -403,6 +403,22 @@ mod tests {
     use super::testkit::*;
     use super::*;
 
+    /// GetSecurityInfo's core on the handle 0x58 for WANT, every out place given: its code and
+    /// the places' values (the owner, group, DACL, SACL and descriptor).
+    fn get_every_part() -> (u32, [usize; 5]) {
+        let mut places = [0usize; 5];
+        let [p0, p1, p2, p3, p4] = &mut places;
+        let mut outs = Outs {
+            owner: Some(Out::from(p0)),
+            group: Some(Out::from(p1)),
+            dacl: Some(Out::from(p2)),
+            sacl: Some(Out::from(p3)),
+            sd: Some(Out::from(p4)),
+        };
+        let code = get_security_info_core(0x58, WANT, &mut outs);
+        (code, places)
+    }
+
     /// Where the kernel keeps the blank descriptor (every object starts with it), the file
     /// calls answer with the file's own: the owner and group out, the size the header and two
     /// SIDs take.
@@ -414,15 +430,7 @@ mod tests {
         let mut blank = self_relative(0, 0, 0, 0, 20);
         blank[2..4].copy_from_slice(&0x8004u16.to_le_bytes());
         host::SEC_REPLY.with(|reply| *reply.borrow_mut() = Ok(blank.clone()));
-        let (mut p0, mut p1, mut p2, mut p3, mut p4) = (0usize, 0, 0, 0, 0);
-        let mut outs = Outs {
-            owner: Some(Out::from(&mut p0)),
-            group: Some(Out::from(&mut p1)),
-            dacl: Some(Out::from(&mut p2)),
-            sacl: Some(Out::from(&mut p3)),
-            sd: Some(Out::from(&mut p4)),
-        };
-        let code = get_security_info_core(0x58, WANT, &mut outs);
+        let (code, [p0, p1, p2, _, p4]) = get_every_part();
         assert_eq!((code, last_error()), (ERROR_SUCCESS, 122));
         assert_ne!(p4, 0);
         // SAFETY: the block the call handed out.
@@ -468,15 +476,7 @@ mod tests {
         reset();
         let sd_bytes = self_relative(20, 28, 0, 36, 52);
         host::SEC_REPLY.with(|reply| *reply.borrow_mut() = Ok(sd_bytes.clone()));
-        let (mut p0, mut p1, mut p2, mut p3, mut p4) = (0usize, 0, 0, 0, 0);
-        let mut outs = Outs {
-            owner: Some(Out::from(&mut p0)),
-            group: Some(Out::from(&mut p1)),
-            dacl: Some(Out::from(&mut p2)),
-            sacl: Some(Out::from(&mut p3)),
-            sd: Some(Out::from(&mut p4)),
-        };
-        let code = get_security_info_core(0x58, WANT, &mut outs);
+        let (code, [p0, p1, p2, p3, p4]) = get_every_part();
         assert_eq!(code, ERROR_SUCCESS);
         assert_eq!(last_error(), 122, "the sizing query's error is left");
         assert_eq!(

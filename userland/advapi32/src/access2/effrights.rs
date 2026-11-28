@@ -169,8 +169,8 @@ mod tests {
 
     use super::*;
     use crate::explicit::tests_support::{make_acl, sid};
-    use crate::imports::host::LAST_ERROR;
     use crate::sid::ERROR_INVALID_ACL;
+    use crate::testkit::{arm, last_error};
     use crate::trustee::{
         FORM_NAME,
         FORM_SID,
@@ -179,14 +179,6 @@ mod tests {
         TRUSTEE_NAME,
         TRUSTEE_OP,
     };
-
-    fn last_error() -> u32 {
-        LAST_ERROR.with(|error| error.get())
-    }
-
-    fn arm() {
-        LAST_ERROR.with(|error| error.set(0xF2F2));
-    }
 
     /// A TRUSTEE by SID: the form SID, the SID's address as the name.
     fn trustee_by_sid(sid: &[u8]) -> Vec<u8> {

@@ -371,15 +371,7 @@ pub unsafe extern "system" fn allocate_locally_unique_id(luid: *mut Luid) -> u32
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::imports::host::LAST_ERROR;
-
-    fn last_error() -> u32 {
-        LAST_ERROR.with(|error| error.get())
-    }
-
-    fn arm() {
-        LAST_ERROR.with(|error| error.set(0xF2F2));
-    }
+    use crate::testkit::{arm, last_error};
 
     /// AllocateLocallyUniqueId writes a fresh id (the low part one past the last, the high part
     /// zero), TRUE with the last error untouched; a null place is FALSE with

@@ -121,15 +121,7 @@ mod tests {
 
     use super::*;
     use crate::filesec::host;
-    use crate::imports::host::LAST_ERROR;
-
-    fn last_error() -> u32 {
-        LAST_ERROR.with(|error| error.get())
-    }
-
-    fn arm() {
-        LAST_ERROR.with(|error| error.set(0xF2F2));
-    }
+    use crate::testkit::{arm, last_error};
 
     fn reset() {
         host::SEC_REPLY

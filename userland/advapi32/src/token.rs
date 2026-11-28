@@ -755,15 +755,8 @@ mod tests {
     use rtl::testing::wide_z;
 
     use super::*;
-    use crate::imports::host::{LAST_ERROR, TOKEN, TOKEN_CALLS, TOKEN_STATUS};
-
-    fn last_error() -> u32 {
-        LAST_ERROR.with(|error| error.get())
-    }
-
-    fn arm() {
-        LAST_ERROR.with(|error| error.set(0xF2F2));
-    }
+    use crate::imports::host::{TOKEN, TOKEN_CALLS, TOKEN_STATUS};
+    use crate::testkit::{arm, last_error};
 
     /// The table holds Windows 2000's privileges, LUIDs 2 to 27, each once.
     #[test]

@@ -590,8 +590,8 @@ fn build_self_relative(
 
 /// One out parameter's value from the self-relative descriptor `bytes` based at `base`: the
 /// component's address, or null when the mask did not ask for it or the descriptor holds no
-/// component there.
-fn give_part(
+/// component there. GetSecurityInfoEx splits its descriptor through it too.
+pub(crate) fn give_part(
     out: Option<&mut Out<'_, usize>>,
     base: usize,
     bytes: &[u8],
@@ -668,18 +668,10 @@ pub(crate) mod testkit {
     use rtl::winerror::{ERROR_INVALID_HANDLE, ERROR_NOACCESS};
 
     use super::*;
-    use crate::imports::host::LAST_ERROR;
+    pub(crate) use crate::testkit::{arm, last_error};
 
     pub(crate) const WANT: u32 =
         OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
-
-    pub(crate) fn last_error() -> u32 {
-        LAST_ERROR.with(|error| error.get())
-    }
-
-    pub(crate) fn arm() {
-        LAST_ERROR.with(|error| error.set(0xF2F2));
-    }
 
     pub(crate) fn reset() {
         host::SEC_REPLY

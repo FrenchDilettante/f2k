@@ -360,7 +360,6 @@ mod tests {
     use super::*;
     use crate::acl::exports::{add_access_allowed_ace, add_audit_access_ace, initialize_acl};
     use crate::explicit::tests_support::sid;
-    use crate::imports::host::LAST_ERROR;
     use crate::sd::{
         initialize_security_descriptor,
         make_self_relative_sd,
@@ -370,14 +369,7 @@ mod tests {
         set_security_descriptor_sacl,
     };
     use crate::sid::ptr_field;
-
-    fn last_error() -> u32 {
-        LAST_ERROR.with(|error| error.get())
-    }
-
-    fn arm() {
-        LAST_ERROR.with(|error| error.set(0xF2F2));
-    }
+    use crate::testkit::{arm, last_error};
 
     /// A self-relative descriptor with the owner, group, DACL and SACL given, in a buffer.
     fn make_sd(owner: &[u8], group: &[u8], dacl: &[u8], sacl: &[u8]) -> Vec<u8> {

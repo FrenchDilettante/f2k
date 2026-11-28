@@ -73,13 +73,7 @@ const SEARCH: &str = "C:\\CORPUS;.;C:\\WINNT\\system32;C:\\WINNT\\system;C:\\WIN
 /// [`OWN_ENVIRONMENT`] under the system root `C:\WINNT`, no file existing, the last error armed.
 fn setup() {
     children::reset();
-    let root = b"C:\\WINNT\0\0";
-    for (at, pair) in root.chunks(2).enumerate() {
-        crate::shared::host::set(
-            crate::shared::NT_SYSTEM_ROOT + 4 * at,
-            u32::from(pair[0]) | u32::from(pair[1]) << 16,
-        );
-    }
+    crate::shared::host::set_system_root();
     CURRENT_DIRECTORY
         .with(|current| *current.borrow_mut() = "C:\\CORPUS\\".encode_utf16().collect());
     EXISTING_PATHS.with(|existing| existing.borrow_mut().clear());
@@ -1260,6 +1254,27 @@ fn a_detached_process_or_a_new_console_is_marked_for_its_connection() {
     );
 }
 
+/// CreateProcessA of the command line `line` alone, inheriting handles, in `SCRATCH` under the
+/// current directory: its answer and PROCESS_INFORMATION.
+fn create_a_in_scratch(line: &mut [u8], info: &StartupInfo<u8>) -> (u32, ProcessInformation) {
+    let mut information = ProcessInformation::default();
+    let created = unsafe {
+        create_process_a(
+            core::ptr::null(),
+            line.as_mut_ptr(),
+            core::ptr::null(),
+            core::ptr::null(),
+            1,
+            0,
+            core::ptr::null(),
+            b"SCRATCH\0".as_ptr(),
+            info,
+            &mut information,
+        )
+    };
+    (created, information)
+}
+
 /// CreateProcessA converts its strings through the ANSI code page (the euro sign is 0x80) and does
 /// CreateProcessW's work.
 ///
@@ -1275,21 +1290,7 @@ fn create_process_a_converts_and_creates() {
         title: title.as_ptr(),
         ..startup()
     };
-    let mut information = ProcessInformation::default();
-    let created = unsafe {
-        create_process_a(
-            core::ptr::null(),
-            line.as_mut_ptr(),
-            core::ptr::null(),
-            core::ptr::null(),
-            1,
-            0,
-            core::ptr::null(),
-            b"SCRATCH\0".as_ptr(),
-            &info,
-            &mut information,
-        )
-    };
+    let (created, information) = create_a_in_scratch(&mut line, &info);
     assert_eq!((created, information.process), (1, CHILD_PROCESS));
     let made = made().pop().unwrap();
     assert_eq!(made.command_line.as_deref(), Some("spawnkid args \u{20AC}"));
@@ -1371,21 +1372,7 @@ fn both_forms_make_the_same_child_of_the_same_strings() {
         desktop: desktop.as_ptr(),
         ..startup()
     };
-    let mut information = ProcessInformation::default();
-    let created = unsafe {
-        create_process_a(
-            core::ptr::null(),
-            line.as_mut_ptr(),
-            core::ptr::null(),
-            core::ptr::null(),
-            1,
-            0,
-            core::ptr::null(),
-            b"SCRATCH\0".as_ptr(),
-            &info,
-            &mut information,
-        )
-    };
+    let (created, information) = create_a_in_scratch(&mut line, &info);
     assert_eq!((created, information.process), (1, CHILD_PROCESS));
     let narrow = child(made().pop().unwrap());
     assert_eq!(wide, narrow);

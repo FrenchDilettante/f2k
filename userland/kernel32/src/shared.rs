@@ -77,6 +77,16 @@ pub mod host {
         PAGE.with(|page| page.borrow_mut()[offset / 4] = value);
     }
 
+    /// Set NtSystemRoot to `C:\WINNT`, the system root the scenarios run under.
+    pub fn set_system_root() {
+        for (at, pair) in b"C:\\WINNT\0\0".chunks(2).enumerate() {
+            set(
+                super::NT_SYSTEM_ROOT + 4 * at,
+                u32::from(pair[0]) | u32::from(pair[1]) << 16,
+            );
+        }
+    }
+
     /// Set the KSYSTEM_TIME at `offset`.
     pub fn set_time(offset: usize, value: u64) {
         set(offset, value as u32);

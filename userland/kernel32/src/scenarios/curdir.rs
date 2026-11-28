@@ -71,13 +71,7 @@ fn a_directory_that_cannot_be_opened_is_refused() {
 /// kernel32.GetSystemDirectoryA
 #[test]
 fn the_windows_directory_is_the_system_root() {
-    let root = b"C:\\WINNT\0\0";
-    for (at, pair) in root.chunks(2).enumerate() {
-        crate::shared::host::set(
-            crate::shared::NT_SYSTEM_ROOT + 4 * at,
-            u32::from(pair[0]) | u32::from(pair[1]) << 16,
-        );
-    }
+    crate::shared::host::set_system_root();
     let mut buffer = [0xCCu8; 32];
     assert_eq!(
         unsafe { get_windows_directory_a(buffer.as_mut_ptr(), 9) },
@@ -110,13 +104,7 @@ fn the_windows_directory_is_the_system_root() {
 /// Pins: kernel32.GetSystemDirectoryW
 #[test]
 fn the_wide_system_directory_is_the_narrow_one() {
-    let root = b"C:\\WINNT\0\0";
-    for (at, pair) in root.chunks(2).enumerate() {
-        crate::shared::host::set(
-            crate::shared::NT_SYSTEM_ROOT + 4 * at,
-            u32::from(pair[0]) | u32::from(pair[1]) << 16,
-        );
-    }
+    crate::shared::host::set_system_root();
     let expected: Vec<u16> = "C:\\WINNT\\system32\0".encode_utf16().collect();
     let mut wide = [0x5A5Au16; 32];
     assert_eq!(

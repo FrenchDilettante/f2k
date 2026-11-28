@@ -421,16 +421,8 @@ mod tests {
         TRUSTEE_IS_SID,
         TRUSTEE_IS_UNKNOWN,
     };
-    use crate::imports::host::LAST_ERROR;
     use crate::imports::ProcessHeap;
-
-    fn last_error() -> u32 {
-        LAST_ERROR.with(|error| error.get())
-    }
-
-    fn arm() {
-        LAST_ERROR.with(|error| error.set(0xF2F2));
-    }
+    use crate::testkit::{arm, last_error};
 
     /// An EXPLICIT_ACCESS in a test's buffer, for a SID-form trustee.
     fn entry_for(sid: &[u8], mode: u32, mask: u32, inheritance: u32) -> ExplicitAccess {
