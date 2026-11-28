@@ -5,6 +5,10 @@
 description = "dialog2 - in-memory dialog templates and the dialog manager's remaining exports: CreateDialogIndirectParamW/A over DLGTEMPLATE without and with DS_SETFONT, an unregistered control class with and without DS_NOFAILCREATE (indirect), a DLGTEMPLATEEX (ex), the undocumented CreateDialogIndirectParamAorW and DialogBoxIndirectParamAorW's flags (aorw), DialogBoxIndirectParamW/A (modal), GetNextDlgTabItem (tabs) and GetNextDlgGroupItem (groups) over tab stops, groups, disabled and hidden controls, SendDlgItemMessageA (senditem), the unsuffixed IsDialogMessage (alias), MessageBoxExW/A's language (msgboxex) and MessageBoxIndirectW/A (msgboxind)."
 kind = "sectioned"
 gate = true
+# msgboxex and msgboxind each wait out the watcher's 2 s grace three times (an MB_OK box given
+# IDOK, which it has no button for, as Windows 2000's run does): each a boot of its own, beside the
+# other blocks' boot.
+separate = ["msgboxex", "msgboxind"]
 # The modal dialogs end themselves at once; each message box takes its watcher a tick or two.
 timeout = 60
 

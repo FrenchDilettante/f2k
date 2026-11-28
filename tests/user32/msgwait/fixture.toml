@@ -9,6 +9,9 @@
 description = "msgwait - MsgWaitForMultipleObjects (and Ex) against each QS_* mask and a posted, sent, timer, paint or peeked message, events with fWaitAll, MWMO_* flags; GetQueueStatus's current and new words step by step; GetInputState and QS_KEY/QS_MOUSEMOVE after SendInput; InSendMessage and InSendMessageEx's ISMEX_* flags for each kind of send; ReplyMessage; SendMessageCallbackW/A and when the callback runs; BroadcastSystemMessage(A/W) to the program's own window; Get/SetMessageExtraInfo; SetMessageQueue; WaitForInputIdle on children."
 kind = "sectioned"
 gate = true
+# idle waits out its children (a 3 s pump, a 1.5 s sleep then a 3 s pump, a 2 s sleep), as
+# Windows 2000's run does: a boot of its own, beside the other blocks' boot.
+separate = ["idle"]
 
 [pending]
 # U6 (.scratch/plans/user32-gdi32-completeness.md): msgwait.exe imports GetMessageExtraInfo and
