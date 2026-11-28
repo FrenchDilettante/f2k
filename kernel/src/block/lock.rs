@@ -180,15 +180,17 @@ impl<T> DeviceLock<T> {
         // KeWaitForSingleObject). A wait satisfied at once is charged against the quantum, so
         // entering one for every uncontended take ran a thread doing file reads off its quantum in
         // a handful of them, an equal-priority thread taking the processor at each sixth.
-        debug_assert!(
-            crate::level::raised::<Dispatch, _>(|dispatch| {
+        // Checked in debug builds only: the check raises to the dispatch level and lowers again,
+        // which a `debug_assert!` argument may not (a release build compiles it out).
+        if cfg!(debug_assertions) {
+            let critical = crate::level::raised::<Dispatch, _>(|dispatch| {
                 let dispatcher = crate::sched::DISPATCHER.get(dispatch);
                 dispatcher
                     .current()
                     .is_some_and(|thread| dispatcher.thread(thread).in_critical_region())
-            }),
-            "a device lock taken outside a critical region"
-        );
+            });
+            assert!(critical, "a device lock taken outside a critical region");
+        }
         let taken = masked(|| {
             self.with_event(|event| {
                 let free = event.signaled();

@@ -2171,12 +2171,14 @@ impl Directory {
     /// returning. False, and nothing held, when one of them is gone already (a handle another
     /// thread closed meanwhile).
     pub fn hold_wait(&mut self, thread: u16, objects: &[ObjectId]) -> bool {
-        debug_assert!(self
-            .thread_side(thread)
-            .waits
-            .objects
-            .iter()
-            .all(Option::is_none));
+        debug_assert!(
+            self.thread_sides.get(thread.into()).is_some_and(|side| side
+                .waits
+                .objects
+                .iter()
+                .all(Option::is_none)),
+            "a thread's wait holds nothing before it is entered"
+        );
         debug_assert!(
             objects
                 .iter()

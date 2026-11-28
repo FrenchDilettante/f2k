@@ -435,13 +435,18 @@ run-tests: userland
 		CARGO_UNSTABLE_BUILD_STD=std $(HOST_TEST) cargo test --manifest-path $(USERLAND_DIR)/$$crate/Cargo.toml --lib --target $(RUST_HOST_TARGET) --target-dir target/userland-host || exit 1; \
 	done
 
+# Lints clippy holds every crate to beyond its defaults: a debug_assert! whose argument mutates
+# (debug_assert_with_mut_call) changes what the code does once a release build compiles the
+# argument out.
+CLIPPY_LINTS = -D clippy::debug_assert_with_mut_call
+
 .PHONY: check
 check: userland
 	@echo "Checking code..."
-	cd $(USERLAND_DIR) && cargo clippy --release
+	cd $(USERLAND_DIR) && cargo clippy --release -- $(CLIPPY_LINTS)
 	cd $(KERNEL_DIR) && cargo check
-	cd $(KERNEL_DIR) && cargo clippy
-	cd $(LOADER_DIR) && cargo clippy
+	cd $(KERNEL_DIR) && cargo clippy -- $(CLIPPY_LINTS)
+	cd $(LOADER_DIR) && cargo clippy -- $(CLIPPY_LINTS)
 
 # Formatting: the Rust sources' settings live in rustfmt.toml at the workspace root, the Markdown
 # files' (rumdl) in pyproject.toml.

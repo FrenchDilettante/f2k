@@ -983,20 +983,23 @@ pub fn create_address_space() -> PhysAddr {
         // The kernel half is copied from the current directory: the master or a linked one, which
         // every table made on demand reached (a retired one could miss a later table, a kernel
         // stack's among them, and the new directory with it).
-        debug_assert!(
-            {
-                let current = current_directory_phys();
-                current == boot_directory_phys()
-                    || directories.is_linked(
-                        &mut Live {
-                            frames: &mut *frames,
-                            scratch: &mut *scratch,
-                        },
-                        current,
-                    )
-            },
-            "a directory copied from one no kernel table reaches"
-        );
+        // Checked in debug builds only: the check maps the directory through the scratch window,
+        // which a `debug_assert!` argument may not (a release build compiles it out).
+        if cfg!(debug_assertions) {
+            let current = current_directory_phys();
+            let linked = current == boot_directory_phys()
+                || directories.is_linked(
+                    &mut Live {
+                        frames: &mut *frames,
+                        scratch: &mut *scratch,
+                    },
+                    current,
+                );
+            assert!(
+                linked,
+                "a directory copied from one no kernel table reaches"
+            );
+        }
         // Allocated first: exhaustion fails before any write.
         let dir_phys = allocate_in(frames);
         // The directory is assembled in its own frame, through the scratch window: every entry is
