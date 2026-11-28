@@ -27,7 +27,7 @@ use rtl::icon::CursorData;
 use rtl::menu::{MenuItemAnswer, MenuItemInfoW};
 use rtl::pod::Pod;
 use rtl::scroll::ScrollInfo;
-use rtl::status::{checked, NtStatus};
+use rtl::status::{checked, written, NtStatus};
 use rtl::user::{GuiThreadInfo, Msg, Point, Receipt, SendTimeout};
 use rtl::window::{WindowPlacement, WindowPos};
 
@@ -333,7 +333,7 @@ mod raw {
         #[link_name = "\u{1}_f2k_nt_NtUserGetClassName"]
         pub fn NtUserGetClassName(window: usize, name: *mut u8, max: u32, copied: *mut u32) -> u32;
 
-        // The windows (kernel/src/win32k/window.rs).
+        // The windows (kernel/src/win32k/window/services.rs).
         #[link_name = "\u{1}_f2k_nt_NtUserCreateWindowEx"]
         pub fn NtUserCreateWindowEx(
             ex_style: u32,
@@ -562,7 +562,7 @@ mod raw {
         #[link_name = "\u{1}_f2k_nt_NtUserDestroyCursor"]
         pub fn NtUserDestroyCursor(cursor: usize) -> u32;
 
-        // The queues and the painting (kernel/src/win32k/queue.rs, paint.rs).
+        // The queues and the painting (kernel/src/win32k/queue/services.rs, paint.rs).
         #[link_name = "\u{1}_f2k_nt_NtUserPostMessage"]
         pub fn NtUserPostMessage(window: usize, message: u32, wparam: u32, lparam: i32) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserPostThreadMessage"]
@@ -944,13 +944,10 @@ pub fn resource_data(module: usize, resource: Hrsrc) -> Option<&'static [u8]> {
     if data == 0 {
         return None;
     }
-    // SAFETY: as above; then LoadResource's handle, which LockResource takes as it is.
-    let (size, at) = unsafe {
-        (
-            raw::SizeofResource(module, resource.0),
-            raw::LockResource(data),
-        )
-    };
+    // SAFETY: as above.
+    let size = unsafe { raw::SizeofResource(module, resource.0) };
+    // SAFETY: LoadResource's handle, which LockResource takes as it is.
+    let at = unsafe { raw::LockResource(data) };
     if size == 0 || at == 0 {
         return Some(&[]);
     }
@@ -987,17 +984,16 @@ impl ResourceName {
 ///
 /// A string name is the address of a NUL-terminated string the call may read.
 pub unsafe fn find_named_resource(module: usize, kind: u16, name: ResourceName) -> Option<Hrsrc> {
-    // SAFETY: the type is a number in a pointer's place, which kernel32 takes as a number; the
-    // name is a number, or the caller's string (the contract).
-    let found = unsafe {
-        match name {
-            ResourceName::Wide(raw) => {
-                raw::FindResourceExW(module, kind as usize as *const u16, raw as *const u16, 0)
-            }
-            ResourceName::Narrow(raw) => {
-                raw::FindResourceExA(module, kind as usize as *const u8, raw as *const u8, 0)
-            }
-        }
+    let found = match name {
+        // SAFETY: the type is a number in a pointer's place, which kernel32 takes as a number; the
+        // name is a number, or the caller's string (the contract).
+        ResourceName::Wide(raw) => unsafe {
+            raw::FindResourceExW(module, kind as usize as *const u16, raw as *const u16, 0)
+        },
+        // SAFETY: as for the wide name.
+        ResourceName::Narrow(raw) => unsafe {
+            raw::FindResourceExA(module, kind as usize as *const u8, raw as *const u8, 0)
+        },
     };
     (found != 0).then_some(Hrsrc(found))
 }
@@ -1183,7 +1179,7 @@ impl FileSearch {
         debug_assert_eq!(pattern.last(), Some(&0));
         let mut data = FindData::default();
         // SAFETY: kernel32 reads the terminated pattern and writes the local structure.
-        let handle = unsafe { raw::FindFirstFileW(pattern.as_ptr(), &mut data) };
+        let handle = unsafe { raw::FindFirstFileW(pattern.as_ptr(), &raw mut data) };
         // Made only for a search there is: a FileSearch closes its handle when dropped.
         (handle != INVALID_HANDLE_VALUE && handle != 0).then(|| FileSearch {
             handle,
@@ -1202,7 +1198,7 @@ impl Iterator for FileSearch {
         }
         let mut data = FindData::default();
         // SAFETY: the search's handle; kernel32 writes the local structure.
-        (unsafe { raw::FindNextFileW(self.handle, &mut data) } != 0).then_some(data)
+        (unsafe { raw::FindNextFileW(self.handle, &raw mut data) } != 0).then_some(data)
     }
 }
 
@@ -1430,7 +1426,9 @@ pub fn call_server(api: u32, data: &mut [u8]) -> u32 {
     let length = data.len();
     message.data.as_bytes_mut()[..length].copy_from_slice(data);
     // SAFETY: the message is this function's own, its data as long as the length says.
-    unsafe { raw::CsrClientCallServer(&mut message, core::ptr::null_mut(), api, length as u32) };
+    unsafe {
+        raw::CsrClientCallServer(&raw mut message, core::ptr::null_mut(), api, length as u32)
+    };
     data.copy_from_slice(&message.data.as_bytes()[..length]);
     message.return_value
 }
@@ -1449,27 +1447,21 @@ pub fn unicode_to_multi_byte(destination: &mut [u8], source: &[u16]) -> usize {
 
 /// NtUserGetProcessWindowStation: the process's window station handle.
 pub fn process_window_station() -> Result<u32, NtStatus> {
-    let mut handle = 0u32;
     // SAFETY: the service writes the handle into the local.
-    checked(unsafe { raw::NtUserGetProcessWindowStation(&mut handle) })?;
-    Ok(handle)
+    written(|handle| unsafe { raw::NtUserGetProcessWindowStation(handle) })
 }
 
 /// NtUserGetGuiResources: the count of the objects of `flags`' kind (GR_GDIOBJECTS,
 /// GR_USEROBJECTS) the process `process` names holds.
 pub fn gui_resources(process: usize, flags: u32) -> Result<u32, NtStatus> {
-    let mut count = 0u32;
     // SAFETY: the service writes the count into the local.
-    checked(unsafe { raw::NtUserGetGuiResources(process, flags, &mut count) })?;
-    Ok(count)
+    written(|count| unsafe { raw::NtUserGetGuiResources(process, flags, count) })
 }
 
 /// NtUserGetThreadDesktop: the desktop handle of the process's thread `thread_id`.
 pub fn thread_desktop(thread_id: u32) -> Result<u32, NtStatus> {
-    let mut handle = 0u32;
     // SAFETY: the service writes the handle into the local.
-    checked(unsafe { raw::NtUserGetThreadDesktop(thread_id, &mut handle) })?;
-    Ok(handle)
+    written(|handle| unsafe { raw::NtUserGetThreadDesktop(thread_id, handle) })
 }
 
 /// NtUserGetObjectInformation: `object`'s information `index` into `information` when it holds
@@ -1539,8 +1531,9 @@ pub fn register_class(
     let (mut atom, mut wow) = (0u32, 0u32);
     // SAFETY: the kernel reads the structure, the name and the menu name it points at (this DLL's
     // own, or the caller's, alive for the call), and writes the two locals.
-    let status =
-        unsafe { raw::NtUserRegisterClassExWOW(class, name, flags, narrow, &mut atom, &mut wow) };
+    let status = unsafe {
+        raw::NtUserRegisterClassExWOW(class, name, flags, narrow, &raw mut atom, &raw mut wow)
+    };
     if status != rtl::status::STATUS_SUCCESS {
         return Err(NtStatus(status));
     }
@@ -1558,31 +1551,25 @@ pub fn unregister_class(name: usize, instance: usize) -> Result<(), NtStatus> {
 /// `instance` sees, into `class`; the class's atom, with rtl::window's CLASS_INFO_ANSI_PROC when
 /// its procedure takes the narrow forms of the messages.
 pub fn class_info(instance: usize, name: usize, class: &mut WndClassExW) -> Result<u32, NtStatus> {
-    let mut answer = 0u32;
     // SAFETY: the kernel reads the name through its fault-tolerant copies, and reads and writes the
     // local structure and the local answer.
-    checked(unsafe { raw::NtUserGetClassInfo(instance, name, class, &mut answer) })?;
-    Ok(answer)
+    written(|answer| unsafe { raw::NtUserGetClassInfo(instance, name, class, answer) })
 }
 
 /// NtUserSetClassLong: the field of `window`'s class at `index` (GCL_*, or an offset into its extra
 /// bytes) set to `value` (GCL_MENUNAME's a string's address or an integer id); the value it held.
 pub fn set_class_long(window: usize, index: i32, value: u32) -> Result<u32, NtStatus> {
-    let mut previous = 0u32;
     // SAFETY: the kernel reads a menu name through its fault-tolerant copies, and writes the
     // local.
-    checked(unsafe { raw::NtUserSetClassLong(window, index, value, &mut previous) })?;
-    Ok(previous)
+    written(|previous| unsafe { raw::NtUserSetClassLong(window, index, value, previous) })
 }
 
 /// NtUserGetClassName: the name of `window`'s class, at most `max` units into `name` (its
 /// terminator included); the units copied, the terminator not counted.
 pub fn class_name(window: usize, name: UserBuffer, max: u32) -> Result<u32, NtStatus> {
-    let mut copied = 0u32;
     // SAFETY: the kernel writes the buffer through its fault-tolerant copies (no memory this DLL
     // holds a reference into), and the count into the local.
-    checked(unsafe { raw::NtUserGetClassName(window, name.at, max, &mut copied) })?;
-    Ok(copied)
+    written(|copied| unsafe { raw::NtUserGetClassName(window, name.at, max, copied) })
 }
 
 // --- win32k: windows -----------------------------------------------------------------------------
@@ -1632,7 +1619,7 @@ pub fn create_window(creation: &Creation) -> Result<u32, (NtStatus, u32)> {
             c.instance,
             c.param,
             c.version,
-            &mut window,
+            &raw mut window,
         )
     });
     answer.map(|()| window).map_err(|status| (status, window))
@@ -1661,11 +1648,9 @@ pub fn find_window_ex(
     class: usize,
     name: usize,
 ) -> Result<u32, NtStatus> {
-    let mut found = 0u32;
     // SAFETY: the kernel reads the names through its fault-tolerant copies (the caller's, alive
     // for the call) and writes the local.
-    checked(unsafe { raw::NtUserFindWindowEx(parent, after, class, name, &mut found) })?;
-    Ok(found)
+    written(|found| unsafe { raw::NtUserFindWindowEx(parent, after, class, name, found) })
 }
 
 // --- kernel32: the global atoms, a window property's name -------------------------------------
@@ -1674,27 +1659,25 @@ pub fn find_window_ex(
 /// address, kernel32 reads it), a string atom's reference counted; 0, kernel32's last error set,
 /// when it is refused.
 pub fn global_add_atom(name: usize, wide: bool) -> u16 {
+    let add = if wide {
+        raw::GlobalAddAtomW
+    } else {
+        raw::GlobalAddAtomA
+    };
     // SAFETY: kernel32 reads the caller's string as its own export does.
-    unsafe {
-        if wide {
-            raw::GlobalAddAtomW(name)
-        } else {
-            raw::GlobalAddAtomA(name)
-        }
-    }
+    unsafe { add(name) }
 }
 
 /// GlobalFindAtomW (`wide`) or GlobalFindAtomA: the global atom the name at `name` has; 0,
 /// kernel32's last error set, when there is none.
 pub fn global_find_atom(name: usize, wide: bool) -> u16 {
+    let find = if wide {
+        raw::GlobalFindAtomW
+    } else {
+        raw::GlobalFindAtomA
+    };
     // SAFETY: as for `global_add_atom`.
-    unsafe {
-        if wide {
-            raw::GlobalFindAtomW(name)
-        } else {
-            raw::GlobalFindAtomA(name)
-        }
-    }
+    unsafe { find(name) }
 }
 
 /// GlobalDeleteAtom: a reference to the atom dropped.
@@ -1711,10 +1694,8 @@ pub fn set_prop(window: usize, atom: u16, data: u32) -> Result<(), NtStatus> {
 
 /// NtUserRemoveProp: the window's property `atom` taken off: its data, 0 for none.
 pub fn remove_prop(window: usize, atom: u16) -> Result<u32, NtStatus> {
-    let mut data = 0u32;
     // SAFETY: the kernel writes the local.
-    checked(unsafe { raw::NtUserRemoveProp(window, u32::from(atom), &mut data) })?;
-    Ok(data)
+    written(|data| unsafe { raw::NtUserRemoveProp(window, u32::from(atom), data) })
 }
 
 /// NtUserBuildPropList: the window's properties, as many as `list` holds, and how many it has
@@ -1726,7 +1707,7 @@ pub fn build_prop_list(
     let mut count = 0u32;
     // SAFETY: the kernel writes the caller's slice, as long as its length, and the local.
     let status = unsafe {
-        raw::NtUserBuildPropList(window, list.as_mut_ptr(), list.len() as u32, &mut count)
+        raw::NtUserBuildPropList(window, list.as_mut_ptr(), list.len() as u32, &raw mut count)
     };
     if status == rtl::status::STATUS_BUFFER_TOO_SMALL {
         return Ok(count as usize);
@@ -1745,10 +1726,8 @@ pub fn call_window_enum_procedure(proc: u32, window: u32, lparam: u32) -> u32 {
 /// NtUserSetTimer: the timer `id` of `window` (0: a thread timer) set to come due every `elapse`
 /// milliseconds, its WM_TIMER's lParam `func` (a TimerProc, 0 for none): the timer's id.
 pub fn set_timer(window: usize, id: u32, elapse: u32, func: usize) -> Result<u32, NtStatus> {
-    let mut made = 0u32;
     // SAFETY: the kernel keeps the TimerProc's address as a value and writes the local.
-    checked(unsafe { raw::NtUserSetTimer(window, id, elapse, func, &mut made) })?;
-    Ok(made)
+    written(|made| unsafe { raw::NtUserSetTimer(window, id, elapse, func, made) })
 }
 
 /// NtUserKillTimer: the timer `id` of `window` gone.
@@ -1813,10 +1792,8 @@ pub fn move_window(
 
 /// NtUserShowWindow: ShowWindow's change, its answer (the window's visibility before it).
 pub fn show_window(window: usize, command: i32) -> Result<u32, NtStatus> {
-    let mut previous = 0u32;
     // SAFETY: the kernel writes the answer into the local.
-    checked(unsafe { raw::NtUserShowWindow(window, command, &mut previous) })?;
-    Ok(previous)
+    written(|previous| unsafe { raw::NtUserShowWindow(window, command, previous) })
 }
 
 /// NtUserShowWindowAsync: ShowWindowAsync's change.
@@ -1827,10 +1804,8 @@ pub fn show_window_async(window: usize, command: i32) -> Result<(), NtStatus> {
 
 /// NtUserGetWindowPlacement: `window`'s WINDOWPLACEMENT.
 pub fn window_placement(window: usize) -> Result<WindowPlacement, NtStatus> {
-    let mut placement = WindowPlacement::default();
     // SAFETY: the kernel writes the local structure.
-    checked(unsafe { raw::NtUserGetWindowPlacement(window, &mut placement) })?;
-    Ok(placement)
+    written(|placement| unsafe { raw::NtUserGetWindowPlacement(window, placement) })
 }
 
 /// NtUserSetWindowPlacement: `placement` made `window`'s, its show command carried out.
@@ -1864,8 +1839,8 @@ pub fn set_window_long(
             index,
             value,
             ansi as u32,
-            &mut previous,
-            &mut previous_ansi,
+            &raw mut previous,
+            &raw mut previous_ansi,
         )
     })?;
     Ok((previous, previous_ansi != 0))
@@ -1874,10 +1849,9 @@ pub fn set_window_long(
 /// NtUserSetWindowWord: SetWindowWord's change of the word at `index` in `window`'s extra bytes to
 /// `value`: the word it held.
 pub fn set_window_word(window: usize, index: i32, value: u16) -> Result<u16, NtStatus> {
-    let mut previous = 0u32;
     // SAFETY: the kernel writes the local.
-    checked(unsafe { raw::NtUserSetWindowWord(window, index, value as u32, &mut previous) })?;
-    Ok(previous as u16)
+    written(|previous| unsafe { raw::NtUserSetWindowWord(window, index, value as u32, previous) })
+        .map(|previous| previous as u16)
 }
 
 /// NtUserDefSetText: `window`'s text set to the NUL-terminated UTF-16 string at `text` (zero: the
@@ -1892,10 +1866,8 @@ pub fn def_set_text(window: usize, text: usize) -> Result<(), NtStatus> {
 /// the CWP_ flags pass over children: its handle, `parent` itself when none holds it, 0 for a point
 /// outside `parent`.
 pub fn child_window_from_point(parent: usize, x: i32, y: i32, flags: u32) -> Result<u32, NtStatus> {
-    let mut child = 0u32;
     // SAFETY: the kernel writes the handle into the local.
-    checked(unsafe { raw::NtUserChildWindowFromPointEx(parent, x, y, flags, &mut child) })?;
-    Ok(child)
+    written(|child| unsafe { raw::NtUserChildWindowFromPointEx(parent, x, y, flags, child) })
 }
 
 // --- win32k: the clipboard -----------------------------------------------------------------------
@@ -1921,11 +1893,9 @@ pub fn empty_clipboard() -> Result<(), NtStatus> {
 /// NtUserConvertMemHandle: a data object of the `length` bytes at `data` (a locked global memory
 /// block's): its handle.
 pub fn convert_mem_handle(data: usize, length: usize) -> Result<u32, NtStatus> {
-    let mut handle = 0u32;
     // SAFETY: the kernel reads the bytes through its fault-tolerant copies, and writes the handle
     // into the local.
-    checked(unsafe { raw::NtUserConvertMemHandle(data, length as u32, &mut handle) })?;
-    Ok(handle)
+    written(|handle| unsafe { raw::NtUserConvertMemHandle(data, length as u32, handle) })
 }
 
 /// NtUserSetClipboardData: the data object `data` put under `format`.
@@ -1938,68 +1908,59 @@ pub fn set_clipboard_data(format: u32, data: u32) -> Result<(), NtStatus> {
 pub fn get_clipboard_data(format: u32) -> Result<(u32, usize), NtStatus> {
     let (mut data, mut length) = (0u32, 0u32);
     // SAFETY: the kernel writes the two locals.
-    checked(unsafe { raw::NtUserGetClipboardData(format, &mut data, &mut length) })?;
+    checked(unsafe { raw::NtUserGetClipboardData(format, &raw mut data, &raw mut length) })?;
     Ok((data, length as usize))
 }
 
 /// NtUserCreateLocalMemHandle: the data object `data`'s bytes into `buffer`.
 pub fn create_local_mem_handle(data: u32, buffer: UserBuffer) -> Result<(), NtStatus> {
-    let mut needed = 0u32;
     // SAFETY: the kernel writes the buffer through its fault-tolerant copies (no memory this DLL
     // holds a reference into), and the length into the local.
-    checked(unsafe { raw::NtUserCreateLocalMemHandle(data, buffer.at, buffer.length, &mut needed) })
+    written(|needed| unsafe {
+        raw::NtUserCreateLocalMemHandle(data, buffer.at, buffer.length, needed)
+    })
+    .map(|_: u32| ())
 }
 
 /// NtUserIsClipboardFormatAvailable: whether the clipboard has `format`.
 pub fn is_clipboard_format_available(format: u32) -> Result<bool, NtStatus> {
-    let mut available = 0u32;
     // SAFETY: the kernel writes the local.
-    checked(unsafe { raw::NtUserIsClipboardFormatAvailable(format, &mut available) })?;
-    Ok(available != 0)
+    written(|available| unsafe { raw::NtUserIsClipboardFormatAvailable(format, available) })
+        .map(|available: u32| available != 0)
 }
 
 /// NtUserCountClipboardFormats: how many formats the clipboard has.
 pub fn count_clipboard_formats() -> Result<u32, NtStatus> {
-    let mut count = 0u32;
     // SAFETY: the kernel writes the local.
-    checked(unsafe { raw::NtUserCountClipboardFormats(&mut count) })?;
-    Ok(count)
+    written(|count| unsafe { raw::NtUserCountClipboardFormats(count) })
 }
 
 /// NtUserGetClipboardOwner: the clipboard's owner (0 for none).
 pub fn clipboard_owner() -> Result<u32, NtStatus> {
-    let mut window = 0u32;
     // SAFETY: the kernel writes the local.
-    checked(unsafe { raw::NtUserGetClipboardOwner(&mut window) })?;
-    Ok(window)
+    written(|window| unsafe { raw::NtUserGetClipboardOwner(window) })
 }
 
 /// NtUserGetOpenClipboardWindow: the window the clipboard is open with (0 for none).
 pub fn open_clipboard_window() -> Result<u32, NtStatus> {
-    let mut window = 0u32;
     // SAFETY: the kernel writes the local.
-    checked(unsafe { raw::NtUserGetOpenClipboardWindow(&mut window) })?;
-    Ok(window)
+    written(|window| unsafe { raw::NtUserGetOpenClipboardWindow(window) })
 }
 
 /// NtUserRegisterWindowMessage: the atom of the NUL-terminated UTF-16 name at `name`.
 pub fn register_window_message(name: usize) -> Result<u32, NtStatus> {
-    let mut atom = 0u32;
     // SAFETY: the kernel reads the name through its fault-tolerant copies, and writes the local.
-    checked(unsafe { raw::NtUserRegisterWindowMessage(name, &mut atom) })?;
-    Ok(atom)
+    written(|atom| unsafe { raw::NtUserRegisterWindowMessage(name, atom) })
 }
 
 /// NtUserGetClipboardFormatName: the registered `format`'s name into `name` (its length in units
 /// holding the NUL too, the name cut to fit): the units copied before the NUL.
 pub fn clipboard_format_name(format: u32, name: UserBuffer) -> Result<u32, NtStatus> {
-    let mut copied = 0u32;
     // SAFETY: the kernel writes the buffer through its fault-tolerant copies (no memory this DLL
     // holds a reference into), and the count into the local.
-    checked(unsafe {
-        raw::NtUserGetClipboardFormatName(format, name.at, name.length / 2, &mut copied)
-    })?;
-    Ok(copied)
+    written(|copied| unsafe {
+        raw::NtUserGetClipboardFormatName(format, name.at, name.length / 2, copied)
+    })
 }
 
 // --- win32k: messages ----------------------------------------------------------------------------
@@ -2060,7 +2021,7 @@ pub fn message_call_timeout(
     let (mut proc, mut result) = (0u32, 0i32);
     let limit = timeout
         .as_ref()
-        .map_or(core::ptr::null(), |t| t as *const SendTimeout);
+        .map_or(core::ptr::null(), core::ptr::from_ref);
     // SAFETY: the kernel writes the two locals and reads the local timeout, when there is one.
     let status = unsafe {
         raw::NtUserMessageCall(
@@ -2068,8 +2029,8 @@ pub fn message_call_timeout(
             message,
             wparam,
             lparam,
-            &mut proc,
-            &mut result,
+            &raw mut proc,
+            &raw mut result,
             limit,
         )
     };
@@ -2091,10 +2052,8 @@ pub fn send_notify_message(
     wparam: u32,
     lparam: i32,
 ) -> Result<u32, NtStatus> {
-    let mut proc = 0u32;
     // SAFETY: the kernel writes the local.
-    checked(unsafe { raw::NtUserSendNotifyMessage(window, message, wparam, lparam, &mut proc) })?;
-    Ok(proc)
+    written(|proc| unsafe { raw::NtUserSendNotifyMessage(window, message, wparam, lparam, proc) })
 }
 
 /// What NtUserSendMessageCallback did with a message.
@@ -2129,8 +2088,8 @@ pub fn send_message_callback(
             lparam,
             callback,
             data,
-            &mut proc,
-            &mut result,
+            &raw mut proc,
+            &raw mut result,
         )
     };
     if status == rtl::status::STATUS_PENDING {
@@ -2151,18 +2110,14 @@ pub fn wait_message() -> Result<(), NtStatus> {
 
 /// NtUserDispatchMessage: the procedure DispatchMessage calls with `msg` (0 for none).
 pub fn dispatch_target(msg: &Msg) -> Result<u32, NtStatus> {
-    let mut proc = 0u32;
     // SAFETY: the kernel reads the local message and writes the local procedure.
-    checked(unsafe { raw::NtUserDispatchMessage(msg, &mut proc) })?;
-    Ok(proc)
+    written(|proc| unsafe { raw::NtUserDispatchMessage(msg, proc) })
 }
 
 /// NtUserCallOneParam: the routine `routine` (rtl::user's ONE_PARAM_*) with `param`: its result.
 pub fn call_one_param(param: u32, routine: u32) -> Result<u32, NtStatus> {
-    let mut result = 0u32;
     // SAFETY: the kernel writes the local result.
-    checked(unsafe { raw::NtUserCallOneParam(param, routine, &mut result) })?;
-    Ok(result)
+    written(|result| unsafe { raw::NtUserCallOneParam(param, routine, result) })
 }
 
 /// NtUserCallHwndLock: the routine `routine` (rtl::user's HWND_LOCK_*) on `window`.
@@ -2185,52 +2140,40 @@ pub fn call_procedure(proc: u32, window: u32, message: u32, wparam: u32, lparam:
 /// NtUserSetFocus: the focus to `window` (0: to no window); the window that had it (0 for none, or
 /// for a refusal).
 pub fn set_focus(window: usize) -> Result<u32, NtStatus> {
-    let mut previous = 0u32;
     // SAFETY: the kernel writes the answer into the local.
-    checked(unsafe { raw::NtUserSetFocus(window, &mut previous) })?;
-    Ok(previous)
+    written(|previous| unsafe { raw::NtUserSetFocus(window, previous) })
 }
 
 /// NtUserSetActiveWindow: `window` activated; the window that was active (0 for none, or for a
 /// refusal).
 pub fn set_active_window(window: usize) -> Result<u32, NtStatus> {
-    let mut previous = 0u32;
     // SAFETY: the kernel writes the answer into the local.
-    checked(unsafe { raw::NtUserSetActiveWindow(window, &mut previous) })?;
-    Ok(previous)
+    written(|previous| unsafe { raw::NtUserSetActiveWindow(window, previous) })
 }
 
 /// NtUserGetForegroundWindow: the foreground window (0 for none).
 pub fn foreground_window() -> Result<u32, NtStatus> {
-    let mut window = 0u32;
     // SAFETY: the kernel writes the answer into the local.
-    checked(unsafe { raw::NtUserGetForegroundWindow(&mut window) })?;
-    Ok(window)
+    written(|window| unsafe { raw::NtUserGetForegroundWindow(window) })
 }
 
 /// NtUserSetCapture: the mouse capture to `window` (0: released); the window that had it (0 for
 /// none, or for a refusal).
 pub fn set_capture(window: usize) -> Result<u32, NtStatus> {
-    let mut previous = 0u32;
     // SAFETY: the kernel writes the answer into the local.
-    checked(unsafe { raw::NtUserSetCapture(window, &mut previous) })?;
-    Ok(previous)
+    written(|previous| unsafe { raw::NtUserSetCapture(window, previous) })
 }
 
 /// NtUserSetCursor: the cursor's shape set to `cursor`; the one it replaces.
 pub fn set_cursor(cursor: usize) -> Result<u32, NtStatus> {
-    let mut previous = 0u32;
     // SAFETY: the kernel writes the answer into the local.
-    checked(unsafe { raw::NtUserSetCursor(cursor, &mut previous) })?;
-    Ok(previous)
+    written(|previous| unsafe { raw::NtUserSetCursor(cursor, previous) })
 }
 
 /// NtUserGetThreadState: the routine `routine` (rtl::user's THREAD_STATE_*): its result.
 pub fn thread_state(routine: u32) -> Result<u32, NtStatus> {
-    let mut result = 0u32;
     // SAFETY: the kernel writes the result into the local.
-    checked(unsafe { raw::NtUserGetThreadState(routine, &mut result) })?;
-    Ok(result)
+    written(|result| unsafe { raw::NtUserGetThreadState(routine, result) })
 }
 
 // --- win32k: the caret
@@ -2238,60 +2181,48 @@ pub fn thread_state(routine: u32) -> Result<u32, NtStatus> {
 
 /// NtUserCreateCaret: a caret of `window`, gray or solid, `width` by `height`; whether it was made.
 pub fn create_caret(window: usize, gray: bool, width: i32, height: i32) -> Result<bool, NtStatus> {
-    let mut made = 0u32;
     // SAFETY: the kernel writes the answer into the local.
-    checked(unsafe { raw::NtUserCreateCaret(window, gray as u32, width, height, &mut made) })?;
-    Ok(made != 0)
+    written(|made| unsafe { raw::NtUserCreateCaret(window, gray as u32, width, height, made) })
+        .map(|made| made != 0)
 }
 
 /// NtUserShowCaret (`show`) or NtUserHideCaret: the caret of `window` (0: whatever window it is
 /// in) shown or hidden once more; whether it was.
 pub fn show_caret(window: usize, show: bool) -> Result<bool, NtStatus> {
-    let mut done = 0u32;
+    let call = if show {
+        raw::NtUserShowCaret
+    } else {
+        raw::NtUserHideCaret
+    };
     // SAFETY: the kernel writes the answer into the local.
-    checked(unsafe {
-        if show {
-            raw::NtUserShowCaret(window, &mut done)
-        } else {
-            raw::NtUserHideCaret(window, &mut done)
-        }
-    })?;
-    Ok(done != 0)
+    written(|done| unsafe { call(window, done) }).map(|done: u32| done != 0)
 }
 
 /// NtUserGetCaretPos: the calling thread's caret place.
 pub fn caret_pos() -> Result<Point, NtStatus> {
-    let mut point = Point::default();
     // SAFETY: the kernel writes the local.
-    checked(unsafe { raw::NtUserGetCaretPos(&mut point) })?;
-    Ok(point)
+    written(|point| unsafe { raw::NtUserGetCaretPos(point) })
 }
 
 /// NtUserGetGUIThreadInfo: the GUITHREADINFO of the thread `thread` (its id; 0 for the foreground
 /// thread).
 pub fn gui_thread_info(thread: u32) -> Result<GuiThreadInfo, NtStatus> {
-    let mut info = GuiThreadInfo::default();
     // SAFETY: the kernel writes the local.
-    checked(unsafe { raw::NtUserGetGUIThreadInfo(thread, &mut info) })?;
-    Ok(info)
+    written(|info| unsafe { raw::NtUserGetGUIThreadInfo(thread, info) })
 }
 
 /// NtUserCallTwoParam: the routine `routine` (rtl::user's TWO_PARAM_*) with its two parameters: its
 /// result.
 pub fn call_two_param(param1: u32, param2: u32, routine: u32) -> Result<u32, NtStatus> {
-    let mut result = 0u32;
     // SAFETY: the kernel writes the result into the local.
-    checked(unsafe { raw::NtUserCallTwoParam(param1, param2, routine, &mut result) })?;
-    Ok(result)
+    written(|result| unsafe { raw::NtUserCallTwoParam(param1, param2, routine, result) })
 }
 
 /// NtUserCallHwndParamLock: the routine `routine` (rtl::user's HWND_PARAM_LOCK_*) on `window` with
 /// `param`: its result.
 pub fn call_hwnd_param_lock(window: usize, param: u32, routine: u32) -> Result<u32, NtStatus> {
-    let mut result = 0u32;
     // SAFETY: the kernel writes the result into the local.
-    checked(unsafe { raw::NtUserCallHwndParamLock(window, param, routine, &mut result) })?;
-    Ok(result)
+    written(|result| unsafe { raw::NtUserCallHwndParamLock(window, param, routine, result) })
 }
 
 // --- win32k: the scroll bars ---------------------------------------------------------------------
@@ -2304,10 +2235,9 @@ pub fn set_scroll_info(
     info: &ScrollInfo,
     redraw: bool,
 ) -> Result<i32, NtStatus> {
-    let mut result = 0u32;
     // SAFETY: the kernel reads the local structure and writes the local answer.
-    checked(unsafe { raw::NtUserSetScrollInfo(window, bar, info, redraw as u32, &mut result) })?;
-    Ok(result as i32)
+    written(|result| unsafe { raw::NtUserSetScrollInfo(window, bar, info, redraw as u32, result) })
+        .map(|result| result as i32)
 }
 
 /// NtUserShowScrollBar: `window`'s own bars `bar` shown or hidden.
@@ -2319,10 +2249,9 @@ pub fn show_scroll_bar(window: usize, bar: i32, show: bool) -> Result<(), NtStat
 /// NtUserEnableScrollBar: the arrows of `window`'s own bars `bar` enabled or disabled; whether
 /// they changed.
 pub fn enable_scroll_bar(window: usize, bar: i32, arrows: u32) -> Result<bool, NtStatus> {
-    let mut result = 0u32;
     // SAFETY: the kernel writes the local answer.
-    checked(unsafe { raw::NtUserEnableScrollBar(window, bar as u32, arrows, &mut result) })?;
-    Ok(result != 0)
+    written(|result| unsafe { raw::NtUserEnableScrollBar(window, bar as u32, arrows, result) })
+        .map(|result| result != 0)
 }
 
 /// NtUserScrollWindowEx: `window`'s client area scrolled by `dx` and `dy` (the rectangles at
@@ -2350,8 +2279,8 @@ pub fn scroll_window_ex(
             clip,
             region,
             flags,
-            &mut update,
-            &mut result,
+            &raw mut update,
+            &raw mut result,
         )
     })?;
     Ok((result as i32, update))
@@ -2407,9 +2336,9 @@ pub fn validate_rgn(window: usize, region: usize) -> Result<(), NtStatus> {
 /// the pending painting handed over (asked with `erase`): rtl::user's UPDATE_ERASE and
 /// UPDATE_FRAME.
 pub fn update_rgn(window: usize, region: usize, erase: bool) -> Result<(i32, u32), NtStatus> {
-    let mut result = 0u32;
     // SAFETY: the kernel writes the answer into the local.
-    checked(unsafe { raw::NtUserGetUpdateRgn(window, region, erase as u32, &mut result) })?;
+    let result: u32 =
+        written(|result| unsafe { raw::NtUserGetUpdateRgn(window, region, erase as u32, result) })?;
     Ok((
         (result & 0xFFFF) as u16 as i16 as i32,
         (result >> 16) & (rtl::user::UPDATE_ERASE | rtl::user::UPDATE_FRAME),
@@ -2419,11 +2348,9 @@ pub fn update_rgn(window: usize, region: usize, erase: bool) -> Result<(i32, u32
 /// NtUserGetUpdateRect: `window`'s update region's box into the RECT at `rect` (zero: none), its
 /// answer bits (rtl::user's UPDATE_*).
 pub fn update_rect(window: usize, rect: usize, erase: bool) -> Result<u32, NtStatus> {
-    let mut bits = 0u32;
     // SAFETY: the kernel writes the rectangle through its fault-tolerant copies, and the bits into
     // the local.
-    checked(unsafe { raw::NtUserGetUpdateRect(window, rect, erase as u32, &mut bits) })?;
-    Ok(bits)
+    written(|bits| unsafe { raw::NtUserGetUpdateRect(window, rect, erase as u32, bits) })
 }
 
 /// NtUserBeginPaint: the PAINTSTRUCT at `paint` filled, its DC made, `window` validated.
@@ -2442,26 +2369,20 @@ pub fn end_paint(window: usize, paint: usize) -> Result<(), NtStatus> {
 
 /// NtUserGetDC: a DC of `window` (zero: the screen).
 pub fn get_dc(window: usize) -> Result<u32, NtStatus> {
-    let mut dc = 0u32;
     // SAFETY: the kernel writes the handle into the local.
-    checked(unsafe { raw::NtUserGetDC(window, &mut dc) })?;
-    Ok(dc)
+    written(|dc| unsafe { raw::NtUserGetDC(window, dc) })
 }
 
 /// NtUserGetDCEx: a DC of `window` with GetDCEx's region and flags.
 pub fn get_dc_ex(window: usize, region: usize, flags: u32) -> Result<u32, NtStatus> {
-    let mut dc = 0u32;
     // SAFETY: the kernel writes the handle into the local.
-    checked(unsafe { raw::NtUserGetDCEx(window, region, flags, &mut dc) })?;
-    Ok(dc)
+    written(|dc| unsafe { raw::NtUserGetDCEx(window, region, flags, dc) })
 }
 
 /// NtUserGetWindowDC: a DC of `window`'s whole rectangle.
 pub fn get_window_dc(window: usize) -> Result<u32, NtStatus> {
-    let mut dc = 0u32;
     // SAFETY: the kernel writes the handle into the local.
-    checked(unsafe { raw::NtUserGetWindowDC(window, &mut dc) })?;
-    Ok(dc)
+    written(|dc| unsafe { raw::NtUserGetWindowDC(window, dc) })
 }
 
 // --- win32k: the display -------------------------------------------------------------------------
@@ -2503,20 +2424,18 @@ pub fn enum_display_monitors(
     rects: &mut [Rect],
 ) -> Result<u32, NtStatus> {
     let count = monitors.len().min(rects.len()) as u32;
-    let mut found = 0u32;
     // SAFETY: the kernel reads the clipping rectangle through its fault-tolerant copies, and
     // writes at most `count` entries of the local arrays and the count into the local.
-    checked(unsafe {
+    written(|found| unsafe {
         raw::NtUserEnumDisplayMonitors(
             dc,
             clip,
             monitors.as_mut_ptr(),
             rects.as_mut_ptr(),
             count,
-            &mut found,
+            found,
         )
-    })?;
-    Ok(found)
+    })
 }
 
 /// The MonitorEnumProc `proc` the program handed EnumDisplayMonitors, called with a monitor: its
@@ -2550,10 +2469,8 @@ pub fn system_parameters_info(
 
 /// NtUserCallNoParam: the routine `routine` (rtl::user's NO_PARAM_*): its result.
 pub fn call_no_param(routine: u32) -> Result<u32, NtStatus> {
-    let mut result = 0;
     // SAFETY: the kernel writes the local.
-    checked(unsafe { raw::NtUserCallNoParam(routine, &mut result) })?;
-    Ok(result)
+    written(|result| unsafe { raw::NtUserCallNoParam(routine, result) })
 }
 
 /// NtUserThunkedMenuItemInfo's insertion or change (rtl::menu's MENU_ITEM_INSERT, MENU_ITEM_SET):
@@ -2618,18 +2535,14 @@ pub fn destroy_menu(menu: usize) -> Result<(), NtStatus> {
 
 /// NtUserCheckMenuItem: CheckMenuItem's change; the item's previous check.
 pub fn check_menu_item(menu: usize, item: u32, check: u32) -> Result<u32, NtStatus> {
-    let mut previous = 0;
     // SAFETY: the kernel writes the local.
-    checked(unsafe { raw::NtUserCheckMenuItem(menu, item, check, &mut previous) })?;
-    Ok(previous)
+    written(|previous| unsafe { raw::NtUserCheckMenuItem(menu, item, check, previous) })
 }
 
 /// NtUserEnableMenuItem: EnableMenuItem's change; the item's previous enabling bits.
 pub fn enable_menu_item(menu: usize, item: u32, enable: u32) -> Result<u32, NtStatus> {
-    let mut previous = 0;
     // SAFETY: the kernel writes the local.
-    checked(unsafe { raw::NtUserEnableMenuItem(menu, item, enable, &mut previous) })?;
-    Ok(previous)
+    written(|previous| unsafe { raw::NtUserEnableMenuItem(menu, item, enable, previous) })
 }
 
 /// NtUserSetMenu: the window's menu set (0: none).
@@ -2641,14 +2554,13 @@ pub fn set_menu(window: usize, menu: usize) -> Result<(), NtStatus> {
 /// NtUserRemoveMenu (`delete` false) or NtUserDeleteMenu: the item taken out of its menu, the
 /// popup it opens kept or destroyed.
 pub fn remove_menu(menu: usize, position: u32, flags: u32, delete: bool) -> Result<(), NtStatus> {
+    let call = if delete {
+        raw::NtUserDeleteMenu
+    } else {
+        raw::NtUserRemoveMenu
+    };
     // SAFETY: no pointers.
-    checked(unsafe {
-        if delete {
-            raw::NtUserDeleteMenu(menu, position, flags)
-        } else {
-            raw::NtUserRemoveMenu(menu, position, flags)
-        }
-    })
+    checked(unsafe { call(menu, position, flags) })
 }
 
 /// NtUserSetMenuDefaultItem: the menu's default item set (u32::MAX: none).
@@ -2660,10 +2572,9 @@ pub fn set_menu_default_item(menu: usize, item: u32, by_position: bool) -> Resul
 /// NtUserGetSystemMenu: the window's copy of the system menu (0 for none yet), `made` attached as
 /// the copy when it has none; with `revert`, the copy destroyed (0).
 pub fn get_system_menu(window: usize, revert: bool, made: usize) -> Result<usize, NtStatus> {
-    let mut menu = 0u32;
     // SAFETY: the kernel writes the local.
-    checked(unsafe { raw::NtUserGetSystemMenu(window, revert as u32, made, &mut menu) })?;
-    Ok(menu as usize)
+    written(|menu| unsafe { raw::NtUserGetSystemMenu(window, revert as u32, made, menu) })
+        .map(|menu| menu as usize)
 }
 
 /// NtUserCreateAcceleratorTable: a table of `entries`, or with `resource` (its data's address in
@@ -2673,18 +2584,17 @@ pub fn create_accelerator_table(
     module: usize,
     resource: usize,
 ) -> Result<usize, NtStatus> {
-    let mut table = 0;
     // SAFETY: the kernel reads the entries, as many as the count says, and writes the local.
-    checked(unsafe {
+    written(|table| unsafe {
         raw::NtUserCreateAcceleratorTable(
             entries.as_ptr(),
             entries.len() as u32,
             module,
             resource,
-            &mut table,
+            table,
         )
-    })?;
-    Ok(table as usize)
+    })
+    .map(|table| table as usize)
 }
 
 /// NtUserCopyAcceleratorTable: with no buffer the table's entry count; else as many of its entries
@@ -2697,27 +2607,23 @@ pub fn copy_accelerator_table(
         Some(entries) => (entries.as_mut_ptr(), entries.len() as u32),
         None => (core::ptr::null_mut(), 0),
     };
-    let mut copied = 0;
     // SAFETY: the kernel writes at most `count` entries of the buffer, and the local.
-    checked(unsafe { raw::NtUserCopyAcceleratorTable(table, at, count, &mut copied) })?;
-    Ok(copied)
+    written(|copied| unsafe { raw::NtUserCopyAcceleratorTable(table, at, count, copied) })
 }
 
 /// NtUserDestroyAcceleratorTable: the table's load count down; whether it was destroyed.
 pub fn destroy_accelerator_table(table: usize) -> Result<bool, NtStatus> {
-    let mut destroyed = 0;
     // SAFETY: the kernel writes the local.
-    checked(unsafe { raw::NtUserDestroyAcceleratorTable(table, &mut destroyed) })?;
-    Ok(destroyed != 0)
+    written(|destroyed| unsafe { raw::NtUserDestroyAcceleratorTable(table, destroyed) })
+        .map(|destroyed| destroyed != 0)
 }
 
 /// NtUserTranslateAccelerator: `msg` translated for `window` through `table`; whether it was an
 /// accelerator (the messages it sent queued for the window's thread).
 pub fn translate_accelerator(window: usize, table: usize, msg: &Msg) -> Result<bool, NtStatus> {
-    let mut translated = 0;
     // SAFETY: the kernel reads the local MSG and writes the local answer.
-    checked(unsafe { raw::NtUserTranslateAccelerator(window, table, msg, &mut translated) })?;
-    Ok(translated != 0)
+    written(|translated| unsafe { raw::NtUserTranslateAccelerator(window, table, msg, translated) })
+        .map(|translated| translated != 0)
 }
 
 /// NtUserFindExistingCursorIcon: the shared icon or cursor (`kind` RT_ICON or RT_CURSOR) loaded
@@ -2730,13 +2636,12 @@ pub fn find_existing_cursor_icon(
     height: i32,
     kind: u16,
 ) -> Result<usize, NtStatus> {
-    let mut cursor = 0;
     let size = (width as u16 as u32) | ((height as u16 as u32) << 16);
     // SAFETY: the kernel writes the local.
-    checked(unsafe {
-        raw::NtUserFindExistingCursorIcon(module, resource, size, u32::from(kind), &mut cursor)
-    })?;
-    Ok(cursor as usize)
+    written(|cursor| unsafe {
+        raw::NtUserFindExistingCursorIcon(module, resource, size, u32::from(kind), cursor)
+    })
+    .map(|cursor: u32| cursor as usize)
 }
 
 /// NtUserSetCursorIconData: the empty record `cursor` filled in from `data`.
@@ -2747,10 +2652,8 @@ pub fn set_cursor_icon_data(cursor: usize, data: &CursorData) -> Result<(), NtSt
 
 /// NtUserGetIconInfo: what the cursor or icon `cursor` holds.
 pub fn get_icon_info(cursor: usize) -> Result<CursorData, NtStatus> {
-    let mut data = CursorData::default();
     // SAFETY: the kernel writes the local structure.
-    checked(unsafe { raw::NtUserGetIconInfo(cursor, &mut data) })?;
-    Ok(data)
+    written(|data| unsafe { raw::NtUserGetIconInfo(cursor, data) })
 }
 
 /// NtUserDestroyCursor: the cursor or icon `cursor` destroyed (a shared one stays).
@@ -2764,27 +2667,21 @@ pub fn destroy_cursor(cursor: usize) -> Result<(), NtStatus> {
 /// NtUserSendInput: the `count` INPUT records of `size` bytes each at `inputs` (the caller's,
 /// read by the kernel) run; how many ran.
 pub fn send_input(count: u32, inputs: usize, size: i32) -> Result<u32, NtStatus> {
-    let mut sent = 0;
     // SAFETY: the kernel reads the records through its fault-tolerant copies, and writes the
     // local.
-    checked(unsafe { raw::NtUserSendInput(count, inputs, size, &mut sent) })?;
-    Ok(sent)
+    written(|sent| unsafe { raw::NtUserSendInput(count, inputs, size, sent) })
 }
 
 /// NtUserGetKeyState: the calling thread's state of the key `vk`, as GetKeyState answers it.
 pub fn get_key_state(vk: i32) -> Result<u16, NtStatus> {
-    let mut state = 0;
     // SAFETY: the kernel writes the local.
-    checked(unsafe { raw::NtUserGetKeyState(vk, &mut state) })?;
-    Ok(state as u16)
+    written(|state| unsafe { raw::NtUserGetKeyState(vk, state) }).map(|state| state as u16)
 }
 
 /// NtUserGetAsyncKeyState: the system's state of the key `vk`, as GetAsyncKeyState answers it.
 pub fn get_async_key_state(vk: i32) -> Result<u16, NtStatus> {
-    let mut state = 0;
     // SAFETY: the kernel writes the local.
-    checked(unsafe { raw::NtUserGetAsyncKeyState(vk, &mut state) })?;
-    Ok(state as u16)
+    written(|state| unsafe { raw::NtUserGetAsyncKeyState(vk, state) }).map(|state| state as u16)
 }
 
 /// NtUserGetKeyboardState: the calling thread's key state into the caller's 256 bytes.
@@ -2802,10 +2699,9 @@ pub fn set_keyboard_state(keys: usize) -> Result<(), NtStatus> {
 /// NtUserTranslateMessage: the character `msg`'s key makes posted for its window; whether one
 /// was.
 pub fn translate_message(msg: &Msg) -> Result<bool, NtStatus> {
-    let mut translated = 0;
     // SAFETY: the kernel reads the local MSG and writes the local answer.
-    checked(unsafe { raw::NtUserTranslateMessage(msg, 0, &mut translated) })?;
-    Ok(translated != 0)
+    written(|translated| unsafe { raw::NtUserTranslateMessage(msg, 0, translated) })
+        .map(|translated| translated != 0)
 }
 
 // --- gdi32 ---------------------------------------------------------------------------------------
@@ -2866,7 +2762,7 @@ pub fn ext_text_out(
     rect: Option<&Rect>,
     units: &[u16],
 ) -> bool {
-    let rect = rect.map_or(core::ptr::null(), |rect| rect as *const Rect);
+    let rect = rect.map_or(core::ptr::null(), core::ptr::from_ref);
     // SAFETY: gdi32 reads the rectangle and the units, which live for the call; no advances.
     unsafe {
         raw::ExtTextOutW(
@@ -2887,7 +2783,7 @@ pub fn text_width(dc: usize, units: &[u16]) -> Option<i32> {
     let mut size = rtl::gdi::Size::default();
     // SAFETY: gdi32 reads the units and writes the SIZE into the local.
     let done =
-        unsafe { raw::GetTextExtentPointW(dc, units.as_ptr(), units.len() as i32, &mut size) };
+        unsafe { raw::GetTextExtentPointW(dc, units.as_ptr(), units.len() as i32, &raw mut size) };
     (done != 0).then_some(size.cx)
 }
 
@@ -2895,7 +2791,7 @@ pub fn text_width(dc: usize, units: &[u16]) -> Option<i32> {
 pub fn text_metrics(dc: usize) -> Option<rtl::gdi::TextMetricW> {
     let mut metric = rtl::gdi::TextMetricW::default();
     // SAFETY: gdi32 writes the structure into the local.
-    let done = unsafe { raw::GetTextMetricsW(dc, &mut metric) };
+    let done = unsafe { raw::GetTextMetricsW(dc, &raw mut metric) };
     (done != 0).then_some(metric)
 }
 
@@ -2952,7 +2848,7 @@ pub fn create_dib_section(info: &[u8]) -> Option<(usize, usize)> {
     let mut bits = 0usize;
     // SAFETY: gdi32 reads the header and the table, ours for the call, and writes the address
     // into the local.
-    let made = unsafe { raw::CreateDIBSection(0, info.as_ptr(), 0, &mut bits, 0, 0) };
+    let made = unsafe { raw::CreateDIBSection(0, info.as_ptr(), 0, &raw mut bits, 0, 0) };
     (made != 0 && bits != 0).then_some((made, bits))
 }
 

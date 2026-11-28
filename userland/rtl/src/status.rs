@@ -266,6 +266,15 @@ pub const fn checked(status: u32) -> Result<(), NtStatus> {
     NtStatus(status).ok()
 }
 
+/// A service that writes one value (a handle, a count, an answer): `call` handed the place of a
+/// local, its default first, as the service's out-parameter; what it wrote, or the service's
+/// failure ([`checked`]'s).
+pub fn written<T: Default>(call: impl FnOnce(*mut T) -> u32) -> Result<T, NtStatus> {
+    let mut value = T::default();
+    checked(call(&raw mut value))?;
+    Ok(value)
+}
+
 /// Where Windows 2000's mapping differs from the generated table's (Wine's, after later releases),
 /// as the captures show it: (the status, Windows 2000's error).
 const WINDOWS_2000: [(u32, u32); 1] = [
@@ -481,6 +490,23 @@ mod tests {
         );
         assert_eq!(
             NtStatus(STATUS_ACCESS_DENIED).ok(),
+            Err(NtStatus(STATUS_ACCESS_DENIED))
+        );
+    }
+
+    /// A written value is answered on a success, and the status on a failure.
+    #[test]
+    fn a_written_value_is_answered_on_success() {
+        let write = |value: u32, status: u32| {
+            written(|at: *mut u32| {
+                // SAFETY: the place is the helper's local, live for the call.
+                unsafe { at.write(value) };
+                status
+            })
+        };
+        assert_eq!(write(7, STATUS_SUCCESS), Ok(7));
+        assert_eq!(
+            write(7, STATUS_ACCESS_DENIED),
             Err(NtStatus(STATUS_ACCESS_DENIED))
         );
     }

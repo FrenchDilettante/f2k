@@ -13,7 +13,7 @@ gate = true
 # U7 (.scratch/plans/user32-gdi32-completeness.md): hooks.exe imports SetWindowsHookExW/A,
 # CallNextHookEx, UnhookWindowsHookEx and CallMsgFilterW/A, which F2K's user32 has as stubs only;
 # drop each entry once its block passes.
-cbt = "SetWindowsHookExW/A, CallNextHookEx and UnhookWindowsHookEx are stubs; no hook handle type, and WH_CBT only as window.rs's seams"
+cbt = "SetWindowsHookExW/A, CallNextHookEx and UnhookWindowsHookEx are stubs; no hook handle type, and WH_CBT only as window/session.rs's seams"
 veto = "WH_CBT not yet implemented (SetWindowsHookExW is a stub): the vetoes of creation, destruction, activation and focus"
 getmsg = "WH_GETMESSAGE not yet implemented (SetWindowsHookExW is a stub)"
 callwnd = "WH_CALLWNDPROC and WH_CALLWNDPROCRET not yet implemented (SetWindowsHookExW is a stub)"
