@@ -781,6 +781,29 @@ def test_a_fixture_declares_its_memory(tmp_path, monkeypatch):
         f2kboot.fixture_memory("secfake")
 
 
+def test_a_separate_section_declares_its_own_memory(tmp_path, monkeypatch):
+    """`[section_memory]` gives a `separate` section's boot its own guest size; the fixture's other
+    blocks keep its `memory`, and a section it names must be separate."""
+    directory = tmp_path / "kernel32" / "secfake"
+    directory.mkdir(parents=True)
+    declared = directory / "fixture.toml"
+    monkeypatch.setattr(f2kboot, "fixture_directories", lambda: {"secfake": directory})
+    base = 'kind = "sectioned"\nstorage = "ide"\nmemory = "32M"\nseparate = ["big"]\n'
+    declared.write_text(base + '[section_memory]\nbig = "128M"\n')
+    assert f2kboot.fixture_memory("secfake") == "32M"
+    assert f2kboot.fixture_memory("secfake", "small") == "32M"
+    assert f2kboot.fixture_memory("secfake", "big") == "128M"
+    declared.write_text(base + '[section_memory]\nother = "128M"\n')
+    with pytest.raises(ValueError, match="not separate"):
+        f2kboot.fixture_memory("secfake")
+    declared.write_text(base + '[section_memory]\nbig = "128 M"\n')
+    with pytest.raises(ValueError, match="section_memory.big"):
+        f2kboot.fixture_memory("secfake")
+    declared.write_text('kind = "sectioned"\nseparate = ["big"]\n[section_memory]\nbig = "128M"\n')
+    with pytest.raises(ValueError, match="storage"):
+        f2kboot.fixture_memory("secfake", "big")
+
+
 def volume_image(path, *, fat1=0x0FFF_FFFF, free_count=0xFFFF_FFFF, next_free=0xFFFF_FFFF,
                  used=(), fsinfo=True):
     """A small FAT32-shaped volume at the partition's offset in a disk image: 8 reserved sectors

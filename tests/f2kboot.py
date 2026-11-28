@@ -2232,20 +2232,45 @@ def fixture_storage(fixture: str) -> str | None:
 MEMORY_SIZE = re.compile(r"[0-9]+[KMG]?")
 
 
-def fixture_memory(fixture: str) -> str | None:
+def fixture_memory(fixture: str, section: str | None = None) -> str | None:
     """The guest memory a fixture's boot runs with, its declaration's `memory` ("32M"; None, the
-    run's RAM_MEMORY, by default). It reaches QEMU's -m only where the disk is the IDE drive
-    (`storage = "ide"`): the RAM-disk boot loads the whole disk image as a module, so it keeps
-    RAM_MEMORY whatever `memory` says, and a fixture declaring `memory` must declare
-    `storage = "ide"` too."""
-    memory = declaration(fixture).get("memory")
-    if memory is not None:
-        if not isinstance(memory, str) or MEMORY_SIZE.fullmatch(memory) is None:
-            raise ValueError(f"{fixture}: memory is a guest size QEMU's -m takes, \"32M\", not {memory!r}")
-        if fixture_storage(fixture) != "ide":
-            raise ValueError(f"{fixture}: memory needs storage = \"ide\": the RAM-disk boot loads the"
-                             " whole disk image and keeps RAM_MEMORY")
+    run's RAM_MEMORY, by default), or for a `separate` section's boot, that section's own where
+    `[section_memory]` names it (`section_memory`). It reaches QEMU's -m only where the disk is
+    the IDE drive (`storage = "ide"`): the RAM-disk boot loads the whole disk image as a module, so
+    it keeps RAM_MEMORY whatever `memory` says, and a fixture declaring `memory` or
+    `[section_memory]` must declare `storage = "ide"` too."""
+    declared = declaration(fixture)
+    memory = declared.get("memory")
+    own = section_memory(fixture)
+    if section is not None and section in own:
+        memory = own[section]
+    elif memory is not None:
+        check_memory_size(fixture, "memory", memory)
+    if (memory is not None or own) and fixture_storage(fixture) != "ide":
+        raise ValueError(f"{fixture}: memory needs storage = \"ide\": the RAM-disk boot loads the"
+                         " whole disk image and keeps RAM_MEMORY")
     return memory
+
+
+def check_memory_size(fixture: str, key: str, memory) -> None:
+    """Fail unless `memory` (a fixture's `key`) is a guest size QEMU's -m takes."""
+    if not isinstance(memory, str) or MEMORY_SIZE.fullmatch(memory) is None:
+        raise ValueError(f"{fixture}: {key} is a guest size QEMU's -m takes, \"32M\", not {memory!r}")
+
+
+def section_memory(fixture: str) -> dict[str, str]:
+    """The guest memory of a fixture's `separate` sections' boots, by section, its declaration's
+    `[section_memory]` (`commitlimit = "128M"`; none by default): a section whose capture needs
+    another machine size than the fixture's other blocks boots with its own. Each section it names
+    must be `separate`, the one boot of the others keeping the fixture's `memory`."""
+    declared = declaration(fixture).get("section_memory", {})
+    if not isinstance(declared, dict):
+        raise ValueError(f"{fixture}: section_memory is a table of section names to guest sizes")
+    for section, memory in declared.items():
+        check_memory_size(fixture, f"section_memory.{section}", memory)
+        if section not in separate_sections(fixture):
+            raise ValueError(f"{fixture}: section_memory names {section}, which is not separate")
+    return declared
 
 
 def fixture_programs(fixture: str) -> list[Path]:
@@ -2319,7 +2344,7 @@ def corpus_params(fixture: str) -> list:
                   f"({', '.join(path.name for path in real_machine_files(fixture))})")
         return [pytest.param(None, id="awaited", marks=[pytest.mark.corpus, pytest.mark.skip(reason=reason)])]
     fixture_storage(fixture)  # a storage it cannot have fails the collection, not the boot
-    fixture_memory(fixture)  # likewise, its memory
+    fixture_memory(fixture)  # likewise, its memory and its sections' own
     if "needs" in declared:
         subsystem_names(declared["needs"], fixture)  # likewise, its needs
     if kind == "script":

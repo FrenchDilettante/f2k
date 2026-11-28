@@ -249,9 +249,10 @@ def run_block(request, builder, boot_timeout, profile_writer) -> Callable[[f2kbo
     kernel's RAM disk) unless the fixture declares `storage = "ide"` or the run asks for the IDE
     disk (F2K_STORAGE=ide): `f2kboot.boot`; a fixture declaring `memory` boots the IDE disk with
     that guest memory instead of RAM_MEMORY (the small-RAM rung), so it declares `storage = "ide"`
-    too (`f2kboot.fixture_memory`). The boot starts the kernel subsystems its blocks' fixtures
-    need, together (`f2kboot.fixture_needs`: a fixture's `needs`, else its programs' imports; all
-    of them under `--full-system`), and a block that reached one it left out fails, naming it."""
+    too (`f2kboot.fixture_memory`), and a `separate` section its `[section_memory]` names boots
+    with its own. The boot starts the kernel subsystems its blocks' fixtures need, together
+    (`f2kboot.fixture_needs`: a fixture's `needs`, else its programs' imports; all of them under
+    `--full-system`), and a block that reached one it left out fails, naming it."""
 
     def run(captured: f2kboot.Captured, image: str = "kernel") -> None:
         name = batch_name(request.node)
@@ -282,7 +283,7 @@ def run_block(request, builder, boot_timeout, profile_writer) -> Callable[[f2kbo
                     timeouts=[boot_timeout(each.timeout) for each in selected],
                     keys=keys,
                     storage=f2kboot.fixture_storage(captured.fixture),
-                    memory=f2kboot.fixture_memory(captured.fixture),
+                    memory=f2kboot.fixture_memory(captured.fixture, captured.block.section),
                 )
             finally:
                 if variant is not None:
