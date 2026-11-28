@@ -646,6 +646,8 @@ mod tests {
     /// signaling the event — which readies the thread blocked on it with success.
     #[test]
     fn the_claim_defers_the_completion_and_the_dpc_wakes_the_waiter() {
+        use core::cell::Cell;
+
         use crate::interrupt::dpc::{retire, Dpc, ProcessorQueue};
         use crate::interrupt::irql::{Irql, IrqlState, OldIrql, IDE, PASSIVE};
         use crate::interrupt::{
@@ -664,16 +666,21 @@ mod tests {
         use crate::sched::thread::ThreadState;
         use crate::sched::wait::{ClockStamp, WaitDisposition, WaitMode, WaitReason};
 
-        /// A controller whose line is in service once the test acknowledges it.
+        /// A controller whose line is in service once the test acknowledges it. Its level is
+        /// published in a cell of its own, for the service routine to read while the interrupt
+        /// core holds the controller borrowed.
         struct Line {
             irql: IrqlState,
+            level: &'static Cell<Irql>,
             in_service: bool,
             ended: u32,
         }
         impl Controller for Line {
             fn claim(&mut self, _vector: u8, level: Irql) -> Claim {
                 if self.in_service {
-                    Claim::Accepted(self.irql.raise(level))
+                    let previous = self.irql.raise(level);
+                    self.level.set(self.irql.current());
+                    Claim::Accepted(previous)
                 } else {
                     Claim::Spurious
                 }
@@ -681,6 +688,7 @@ mod tests {
 
             fn end(&mut self, previous: OldIrql, _vector: u8) {
                 self.irql.lower(previous);
+                self.level.set(self.irql.current());
                 self.in_service = false;
                 self.ended += 1;
             }
@@ -706,14 +714,14 @@ mod tests {
             latch: Latch,
             queue: &'static ProcessorQueue,
             dpc: &'static Dpc,
-            controller: *const Line,
+            level: &'static Cell<Irql>,
             level_seen: Option<Irql>,
         }
 
         fn service(_object: &InterruptObject, context: usize) -> bool {
             // SAFETY: the context is the test's live harness.
             let harness = unsafe { &mut *(context as *mut Harness) };
-            harness.level_seen = Some(unsafe { (*harness.controller).irql.current() });
+            harness.level_seen = Some(harness.level.get());
             if harness.latch.service(&mut harness.sim, PRIMARY_BASE) {
                 raised::<High, _>(|high| {
                     harness
@@ -727,8 +735,7 @@ mod tests {
         /// The completion DPC: its context word points at the event and dispatcher pair.
         fn completion(_: &mut At<Dispatch>, _: &Dpc, context: usize, _: usize, _: usize) {
             // SAFETY: the context is the test's live pair.
-            let (event, dispatcher) =
-                unsafe { &mut *(context as *mut (&mut Event, &mut Dispatcher)) };
+            let (event, dispatcher) = unsafe { &mut *(context as *mut (&Event, &mut Dispatcher)) };
             super::complete(event.waitable.id(), dispatcher);
         }
 
@@ -738,8 +745,8 @@ mod tests {
         let mut thread = crate::sched::testkit::thread(process);
         thread.state = ThreadState::Running;
         dispatcher.enter(thread.id());
-        let event = Box::leak(Box::new(Event::new(EventKind::Synchronization, false)));
-        event.init();
+        // Shared from its naming on: the dispatcher reaches it through the name `init` made.
+        let event = crate::sched::testkit::event(EventKind::Synchronization, false);
         let stamp = ClockStamp {
             interrupt_time: 0,
             tick: 0,
@@ -759,18 +766,20 @@ mod tests {
         assert_eq!(thread.state(), ThreadState::Waiting);
 
         // The device side: a command in flight, its data ready and INTRQ asserted.
+        let level = Box::leak(Box::new(Cell::new(PASSIVE)));
         let mut line = Box::new(Line {
             irql: IrqlState::new(),
+            level,
             in_service: false,
             ended: 0,
         });
-        let mut pair: (&mut Event, &mut Dispatcher) = (event, &mut dispatcher);
+        let mut pair: (&Event, &mut Dispatcher) = (event, &mut dispatcher);
         let mut harness = Box::new(Harness {
             sim: SimChannel::with_disk(DISK),
             latch: Latch::new(),
             queue: Box::leak(Box::new(ProcessorQueue::new(4, 0))),
             dpc: Box::leak(Box::new(Dpc::new(completion, &mut pair as *mut _ as usize))),
-            controller: &*line as *const Line,
+            level,
             level_seen: None,
         });
         harness.sim.out(PRIMARY_CONTROL, 0);

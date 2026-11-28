@@ -101,9 +101,23 @@ impl SimChannel {
     /// A channel whose master is a disk of `sectors` sectors, sector `n` filled with the byte
     /// pattern `pattern(n, offset)`.
     pub fn with_disk(sectors: u32) -> Self {
+        // A sector's pattern is its offsets' row XORed with one byte of its LBA's (see
+        // [`pattern`]), and repeats every 256 sectors: the first 256 are made a word at a time,
+        // the rest copied from them. Byte by byte, the fill took minutes under Miri.
+        const PERIOD: usize = 256 * SECTOR_SIZE;
+        let row: [u8; SECTOR_SIZE] = core::array::from_fn(|offset| pattern(0, offset));
         let mut disk = vec![0u8; sectors as usize * SECTOR_SIZE];
-        for (index, byte) in disk.iter_mut().enumerate() {
-            *byte = pattern((index / SECTOR_SIZE) as u32, index % SECTOR_SIZE);
+        let first = disk.len().min(PERIOD);
+        for (lba, sector) in disk[..first].chunks_exact_mut(SECTOR_SIZE).enumerate() {
+            let key = u64::from_ne_bytes([pattern(lba as u32, 0); 8]);
+            for (out, word) in sector.chunks_exact_mut(8).zip(row.chunks_exact(8)) {
+                let word = u64::from_ne_bytes(word.try_into().unwrap()) ^ key;
+                out.copy_from_slice(&word.to_ne_bytes());
+            }
+        }
+        for start in (PERIOD..disk.len()).step_by(PERIOD) {
+            let length = (disk.len() - start).min(PERIOD);
+            disk.copy_within(..length, start);
         }
         Self::new(Some(disk))
     }
