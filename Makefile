@@ -73,6 +73,11 @@ VBOX_EXTRAS ?= vbox-image
 VBOX_VDI ?= $(BUILD_DIR)/f2k.vdi
 EXPORTGEN_DIR ?= tools/exportgen
 USERLAND_DIR ?= userland
+# The screen tests' programs, each a crate of the userland workspace beside its test and its
+# screenshots (tests/screens/<program>/).
+SCREENS_DIR ?= tests/screens
+# A program's crate directory: userland/<program>, or tests/screens/<program> for a screen test's.
+crate_dir = $(firstword $(wildcard $(USERLAND_DIR)/$(1) $(SCREENS_DIR)/$(1)))
 
 # Tools
 NASM ?= nasm
@@ -111,7 +116,8 @@ SYSTEM_DLLS = $(BUILD_DIR)/userland/i686-f2k-pe/release/ntdll.dll \
               $(BUILD_DIR)/userland/i686-f2k-pe/release/user32.dll \
               $(BUILD_DIR)/userland/i686-f2k-pe/release/gdi32.dll \
               $(BUILD_DIR)/userland/i686-f2k-pe/release/shell32.dll
-# F2K's own programs the userland workspace builds (userland/<program>), which the disk carries in
+# F2K's own programs the userland workspace builds (userland/<program>; drawdemo, a screen test's,
+# tests/screens/drawdemo), which the disk carries in
 # the system directory beside the DLLs. The target names every image it links <name>.dll (the
 # DLLs are its binaries too), so `userland` copies each program to its .exe name beside it.
 SYSTEM_PROGRAMS = pwd ps shutdown fish drawdemo
@@ -121,15 +127,14 @@ SYSTEM_EXES = $(foreach program,$(SYSTEM_PROGRAMS),$(BUILD_DIR)/userland/i686-f2
 # whose boot runs CMDLINE, the disk make run and make vbox-image boot.
 CMD_PROGRAM = cmd
 CMD_EXE = $(BUILD_DIR)/userland/i686-f2k-pe/release/$(CMD_PROGRAM).exe
-# F2K's own test programs (userland/<program>), built and copied to their .exe names as the
-# programs are, but kept off the disk the tests boot: the test that needs one boots a copy of that
-# disk with it added (keyshow.exe: tests/core/test_guikeys.py; fontshow.exe:
-# tests/core/test_tahoma.py, with the font it draws; dlgshow.exe: tests/core/test_dialogs.py;
-# menushow.exe: tests/core/test_nonclient.py; scrollshow.exe: tests/core/test_scrollbars.py;
-# nestshow.exe: tests/core/test_nesting.py; shapeshow.exe: tests/core/test_shapeshow.py;
-# mapshow.exe: tests/core/test_mapshow.py; textshow.exe: tests/core/test_textshow.py;
-# listboxshow.exe: tests/core/test_listboxes.py; comboboxshow.exe: tests/core/test_comboboxes.py;
-# clipshow.exe: tests/core/test_childpaint.py).
+# F2K's own test programs (tests/screens/<program>, each beside the test that runs it), built and
+# copied to their .exe names as the programs are, but kept off the disk the tests boot: the test
+# that needs one boots a copy of that disk with it added (keyshow.exe: test_guikeys.py; fontshow.exe:
+# test_tahoma.py, with the font it draws; dlgshow.exe: test_dialogs.py; menushow.exe:
+# test_nonclient.py; scrollshow.exe: test_scrollbars.py; nestshow.exe: test_nesting.py;
+# shapeshow.exe: test_shapeshow.py; mapshow.exe: test_mapshow.py; textshow.exe: test_textshow.py;
+# listboxshow.exe: test_listboxes.py; comboboxshow.exe: test_comboboxes.py; clipshow.exe:
+# test_childpaint.py).
 TEST_PROGRAMS = keyshow fontshow dlgshow menushow scrollshow nestshow shapeshow mapshow textshow listboxshow comboboxshow clipshow
 TEST_EXES = $(foreach program,$(TEST_PROGRAMS),$(BUILD_DIR)/userland/i686-f2k-pe/release/$(program).exe)
 CMD_DISK_IMG ?= $(OUT_DIR)/f2k-cmd-disk.img
@@ -156,7 +161,7 @@ help:
 	@echo "                 own programs (pwd.exe, ps.exe, shutdown.exe, fish.exe, drawdemo.exe, cmd.exe,"
 	@echo "                 keyshow.exe, fontshow.exe, dlgshow.exe, menushow.exe, scrollshow.exe,"
 	@echo "                 nestshow.exe, shapeshow.exe, mapshow.exe, textshow.exe, listboxshow.exe,"
-	@echo "                 comboboxshow.exe, clipshow.exe)"
+	@echo "                 comboboxshow.exe, clipshow.exe: the screen tests' programs, in tests/screens/)"
 	@echo "  kernel       - Build the kernel (the system DLLs first), its image ntoskrnl.exe, and the"
 	@echo "                 boot loader that carries it (f2k-kernel, what the loaders boot)"
 	@echo "  test        - Run every on-target QEMU test (kernel boots and the corpus)"
@@ -466,9 +471,9 @@ run-tests: userland
 	done
 	# The compiler's helpers, F2K's own programs' runtime, and the programs' libraries (a program
 	# without one, fontshow, is passed over).
-	for crate in compiler-helpers exe $(SYSTEM_PROGRAMS) $(CMD_PROGRAM) $(TEST_PROGRAMS); do \
-		[ -f $(USERLAND_DIR)/$$crate/src/lib.rs ] || continue; \
-		CARGO_UNSTABLE_BUILD_STD=std $(HOST_TEST) cargo test --manifest-path $(USERLAND_DIR)/$$crate/Cargo.toml --lib --target $(RUST_HOST_TARGET) --target-dir target/userland-host || exit 1; \
+	for crate in $(foreach crate,compiler-helpers exe $(SYSTEM_PROGRAMS) $(CMD_PROGRAM) $(TEST_PROGRAMS),$(call crate_dir,$(crate))); do \
+		[ -f $$crate/src/lib.rs ] || continue; \
+		CARGO_UNSTABLE_BUILD_STD=std $(HOST_TEST) cargo test --manifest-path $$crate/Cargo.toml --lib --target $(RUST_HOST_TARGET) --target-dir target/userland-host || exit 1; \
 	done
 
 # Lints clippy holds every crate to beyond its defaults: a debug_assert! whose argument mutates

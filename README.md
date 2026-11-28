@@ -17,7 +17,7 @@ F2K provides its own versions of seven of Windows 2000's system DLLs: ntdll, ker
 None of them is complete yet: a function F2K doesn't have is either absent or a stub that logs its call, and the [compatibility report](#the-compatibility-report) shows which.
 The mouse, networking, sound, printing and multiple processors are not there yet.
 
-F2K also has a few programs of its own, under `userland/`: [`cmd.exe`](userland/cmd/README.md), [`pwd`](userland/pwd/README.md), [`ps`](userland/ps/README.md), [`shutdown`](userland/shutdown/README.md), `fish` (which switches to graphics mode and starts a GUI program), and small demos and test programs.
+F2K also has a few programs of its own, under `userland/`: [`cmd.exe`](userland/cmd/README.md), [`pwd`](userland/pwd/README.md), [`ps`](userland/ps/README.md), [`shutdown`](userland/shutdown/README.md), `fish` (which switches to graphics mode and starts a GUI program), and small demos and test programs (under `tests/screens/`, beside the tests that run them).
 
 ## Getting started
 
@@ -131,7 +131,8 @@ f2k/
 ├── kernel/       # The kernel, ntoskrnl.exe: memory, processes, the scheduler, the object manager,
 │                 # FAT32, the registry, the I/O manager and drivers, and win32k (windows and GDI)
 ├── userland/     # The system DLLs (rtl, ntdll, kernel32, msvcrt, advapi32, user32, gdi32,
-│                 # shell32) and F2K's own programs; its own Cargo workspace
+│                 # shell32) and F2K's own programs; its own Cargo workspace, which also builds
+│                 # the screen tests' programs (tests/screens/)
 ├── tests/        # The Windows 2000 corpus and the pytest suite (see tests/README.md)
 ├── tools/        # exportgen: the export specs' reader and generator
 ├── scripts/      # Build and test scripts: linker scripts, compat.py, the export dumps

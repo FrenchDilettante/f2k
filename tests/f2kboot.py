@@ -22,8 +22,8 @@ Three pieces the test modules share:
 - the text screen: a boot that asks for it carries a QMP socket, and the machine's VGA text page is
   read through it while QEMU still runs (`read_text_screen`, `TextScreen`), or drawn as QEMU shows
   it (`screendump`, a PNG; `read_png`, `differing_cells`);
-- the screen baselines: a core test's dumps compared, pixel for pixel, with the PNGs committed under
-  tests/core/screens/<test>/ (`check_screens`); a changed or missing one rewritten there by the
+- the screen baselines: a screen test's dumps compared, pixel for pixel, with the PNGs committed
+  beside it, tests/screens/<program>/ (`check_screens`); a changed or missing one rewritten there by the
   canonical encoder (`encode_png`) and the test failed, so committing the file accepts it;
 - the graphics smoke tests: a program's drawing dumped at its boot's end (`boot_painting`), COM1
   held to the lines every such test needs (`check_painted`), and the dump read (`read_screen`,
@@ -1280,17 +1280,18 @@ def lit_pixels(image: Image, cell: tuple[int, int]) -> int:
 
 # --- The screen baselines -----------------------------------------------------------------------
 #
-# A core test that draws on the graphics screen keeps its dumps (`screendump`) as baselines committed
-# beside the tests, tests/core/screens/<test>/<name>.png, for the owner to look at; F2K under QEMU
+# A screen test keeps its dumps (`screendump`) as baselines committed beside it and the program it
+# runs, tests/screens/<program>/<name>.png, for the owner to look at; F2K under QEMU
 # only, never compared with Windows 2000. The check compares decoded pixels, never file bytes (the
 # same pixels encode to different bytes under another zlib, level or filter choice): a dump whose
 # size and pixels equal its baseline's leaves the file untouched. A changed or missing baseline is
 # written over with the dump, through the canonical encoder, and the test fails naming it, a diff
 # image beside the dump in the scratch screens (SCREENS); committing the file accepts it, and the
-# rerun passes. tests/core/screens/hello.png, beside the directories, is test_textscreen's own
-# reference, which it keeps as QEMU writes it (`--update-screens`).
+# rerun passes. tests/core/screens/hello.png is test_textscreen's own reference, which it keeps as
+# QEMU writes it (`--update-screens`).
 
-BASELINES = TESTS / "core" / "screens"
+# The screen tests' directories: each holds a program, its tests and their baselines.
+BASELINES = TESTS / "screens"
 # The canonical encoding: 8-bit RGB, not interlaced, every row under the Up filter, the image data
 # in one IDAT compressed at zlib's level 9, and no chunk but IHDR, IDAT and IEND (no time, text,
 # gamma or colour profile). The same pixels always give the same bytes, under the same zlib.
@@ -1410,12 +1411,13 @@ def check_screen(screen: Path, baseline: Path, masks: tuple[Rect, ...] = ()) -> 
             f" (diff: {diff_path})")
 
 
-def check_screens(test: str, names: list[str], masks: dict[str, tuple[Rect, ...]] | None = None) -> None:
+def check_screens(test: str, baselines: Path, names: list[str],
+                  masks: dict[str, tuple[Rect, ...]] | None = None) -> None:
     """A test's screen check, its last: each of its dumps, SCREENS/<test>/<name>, against its
-    baseline, BASELINES/<test>/<name> (`check_screen`); the test failed naming every one that
-    differs or is missing."""
+    baseline, <baselines>/<name>, the test's own directory (`check_screen`); the test failed
+    naming every one that differs or is missing."""
     problems = [problem for name in names
-                if (problem := check_screen(SCREENS / test / name, BASELINES / test / name,
+                if (problem := check_screen(SCREENS / test / name, baselines / name,
                                             (masks or {}).get(name, ()))) is not None]
     if problems:
         import pytest  # the module is also the scripts' and the host checks', which need no pytest

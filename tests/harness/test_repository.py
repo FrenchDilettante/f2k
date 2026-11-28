@@ -166,16 +166,17 @@ ADDING_PROGRAMS = [name for name in DECLARED if "system_programs" in f2kboot.dec
 @pytest.mark.parametrize("fixture", ADDING_PROGRAMS)
 def test_system_programs_name_built_programs_the_disk_leaves_out(fixture: str):
     """A sectioned fixture's `system_programs` names programs the userland workspace builds and
-    `make userland` copies to their .exe names (userland/<name>), which the disk the tests boot
-    leaves out of \\WINNT\\system32 (the ones it carries need no declaration): cmd.exe, and the
-    test programs (keyshow.exe)."""
+    `make userland` copies to their .exe names (userland/<name>, or tests/screens/<name> for a screen
+    test's), which the disk the tests boot leaves out of \\WINNT\\system32 (the ones it carries need
+    no declaration): cmd.exe, and the test programs (keyshow.exe)."""
     assert f2kboot.declaration(fixture)["kind"] == "sectioned", "only a sectioned fixture adds programs"
     names = [path.stem for path in f2kboot.system_programs(fixture)]
     assert names, "an empty system_programs: leave it out"
     on_disk = makefile_programs("SYSTEM_PROGRAMS")
     built = on_disk + makefile_programs("CMD_PROGRAM") + makefile_programs("TEST_PROGRAMS")
     for name in names:
-        assert (f2kboot.REPO_ROOT / "userland" / name / "Cargo.toml").is_file(), f"no userland/{name}"
+        crates = [f2kboot.REPO_ROOT / place / name / "Cargo.toml" for place in ("userland", "tests/screens")]
+        assert any(crate.is_file() for crate in crates), f"no userland/{name} or tests/screens/{name}"
         assert name in built, f"{name}: not a program `make userland` copies to its .exe name"
         assert name not in on_disk, f"{name}: the disk the tests boot carries it already"
 

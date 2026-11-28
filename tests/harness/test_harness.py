@@ -1613,8 +1613,8 @@ BASELINE_FILES = sorted(f2kboot.BASELINES.glob("*/*.png"))
 
 def test_the_baselines_exist():
     names = {path.relative_to(f2kboot.BASELINES).as_posix() for path in BASELINE_FILES}
-    assert {"dialogs/dialog.png", "nonclient/window.png", "nonclient/menu.png", "nonclient/after.png",
-            "tahoma/fontshow.png"} <= names
+    assert {"dlgshow/dialog.png", "menushow/window.png", "menushow/menu.png", "menushow/after.png",
+            "fontshow/fontshow.png"} <= names
 
 
 @pytest.mark.parametrize("path", BASELINE_FILES, ids=lambda path: path.relative_to(f2kboot.BASELINES).as_posix())

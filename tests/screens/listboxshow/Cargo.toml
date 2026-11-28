@@ -1,0 +1,15 @@
+[package]
+name = "listboxshow"
+version = "0.1.0"
+edition = "2021"
+# A member of the userland workspace (userland/Cargo.toml), which lives elsewhere.
+workspace = "../../../userland"
+
+# The program: listboxshow.exe (the target names its images .dll: the Makefile copies it to its name).
+[[bin]]
+name = "listboxshow"
+path = "src/main.rs"
+test = false
+
+[dependencies]
+exe = { path = "../../../userland/exe" }

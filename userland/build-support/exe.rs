@@ -10,7 +10,9 @@ const ENTRY: &str = "f2k_start";
 
 /// Link the crate's binary as a console program at the executables' base, 0x00400000.
 fn build_exe() {
-    println!("cargo:rerun-if-changed=../build-support/exe.rs");
+    // The build script itself, whose compile already follows this file (it is `include!`d): a
+    // path that holds wherever the crate lives (userland/<program>, tests/screens/<program>).
+    println!("cargo:rerun-if-changed=build.rs");
     for arg in [
         format!("/ENTRY:{ENTRY}"),
         // A console program for Windows NT 4.0 and later, as MSVC 6 marks one (the target's own
