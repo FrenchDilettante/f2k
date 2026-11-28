@@ -275,54 +275,52 @@ fn ace_sid_matches(check: &AccessCheck<'_>, ace: &AceView<'_>, deny_ace: bool) -
     }
 }
 
+/// What a matching ACE does to the walk: grant or deny its mask.
+enum Effect {
+    Allow(u32),
+    Deny(u32),
+}
+
+/// What an ACE does to the check: its mask granted or denied, when it is an allow or deny ACE
+/// (plain, object or compound) that is not inherit-only, applies to the object types asked
+/// about and names SIDs the subject holds; None when it does nothing.
+fn ace_effect(ace: &AceView<'_>, check: &AccessCheck<'_>) -> Option<Effect> {
+    if ace.flags() & INHERIT_ONLY_ACE != 0 {
+        return None;
+    }
+    let mask = ace.mask()?;
+    match ace.ace_type() {
+        ACCESS_ALLOWED_ACE_TYPE | ACCESS_ALLOWED_OBJECT_ACE_TYPE => {
+            let typed = ace.ace_type() == ACCESS_ALLOWED_OBJECT_ACE_TYPE;
+            let applies =
+                !typed || object_ace_applies(ace.object_type(), check.object_types, false);
+            (applies && ace_sid_matches(check, ace, false)).then_some(Effect::Allow(mask))
+        }
+        ACCESS_ALLOWED_COMPOUND_ACE_TYPE => {
+            let (client, server) = (ace.second_sid()?, ace.sid()?);
+            let effective = &check.subject.effective;
+            let matches = sid_in_token(effective, check.principal_self, client, false)
+                && sid_in_token(&check.subject.primary, None, server, false);
+            matches.then_some(Effect::Allow(mask))
+        }
+        ACCESS_DENIED_ACE_TYPE | ACCESS_DENIED_OBJECT_ACE_TYPE => {
+            let typed = ace.ace_type() == ACCESS_DENIED_OBJECT_ACE_TYPE;
+            let applies = !typed || object_ace_applies(ace.object_type(), check.object_types, true);
+            (applies && ace_sid_matches(check, ace, true)).then_some(Effect::Deny(mask))
+        }
+        _ => None,
+    }
+}
+
 /// The normal walk over the DACL's ACEs in order, keeping `remaining`: a matching allow
 /// clears its mask from what remains, a matching deny whose mask intersects what remains
 /// stops the walk (the first matching deny in walk order wins). Returns what stays
 /// ungranted.
 fn normal_walk(dacl: &[u8], check: &AccessCheck<'_>, mut remaining: u32) -> u32 {
     for ace in AceViews::new(dacl) {
-        if ace.flags() & INHERIT_ONLY_ACE != 0 {
-            continue;
-        }
-        let mask = ace.mask();
-        match ace.ace_type() {
-            ACCESS_ALLOWED_ACE_TYPE | ACCESS_ALLOWED_OBJECT_ACE_TYPE => {
-                let typed = ace.ace_type() == ACCESS_ALLOWED_OBJECT_ACE_TYPE;
-                if typed && !object_ace_applies(ace.object_type(), check.object_types, false) {
-                    continue;
-                }
-                if let Some(mask) = mask {
-                    if ace_sid_matches(check, &ace, false) {
-                        remaining &= !mask;
-                    }
-                }
-            }
-            ACCESS_ALLOWED_COMPOUND_ACE_TYPE => {
-                if let (Some(mask), Some(client), Some(server)) =
-                    (mask, ace.second_sid(), ace.sid())
-                {
-                    if sid_in_token(
-                        &check.subject.effective,
-                        check.principal_self,
-                        client,
-                        false,
-                    ) && sid_in_token(&check.subject.primary, None, server, false)
-                    {
-                        remaining &= !mask;
-                    }
-                }
-            }
-            ACCESS_DENIED_ACE_TYPE | ACCESS_DENIED_OBJECT_ACE_TYPE => {
-                let typed = ace.ace_type() == ACCESS_DENIED_OBJECT_ACE_TYPE;
-                if typed && !object_ace_applies(ace.object_type(), check.object_types, true) {
-                    continue;
-                }
-                if let Some(mask) = mask {
-                    if ace_sid_matches(check, &ace, true) && remaining & mask != 0 {
-                        return remaining;
-                    }
-                }
-            }
+        match ace_effect(&ace, check) {
+            Some(Effect::Allow(mask)) => remaining &= !mask,
+            Some(Effect::Deny(mask)) if remaining & mask != 0 => return remaining,
             _ => {}
         }
         if remaining == 0 {
@@ -339,49 +337,10 @@ fn maximum_walk(dacl: &[u8], check: &AccessCheck<'_>) -> u32 {
     let mut granted = 0u32;
     let mut denied = 0u32;
     for ace in AceViews::new(dacl) {
-        if ace.flags() & INHERIT_ONLY_ACE != 0 {
-            continue;
-        }
-        let mask = ace.mask();
-        match ace.ace_type() {
-            ACCESS_ALLOWED_ACE_TYPE | ACCESS_ALLOWED_OBJECT_ACE_TYPE => {
-                let typed = ace.ace_type() == ACCESS_ALLOWED_OBJECT_ACE_TYPE;
-                if typed && !object_ace_applies(ace.object_type(), check.object_types, false) {
-                    continue;
-                }
-                if let Some(mask) = mask {
-                    if ace_sid_matches(check, &ace, false) {
-                        granted |= mask & !denied;
-                    }
-                }
-            }
-            ACCESS_ALLOWED_COMPOUND_ACE_TYPE => {
-                if let (Some(mask), Some(client), Some(server)) =
-                    (mask, ace.second_sid(), ace.sid())
-                {
-                    if sid_in_token(
-                        &check.subject.effective,
-                        check.principal_self,
-                        client,
-                        false,
-                    ) && sid_in_token(&check.subject.primary, None, server, false)
-                    {
-                        granted |= mask & !denied;
-                    }
-                }
-            }
-            ACCESS_DENIED_ACE_TYPE | ACCESS_DENIED_OBJECT_ACE_TYPE => {
-                let typed = ace.ace_type() == ACCESS_DENIED_OBJECT_ACE_TYPE;
-                if typed && !object_ace_applies(ace.object_type(), check.object_types, true) {
-                    continue;
-                }
-                if let Some(mask) = mask {
-                    if ace_sid_matches(check, &ace, true) {
-                        denied |= mask & !granted;
-                    }
-                }
-            }
-            _ => {}
+        match ace_effect(&ace, check) {
+            Some(Effect::Allow(mask)) => granted |= mask & !denied,
+            Some(Effect::Deny(mask)) => denied |= mask & !granted,
+            None => {}
         }
     }
     granted

@@ -50,34 +50,11 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
-    use crate::user::syscall::host::{install, UserMemory};
+    use crate::user::syscall::host::{install, Page};
     use crate::user::TrapFrame;
 
     /// Mapped user memory at [BASE, BASE + len): anything else faults.
     const BASE: u32 = 0x0040_0000;
-
-    struct Page(Vec<u8>);
-
-    impl UserMemory for Page {
-        fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
-            let at = pointer.checked_sub(BASE).ok_or(STATUS_ACCESS_VIOLATION)? as usize;
-            bytes.copy_from_slice(
-                self.0
-                    .get(at..at + bytes.len())
-                    .ok_or(STATUS_ACCESS_VIOLATION)?,
-            );
-            Ok(())
-        }
-
-        fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), NtStatus> {
-            let at = pointer.checked_sub(BASE).ok_or(STATUS_ACCESS_VIOLATION)? as usize;
-            self.0
-                .get_mut(at..at + bytes.len())
-                .ok_or(STATUS_ACCESS_VIOLATION)?
-                .copy_from_slice(bytes);
-            Ok(())
-        }
-    }
 
     /// The seed: the first id's low part starts past the reserved range.
     #[test]
@@ -100,7 +77,7 @@ mod tests {
     /// STATUS_ACCESS_VIOLATION.
     #[test]
     fn the_service_writes_a_fresh_id() {
-        let page = Rc::new(RefCell::new(Page(vec![0u8; 0x100])));
+        let page = Rc::new(RefCell::new(Page::new(BASE, vec![0u8; 0x100])));
         let _installed = install(page.clone());
         let mut frame = TrapFrame::default();
         let mut passive = crate::level::passive_for_test();

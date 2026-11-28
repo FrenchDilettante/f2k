@@ -423,24 +423,7 @@ pub fn open_thread(
     attributes: UserAddr,
     client_id: UserAddr,
 ) -> NtResult {
-    if slot.is_null() {
-        return Err(STATUS_ACCESS_VIOLATION);
-    }
-    crate::user::syscall::probe_user_range(slot.addr().raw(), 4)
-        .map_err(|_| STATUS_ACCESS_VIOLATION)?;
-    let (named, inherit) = if attributes.is_null() {
-        (false, false)
-    } else {
-        let mut name = super::attributes::Name::new();
-        let read = super::attributes::read(attributes, &mut name)?;
-        (read.name.is_some(), read.inherit())
-    };
-    let client_id = if client_id.is_null() {
-        None
-    } else {
-        Some(client_id.cast::<ClientId>().read()?)
-    };
-    let client_id = super::process::open_by(named, client_id)?;
+    let (client_id, inherit) = super::process::open_arguments(slot, attributes, client_id)?;
     #[cfg(target_arch = "x86")]
     {
         let found = if client_id.unique_thread == 0 {

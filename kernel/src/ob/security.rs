@@ -17,8 +17,8 @@
 
 use super::sdcache::{self, SdRef};
 use super::ObjectType;
+use crate::nt::capture::CallerMemory;
 use crate::sec::{
-    Memory,
     SecurityDescriptor,
     SECURITY_DESCRIPTOR_MIN_LENGTH,
     SECURITY_DESCRIPTOR_REVISION,
@@ -184,26 +184,6 @@ pub fn default_sd(kind: ObjectType) -> Option<SdRef> {
             )?)
         }
         _ => null_dacl(),
-    }
-}
-
-/// The caller's memory as a descriptor capture probes it: the same range probe and fault-tolerant
-/// copy the syscall arguments' capture uses (see [`crate::user::syscall`]).
-pub struct CallerMemory;
-
-impl Memory for CallerMemory {
-    fn probe(&self, addr: u32, align: u32, len: u32) -> Result<(), NtStatus> {
-        if align != 0 && addr % align != 0 {
-            return Err(crate::sec::STATUS_DATATYPE_MISALIGNMENT);
-        }
-        crate::user::syscall::probe_user_range(addr, len)
-    }
-
-    fn read(&self, addr: u32, align: u32, buf: &mut [u8]) -> Result<(), NtStatus> {
-        if align != 0 && addr % align != 0 {
-            return Err(crate::sec::STATUS_DATATYPE_MISALIGNMENT);
-        }
-        crate::user::syscall::read_user(addr, buf)
     }
 }
 
@@ -389,12 +369,11 @@ pub fn caller_mode() -> crate::sec::CallerMode {
 
 #[cfg(test)]
 mod tests {
-    use std::vec::Vec;
-
     use super::*;
     use crate::sec::testkit::{acl, allowed, sd, sd_bytes, sid, user_sid};
     use crate::sec::{SecurityDescriptor, SE_DACL_PRESENT, SE_SELF_RELATIVE};
     use crate::status::STATUS_ACCESS_VIOLATION;
+    use crate::user::syscall::host::Page;
 
     // -- the defaults --------------------------------------------------------------
 
@@ -501,27 +480,9 @@ mod tests {
 
     // -- capture -------------------------------------------------------------------
 
-    /// A host page as the caller's memory: the copies go through the installed `UserMemory`,
-    /// the same seam the syscall arguments' capture uses.
-    struct Page(Vec<u8>);
-
+    /// The caller's memory: a host page through the installed `UserMemory`, the same seam the
+    /// syscall arguments' capture uses.
     const BASE: u32 = 0x10000;
-
-    impl crate::user::syscall::host::UserMemory for Page {
-        fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
-            let at = pointer.checked_sub(BASE).ok_or(STATUS_ACCESS_VIOLATION)? as usize;
-            bytes.copy_from_slice(
-                self.0
-                    .get(at..at + bytes.len())
-                    .ok_or(STATUS_ACCESS_VIOLATION)?,
-            );
-            Ok(())
-        }
-
-        fn write(&mut self, _: u32, _: &[u8]) -> Result<(), NtStatus> {
-            Err(STATUS_ACCESS_VIOLATION)
-        }
-    }
 
     /// An absolute-form SD at BASE+0x100 in a fresh page, its DACL at +0x400 and its owner at
     /// +0x600: a present DACL with one allowed ACE over the user, owned by the user.
@@ -543,7 +504,7 @@ mod tests {
         let mut header = [0u8; 20];
         assert!(h.write(&mut header));
         page[0x100..0x114].copy_from_slice(&header);
-        (Page(page), BASE + 0x100)
+        (Page::read_only(BASE, page), BASE + 0x100)
     }
 
     /// A user-mode capture of the caller's descriptor lands in the cache, packed self-relative,
@@ -615,7 +576,7 @@ mod tests {
         let mut header = [0u8; 20];
         assert!(h.write(&mut header));
         page[0x100..0x114].copy_from_slice(&header);
-        let memory = Rc::new(RefCell::new(Page(page)));
+        let memory = Rc::new(RefCell::new(Page::read_only(BASE, page)));
         let _installed = install(memory);
         assert_eq!(capture_sd(BASE + 0x100, true), Err(STATUS_ACCESS_VIOLATION));
     }
@@ -654,7 +615,7 @@ mod tests {
         let mut header = [0u8; 20];
         assert!(h.write(&mut header));
         page[0x100..0x114].copy_from_slice(&header);
-        let memory = Rc::new(RefCell::new(Page(page)));
+        let memory = Rc::new(RefCell::new(Page::read_only(BASE, page)));
         let _installed = install(memory);
 
         let captured = capture_sd(BASE + 0x100, true).unwrap().unwrap();

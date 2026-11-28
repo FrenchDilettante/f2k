@@ -328,21 +328,8 @@ mod tests {
 
         use rtl::pod::Pod;
 
-        use crate::user::syscall::host::{install, UserMemory};
+        use crate::user::syscall::host::{install, Page};
         const BASE: u32 = 0x10000;
-        struct Page(std::vec::Vec<u8>);
-        impl UserMemory for Page {
-            fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
-                let at = pointer.checked_sub(BASE).ok_or(STATUS_ACCESS_VIOLATION)? as usize;
-                let from = self.0.get(at..at + bytes.len());
-                bytes.copy_from_slice(from.ok_or(STATUS_ACCESS_VIOLATION)?);
-                Ok(())
-            }
-
-            fn write(&mut self, _: u32, _: &[u8]) -> Result<(), NtStatus> {
-                Err(STATUS_ACCESS_VIOLATION)
-            }
-        }
         // The attributes at BASE, their UNICODE_STRING at +0x20, its units at +0x40.
         let mut page = std::vec![0u8; 0x1000];
         let attributes = ObjectAttributes::<u32> {
@@ -361,7 +348,7 @@ mod tests {
         };
         page[0x20..0x28].copy_from_slice(string.as_bytes());
         page[0x40..0x46].copy_from_slice(b"E\0v\0t\0");
-        let memory = Rc::new(RefCell::new(Page(page)));
+        let memory = Rc::new(RefCell::new(Page::read_only(BASE, page)));
         let _installed = install(memory.clone());
 
         let mut name = Name::new();
@@ -373,19 +360,19 @@ mod tests {
 
         // Too long: one unit past the longest.
         let long = (2 * (MAX_NAME + 1)) as u16;
-        memory.borrow_mut().0[0x20..0x22].copy_from_slice(&long.to_le_bytes());
+        memory.borrow_mut().bytes[0x20..0x22].copy_from_slice(&long.to_le_bytes());
         assert_eq!(
             read(UserAddr(BASE), &mut name).map(|got| got.name),
             Err(STATUS_NAME_TOO_LONG)
         );
         // No name.
-        memory.borrow_mut().0[8..12].fill(0);
+        memory.borrow_mut().bytes[8..12].fill(0);
         assert_eq!(
             read(UserAddr(BASE), &mut name).map(|got| got.name),
             Ok(None)
         );
         // Another structure's length.
-        memory.borrow_mut().0[0] = 28;
+        memory.borrow_mut().bytes[0] = 28;
         assert_eq!(
             read(UserAddr(BASE), &mut name).map(|got| got.name),
             Err(STATUS_INVALID_PARAMETER)
@@ -405,24 +392,8 @@ mod tests {
 
         use rtl::pod::Pod;
 
-        use crate::user::syscall::host::{install, UserMemory};
+        use crate::user::syscall::host::{install, Page};
         const BASE: u32 = 0x20000;
-        struct Page(std::vec::Vec<u8>);
-        impl UserMemory for Page {
-            fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
-                let at = pointer.checked_sub(BASE).ok_or(STATUS_ACCESS_VIOLATION)? as usize;
-                bytes.copy_from_slice(
-                    self.0
-                        .get(at..at + bytes.len())
-                        .ok_or(STATUS_ACCESS_VIOLATION)?,
-                );
-                Ok(())
-            }
-
-            fn write(&mut self, _: u32, _: &[u8]) -> Result<(), NtStatus> {
-                Err(STATUS_ACCESS_VIOLATION)
-            }
-        }
         let mut page = std::vec![0u8; 0x100];
         let attributes = ObjectAttributes::<u32> {
             length: 24,
@@ -433,7 +404,7 @@ mod tests {
             security_quality_of_service: 0,
         };
         page[..24].copy_from_slice(attributes.as_bytes());
-        let memory = Rc::new(RefCell::new(Page(page)));
+        let memory = Rc::new(RefCell::new(Page::read_only(BASE, page)));
         let _installed = install(memory);
         let mut name = Name::new();
         let got = read(UserAddr(BASE), &mut name).unwrap();
@@ -451,7 +422,7 @@ mod tests {
         };
         let mut page = page;
         page[..24].copy_from_slice(attributes.as_bytes());
-        let memory = Rc::new(RefCell::new(Page(page)));
+        let memory = Rc::new(RefCell::new(Page::read_only(BASE, page)));
         let _installed = install(memory);
         let got = read(UserAddr(BASE), &mut name).unwrap();
         assert_eq!(got.security_descriptor, 0);

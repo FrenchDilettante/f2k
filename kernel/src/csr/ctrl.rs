@@ -449,15 +449,12 @@ impl Default for Control {
 
 #[cfg(target_arch = "x86")]
 mod target {
-    use core::cell::UnsafeCell;
-    use core::ptr::NonNull;
-
     use crate::level::{raised, Dispatch};
     use crate::mem::paging::PAGE_SIZE;
     use crate::nt::call::UserAddr;
     use crate::ob::ObjectId;
-    use crate::sched::event::{Event, EventKind, EVENT_WAKE_INCREMENT};
-    use crate::sched::wait::{WaitReason, WaitableId};
+    use crate::sched::event::{WorkEvent, EVENT_WAKE_INCREMENT};
+    use crate::sched::wait::WaitReason;
     use crate::sched::DISPATCHER;
     use crate::status::*;
     use crate::user::args::UserPtr;
@@ -466,40 +463,13 @@ mod target {
     /// csrss's high priority class), the top of the variable range.
     const PRIORITY: i8 = 15;
 
-    /// The control thread's work event: a synchronization event, set by each raise, waited on by
-    /// the control thread alone. It is named by its address in the dispatcher database
-    /// ([`WaitableId::Embedded`]), and reached only through the dispatcher once named.
-    struct WorkEvent(UnsafeCell<Event>);
-
-    // SAFETY: one processor. The event is touched directly once, by `init` at boot, before the
-    // control thread exists and before anything raises an event; from then on only the
-    // dispatcher reaches its header, by its address, serialized at the dispatch level.
-    unsafe impl Sync for WorkEvent {}
-
-    static WORK: WorkEvent = WorkEvent(UnsafeCell::new(Event::new(
-        EventKind::Synchronization,
-        false,
-    )));
-
-    impl WorkEvent {
-        /// The event's name: its header's address. No reference to the event is formed.
-        fn id(&self) -> WaitableId {
-            // SAFETY: a projection inside the static's own cell: it computes the header's address
-            // and reads nothing.
-            let header = unsafe { core::ptr::addr_of_mut!((*self.0.get()).waitable) };
-            WaitableId::Embedded(NonNull::new(header).expect("a static is not null"))
-        }
-    }
+    /// The control thread's work event, set by each raise.
+    static WORK: WorkEvent = WorkEvent::new();
 
     /// Start the control thread: its work event named, then the thread (see
     /// `crate::sched::idle::start_system_thread`). Once, at boot, before the first process.
     pub fn start() {
-        {
-            let _masked = crate::pcr::pcr().mask_guard();
-            // SAFETY: the one direct reach into the event (see the `Sync` impl): nothing waits on
-            // it or signals it yet, and interrupts are masked for the reference's life.
-            unsafe { (*WORK.0.get()).init() };
-        }
+        WORK.init();
         crate::sched::idle::start_system_thread(
             crate::sched::database::CONSOLE_CONTROL_THREAD,
             control_thread,

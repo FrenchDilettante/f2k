@@ -19,12 +19,13 @@ const TYPE_ENTRY: usize = 8;
 const MAX_LEVEL: u16 = 4;
 
 /// The caller's address space as a descriptor-capture seam: the probe checks the alignment the
-/// read needs, then that the range is the caller's.
-struct UserMemory;
+/// read needs (an alignment of 0 asks for none), then that the range is the caller's. The
+/// security services' captures and the object manager's ([`crate::ob::security`]) share it.
+pub struct CallerMemory;
 
-impl Memory for UserMemory {
+impl Memory for CallerMemory {
     fn probe(&self, addr: u32, align: u32, len: u32) -> Result<(), NtStatus> {
-        if addr % align != 0 {
+        if align != 0 && addr % align != 0 {
             return Err(sd::STATUS_DATATYPE_MISALIGNMENT);
         }
         UserAddr(addr).probe(len)?;
@@ -32,7 +33,7 @@ impl Memory for UserMemory {
     }
 
     fn read(&self, addr: u32, align: u32, buf: &mut [u8]) -> Result<(), NtStatus> {
-        if addr % align != 0 {
+        if align != 0 && addr % align != 0 {
             return Err(sd::STATUS_DATATYPE_MISALIGNMENT);
         }
         UserAddr(addr).read(buf)?;
@@ -47,7 +48,7 @@ pub fn capture_sd(at: UserAddr) -> Result<Option<Owned>, NtStatus> {
     if at.is_null() {
         return Ok(None);
     }
-    let mem = UserMemory;
+    let mem = CallerMemory;
     let len = sd::length(&mem, at.raw()).ok_or(STATUS_ACCESS_VIOLATION)?;
     let mut out = sec::allocate(len as usize).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
     let mut written = 0u32;
@@ -159,44 +160,14 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
-    use crate::user::syscall::host::{install, Installed, UserMemory as HostMemory};
+    use crate::user::syscall::host::{install, Installed, Page};
 
     /// Where the staged caller memory starts; everything outside it faults.
     const AT: u32 = 0x0060_0000;
 
-    /// The caller's memory: `bytes` mapped from [`AT`].
-    struct Mapped {
-        bytes: Vec<u8>,
-    }
-
-    impl Mapped {
-        /// The staged bytes `len` from `pointer`, when they are all mapped.
-        fn span(&self, pointer: u32, len: usize) -> Result<core::ops::Range<usize>, NtStatus> {
-            let start = pointer.wrapping_sub(AT) as usize;
-            match start.checked_add(len) {
-                Some(end) if pointer >= AT && end <= self.bytes.len() => Ok(start..end),
-                _ => Err(STATUS_ACCESS_VIOLATION),
-            }
-        }
-    }
-
-    impl HostMemory for Mapped {
-        fn read(&self, pointer: u32, out: &mut [u8]) -> Result<(), NtStatus> {
-            let range = self.span(pointer, out.len())?;
-            out.copy_from_slice(&self.bytes[range]);
-            Ok(())
-        }
-
-        fn write(&mut self, pointer: u32, data: &[u8]) -> Result<(), NtStatus> {
-            let range = self.span(pointer, data.len())?;
-            self.bytes[range].copy_from_slice(data);
-            Ok(())
-        }
-    }
-
     /// Install `bytes` as the caller's memory at [`AT`].
     fn stage(bytes: Vec<u8>) -> Installed {
-        install(Rc::new(RefCell::new(Mapped { bytes })))
+        install(Rc::new(RefCell::new(Page::new(AT, bytes))))
     }
 
     /// S-1-5-18 (LocalSystem): revision 1, one sub-authority, NT authority.

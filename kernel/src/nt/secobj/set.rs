@@ -385,27 +385,10 @@ mod tests {
         use std::cell::RefCell;
         use std::rc::Rc;
 
-        use crate::ob::security::CallerMemory;
-        use crate::user::syscall::host::{install, UserMemory};
+        use crate::nt::capture::CallerMemory;
+        use crate::user::syscall::host::{install, Page};
 
         const BASE: u32 = 0x30000;
-        struct Page(Vec<u8>);
-        impl UserMemory for Page {
-            fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
-                let at = pointer.checked_sub(BASE).ok_or(STATUS_ACCESS_VIOLATION)? as usize;
-                bytes.copy_from_slice(
-                    self.0
-                        .get(at..at + bytes.len())
-                        .ok_or(STATUS_ACCESS_VIOLATION)?,
-                );
-                Ok(())
-            }
-
-            fn write(&mut self, _: u32, _: &[u8]) -> Result<(), NtStatus> {
-                Err(STATUS_ACCESS_VIOLATION)
-            }
-        }
-
         // An absolute SD at BASE+0x100: owner at +0x600, DACL at +0x400.
         let (owner, group, dacl, _sacl) = parts();
         let mut page = vec![0u8; 0x800];
@@ -423,7 +406,7 @@ mod tests {
         let mut raw = [0u8; 20];
         assert!(header.write(&mut raw));
         page[0x100..0x114].copy_from_slice(&raw);
-        let _installed = install(Rc::new(RefCell::new(Page(page))));
+        let _installed = install(Rc::new(RefCell::new(Page::read_only(BASE, page))));
 
         // The forced capture (the set's): packed self-relative, DACL then owner, validated.
         // Sized first with an empty buffer, then copied into one of that size, as
@@ -490,27 +473,10 @@ mod tests {
         use std::cell::RefCell;
         use std::rc::Rc;
 
-        use crate::ob::security::CallerMemory;
-        use crate::user::syscall::host::{install, UserMemory};
+        use crate::nt::capture::CallerMemory;
+        use crate::user::syscall::host::{install, Page};
 
         const BASE: u32 = 0x40000;
-        struct Page(Vec<u8>);
-        impl UserMemory for Page {
-            fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
-                let at = pointer.checked_sub(BASE).ok_or(STATUS_ACCESS_VIOLATION)? as usize;
-                bytes.copy_from_slice(
-                    self.0
-                        .get(at..at + bytes.len())
-                        .ok_or(STATUS_ACCESS_VIOLATION)?,
-                );
-                Ok(())
-            }
-
-            fn write(&mut self, _: u32, _: &[u8]) -> Result<(), NtStatus> {
-                Err(STATUS_ACCESS_VIOLATION)
-            }
-        }
-
         let (owner, _group, dacl, _sacl) = parts();
         let page_with = |owner_bytes: &[u8], dacl_bytes: &[u8]| {
             let mut page = vec![0u8; 0x800];
@@ -531,7 +497,7 @@ mod tests {
             page
         };
         let capture = |page: Vec<u8>| {
-            let _installed = install(Rc::new(RefCell::new(Page(page))));
+            let _installed = install(Rc::new(RefCell::new(Page::read_only(BASE, page))));
             let mut needed = 0u32;
             let sized = crate::sec::sd::capture(
                 &CallerMemory,

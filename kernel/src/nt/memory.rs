@@ -1093,34 +1093,9 @@ mod tests {
         use std::cell::RefCell;
         use std::rc::Rc;
 
-        use crate::user::syscall::host::{install, UserMemory};
-        struct Page(Vec<u8>);
-        impl UserMemory for Page {
-            fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
-                let at = pointer
-                    .checked_sub(0x10000)
-                    .ok_or(STATUS_ACCESS_VIOLATION)? as usize;
-                bytes.copy_from_slice(
-                    self.0
-                        .get(at..at + bytes.len())
-                        .ok_or(STATUS_ACCESS_VIOLATION)?,
-                );
-                Ok(())
-            }
-
-            fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), NtStatus> {
-                let at = pointer
-                    .checked_sub(0x10000)
-                    .ok_or(STATUS_ACCESS_VIOLATION)? as usize;
-                self.0
-                    .get_mut(at..at + bytes.len())
-                    .ok_or(STATUS_ACCESS_VIOLATION)?
-                    .copy_from_slice(bytes);
-                Ok(())
-            }
-        }
+        use crate::user::syscall::host::{install, Page};
         const SENTINEL: u32 = 0xF2F2;
-        let memory = Rc::new(RefCell::new(Page(vec![0; 0x100])));
+        let memory = Rc::new(RefCell::new(Page::new(0x10000, vec![0; 0x100])));
         let _installed = install(memory.clone());
         let mut frame = crate::user::TrapFrame::default();
         let mut passive = crate::level::passive_for_test();

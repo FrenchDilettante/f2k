@@ -99,28 +99,7 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
-    use crate::user::syscall::host::{install, UserMemory};
-
-    /// One page of user memory at 0x10000.
-    struct Page(Vec<u8>);
-
-    impl UserMemory for Page {
-        fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
-            let at = pointer
-                .checked_sub(0x10000)
-                .ok_or(STATUS_ACCESS_VIOLATION)? as usize;
-            bytes.copy_from_slice(
-                self.0
-                    .get(at..at + bytes.len())
-                    .ok_or(STATUS_ACCESS_VIOLATION)?,
-            );
-            Ok(())
-        }
-
-        fn write(&mut self, _: u32, _: &[u8]) -> Result<(), NtStatus> {
-            Err(STATUS_ACCESS_VIOLATION)
-        }
-    }
+    use crate::user::syscall::host::{install, Page};
 
     /// A raised record is read to its parameters; more than fifteen is an invalid parameter, a
     /// record running off the mapped memory an access violation.
@@ -133,7 +112,7 @@ mod tests {
         {
             page[i * 4..i * 4 + 4].copy_from_slice(&word.to_le_bytes());
         }
-        let memory = Rc::new(RefCell::new(Page(page)));
+        let memory = Rc::new(RefCell::new(Page::read_only(0x10000, page)));
         let _installed = install(memory.clone());
         let record = read_record(UserAddr(0x10000)).unwrap();
         assert_eq!(
@@ -148,7 +127,7 @@ mod tests {
             },
             "nothing past the parameters"
         );
-        memory.borrow_mut().0[16..20].copy_from_slice(&16u32.to_le_bytes());
+        memory.borrow_mut().bytes[16..20].copy_from_slice(&16u32.to_le_bytes());
         assert_eq!(
             read_record(UserAddr(0x10000)),
             Err(STATUS_INVALID_PARAMETER)

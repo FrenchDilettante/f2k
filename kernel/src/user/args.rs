@@ -157,49 +157,16 @@ mod tests {
     use rtl::nt::ClientId;
 
     use super::*;
-    use crate::status::{NtStatus, STATUS_ACCESS_VIOLATION};
-    use crate::user::syscall::host::{install, Installed, UserMemory};
-
-    /// Mapped user memory at [BASE, BASE + len): anything else faults.
-    struct Pages {
-        base: u32,
-        bytes: std::vec::Vec<u8>,
-    }
-
-    impl UserMemory for Pages {
-        fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
-            let start = pointer
-                .checked_sub(self.base)
-                .ok_or(STATUS_ACCESS_VIOLATION)? as usize;
-            let slice = self
-                .bytes
-                .get(start..start + bytes.len())
-                .ok_or(STATUS_ACCESS_VIOLATION)?;
-            bytes.copy_from_slice(slice);
-            Ok(())
-        }
-
-        fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), NtStatus> {
-            let start = pointer
-                .checked_sub(self.base)
-                .ok_or(STATUS_ACCESS_VIOLATION)? as usize;
-            let slice = self
-                .bytes
-                .get_mut(start..start + bytes.len())
-                .ok_or(STATUS_ACCESS_VIOLATION)?;
-            slice.copy_from_slice(bytes);
-            Ok(())
-        }
-    }
+    use crate::user::syscall::host::{install, Installed, Page};
 
     const BASE: u32 = 0x0040_0000;
 
     /// A mapped page at BASE; the page after it faults.
-    fn pages() -> (std::rc::Rc<core::cell::RefCell<Pages>>, Installed) {
-        let memory = std::rc::Rc::new(core::cell::RefCell::new(Pages {
-            base: BASE,
-            bytes: std::vec![0xAA; 4096],
-        }));
+    fn pages() -> (std::rc::Rc<core::cell::RefCell<Page>>, Installed) {
+        let memory = std::rc::Rc::new(core::cell::RefCell::new(Page::new(
+            BASE,
+            std::vec![0xAA; 4096],
+        )));
         let installed = install(memory.clone());
         (memory, installed)
     }

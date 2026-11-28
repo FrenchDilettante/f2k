@@ -301,6 +301,65 @@ pub mod host {
     #[cfg(test)]
     pub type Shared = std::rc::Rc<core::cell::RefCell<dyn UserMemory>>;
 
+    /// The tests' user memory: `bytes` mapped at `base`, anything else faults. A read-only page
+    /// refuses every write, wherever it lands.
+    #[cfg(test)]
+    pub struct Page {
+        base: u32,
+        pub bytes: std::vec::Vec<u8>,
+        writable: bool,
+    }
+
+    #[cfg(test)]
+    impl Page {
+        /// `bytes` mapped readable and writable at `base`.
+        pub fn new(base: u32, bytes: std::vec::Vec<u8>) -> Self {
+            Self {
+                base,
+                bytes,
+                writable: true,
+            }
+        }
+
+        /// `bytes` mapped read-only at `base`.
+        pub fn read_only(base: u32, bytes: std::vec::Vec<u8>) -> Self {
+            Self {
+                base,
+                bytes,
+                writable: false,
+            }
+        }
+
+        /// The offset of `pointer` into the page; STATUS_ACCESS_VIOLATION below it.
+        fn offset(&self, pointer: u32) -> Result<usize, NtStatus> {
+            Ok(pointer
+                .checked_sub(self.base)
+                .ok_or(STATUS_ACCESS_VIOLATION)? as usize)
+        }
+    }
+
+    #[cfg(test)]
+    impl UserMemory for Page {
+        fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
+            let at = self.offset(pointer)?;
+            let source = self.bytes.get(at..at + bytes.len());
+            bytes.copy_from_slice(source.ok_or(STATUS_ACCESS_VIOLATION)?);
+            Ok(())
+        }
+
+        fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), NtStatus> {
+            if !self.writable {
+                return Err(STATUS_ACCESS_VIOLATION);
+            }
+            let at = self.offset(pointer)?;
+            let target = self.bytes.get_mut(at..at + bytes.len());
+            target
+                .ok_or(STATUS_ACCESS_VIOLATION)?
+                .copy_from_slice(bytes);
+            Ok(())
+        }
+    }
+
     #[cfg(test)]
     std::thread_local! {
         static MEMORY: core::cell::RefCell<Option<Shared>> = const { core::cell::RefCell::new(None) };

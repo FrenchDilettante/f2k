@@ -351,10 +351,9 @@ mod tests {
     use super::*;
     use crate::ob::{Entry, ObjectId, ObjectType};
     use crate::se::{sid_bytes, Change, Requests, PRIMARY_GROUP, USER};
+    use crate::sec::testkit::{acl, allowed, guid, object_ace, sid};
     use crate::sec::{
-        ACCESS_ALLOWED_ACE_TYPE,
         ACCESS_ALLOWED_OBJECT_ACE_TYPE,
-        ACL_REVISION2,
         SE_CHANGE_NOTIFY_PRIVILEGE,
         SE_DACL_PRESENT,
         SE_PRIVILEGE_ENABLED,
@@ -369,51 +368,6 @@ mod tests {
         generic_execute: 0x4,
         generic_all: 0xF,
     };
-
-    /// A SID's bytes: revision 1, the count, a zeroed authority with the authority's low byte
-    /// last, then a dword per sub-authority.
-    fn sid(authority: u8, subs: &[u32]) -> Vec<u8> {
-        let mut v = vec![1u8, subs.len() as u8, 0, 0, 0, 0, 0, authority];
-        for &s in subs {
-            v.extend_from_slice(&s.to_le_bytes());
-        }
-        v
-    }
-
-    /// An ACE's bytes: the type, the flags, the dword-padded size, then the body.
-    fn ace_body(ace_type: u8, body: &[u8]) -> Vec<u8> {
-        let size = (4 + body.len() + 3) & !3;
-        let mut v = vec![ace_type, 0];
-        v.extend_from_slice(&(size as u16).to_le_bytes());
-        v.extend_from_slice(body);
-        v.resize(size, 0);
-        v
-    }
-
-    /// A plain ACE of `mask` to `sid`.
-    fn ace(ace_type: u8, mask: u32, sid: &[u8]) -> Vec<u8> {
-        let mut body = mask.to_le_bytes().to_vec();
-        body.extend_from_slice(sid);
-        ace_body(ace_type, &body)
-    }
-
-    /// An ACL's bytes over `aces`.
-    fn acl(aces: &[Vec<u8>]) -> Vec<u8> {
-        acl_rev(ACL_REVISION2, aces)
-    }
-
-    /// An ACL of `revision`'s bytes over `aces`.
-    fn acl_rev(revision: u8, aces: &[Vec<u8>]) -> Vec<u8> {
-        let size = 8 + aces.iter().map(|a| a.len()).sum::<usize>();
-        let mut v = vec![revision, 0];
-        v.extend_from_slice(&(size as u16).to_le_bytes());
-        v.extend_from_slice(&(aces.len() as u16).to_le_bytes());
-        v.extend_from_slice(&[0, 0]);
-        for a in aces {
-            v.extend_from_slice(a);
-        }
-        v
-    }
 
     /// A self-relative descriptor in one buffer: the header, then the DACL, the owner and the
     /// group, each packed dword-aligned, when present.
@@ -570,11 +524,7 @@ mod tests {
         let token = token();
         let user = sid_bytes(&USER);
         let group = sid_bytes(&PRIMARY_GROUP);
-        let sd = sd_of(
-            &user,
-            &group,
-            &acl(&[ace(ACCESS_ALLOWED_ACE_TYPE, 0x7, &user)]),
-        );
+        let sd = sd_of(&user, &group, &acl(&[allowed(0x7, &user)]));
         let mut no_token = input(&sd, &token, 0x7, 64);
         no_token.token = None;
         assert!(
@@ -602,11 +552,7 @@ mod tests {
         let token = token();
         let user = sid_bytes(&USER);
         let group = sid_bytes(&PRIMARY_GROUP);
-        let sd = sd_of(
-            &user,
-            &group,
-            &acl(&[ace(ACCESS_ALLOWED_ACE_TYPE, 0x7, &user)]),
-        );
+        let sd = sd_of(&user, &group, &acl(&[allowed(0x7, &user)]));
         match run(&input(&sd, &token, 0x7, 64)) {
             Answer::Checked(answer) => {
                 assert_eq!(answer.granted, 0x7);
@@ -625,11 +571,7 @@ mod tests {
         let user = sid_bytes(&USER);
         let group = sid_bytes(&PRIMARY_GROUP);
         let stranger = sid(5, &[32, 546]);
-        let sd = sd_of(
-            &user,
-            &group,
-            &acl(&[ace(ACCESS_ALLOWED_ACE_TYPE, 0x7, &stranger)]),
-        );
+        let sd = sd_of(&user, &group, &acl(&[allowed(0x7, &stranger)]));
         match run(&input(&sd, &token, 0x7, 64)) {
             Answer::Checked(answer) => {
                 assert_eq!(answer.granted, 0);
@@ -646,10 +588,7 @@ mod tests {
         let token = token();
         let user = sid_bytes(&USER);
         let group = sid_bytes(&PRIMARY_GROUP);
-        let dacl = acl(&[
-            ace(ACCESS_ALLOWED_ACE_TYPE, 0x1, &user),
-            ace(ACCESS_ALLOWED_ACE_TYPE, 0x2, &user),
-        ]);
+        let dacl = acl(&[allowed(0x1, &user), allowed(0x2, &user)]);
         let sd = sd_of(&user, &group, &dacl);
         match run(&input(&sd, &token, MAXIMUM_ALLOWED, 64)) {
             Answer::Checked(answer) => {
@@ -680,11 +619,7 @@ mod tests {
         );
         let user = sid_bytes(&USER);
         let group = sid_bytes(&PRIMARY_GROUP);
-        let sd = sd_of(
-            &user,
-            &group,
-            &acl(&[ace(ACCESS_ALLOWED_ACE_TYPE, 0x7, &user)]),
-        );
+        let sd = sd_of(&user, &group, &acl(&[allowed(0x7, &user)]));
         // No privilege used: the empty set still takes 20 bytes.
         match run(&input(&sd, &token, 0x7, 19)) {
             Answer::Refused {
@@ -752,11 +687,7 @@ mod tests {
         let token = token();
         let user = sid_bytes(&USER);
         let group = sid_bytes(&PRIMARY_GROUP);
-        let sd = sd_of(
-            &user,
-            &group,
-            &acl(&[ace(ACCESS_ALLOWED_ACE_TYPE, 0x7, &user)]),
-        );
+        let sd = sd_of(&user, &group, &acl(&[allowed(0x7, &user)]));
         match run(&input(&sd, &token, ACCESS_SYSTEM_SECURITY, 0)) {
             Answer::Checked(answer) => {
                 assert_eq!(answer.granted, 0);
@@ -773,25 +704,9 @@ mod tests {
         let token = token();
         let user = sid_bytes(&USER);
         let group = sid_bytes(&PRIMARY_GROUP);
-        let guid = Guid {
-            data1: 0x1111,
-            data2: 0,
-            data3: 0,
-            data4: [0; 8],
-        };
-        let mut guid_bytes = guid.data1.to_le_bytes().to_vec();
-        guid_bytes.extend_from_slice(&guid.data2.to_le_bytes());
-        guid_bytes.extend_from_slice(&guid.data3.to_le_bytes());
-        guid_bytes.extend_from_slice(&guid.data4);
-        let mut body = 0x5u32.to_le_bytes().to_vec();
-        body.extend_from_slice(&1u32.to_le_bytes());
-        body.extend_from_slice(&guid_bytes);
-        body.extend_from_slice(&user);
-        let sd = sd_of(
-            &user,
-            &group,
-            &acl_rev(4, &[ace_body(ACCESS_ALLOWED_OBJECT_ACE_TYPE, &body)]),
-        );
+        let guid = guid(0x1111);
+        let typed = object_ace(ACCESS_ALLOWED_OBJECT_ACE_TYPE, 0x5, Some(guid), &user);
+        let sd = sd_of(&user, &group, &acl(&[typed]));
         match run(&input(&sd, &token, 0x5, 64)) {
             Answer::Checked(answer) => assert_eq!(answer.access_status, STATUS_ACCESS_DENIED),
             Answer::Refused { status, .. } => panic!("refused: {status:?}"),

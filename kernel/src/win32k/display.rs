@@ -685,6 +685,7 @@ mod tests {
     use rtl::testing::utf16_bytes_z;
 
     use super::*;
+    use crate::user::syscall::host::Page;
 
     fn dev_mode(fields: u32, bits: u32, width: u32, height: u32) -> DevModeW {
         let mut mode = DevModeW::zeroed();
@@ -756,40 +757,14 @@ mod tests {
         assert!(!is_primary_display(&units("")));
     }
 
-    /// The caller's memory: a page at 0x1000, anything else faults.
-    struct Page(std::vec::Vec<u8>);
-
-    impl crate::user::syscall::host::UserMemory for Page {
-        fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
-            let at = (pointer as usize)
-                .checked_sub(0x1000)
-                .ok_or(STATUS_ACCESS_VIOLATION)?;
-            let source = self
-                .0
-                .get(at..at + bytes.len())
-                .ok_or(STATUS_ACCESS_VIOLATION)?;
-            bytes.copy_from_slice(source);
-            Ok(())
-        }
-
-        fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), NtStatus> {
-            let at = (pointer as usize)
-                .checked_sub(0x1000)
-                .ok_or(STATUS_ACCESS_VIOLATION)?;
-            let target = self
-                .0
-                .get_mut(at..at + bytes.len())
-                .ok_or(STATUS_ACCESS_VIOLATION)?;
-            target.copy_from_slice(bytes);
-            Ok(())
-        }
-    }
-
     type Shared = std::rc::Rc<core::cell::RefCell<Page>>;
 
     /// A page of the caller's memory, installed, filled with 0xCC.
     fn page() -> (Shared, crate::user::syscall::host::Installed) {
-        let page = std::rc::Rc::new(core::cell::RefCell::new(Page(std::vec![0xCC; 0x1000])));
+        let page = std::rc::Rc::new(core::cell::RefCell::new(Page::new(
+            0x1000,
+            std::vec![0xCC; 0x1000],
+        )));
         let installed = crate::user::syscall::host::install(page.clone());
         (page, installed)
     }
@@ -881,7 +856,7 @@ mod tests {
                 )),
                 Ok(STATUS_SUCCESS)
             );
-            let mode = DevModeW::from_bytes(&page.borrow().0[0x100..0x100 + 220]).unwrap();
+            let mode = DevModeW::from_bytes(&page.borrow().bytes[0x100..0x100 + 220]).unwrap();
             assert_eq!(mode.size, 188, "a caller's dmSize of {size}");
             assert_eq!(
                 (mode.pels_width, mode.pels_height),
@@ -890,7 +865,7 @@ mod tests {
             );
             assert_eq!(mode.fields, 0x7E_0020);
             assert!(
-                page.borrow().0[0x100 + 188..0x100 + 220]
+                page.borrow().bytes[0x100 + 188..0x100 + 220]
                     .iter()
                     .all(|&byte| byte == 0xCC),
                 "nothing past the described version"
@@ -898,7 +873,8 @@ mod tests {
         }
 
         // The display by its name.
-        page.borrow_mut().0[0x800..0x800 + 26].copy_from_slice(&utf16_bytes_z("\\\\.\\DISPLAY1"));
+        page.borrow_mut().bytes[0x800..0x800 + 26]
+            .copy_from_slice(&utf16_bytes_z("\\\\.\\DISPLAY1"));
         assert_eq!(
             with_call(|call| enum_display_settings(
                 call,
@@ -909,7 +885,8 @@ mod tests {
             )),
             Ok(STATUS_SUCCESS)
         );
-        page.borrow_mut().0[0x800..0x800 + 26].copy_from_slice(&utf16_bytes_z("\\\\.\\DISPLAY2"));
+        page.borrow_mut().bytes[0x800..0x800 + 26]
+            .copy_from_slice(&utf16_bytes_z("\\\\.\\DISPLAY2"));
         assert_eq!(
             with_call(|call| enum_display_settings(
                 call,
@@ -953,7 +930,7 @@ mod tests {
             Ok(STATUS_SUCCESS)
         );
         {
-            let bytes = &page.borrow().0;
+            let bytes = &page.borrow().bytes;
             let device = DisplayDeviceW::from_bytes(&bytes[..840]).unwrap();
             assert_eq!(device.cb, 840);
             assert_eq!(
@@ -980,13 +957,13 @@ mod tests {
         );
 
         // The older structure ends at StateFlags: nothing past it is written.
-        page.borrow_mut().0.fill(0xCC);
+        page.borrow_mut().bytes.fill(0xCC);
         set_cb(DISPLAY_DEVICE_STATE_END_W as u32);
         assert_eq!(
             with_call(|call| enum_display_devices(call, UserAddr(0), 0, out, 0)),
             Ok(STATUS_SUCCESS)
         );
-        assert_eq!(page.borrow().0[DISPLAY_DEVICE_STATE_END_W], 0xCC);
+        assert_eq!(page.borrow().bytes[DISPLAY_DEVICE_STATE_END_W], 0xCC);
         set_cb(DISPLAY_DEVICE_STATE_END_W as u32 - 1);
         assert_eq!(
             with_call(|call| enum_display_devices(call, UserAddr(0), 0, out, 0)),
@@ -995,12 +972,13 @@ mod tests {
 
         // The primary display's monitors.
         set_cb(840);
-        page.borrow_mut().0[0x800..0x800 + 26].copy_from_slice(&utf16_bytes_z("\\\\.\\display1"));
+        page.borrow_mut().bytes[0x800..0x800 + 26]
+            .copy_from_slice(&utf16_bytes_z("\\\\.\\display1"));
         assert_eq!(
             with_call(|call| enum_display_devices(call, UserAddr(0x1800), 0, out, 0)),
             Ok(STATUS_SUCCESS)
         );
-        let device = DisplayDeviceW::from_bytes(&page.borrow().0[..840]).unwrap();
+        let device = DisplayDeviceW::from_bytes(&page.borrow().bytes[..840]).unwrap();
         assert_eq!(
             &device.device_name.as_bytes()[..44],
             &utf16_bytes_z("\\\\.\\DISPLAY1\\Monitor0")[..]
@@ -1009,7 +987,8 @@ mod tests {
             with_call(|call| enum_display_devices(call, UserAddr(0x1800), 1, out, 0)),
             Err(STATUS_NO_MORE_ENTRIES)
         );
-        page.borrow_mut().0[0x800..0x800 + 26].copy_from_slice(&utf16_bytes_z("\\\\.\\DISPLAY9"));
+        page.borrow_mut().bytes[0x800..0x800 + 26]
+            .copy_from_slice(&utf16_bytes_z("\\\\.\\DISPLAY9"));
         assert_eq!(
             with_call(|call| enum_display_devices(call, UserAddr(0x1800), 0, out, 0)),
             Err(STATUS_INVALID_PARAMETER)
@@ -1079,7 +1058,7 @@ mod tests {
             Ok(PRIMARY_MONITOR_HANDLE)
         );
         assert_eq!(UserPtr::<Rect>::at(0x1200).read(), Ok(screen_rect()));
-        assert_eq!(page.borrow().0[0x104], 0xCC, "one monitor");
+        assert_eq!(page.borrow().bytes[0x104], 0xCC, "one monitor");
         assert_eq!(
             with_call(|call| enum_display_monitors(
                 call,

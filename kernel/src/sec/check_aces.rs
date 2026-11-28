@@ -44,7 +44,7 @@ pub fn ace_count(dacl: &[u8]) -> u16 {
 
 /// One ACE of a validated DACL, read from its bytes.
 pub struct AceView<'a> {
-    bytes: &'a [u8],
+    pub(super) bytes: &'a [u8],
 }
 
 impl<'a> AceView<'a> {
@@ -138,7 +138,7 @@ impl<'a> AceView<'a> {
     }
 }
 
-/// The ACEs of a validated DACL, in order.
+/// The ACEs of a DACL, in order, each checked to fit inside the ACL and the buffer.
 pub struct AceViews<'a> {
     bytes: &'a [u8],
     at: usize,
@@ -148,10 +148,16 @@ pub struct AceViews<'a> {
 impl<'a> AceViews<'a> {
     /// The iterator over `dacl`'s ACEs.
     pub fn new(dacl: &'a [u8]) -> AceViews<'a> {
+        AceViews::counted(dacl, ace_count(dacl))
+    }
+
+    /// The iterator over the first `count` ACEs of the ACL in `bytes`, stopping at the first one
+    /// that runs out of the ACL (an [`super::Acl`]'s walk).
+    pub fn counted(bytes: &'a [u8], count: u16) -> AceViews<'a> {
         AceViews {
-            bytes: dacl,
+            bytes,
             at: ACL_HEADER_SIZE,
-            left: ace_count(dacl),
+            left: count,
         }
     }
 }

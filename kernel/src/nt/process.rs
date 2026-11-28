@@ -110,6 +110,34 @@ pub(super) fn current(process: Handle) -> Result<(), NtStatus> {
     }
 }
 
+/// NtOpenProcess's and NtOpenThread's arguments, checked in Windows 2000's order: the handle's
+/// slot probed (STATUS_ACCESS_VIOLATION), the attributes read, the client id read, then the
+/// choice [`open_by`] makes from them. The client id to open, and whether the handle inherits.
+pub fn open_arguments(
+    slot: UserPtr<u32>,
+    attributes: UserAddr,
+    client_id: UserAddr,
+) -> Result<(ClientId, bool), NtStatus> {
+    if slot.is_null() {
+        return Err(STATUS_ACCESS_VIOLATION);
+    }
+    crate::user::syscall::probe_user_range(slot.addr().raw(), 4)
+        .map_err(|_| STATUS_ACCESS_VIOLATION)?;
+    let (named, inherit) = if attributes.is_null() {
+        (false, false)
+    } else {
+        let mut name = super::attributes::Name::new();
+        let read = super::attributes::read(attributes, &mut name)?;
+        (read.name.is_some(), read.inherit())
+    };
+    let client_id = if client_id.is_null() {
+        None
+    } else {
+        Some(client_id.cast::<ClientId>().read()?)
+    };
+    Ok((open_by(named, client_id)?, inherit))
+}
+
 /// NtOpenProcess's choice of what to open, from whether the OBJECT_ATTRIBUTES name an object and
 /// the CLIENT_ID given: the client id. Both, or neither, is STATUS_INVALID_PARAMETER_MIX; a name
 /// alone names nothing (no process object is named): STATUS_OBJECT_NAME_NOT_FOUND.
@@ -139,24 +167,7 @@ pub fn open_process(
     attributes: UserAddr,
     client_id: UserAddr,
 ) -> NtResult {
-    if slot.is_null() {
-        return Err(STATUS_ACCESS_VIOLATION);
-    }
-    crate::user::syscall::probe_user_range(slot.addr().raw(), 4)
-        .map_err(|_| STATUS_ACCESS_VIOLATION)?;
-    let (named, inherit) = if attributes.is_null() {
-        (false, false)
-    } else {
-        let mut name = super::attributes::Name::new();
-        let read = super::attributes::read(attributes, &mut name)?;
-        (read.name.is_some(), read.inherit())
-    };
-    let client_id = if client_id.is_null() {
-        None
-    } else {
-        Some(client_id.cast::<ClientId>().read()?)
-    };
-    let client_id = open_by(named, client_id)?;
+    let (client_id, inherit) = open_arguments(slot, attributes, client_id)?;
     let access = super::object::process_access(access);
     #[cfg(target_arch = "x86")]
     {
@@ -559,36 +570,11 @@ mod tests {
         use std::cell::RefCell;
         use std::rc::Rc;
 
-        use crate::user::syscall::host::{install, UserMemory};
-        struct Page(Vec<u8>);
-        impl UserMemory for Page {
-            fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
-                let at = pointer
-                    .checked_sub(0x10000)
-                    .ok_or(STATUS_ACCESS_VIOLATION)? as usize;
-                bytes.copy_from_slice(
-                    self.0
-                        .get(at..at + bytes.len())
-                        .ok_or(STATUS_ACCESS_VIOLATION)?,
-                );
-                Ok(())
-            }
-
-            fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), NtStatus> {
-                let at = pointer
-                    .checked_sub(0x10000)
-                    .ok_or(STATUS_ACCESS_VIOLATION)? as usize;
-                self.0
-                    .get_mut(at..at + bytes.len())
-                    .ok_or(STATUS_ACCESS_VIOLATION)?
-                    .copy_from_slice(bytes);
-                Ok(())
-            }
-        }
+        use crate::user::syscall::host::{install, Page};
         // A slot at 0x10000, a CLIENT_ID at 0x10010, an unnamed OBJECT_ATTRIBUTES at 0x10020.
         let mut page = vec![0u8; 0x40];
         page[0x20] = 24;
-        let memory = Rc::new(RefCell::new(Page(page)));
+        let memory = Rc::new(RefCell::new(Page::new(0x10000, page)));
         let _installed = install(memory.clone());
         let mut frame = crate::user::TrapFrame::default();
         let mut passive = crate::level::passive_for_test();
@@ -676,27 +662,12 @@ mod tests {
         use std::cell::RefCell;
         use std::rc::Rc;
 
-        use crate::user::syscall::host::{install, UserMemory};
-        struct Word(Vec<u8>);
-        impl UserMemory for Word {
-            fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
-                let at = pointer
-                    .checked_sub(0x10000)
-                    .ok_or(STATUS_ACCESS_VIOLATION)? as usize;
-                bytes.copy_from_slice(
-                    self.0
-                        .get(at..at + bytes.len())
-                        .ok_or(STATUS_ACCESS_VIOLATION)?,
-                );
-                Ok(())
-            }
-
-            fn write(&mut self, _: u32, _: &[u8]) -> Result<(), NtStatus> {
-                Err(STATUS_ACCESS_VIOLATION)
-            }
-        }
+        use crate::user::syscall::host::{install, Page};
         let active = crate::processors::active();
-        let memory = Rc::new(RefCell::new(Word(active.to_le_bytes().to_vec())));
+        let memory = Rc::new(RefCell::new(Page::read_only(
+            0x10000,
+            active.to_le_bytes().to_vec(),
+        )));
         let _installed = install(memory.clone());
         let mut frame = crate::user::TrapFrame::default();
         let mut passive = crate::level::passive_for_test();
@@ -720,7 +691,7 @@ mod tests {
             Err(STATUS_INVALID_HANDLE)
         );
         for mask in [0, active << 1, active << 1 | active] {
-            memory.borrow_mut().0 = mask.to_le_bytes().to_vec();
+            memory.borrow_mut().bytes = mask.to_le_bytes().to_vec();
             assert_eq!(
                 set_information_process(&mut call, me, 21, at, 4),
                 Err(STATUS_INVALID_PARAMETER),

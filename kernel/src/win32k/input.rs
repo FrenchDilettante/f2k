@@ -559,13 +559,10 @@ pub fn takes_keyboard() -> bool {
 
 #[cfg(target_arch = "x86")]
 mod target {
-    use core::cell::UnsafeCell;
-    use core::ptr::NonNull;
-
     use crate::hw::kbd::ByteRing;
     use crate::level::{At, Dispatch};
-    use crate::sched::event::{Event, EventKind, EVENT_WAKE_INCREMENT};
-    use crate::sched::wait::{WaitReason, WaitableId};
+    use crate::sched::event::{WorkEvent, EVENT_WAKE_INCREMENT};
+    use crate::sched::wait::WaitReason;
 
     /// The raw input thread's priority: Windows 2000's, LOW_REALTIME_PRIORITY + 3, above every
     /// program's thread, so a keystroke reaches its queue before the program reads on.
@@ -575,39 +572,12 @@ mod target {
     /// thread takes them.
     static RAW: ByteRing = ByteRing::new();
 
-    /// The raw input thread's work event: a synchronization event, set by the DPC for each byte,
-    /// waited on by the thread alone. Named by its address in the dispatcher database
-    /// ([`WaitableId::Embedded`]), and reached only through the dispatcher once named.
-    struct WorkEvent(UnsafeCell<Event>);
-
-    // SAFETY: one processor. The event is touched directly once, by `start` at boot, before the
-    // thread exists and before the keyboard's bytes can reach it; from then on only the
-    // dispatcher reaches its header, by its address, serialized at the dispatch level.
-    unsafe impl Sync for WorkEvent {}
-
-    static WORK: WorkEvent = WorkEvent(UnsafeCell::new(Event::new(
-        EventKind::Synchronization,
-        false,
-    )));
-
-    impl WorkEvent {
-        /// The event's name: its header's address. No reference to the event is formed.
-        fn id(&self) -> WaitableId {
-            // SAFETY: a projection inside the static's own cell: it computes the header's address
-            // and reads nothing.
-            let header = unsafe { core::ptr::addr_of_mut!((*self.0.get()).waitable) };
-            WaitableId::Embedded(NonNull::new(header).expect("a static is not null"))
-        }
-    }
+    /// The raw input thread's work event, set by the DPC for each byte.
+    static WORK: WorkEvent = WorkEvent::new();
 
     /// Start the raw input thread: once, at boot, before the first process.
     pub fn start() {
-        {
-            let _masked = crate::pcr::pcr().mask_guard();
-            // SAFETY: the one direct reach into the event (see the `Sync` impl): nothing waits on
-            // it or sets it yet, and interrupts are masked for the reference's life.
-            unsafe { (*WORK.0.get()).init() };
-        }
+        WORK.init();
         crate::sched::idle::start_system_thread(
             crate::sched::database::RAW_INPUT_THREAD,
             raw_input_thread,

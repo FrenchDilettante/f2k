@@ -18,6 +18,7 @@
 //! [`Acl::iter`] read the ACEs back in order, [`Acl::first_free`] finds where the next ACE goes,
 //! and [`Acl::delete_ace`] removes one, shifting the rest down and zeroing the vacated tail.
 
+use super::check_aces::AceViews;
 use crate::se::Sid;
 use crate::status::{NtStatus, STATUS_BUFFER_TOO_SMALL, STATUS_INVALID_PARAMETER};
 
@@ -428,11 +429,7 @@ impl<'a> Acl<'a> {
         } else {
             0
         };
-        Aces {
-            bytes: &self.bytes[..],
-            at: ACL_HEADER_SIZE,
-            left: count,
-        }
+        Aces(AceViews::counted(&self.bytes[..], count))
     }
 
     /// The `index`th ACE, in order, or None if there is no such well-formed ACE.
@@ -684,37 +681,14 @@ impl<'a> Ace<'a> {
     }
 }
 
-/// An ACL's ACEs, in order.
-pub struct Aces<'a> {
-    bytes: &'a [u8],
-    at: usize,
-    left: u16,
-}
+/// An ACL's ACEs, in order: the walk of [`AceViews`], each ACE read as an [`Ace`].
+pub struct Aces<'a>(AceViews<'a>);
 
 impl<'a> Iterator for Aces<'a> {
     type Item = Ace<'a>;
 
     fn next(&mut self) -> Option<Ace<'a>> {
-        if self.left == 0 || self.bytes.len() < ACL_HEADER_SIZE {
-            return None;
-        }
-        let size = u16_at(self.bytes, 2) as usize;
-        if self.at + ACE_HEADER_SIZE > size || self.at + ACE_HEADER_SIZE > self.bytes.len() {
-            return None;
-        }
-        let ace_size = u16_at(self.bytes, self.at + 2) as usize;
-        if ace_size < ACE_HEADER_SIZE
-            || self.at + ace_size > size
-            || self.at + ace_size > self.bytes.len()
-        {
-            return None;
-        }
-        let ace = Ace {
-            bytes: &self.bytes[self.at..self.at + ace_size],
-        };
-        self.at += ace_size;
-        self.left -= 1;
-        Some(ace)
+        self.0.next().map(|ace| Ace { bytes: ace.bytes })
     }
 }
 

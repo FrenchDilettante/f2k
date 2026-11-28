@@ -151,6 +151,46 @@ impl Dispatcher {
     }
 }
 
+/// A system thread's work event (the console control thread's, the raw input thread's): a static
+/// synchronization event, set for each piece of work, waited on by its thread alone. It is named
+/// by its address in the dispatcher database ([`WaitableId::Embedded`]), and reached only through
+/// the dispatcher once named.
+#[cfg(target_arch = "x86")]
+pub struct WorkEvent(core::cell::UnsafeCell<Event>);
+
+// SAFETY: the event is touched directly once, by `init` at boot, before its thread exists and
+// before anything sets it; from then on only the dispatcher reaches its header, by its address,
+// under the dispatcher's own serialization.
+#[cfg(target_arch = "x86")]
+unsafe impl Sync for WorkEvent {}
+
+#[cfg(target_arch = "x86")]
+impl WorkEvent {
+    /// A synchronization event, not signaled; [`WorkEvent::init`] names it.
+    pub const fn new() -> Self {
+        WorkEvent(core::cell::UnsafeCell::new(Event::new(
+            EventKind::Synchronization,
+            false,
+        )))
+    }
+
+    /// Name the event by its address: once, at boot, before its thread exists.
+    pub fn init(&'static self) {
+        let _masked = crate::pcr::pcr().mask_guard();
+        // SAFETY: the one direct reach into the event (see the `Sync` impl): nothing waits on it
+        // or sets it yet, and interrupts are masked for the reference's life.
+        unsafe { (*self.0.get()).init() };
+    }
+
+    /// The event's name: its header's address. No reference to the event is formed.
+    pub fn id(&self) -> WaitableId {
+        // SAFETY: a projection inside the static's own cell: it computes the header's address and
+        // reads nothing.
+        let header = unsafe { core::ptr::addr_of_mut!((*self.0.get()).waitable) };
+        WaitableId::Embedded(core::ptr::NonNull::new(header).expect("a static is not null"))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

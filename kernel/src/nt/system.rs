@@ -525,34 +525,6 @@ mod tests {
         assert_eq!(word(&zeroed, 0x4C), 0);
     }
 
-    /// A page of user memory at 0x10000, for the services' host paths.
-    struct Page(std::vec::Vec<u8>);
-
-    impl crate::user::syscall::host::UserMemory for Page {
-        fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
-            let at = pointer
-                .checked_sub(0x10000)
-                .ok_or(STATUS_ACCESS_VIOLATION)? as usize;
-            bytes.copy_from_slice(
-                self.0
-                    .get(at..at + bytes.len())
-                    .ok_or(STATUS_ACCESS_VIOLATION)?,
-            );
-            Ok(())
-        }
-
-        fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), NtStatus> {
-            let at = pointer
-                .checked_sub(0x10000)
-                .ok_or(STATUS_ACCESS_VIOLATION)? as usize;
-            self.0
-                .get_mut(at..at + bytes.len())
-                .ok_or(STATUS_ACCESS_VIOLATION)?
-                .copy_from_slice(bytes);
-            Ok(())
-        }
-    }
-
     /// NtSetSystemInformation takes SystemPrioritySeperation (39) as one ULONG: another length is
     /// STATUS_INFO_LENGTH_MISMATCH, an unreadable one STATUS_ACCESS_VIOLATION, another class
     /// STATUS_INVALID_INFO_CLASS.
@@ -561,7 +533,10 @@ mod tests {
         use std::cell::RefCell;
         use std::rc::Rc;
 
-        let memory = Rc::new(RefCell::new(Page(std::vec![0; 0x1000])));
+        let memory = Rc::new(RefCell::new(crate::user::syscall::host::Page::new(
+            0x10000,
+            std::vec![0; 0x1000],
+        )));
         let _installed = crate::user::syscall::host::install(memory.clone());
         let mut frame = crate::user::TrapFrame::default();
         let mut passive = crate::level::passive_for_test();
@@ -593,7 +568,10 @@ mod tests {
         use std::rc::Rc;
 
         use crate::user::syscall::host::install;
-        let memory = Rc::new(RefCell::new(Page(std::vec![0; 0x1000])));
+        let memory = Rc::new(RefCell::new(crate::user::syscall::host::Page::new(
+            0x10000,
+            std::vec![0; 0x1000],
+        )));
         let _installed = install(memory.clone());
         let mut frame = crate::user::TrapFrame::default();
         let mut passive = crate::level::passive_for_test();
@@ -608,7 +586,7 @@ mod tests {
         let mut answer = [0u8; 0x200];
         memory
             .borrow()
-            .0
+            .bytes
             .get(0..0x200)
             .unwrap()
             .iter()
@@ -628,7 +606,7 @@ mod tests {
             let mut bytes = [0u8; 4];
             memory
                 .borrow()
-                .0
+                .bytes
                 .get(0x800..0x804)
                 .unwrap()
                 .iter()

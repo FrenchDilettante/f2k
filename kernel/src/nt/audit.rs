@@ -442,34 +442,11 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
-    use crate::user::syscall::host::{install, UserMemory};
+    use crate::user::syscall::host::{install, Page};
     use crate::user::TrapFrame;
 
     /// Mapped user memory at [BASE, BASE + len): anything else faults.
     const BASE: u32 = 0x0050_0000;
-
-    struct Page(Vec<u8>);
-
-    impl UserMemory for Page {
-        fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
-            let at = pointer.checked_sub(BASE).ok_or(STATUS_ACCESS_VIOLATION)? as usize;
-            bytes.copy_from_slice(
-                self.0
-                    .get(at..at + bytes.len())
-                    .ok_or(STATUS_ACCESS_VIOLATION)?,
-            );
-            Ok(())
-        }
-
-        fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), NtStatus> {
-            let at = pointer.checked_sub(BASE).ok_or(STATUS_ACCESS_VIOLATION)? as usize;
-            self.0
-                .get_mut(at..at + bytes.len())
-                .ok_or(STATUS_ACCESS_VIOLATION)?
-                .copy_from_slice(bytes);
-            Ok(())
-        }
-    }
 
     /// The alarm-only services answer STATUS_SUCCESS and probe nothing: even null
     /// arguments pass, the names and handle id being audit-only and dropped.
@@ -516,7 +493,7 @@ mod tests {
     /// STATUS_ACCESS_VIOLATION.
     #[test]
     fn the_open_writes_generate_on_close_false() {
-        let page = Rc::new(RefCell::new(Page(vec![0xAAu8; 0x40])));
+        let page = Rc::new(RefCell::new(Page::new(BASE, vec![0xAAu8; 0x40])));
         let _installed = install(page.clone());
         let mut frame = TrapFrame::default();
         let mut passive = crate::level::passive_for_test();
@@ -539,7 +516,7 @@ mod tests {
             )
         };
         assert_eq!(open(&mut call, BASE), Ok(STATUS_SUCCESS));
-        assert_eq!(page.borrow().0[0], GENERATE_ON_CLOSE);
+        assert_eq!(page.borrow().bytes[0], GENERATE_ON_CLOSE);
         assert_eq!(open(&mut call, 0), Err(STATUS_ACCESS_VIOLATION));
         assert_eq!(open(&mut call, BASE + 0x1000), Err(STATUS_ACCESS_VIOLATION));
     }

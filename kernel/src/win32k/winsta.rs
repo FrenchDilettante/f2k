@@ -393,7 +393,7 @@ mod tests {
     use rtl::testing::utf16_bytes_z;
 
     use super::*;
-    use crate::user::syscall::host::{install, UserMemory};
+    use crate::user::syscall::host::{install, Page};
 
     const WINSTA0: UserObject = UserObject {
         type_name: "WindowStation",
@@ -445,44 +445,18 @@ mod tests {
         assert_eq!(information(&WINSTA0, 99), None);
     }
 
-    /// The caller's memory: a page at 0x1000, anything else faults.
-    struct Page(std::vec::Vec<u8>);
-
-    impl UserMemory for Page {
-        fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
-            let at = (pointer as usize)
-                .checked_sub(0x1000)
-                .ok_or(STATUS_ACCESS_VIOLATION)?;
-            let source = self
-                .0
-                .get(at..at + bytes.len())
-                .ok_or(STATUS_ACCESS_VIOLATION)?;
-            bytes.copy_from_slice(source);
-            Ok(())
-        }
-
-        fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), NtStatus> {
-            let at = (pointer as usize)
-                .checked_sub(0x1000)
-                .ok_or(STATUS_ACCESS_VIOLATION)?;
-            let target = self
-                .0
-                .get_mut(at..at + bytes.len())
-                .ok_or(STATUS_ACCESS_VIOLATION)?;
-            target.copy_from_slice(bytes);
-            Ok(())
-        }
-    }
-
     /// The service's answers into the caller's memory: the length needed in every case, the
     /// buffer written only when it holds the answer whole.
     #[test]
     fn the_service_reports_the_length_in_every_case() {
-        let page = std::rc::Rc::new(core::cell::RefCell::new(Page(std::vec![0xCC; 0x100])));
+        let page = std::rc::Rc::new(core::cell::RefCell::new(Page::new(
+            0x1000,
+            std::vec![0xCC; 0x100],
+        )));
         let _installed = install(page.clone());
         let (buffer, needed) = (UserAddr(0x1000), UserPtr::<u32>::at(0x10F0));
         let read_needed = || needed.read().unwrap();
-        let untouched = |page: &Page| page.0[..0x40].iter().all(|&b| b == 0xCC);
+        let untouched = |page: &Page| page.bytes[..0x40].iter().all(|&b| b == 0xCC);
 
         assert_eq!(
             answer(None, UOI_NAME, buffer, 0x40, needed),
@@ -515,8 +489,8 @@ mod tests {
             Ok(STATUS_SUCCESS)
         );
         assert_eq!(read_needed(), 16);
-        assert_eq!(&page.borrow().0[..16], &utf16_bytes_z("WinSta0")[..]);
-        assert_eq!(page.borrow().0[16], 0xCC, "the answer alone");
+        assert_eq!(&page.borrow().bytes[..16], &utf16_bytes_z("WinSta0")[..]);
+        assert_eq!(page.borrow().bytes[16], 0xCC, "the answer alone");
         assert_eq!(
             answer(Some(DEFAULT), UOI_TYPE, UserAddr(0x2000), 16, needed),
             Err(STATUS_ACCESS_VIOLATION)
