@@ -690,6 +690,7 @@ mod target {
     use crate::nt::memory::{capture, with_process, with_space};
     use crate::nt::object::is_console_handle;
     use crate::nt::sync;
+    use crate::ob::sdcache::PoolBuf;
     use crate::ob::{self, ObjectId, ObjectType};
 
     /// A section is gone: it drops its hold on its frames. A cached image segment's are parked,
@@ -1044,23 +1045,30 @@ mod target {
         result
     }
 
+    /// A page's buffer from the pool, for the image paths' pages: kept off the kernel stack, which
+    /// these paths share with the services a user callback nests (a callback is sure of 12 KiB
+    /// below its issuer only), where a page's array or two in a frame is a large part of it.
+    fn page_buffer() -> Result<PoolBuf, NtStatus> {
+        PoolBuf::take(PAGE as usize).ok_or(STATUS_INSUFFICIENT_RESOURCES)
+    }
+
     /// An image file's layout (see [`image_layout`]) and its header page as mapped (the image's
     /// page 0: its headers, and whatever part of a section the page holds), from its first page as
     /// the volume holds it. Only a section's bytes past that first page are read again.
     fn read_image_start(
         file: &crate::fs::fat32::lookup::File,
-    ) -> Result<((u32, u32), [u8; PAGE as usize]), NtStatus> {
-        let mut headers = [0u8; IMAGE_HEADERS];
+    ) -> Result<((u32, u32), PoolBuf), NtStatus> {
+        let mut headers = page_buffer()?;
         let length = IMAGE_HEADERS.min(file.size as usize);
-        let headers = &mut headers[..length];
+        let headers = &mut headers.as_mut_slice()[..length];
         if crate::fs::io::read_file_at(file, 0, headers).is_none() {
             return Err(STATUS_IO_DEVICE_ERROR);
         }
         let layout = image_layout(headers, file.size)?;
         let image = crate::exec::pe::Image::parse_headers(headers, file.size as usize)
             .map_err(|_| STATUS_INVALID_IMAGE_FORMAT)?;
-        let mut page = [0u8; PAGE as usize];
-        let built = image.map_page(0, &mut page, |offset, out| {
+        let mut page = page_buffer()?;
+        let built = image.map_page(0, page.as_mut_slice(), |offset, out| {
             let end = offset as usize + out.len();
             match headers.get(offset as usize..end) {
                 Some(read) => {
@@ -1084,15 +1092,17 @@ mod target {
     fn segment_headers(
         segment: ob::SegmentId,
         file: &crate::fs::fat32::lookup::File,
-    ) -> Result<([u8; PAGE as usize], usize), NtStatus> {
-        let mut page = [0u8; PAGE as usize];
+    ) -> Result<(PoolBuf, usize), NtStatus> {
+        let mut page = page_buffer()?;
         let length = (file.size as usize).min(IMAGE_HEADERS);
         let held = ob::locked(|directory| {
             let frame = segment_frames(directory, segment).made(&CurrentPages, 0)?;
-            crate::mem::paging::read_frame(frame, 0, &mut page);
+            crate::mem::paging::read_frame(frame, 0, page.as_mut_slice());
             Some(())
         });
-        if held.is_none() && crate::fs::io::read_file_at(file, 0, &mut page[..length]).is_none() {
+        if held.is_none()
+            && crate::fs::io::read_file_at(file, 0, &mut page.as_mut_slice()[..length]).is_none()
+        {
             return Err(STATUS_IO_DEVICE_ERROR);
         }
         Ok((page, length))
@@ -1404,7 +1414,7 @@ mod target {
         // The image is a view of its header page, which stays as read while `buffer` builds the
         // pages.
         let (header_page, headers) = segment_headers(segment, &file)?;
-        let mut buffer = [0u8; PAGE as usize];
+        let mut buffer = page_buffer()?;
         let image =
             crate::exec::pe::Image::parse_headers(&header_page[..headers], file.size as usize)
                 .map_err(|_| STATUS_INVALID_IMAGE_FORMAT)?;
@@ -1440,7 +1450,7 @@ mod target {
             let made = ob::locked(|directory| segment_frames(directory, segment).made(table, page));
             // A page not yet made is built first: a read that fails maps nothing.
             if made.is_none()
-                && !image.map_page(rva, &mut buffer, |offset, out| {
+                && !image.map_page(rva, buffer.as_mut_slice(), |offset, out| {
                     crate::fs::io::read_file_at(&file, offset, out).is_some()
                 })
             {
@@ -1451,7 +1461,7 @@ mod target {
                 Some(frame) => Ok(frame),
                 None => ob::locked(|directory| {
                     segment_frames(directory, segment).image_frame(table, page, |frame| {
-                        crate::mem::paging::write_frame(frame, 0, &buffer);
+                        crate::mem::paging::write_frame(frame, 0, buffer.as_slice());
                     })
                 }),
             };

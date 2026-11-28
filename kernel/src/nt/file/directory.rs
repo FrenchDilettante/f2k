@@ -20,6 +20,7 @@ use crate::fs::fat32::lookup::File;
 use crate::fs::fat32::path::MAX_NAME;
 use crate::fs::file::{rights, Context, IoState};
 use crate::fs::search::{matches, Search, MAX_EXPRESSION};
+use crate::ob::sdcache::PoolBuf;
 use crate::status::*;
 
 /// The most a query copies out at once (a listing buffer's worth: FindFirstFile's is 4 KiB).
@@ -165,10 +166,12 @@ fn list(
         Ok(Search::new(expression))
     })?;
     let expression = search.expression();
-    let mut buffer = [0u8; MAX_BUFFER];
+    // The answer is built in the pool, not in this frame: up to 16 KiB, half a kernel stack, on a
+    // path a user callback's nested service may take (sure of 12 KiB below its issuer only).
+    let mut buffer = PoolBuf::take(room).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
     let cluster = cluster_bytes();
     // The entries that fit, from the search's next record on, and the next record index.
-    let mut listing = Listing::new(class, &mut buffer[..room], single);
+    let mut listing = Listing::new(class, buffer.as_mut_slice(), single);
     let mut next = search.next;
     let walked = crate::fs::fat32::volume::with_boot_volume(|volume| {
         walk(volume, directory.first_cluster, |listed| {
