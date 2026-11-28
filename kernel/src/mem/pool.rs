@@ -230,6 +230,20 @@ mod target {
         }
     }
 
+    /// `count` values, each `fresh()`, in a block kept for the kernel's life (a table sized at
+    /// the boot, as the runner's audit ledger is by its legs): none when the pool has no room.
+    pub fn leak_array<T>(count: usize, fresh: impl Fn() -> T) -> Option<&'static mut [T]> {
+        const { assert!(core::mem::align_of::<T>() <= PAGE_SIZE as usize) };
+        let bytes = (count * core::mem::size_of::<T>()).max(1);
+        let at = allocate(bytes)?.leak().as_mut_ptr().cast::<T>();
+        for index in 0..count {
+            // SAFETY: the block holds `count` values from its page-aligned start, and is ours.
+            unsafe { at.add(index).write(fresh()) };
+        }
+        // SAFETY: every value written above; the block is kept and named by nothing else.
+        Some(unsafe { core::slice::from_raw_parts_mut(at, count) })
+    }
+
     /// Release the block at virtual address `va` that [`allocate`] handed out for `bytes`:
     /// reconstructs the block and drops it (its pages unmapped, their frames and the pages
     /// themselves given back), as the DMA layer's free path does with a registry record.

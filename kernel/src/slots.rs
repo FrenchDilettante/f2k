@@ -1098,7 +1098,12 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
 
     /// The live slots' ids and records, in index order.
     pub fn iter(&self) -> impl Iterator<Item = (C::Id, &T)> + '_ {
-        (C::RESERVED_LOW..self.high).filter_map(move |index| {
+        self.iter_from(0)
+    }
+
+    /// [`Slots::iter`] from slot `start` on: the live slots at `start` and above, in index order.
+    pub fn iter_from(&self, start: u32) -> impl Iterator<Item = (C::Id, &T)> + '_ {
+        (start.max(C::RESERVED_LOW)..self.high).filter_map(move |index| {
             let slot = self.slot(index)?.as_ptr();
             // SAFETY: a made chunk's slot, written whole; `&self` keeps the pool's changes away.
             let (uniq, state, value) = unsafe { ((*slot).uniq, (*slot).state, &(*slot).value) };

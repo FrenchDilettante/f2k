@@ -176,7 +176,7 @@ PROCESS_CONCURRENT_SAME_IMAGE = (
     "F2K: process suite complete: 2 run, 0 faulted, 0 leaks",
 )
 
-# Sixteen C-runtime (/MD) programs alive at once, the process pool's whole capacity: hellomd first,
+# Sixteen C-runtime (/MD) programs alive at once (once the process pool's whole capacity): hellomd first,
 # then fifteen of spawn's companion program sleeping two seconds (it prints nothing), so all sixteen
 # hold their DLLs' views together. Each maps kernel32 and msvcrt from the volume: every process
 # maps the same two image segments, its sections closed once mapped, so the section pool does not
@@ -193,13 +193,13 @@ PROCESS_CONCURRENT_MD = (
     "F2K: process suite complete: 16 run, 0 faulted, 0 leaks",
 )
 
-# One leg more than the process pool holds: sixty-four exit0 legs load, the sixty-fifth's process is
-# refused (STATUS_INSUFFICIENT_RESOURCES: every process record in use), reported after its start
-# line, and the boot halts there, as on any leg that does not load: no leg runs.
-PROCESS_CONCURRENT_TOO_MANY = (
+# A hundred exit0 legs side by side, past the 64 processes F2K's fixed pool once held: the processes
+# have no cap but memory (slot-pool slice 19), so every leg loads, runs and is torn down clean, and
+# every audit line waits in the ledger made for the boot's legs until the last reap.
+PROCESS_CONCURRENT_MANY = (
     *BOOTED,
-    *(f"F2K: process {index} of 65: exit0" for index in range(1, 66)),
-    "F2K: process not created (status 0xc000009a)",
+    *(f"F2K: process {index} of 100: exit0" for index in range(1, 101)),
+    "F2K: process suite complete: 100 run, 0 faulted, 0 leaks",
 )
 
 # The session's end (kernel/src/session.rs), driven by the kernel option `end-session=<flags>`: no
@@ -696,14 +696,14 @@ CASES = (
         timeout=40.0,
     ),
     Case(
-        name="process-concurrent-too-many",
-        description="sixty-five legs side by side, one more than the process pool holds: the sixty-fifth's creation is refused with its status after its start line, and the boot halts with no leg run",
+        name="process-concurrent-many",
+        description="a hundred legs side by side, past the 64 processes F2K once held (it holds as many as memory backs, as Windows 2000 does): every leg loaded, every one ends and is torn down clean, and the summary counts them all",
         image="kernel",
-        cmdline=" ;; ".join(("exit0",) * 65),
+        cmdline=" ;; ".join(("exit0",) * 100),
         kernel_options="concurrent",
         ordered=True,
-        expects=PROCESS_CONCURRENT_TOO_MANY,
-        forbids=("exited normally",),
+        expects=PROCESS_CONCURRENT_MANY,
+        forbids=("not created", "FAILED"),
     ),
     # Interrupt/timer core: the irq-smoke diagnostic boot proves the hardware layer and the
     # interrupt core are live, then the normal boot proceeds to the default image's exit (the tick

@@ -8,10 +8,11 @@
 //! ([`crate::slots::SideTable`]) keyed by the object's index, whose record is made in the nonpaged
 //! pool ([`crate::mem::pool`]) the first time a process takes its index, and kept for the kernel's
 //! life, reused by every later process at that index, so it never moves (Windows 2000 takes its
-//! EPROCESS from the nonpaged pool too). A record costs some 40 KiB: built into the kernel's image,
-//! [`MAX_PROCESSES`] of them would not fit its window. The capacity is [`MAX_PROCESSES`]: a process
-//! created while every index is in use, or whose record the pool has no room for, is refused
-//! ([`create`]). The records are shared: what changes in one sits behind its own locks (see
+//! EPROCESS from the nonpaged pool too). A record costs some 27 KiB, so a table of them built into
+//! the kernel's image would cap the processes; this one has no cap, as Windows 2000 has none: what
+//! bounds it is memory (a process whose object, record or side tables find no page is refused,
+//! [`create`]), and the object's u16 index, a representation limit (65,534 processes) far past
+//! what memory backs. The records are shared: what changes in one sits behind its own locks (see
 //! [`Process`]), so every accessor hands out `&'static Process`, which every thread of the process
 //! may hold at once.
 //!
@@ -32,9 +33,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use super::Process;
 #[cfg(target_arch = "x86")]
 use crate::slots::{NonpagedPages, SideTable};
-
-/// How many processes can exist at once, across the system.
-pub const MAX_PROCESSES: usize = 64;
 
 /// The process records, by pool index: a record is made, with its chunk, the first time a process
 /// takes its index, and kept at that address for the kernel's life (see the module notes). Readers
@@ -69,24 +67,21 @@ pub fn record(index: u16) -> &'static Process {
     made(index).expect("a process record taken by a live process")
 }
 
-/// The process objects that live now, by pool index, as one hold of the directory finds them.
-#[cfg(target_arch = "x86")]
-fn live_objects() -> [Option<crate::ob::ObjectId>; crate::ob::PROCESSES] {
-    crate::ob::locked(|directory| {
-        core::array::from_fn(|index| directory.processes_live(index as u16))
-    })
-}
-
-/// Every record whose process object lives, with its object.
+/// Every record whose process object lives, with its object, in pool order: a hold of the
+/// directory a step, each finding the next live object past the last one found (no snapshot of
+/// every process, which would need room for as many as there may be). A process created during
+/// the walk is found when its index lies ahead of it; one deleted meanwhile is not.
 #[cfg(target_arch = "x86")]
 fn live() -> impl Iterator<Item = (&'static Process, crate::ob::ObjectId)> {
-    live_objects()
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, id)| {
-            let (process, id) = (made(index as u16)?, id?);
-            (process.object() == id).then_some((process, id))
-        })
+    let mut from = 0u16;
+    core::iter::from_fn(move || loop {
+        let id = crate::ob::locked(|directory| directory.next_live_process(from))?;
+        // The u16 index stops at 0xFFFE: the step after the last index finds nothing.
+        from = id.index + 1;
+        if let Some(process) = made(id.index).filter(|process| process.object() == id) {
+            return Some((process, id));
+        }
+    })
 }
 
 /// Every process that has not ended, in pool order: the process listing's. As the toolhelp
@@ -103,11 +98,10 @@ pub fn listed() -> impl Iterator<Item = &'static Process> {
 /// Create a process: its object and its record at the same index, the record taken in place over
 /// the address space at `dir_phys`, named `name`, created by the process whose client id is
 /// `parent_id` (zero: none), running as leg `leg` (none for a child).
-/// STATUS_INSUFFICIENT_RESOURCES when every process record is in use, or a record not yet made
-/// (or the drivers' stand-in for the process, [`crate::dev::io`]'s) finds no room in the nonpaged
-/// pool (Windows 2000's answer to a full table and to an exhausted
-/// pool); nothing is taken then — the object made goes again — and the address space stays the
-/// caller's.
+/// STATUS_INSUFFICIENT_RESOURCES when the object, or a record not yet made (or the drivers'
+/// stand-in for the process, [`crate::dev::io`]'s), finds no room in the nonpaged pool (Windows
+/// 2000's answer to an exhausted pool), or every u16 index is in use; nothing is taken then — the
+/// object made goes again — and the address space stays the caller's.
 #[cfg(target_arch = "x86")]
 pub(super) fn create(
     dir_phys: crate::mem::phys::PhysAddr,

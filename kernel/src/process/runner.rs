@@ -47,7 +47,7 @@
 //! started); each leg's end line prints as it ends, its audit line at the next quiescent point,
 //! and the summary once every leg is reaped. The program output of legs that overlap
 //! interleaves on COM1, so the log is judged whole, not split by leg. A boot of more legs than
-//! there can be processes at once stops at the first leg past the pool's capacity: its start line,
+//! memory holds processes for at once stops at the first leg it has no room for: its start line,
 //! then `F2K: process not created (status 0xc000009a)` (STATUS_INSUFFICIENT_RESOURCES), and the
 //! boot halts, as on any leg that does not load (its file unread, its image rejected).
 
@@ -81,7 +81,9 @@ fn with_suite<R>(step: impl FnOnce(&mut Suite) -> R) -> R {
 /// (every program's, with the `concurrent` option), and enter the idle loop. Never returns.
 pub fn run() -> ! {
     let legs = programs().count() as u32;
-    with_suite(|suite| suite.begin(legs));
+    // The deferred audits' room, one of the boot's permanent allocations.
+    let ledger = exit::ledger(legs);
+    with_suite(|suite| suite.begin(legs, ledger));
     // The console's control thread, the kernel's worker that delivers its control events: its
     // stack is one of the boot's permanent allocations.
     crate::csr::start_control_thread();
@@ -178,7 +180,7 @@ fn start_leg(index: u32) {
 /// every main thread, in the same order (see the module's documentation). Two passes, keeping
 /// nothing between them: the second finds each leg's process among the listed ones by its leg
 /// number (none of them runs yet, so none has ended). A leg that does not load — more legs than
-/// there can be processes at once among the reasons — halts the boot, as any does.
+/// memory holds processes for among the reasons — halts the boot, as any does.
 fn start_every_leg(legs: u32) {
     for index in 1..=legs {
         load_leg(index);

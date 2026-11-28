@@ -88,7 +88,6 @@ pub mod ordinals;
 /// The foreground process and its stretched quantum (Windows 2000's priority separation).
 pub mod foreground;
 
-pub use pool::MAX_PROCESSES;
 #[cfg(target_arch = "x86")]
 pub use pool::{current, queue_reap, reap_pending};
 
@@ -1393,7 +1392,10 @@ fn teardown(process: &'static Process, quiescent: bool) {
     // private fonts, if it ever entered win32k; the audit, with the record still the process's;
     // then the deletion, which may free it.
     crate::mem::kstacks::release_parked();
-    crate::win32k::gdi::end_process(process.object().index);
+    crate::win32k::gdi::end_process(crate::win32k::gdi::Owner {
+        process: process.object().index,
+        id: process.id(),
+    });
     if process.win32k().is_some() {
         // A process connects at its first win32k service, which a boot without win32k refuses
         // (`user::syscall`): a connection there is a bug, not a step to skip.

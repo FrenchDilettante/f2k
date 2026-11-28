@@ -8,9 +8,11 @@
 //! process's handle count does not include them, as on Windows 2000. The entry names its owner,
 //! the process that made the object, and only the owner finds it: a handle another process
 //! passes along names nothing there (STATUS_INVALID_HANDLE, as Windows 2000's GDI handles are
-//! valid in their own process alone). The stock objects and the other global objects
-//! ([`rtl::gdi::global_object_kind`]) are not in the table: their handles are constants every
-//! process names alike.
+//! valid in their own process alone). The owner is named by its process id, as Windows 2000's
+//! entry names it (its GDI handle table entry's process id field, from memory), so the table needs
+//! no room per process index and caps no process count. The stock objects and the other global
+//! objects ([`rtl::gdi::global_object_kind`]) are not in the table: their handles are constants
+//! every process names alike.
 //!
 //! A handle is [`GdiHandle`]'s shape: the slot's index in the low word, the object's kind in bits
 //! 16-19 ([`rtl::gdi::object_handle`]; a DC's clear; the entry keeps it, as a pen's is OBJ_PEN or
@@ -38,7 +40,7 @@
 //! fails (its id's generation moved on), so nothing the table hands out ever names another object.
 
 use rtl::dib::OBJ_BITMAP;
-use rtl::gdi::{object_handle, OBJ_BRUSH, OBJ_FONT, OBJ_PEN, OBJ_REGION};
+use rtl::gdi::{object_handle, OBJ_BRUSH, OBJ_EXTPEN, OBJ_FONT, OBJ_PEN, OBJ_REGION};
 
 use super::process::{self, Objects, W32Processes};
 use crate::ob::{ObjectId, ObjectType};
@@ -52,26 +54,61 @@ pub const DC_KIND: u32 = 0;
 /// and the stock bit.
 const TYPE_BITS: u32 = 0x00FF_0000;
 
-/// A table entry: the object (its creator's reference, which the entry holds), its owner, the
-/// process that made it, by its object's index (the low byte: a process's index is at most 64), and
-/// the kind its handle carries (the high byte), in one word so an entry keeps to its 16-byte slot.
+/// A GDI object's owner: the process that made it, by its object's index (where its count of
+/// GDI objects is kept, [`super::process`]'s record) and by its client id (what the entry keeps).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Owner {
+    pub process: u16,
+    pub id: u32,
+}
+
+/// The bits of an entry's owner word that carry the owner's process id, shifted right two (a
+/// client id's low two bits are always clear): 24 bits, the width of the client-id table's index
+/// (its 2^24 - 1 entries), so every process id fits.
+const OWNER_BITS: u32 = 24;
+
+/// A table entry: the object (its creator's reference, which the entry holds) by its index and
+/// generation; its owner's process id, shifted right two, in the low 24 bits of the owner word,
+/// and the kind its handle carries in the top 8. The kind tells the object's type too (a pen's
+/// OBJ_PEN or OBJ_EXTPEN both a Pen), so the type takes no room of its own, and the entry keeps
+/// to its 16-byte slot, 256 to a page: Windows 2000's entry keeps the owner's process id and the
+/// type beside the object too.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GdiEntry {
-    object: ObjectId,
-    owner_kind: u16,
+    index: u16,
+    generation: u16,
+    owner_kind: u32,
 }
 
 impl GdiEntry {
-    fn owner(&self) -> u16 {
-        self.owner_kind & 0xFF
+    /// The entry for `object`, its handle's kind `kind`, made by the process whose client id is
+    /// `owner`; none when the id is past the entry's field (no client id is).
+    fn new(object: ObjectId, kind: u32, owner: u32) -> Option<GdiEntry> {
+        let owner = owner >> 2;
+        (owner < 1 << OWNER_BITS && kind < 1 << (32 - OWNER_BITS)).then_some(GdiEntry {
+            index: object.index,
+            generation: object.generation,
+            owner_kind: owner | kind << OWNER_BITS,
+        })
+    }
+
+    /// Whether the process whose client id is `owner` owns the entry.
+    fn owned_by(&self, owner: u32) -> bool {
+        self.owner_kind & ((1 << OWNER_BITS) - 1) == owner >> 2 && owner & 3 == 0
     }
 
     fn kind(&self) -> u32 {
-        u32::from(self.owner_kind >> 8)
+        self.owner_kind >> OWNER_BITS
+    }
+
+    fn object(&self) -> ObjectId {
+        ObjectId {
+            kind: object_type(self.kind()).expect("an entry of a GDI kind"),
+            index: self.index,
+            generation: self.generation,
+        }
     }
 }
-
-const _: () = assert!(crate::ob::PROCESSES <= 0x100);
 
 // SAFETY: writes a whole entry (an id that names nothing, generation 0).
 unsafe impl Record for GdiEntry {
@@ -79,11 +116,8 @@ unsafe impl Record for GdiEntry {
         // SAFETY: the caller's contract.
         unsafe {
             at.write(GdiEntry {
-                object: ObjectId {
-                    kind: ObjectType::Dc,
-                    index: 0,
-                    generation: 0,
-                },
+                index: 0,
+                generation: 0,
                 owner_kind: 0,
             })
         };
@@ -111,12 +145,27 @@ pub const fn kind_bits(kind: ObjectType) -> Option<u32> {
     }
 }
 
+/// The type of the objects whose handles carry the kind bits `bits`; none for bits no GDI
+/// object's handle carries.
+const fn object_type(bits: u32) -> Option<ObjectType> {
+    match bits {
+        DC_KIND => Some(ObjectType::Dc),
+        OBJ_BRUSH => Some(ObjectType::Brush),
+        OBJ_PEN | OBJ_EXTPEN => Some(ObjectType::Pen),
+        OBJ_BITMAP => Some(ObjectType::Bitmap),
+        OBJ_FONT => Some(ObjectType::Font),
+        OBJ_REGION => Some(ObjectType::Region),
+        _ => None,
+    }
+}
+
 /// Why an insert gave no handle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Refusal {
     /// The process holds its quota's worth of GDI objects.
     Quota,
-    /// The table holds its 16,384 entries.
+    /// The table holds its 16,384 entries (or the owner's process id is past the entry's
+    /// field, which no client id is).
     Ceiling,
     /// No page was left for the table's next chunk or the process's record.
     NoMemory,
@@ -159,7 +208,7 @@ impl GdiTable {
     /// `object` is no GDI object's.
     pub fn insert(
         &mut self,
-        owner: u16,
+        owner: Owner,
         object: ObjectId,
         pages: &impl Pages,
     ) -> Result<u32, Refusal> {
@@ -168,21 +217,23 @@ impl GdiTable {
     }
 
     /// [`GdiTable::insert`], the handle carrying the kind `kind` (an extended pen's OBJ_EXTPEN,
-    /// where its object's type says OBJ_PEN). An owner or a kind past the entry's byte is
-    /// [`Refusal::Ceiling`]'s (neither happens: process indices stay below 0x100, kinds below 16).
+    /// where its object's type says OBJ_PEN).
+    ///
+    /// # Panics
+    ///
+    /// `kind` is no kind an object of `object`'s type carries.
     pub fn insert_as(
         &mut self,
-        owner: u16,
+        owner: Owner,
         object: ObjectId,
         kind: u32,
         pages: &impl Pages,
     ) -> Result<u32, Refusal> {
-        if owner > 0xFF || kind > 0xFF {
-            return Err(Refusal::Ceiling);
-        }
+        assert_eq!(object_type(kind), Some(object.kind), "a GDI object's kind");
+        let fresh = GdiEntry::new(object, kind, owner.id).ok_or(Refusal::Ceiling)?;
         let quota = super::quota::gdi_process_handle_quota();
         self.processes
-            .may_take(Objects::Gdi, owner, quota, pages)
+            .may_take(Objects::Gdi, owner.process, quota, pages)
             .map_err(|refusal| match refusal {
                 process::Refusal::Quota => Refusal::Quota,
                 process::Refusal::NoMemory => Refusal::NoMemory,
@@ -194,37 +245,34 @@ impl GdiTable {
                 Full::Limit => Refusal::Ceiling,
                 Full::NoChunk => Refusal::NoMemory,
             })?;
-        *entry = GdiEntry {
-            object,
-            owner_kind: owner | ((kind as u16) << 8),
-        };
-        self.processes.took(Objects::Gdi, owner);
+        *entry = fresh;
+        self.processes.took(Objects::Gdi, owner.process);
         Ok(object_handle(kind, id))
     }
 
-    /// The object `handle` names for the process `owner`: an entry it owns whose kind and
-    /// uniqueness the handle carries exactly. None for any other handle: another process's, a
-    /// deleted object's, a global object's, or one past the table.
-    pub fn find(&self, owner: u16, handle: u32) -> Option<ObjectId> {
+    /// The object `handle` names for the process whose client id is `owner`: an entry it owns
+    /// whose kind and uniqueness the handle carries exactly. None for any other handle: another
+    /// process's, a deleted object's, a global object's, or one past the table.
+    pub fn find(&self, owner: u32, handle: u32) -> Option<ObjectId> {
         let entry = self.slots.get(handle)?;
         let kind = entry.kind();
-        (entry.owner() == owner && handle & TYPE_BITS == object_handle(kind, 0))
-            .then_some(entry.object)
+        (entry.owned_by(owner) && handle & TYPE_BITS == object_handle(kind, 0))
+            .then(|| entry.object())
     }
 
     /// Free the entry `handle` names for `owner` (see [`GdiTable::find`]): the object whose
     /// reference it held, which the caller now holds. None when it names none.
-    pub fn remove(&mut self, owner: u16, handle: u32) -> Option<ObjectId> {
-        let object = self.find(owner, handle)?;
+    pub fn remove(&mut self, owner: Owner, handle: u32) -> Option<ObjectId> {
+        let object = self.find(owner.id, handle)?;
         self.slots.free(handle);
-        self.processes.gave(Objects::Gdi, owner);
+        self.processes.gave(Objects::Gdi, owner.process);
         Some(object)
     }
 
     /// Free up to `out.len()` of the entries `owner` owns, in slot order, their objects (the
     /// references they held, which the caller now holds) into `out`: how many. Fewer than
     /// `out.len()` when no entry of `owner` is left.
-    pub fn take_owned(&mut self, owner: u16, out: &mut [Option<ObjectId>]) -> usize {
+    pub fn take_owned(&mut self, owner: Owner, out: &mut [Option<ObjectId>]) -> usize {
         let mut handles = [0u32; TAKE_STEP];
         let room = out.len().min(TAKE_STEP);
         let mut count = 0;
@@ -232,20 +280,20 @@ impl GdiTable {
             if count == room {
                 break;
             }
-            if entry.owner() == owner {
+            if entry.owned_by(owner.id) {
                 handles[count] = id;
-                out[count] = Some(entry.object);
+                out[count] = Some(entry.object());
                 count += 1;
             }
         }
         for &handle in &handles[..count] {
             self.slots.free(handle);
-            self.processes.gave(Objects::Gdi, owner);
+            self.processes.gave(Objects::Gdi, owner.process);
         }
         if count < room {
             // The last of the owner's entries: its count starts afresh for the next process at
             // its index.
-            self.processes.end(Objects::Gdi, owner);
+            self.processes.end(Objects::Gdi, owner.process);
         }
         count
     }
@@ -255,12 +303,12 @@ impl GdiTable {
         self.slots.live()
     }
 
-    /// The entries `owner` owns.
+    /// The entries the process whose client id is `owner` owns.
     #[cfg(test)]
-    pub fn owned(&self, owner: u16) -> usize {
+    pub fn owned(&self, owner: u32) -> usize {
         self.slots
             .iter()
-            .filter(|(_, entry)| entry.owner() == owner)
+            .filter(|(_, entry)| entry.owned_by(owner))
             .count()
     }
 }
@@ -294,9 +342,13 @@ mod target {
         f(&mut table)
     }
 
-    /// The calling process, as the table names an owner: its object's index.
-    fn owner() -> u16 {
-        crate::process::current().object().index
+    /// The calling process, as the table names an owner.
+    fn owner() -> Owner {
+        let process = crate::process::current();
+        Owner {
+            process: process.object().index,
+            id: process.id(),
+        }
     }
 
     /// Publish a new GDI object `object` for the calling process: an entry holding its creator's
@@ -328,7 +380,7 @@ mod target {
         if handle & TYPE_BITS != object_handle(kind, 0) {
             return None;
         }
-        let owner = owner();
+        let owner = owner().id;
         with_table(|table| table.find(owner, handle))
     }
 
@@ -340,7 +392,7 @@ mod target {
 
     /// Whether the calling process's `handle` names a GDI object of any kind.
     pub fn names(handle: u32) -> bool {
-        let owner = owner();
+        let owner = owner().id;
         with_table(|table| table.find(owner, handle)).is_some()
     }
 
@@ -362,10 +414,10 @@ mod target {
         }
     }
 
-    /// The process `owner` (its object's index) has ended: every GDI object it still owns is freed,
-    /// a step of [`TAKE_STEP`] entries out of the table in one hold and their references dropped
-    /// after it.
-    pub fn end_process(owner: u16) {
+    /// The process `owner` has ended: every GDI object it still owns is freed, a step of
+    /// [`TAKE_STEP`] entries out of the table in one hold and their references dropped after it.
+    /// It runs at the process's teardown, while its client id still names it alone.
+    pub fn end_process(owner: Owner) {
         loop {
             let mut step = [None; TAKE_STEP];
             let taken = with_table(|table| table.take_owned(owner, &mut step));
@@ -406,8 +458,56 @@ mod tests {
         GdiTable::on(process::processes())
     }
 
-    const ONE: u16 = 3;
-    const OTHER: u16 = 5;
+    const ONE: Owner = Owner {
+        process: 3,
+        id: 0x8C,
+    };
+    const OTHER: Owner = Owner {
+        process: 5,
+        id: 0x90,
+    };
+
+    /// An entry keeps to a 16-byte slot, 256 to a page, whatever the process count.
+    #[test]
+    fn an_entry_keeps_to_its_slot() {
+        assert_eq!(core::mem::size_of::<GdiEntry>(), 8);
+        assert_eq!(PER, 256);
+    }
+
+    /// The owner is its process id, not its index: a later process at the same index finds
+    /// nothing of an earlier one's; any client id the table can name (up to 2^24 - 1 entries'
+    /// worth, shifted left two) owns its entries, and none past it is taken.
+    #[test]
+    fn the_owner_is_its_process_id() {
+        let pages = HostPages::new();
+        let mut table = table();
+        let brush = object(ObjectType::Brush, 1);
+        let handle = table.insert(ONE, brush, &pages).unwrap();
+        let later = Owner {
+            process: ONE.process,
+            id: 0x200,
+        };
+        assert_eq!(table.find(later.id, handle), None);
+        assert_eq!(table.remove(later, handle), None);
+        let highest = Owner {
+            process: 0xFFFE,
+            id: ((1 << 24) - 1) << 2,
+        };
+        let far = table.insert(highest, brush, &pages).unwrap();
+        assert_eq!(table.find(highest.id, far), Some(brush));
+        assert_eq!(table.find(highest.id & !(1 << 25), far), None);
+        assert_eq!(
+            table.find(highest.id | 1, far),
+            None,
+            "a client id's low bits are clear"
+        );
+        let past = Owner {
+            process: 0xFFFE,
+            id: 1 << 26,
+        };
+        assert_eq!(table.insert(past, brush, &pages), Err(Refusal::Ceiling));
+        assert_eq!(table.find(ONE.id, handle), Some(brush));
+    }
 
     /// A handle carries its slot in the low word, its kind in bits 16-19 (a DC's clear) and its
     /// uniqueness, from 1, in bits 24-31, the stock bit clear; rtl::gdi reads its kind back.
@@ -463,9 +563,9 @@ mod tests {
             .unwrap();
         assert_eq!(rtl::gdi::object_kind(plain), Some(OBJ_PEN));
         assert_eq!(rtl::gdi::object_kind(extended), Some(rtl::gdi::OBJ_EXTPEN));
-        assert_eq!(table.find(ONE, extended), Some(pen));
+        assert_eq!(table.find(ONE.id, extended), Some(pen));
         let swapped = rtl::gdi::object_handle(OBJ_PEN, extended & 0xFF00_FFFF);
-        assert_eq!(table.find(ONE, swapped), None);
+        assert_eq!(table.find(ONE.id, swapped), None);
     }
 
     /// Only the owner finds its objects: another process's look-up, its delete and its teardown
@@ -476,12 +576,12 @@ mod tests {
         let mut table = table();
         let brush = object(ObjectType::Brush, 7);
         let handle = table.insert(ONE, brush, &pages).unwrap();
-        assert_eq!(table.find(ONE, handle), Some(brush));
-        assert_eq!(table.find(OTHER, handle), None);
+        assert_eq!(table.find(ONE.id, handle), Some(brush));
+        assert_eq!(table.find(OTHER.id, handle), None);
         assert_eq!(table.remove(OTHER, handle), None);
         let mut out = [None; 4];
         assert_eq!(table.take_owned(OTHER, &mut out), 0);
-        assert_eq!(table.find(ONE, handle), Some(brush));
+        assert_eq!(table.find(ONE.id, handle), Some(brush));
         assert_eq!(table.remove(ONE, handle), Some(brush));
     }
 
@@ -498,7 +598,7 @@ mod tests {
             .insert(ONE, object(ObjectType::Brush, 2), &pages)
             .unwrap();
         assert_eq!(table.remove(ONE, first), Some(object(ObjectType::Brush, 1)));
-        assert_eq!(table.find(ONE, first), None);
+        assert_eq!(table.find(ONE.id, first), None);
         assert_eq!(
             table.remove(ONE, first),
             None,
@@ -509,9 +609,12 @@ mod tests {
             .unwrap();
         assert_eq!(again & 0xFFFF, first & 0xFFFF, "the slot freed last");
         assert_eq!(again >> 24, (first >> 24) + 1);
-        assert_eq!(table.find(ONE, first), None);
-        assert_eq!(table.find(ONE, again), Some(object(ObjectType::Brush, 3)));
-        assert_eq!(table.find(ONE, kept), Some(object(ObjectType::Brush, 2)));
+        assert_eq!(table.find(ONE.id, first), None);
+        assert_eq!(
+            table.find(ONE.id, again),
+            Some(object(ObjectType::Brush, 3))
+        );
+        assert_eq!(table.find(ONE.id, kept), Some(object(ObjectType::Brush, 2)));
     }
 
     /// A handle whose kind bits are another kind's, whose stock bit or type bits are set, or whose
@@ -535,15 +638,18 @@ mod tests {
             0,
             0xFFFF_FFFF,
         ] {
-            assert_eq!(table.find(ONE, forged), None, "{forged:#x}");
+            assert_eq!(table.find(ONE.id, forged), None, "{forged:#x}");
         }
         for index in 0..=rtl::gdi::DEFAULT_GUI_FONT {
             if let Some(stock) = rtl::gdi::stock_handle(index) {
-                assert_eq!(table.find(ONE, stock), None);
+                assert_eq!(table.find(ONE.id, stock), None);
                 assert_eq!(table.find(0, stock), None);
             }
         }
-        assert_eq!(table.find(ONE, handle), Some(object(ObjectType::Brush, 1)));
+        assert_eq!(
+            table.find(ONE.id, handle),
+            Some(object(ObjectType::Brush, 1))
+        );
     }
 
     /// A process's end takes every entry it owns, a step at a time, and no other process's.
@@ -565,7 +671,7 @@ mod tests {
             let other = object(kind, 1000 + index);
             others.push((table.insert(OTHER, other, &pages).unwrap(), other));
         }
-        assert_eq!(table.owned(ONE), TAKE_STEP * 2 + 5);
+        assert_eq!(table.owned(ONE.id), TAKE_STEP * 2 + 5);
         let mut taken = std::vec::Vec::new();
         loop {
             let mut step = [None; TAKE_STEP];
@@ -577,10 +683,10 @@ mod tests {
         }
         assert_eq!(taken.len(), TAKE_STEP * 2 + 5);
         assert!(taken.iter().all(|object| object.index < 1000));
-        assert_eq!(table.owned(ONE), 0);
+        assert_eq!(table.owned(ONE.id), 0);
         assert_eq!(table.live() as usize, others.len());
         for (handle, other) in others {
-            assert_eq!(table.find(OTHER, handle), Some(other));
+            assert_eq!(table.find(OTHER.id, handle), Some(other));
         }
     }
 
@@ -601,7 +707,7 @@ mod tests {
                 ObjectType::Region
             };
             handles.push(table.insert(ONE, object(kind, 1), &pages).unwrap());
-            assert_eq!(table.processes.gdi_objects(ONE), index + 1);
+            assert_eq!(table.processes.gdi_objects(ONE.process), index + 1);
         }
         assert_eq!(
             table.insert(ONE, object(ObjectType::Brush, 1), &pages),
@@ -609,16 +715,16 @@ mod tests {
         );
         assert_eq!(Refusal::Quota.status(), STATUS_NO_MEMORY);
         assert_eq!(rtl::status::dos_error(Refusal::Quota.status().0), 8);
-        assert_eq!(table.processes.gdi_objects(ONE), quota);
+        assert_eq!(table.processes.gdi_objects(ONE.process), quota);
         assert_eq!(table.live(), quota);
         assert!(table
             .insert(OTHER, object(ObjectType::Font, 1), &pages)
             .is_ok());
-        assert_eq!(table.processes.gdi_objects(OTHER), 1);
+        assert_eq!(table.processes.gdi_objects(OTHER.process), 1);
 
         let last = handles.pop().unwrap();
         assert!(table.remove(ONE, last).is_some());
-        assert_eq!(table.processes.gdi_objects(ONE), quota - 1);
+        assert_eq!(table.processes.gdi_objects(ONE.process), quota - 1);
         let again = table
             .insert(ONE, object(ObjectType::Brush, 2), &pages)
             .unwrap();
@@ -631,7 +737,11 @@ mod tests {
         for handle in handles {
             assert!(table.remove(ONE, handle).is_some());
         }
-        assert_eq!(table.processes.gdi_objects(ONE), 0, "every one given back");
+        assert_eq!(
+            table.processes.gdi_objects(ONE.process),
+            0,
+            "every one given back"
+        );
     }
 
     /// A delete by another process, or of a stale handle, gives no count back; the teardown's
@@ -651,18 +761,27 @@ mod tests {
         table
             .insert(OTHER, object(ObjectType::Dc, 1), &pages)
             .unwrap();
-        assert_eq!(table.processes.gdi_objects(ONE), TAKE_STEP as u32 + 4);
+        assert_eq!(
+            table.processes.gdi_objects(ONE.process),
+            TAKE_STEP as u32 + 4
+        );
         assert_eq!(table.remove(OTHER, first), None);
-        assert_eq!(table.processes.gdi_objects(ONE), TAKE_STEP as u32 + 4);
+        assert_eq!(
+            table.processes.gdi_objects(ONE.process),
+            TAKE_STEP as u32 + 4
+        );
         assert!(table.remove(ONE, first).is_some());
         assert_eq!(table.remove(ONE, first), None, "stale");
-        assert_eq!(table.processes.gdi_objects(ONE), TAKE_STEP as u32 + 3);
+        assert_eq!(
+            table.processes.gdi_objects(ONE.process),
+            TAKE_STEP as u32 + 3
+        );
         let mut step = [None; TAKE_STEP];
         assert_eq!(table.take_owned(ONE, &mut step), TAKE_STEP);
-        assert_eq!(table.processes.gdi_objects(ONE), 3);
+        assert_eq!(table.processes.gdi_objects(ONE.process), 3);
         assert_eq!(table.take_owned(ONE, &mut step), 3);
-        assert_eq!(table.processes.gdi_objects(ONE), 0);
-        assert_eq!(table.processes.gdi_objects(OTHER), 1);
+        assert_eq!(table.processes.gdi_objects(ONE.process), 0);
+        assert_eq!(table.processes.gdi_objects(OTHER.process), 1);
     }
 
     /// The stock objects are no process's: their handles name no entry, so a delete gives no
@@ -679,7 +798,7 @@ mod tests {
                 assert_eq!(table.remove(ONE, stock), None);
             }
         }
-        assert_eq!(table.processes.gdi_objects(ONE), 1);
+        assert_eq!(table.processes.gdi_objects(ONE.process), 1);
         assert_eq!(table.live(), 1);
     }
 
@@ -696,7 +815,7 @@ mod tests {
             assert_eq!(
                 table
                     .processes
-                    .may_take(Objects::Gdi, owner, quota, &records),
+                    .may_take(Objects::Gdi, owner.process, quota, &records),
                 Ok(())
             );
         }
@@ -710,7 +829,7 @@ mod tests {
         };
         assert_eq!(handles.len(), PER - 1, "one page's slots, slot 0 reserved");
         assert_eq!(refusal, Refusal::NoMemory);
-        assert_eq!(table.processes.gdi_objects(ONE), PER as u32 - 1);
+        assert_eq!(table.processes.gdi_objects(ONE.process), PER as u32 - 1);
         pages.set_budget(CHUNKS);
         let refusal = loop {
             let owner = if handles.len() < 8_000 { ONE } else { OTHER };
@@ -724,7 +843,7 @@ mod tests {
         assert_eq!(handles.last().map(|handle| handle & 0xFFFF), Some(0x3FFF));
         assert_eq!(table.live(), 0x3FFF);
         assert_eq!(
-            table.processes.gdi_objects(ONE) + table.processes.gdi_objects(OTHER),
+            table.processes.gdi_objects(ONE.process) + table.processes.gdi_objects(OTHER.process),
             0x3FFF
         );
         assert_eq!(

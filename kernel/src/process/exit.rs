@@ -307,34 +307,53 @@ pub struct Reaped {
 /// overlap, no frame count tells whose a missing frame was. A boot that runs one process at a time
 /// reaches quiescence at every reap, and reports each process's line there, as it always did.
 ///
-/// The ledger holds as many audits as there can be processes: a boot's legs start one after
-/// another, each at the quiescent point after the last's reap, or all at once (children of a
-/// process report no audit line).
+/// The ledger holds an audit for each of the boot's legs, the most that can wait at once: only a
+/// leg reports an audit line (children of a process report none), and a leg is reaped once,
+/// whether the legs start one after another, each at the quiescent point after the last's reap,
+/// or all at once. The first audit has its room in the ledger itself, enough for a boot of one
+/// program (or one the runner does not drive); the room for the rest is made at the boot for the
+/// leg count ([`ledger`]), since the processes, which the legs are, have no cap to size it by.
 #[cfg(any(test, target_arch = "x86"))]
 pub struct DeferredAudits {
-    reaped: [Option<Reaped>; crate::process::MAX_PROCESSES],
+    first: [Option<Reaped>; 1],
+    more: &'static mut [Option<Reaped>],
 }
 
 #[cfg(any(test, target_arch = "x86"))]
 impl DeferredAudits {
-    /// None deferred.
+    /// None deferred, room for one.
     pub const fn new() -> Self {
         DeferredAudits {
-            reaped: [None; crate::process::MAX_PROCESSES],
+            first: [None],
+            more: &mut [],
         }
+    }
+
+    /// None deferred, room for one and `more.len()` more, every entry of which is none.
+    pub fn on(more: &'static mut [Option<Reaped>]) -> Self {
+        debug_assert!(more.iter().all(Option::is_none), "an empty ledger");
+        DeferredAudits {
+            first: [None],
+            more,
+        }
+    }
+
+    /// The ledger's entries, in reap order: the deferred audits, then the free room.
+    fn entries(&mut self) -> impl Iterator<Item = &mut Option<Reaped>> {
+        self.first.iter_mut().chain(self.more.iter_mut())
     }
 
     /// Defer `reaped`'s audit to the next quiescent point.
     ///
     /// # Panics
     ///
-    /// More audits wait than there can be processes (see the type's notes).
+    /// More audits wait than the ledger has room for: more than there are legs (see the type's
+    /// notes).
     pub fn defer(&mut self, reaped: Reaped) {
         let free = self
-            .reaped
-            .iter_mut()
+            .entries()
             .find(|slot| slot.is_none())
-            .expect("a deferred audit per process");
+            .expect("a deferred audit per leg");
         *free = Some(reaped);
     }
 
@@ -346,7 +365,7 @@ impl DeferredAudits {
         baseline: u32,
         mut report: impl FnMut(Reaped, Result<(), Leak>),
     ) {
-        for slot in self.reaped.iter_mut() {
+        for slot in self.entries() {
             let Some(reaped) = slot.take() else {
                 break;
             };
@@ -360,6 +379,23 @@ impl DeferredAudits {
                 })
             };
             report(reaped, verdict);
+        }
+    }
+}
+
+/// The room for a boot of `legs` legs' deferred audits past the first ([`DeferredAudits`] holds
+/// that one), made in the nonpaged pool at the boot, before the allocator's baseline, and kept;
+/// none for a boot of one leg.
+///
+/// # Panics
+///
+/// The pool has no room for it, at the boot.
+#[cfg(target_arch = "x86")]
+pub fn ledger(legs: u32) -> &'static mut [Option<Reaped>] {
+    match legs.saturating_sub(1) as usize {
+        0 => &mut [],
+        more => {
+            crate::mem::pool::leak_array(more, || None).expect("room for the boot's audit ledger")
         }
     }
 }
@@ -483,9 +519,15 @@ impl Suite {
         }
     }
 
-    /// The boot runs `legs` programs.
-    pub fn begin(&mut self, legs: u32) {
+    /// The boot runs `legs` programs, their audits past the first deferred in `ledger`
+    /// ([`ledger`]'s room).
+    pub fn begin(&mut self, legs: u32, ledger: &'static mut [Option<Reaped>]) {
+        assert!(
+            ledger.len() + 1 >= legs as usize,
+            "a deferred audit per leg"
+        );
         self.legs = legs;
+        self.audits = DeferredAudits::on(ledger);
     }
 
     /// How many programs the boot runs: 0 until the runner starts (a boot it does not drive).
@@ -772,6 +814,11 @@ mod tests {
     }
 
     /// A reaped process as the deferred-audit tests build it.
+    /// Room for `count` deferred audits, kept for the test's life (the boot's is the pool's).
+    fn room(count: usize) -> &'static mut [Option<Reaped>] {
+        Box::leak(vec![None; count].into_boxed_slice())
+    }
+
     fn reaped(index: u32, end: ProcessEnd) -> Reaped {
         Reaped {
             index: Some(index),
@@ -784,7 +831,7 @@ mod tests {
     /// audits, all sharing the baseline comparison; settled, the ledger is empty.
     #[test]
     fn deferred_audits_settle_at_quiescence() {
-        let mut audits = DeferredAudits::new();
+        let mut audits = DeferredAudits::on(room(8));
         let first = Reaped {
             frames_audit_ok: false,
             ..reaped(1, ProcessEnd::Exited(0))
@@ -838,7 +885,7 @@ mod tests {
     #[test]
     fn a_lone_process_settles_at_its_own_reap() {
         let mut audits = DeferredAudits::new();
-        for _ in 0..crate::process::MAX_PROCESSES * 2 {
+        for _ in 0..100 {
             audits.defer(Reaped {
                 index: None,
                 ..reaped(0, ProcessEnd::Exited(0))
@@ -857,12 +904,12 @@ mod tests {
         }
     }
 
-    /// More audits waiting than there can be processes is a bug, not a lost line.
+    /// More audits waiting than there are legs is a bug, not a lost line.
     #[test]
-    #[should_panic(expected = "a deferred audit per process")]
-    fn deferred_audits_refuse_past_the_process_pool() {
-        let mut audits = DeferredAudits::new();
-        for index in 0..=crate::process::MAX_PROCESSES as u32 {
+    #[should_panic(expected = "a deferred audit per leg")]
+    fn deferred_audits_refuse_past_the_ledger() {
+        let mut audits = DeferredAudits::on(room(3));
+        for index in 0..=4 {
             audits.defer(reaped(index + 1, ProcessEnd::Exited(0)));
         }
     }
@@ -1026,7 +1073,7 @@ mod tests {
     #[test]
     fn a_suite_one_leg_at_a_time() {
         let mut suite = Suite::new();
-        suite.begin(3);
+        suite.begin(3, room(2));
         suite.started(1);
         for index in 1..=3 {
             let end = if index == 2 {
@@ -1065,7 +1112,10 @@ mod tests {
         for legs in [0, 1] {
             let mut suite = Suite::new();
             assert_eq!(suite.legs(), 0);
-            suite.begin(legs);
+            // A boot the runner does not drive never begins: the ledger's own room serves it.
+            if legs > 0 {
+                suite.begin(legs, room(0));
+            }
             assert_eq!(suite.legs(), legs);
             if legs == 1 {
                 suite.started(1);
@@ -1092,7 +1142,7 @@ mod tests {
     #[test]
     fn overlapping_legs_report_by_their_own_index() {
         let mut suite = Suite::new();
-        suite.begin(2);
+        suite.begin(2, room(1));
         suite.started(1);
         suite.started(2);
         suite.reaped(Some(2), ProcessEnd::Faulted(PAGE_FAULT), true);
@@ -1121,7 +1171,7 @@ mod tests {
     #[test]
     fn a_child_reports_nothing_but_may_settle_its_parent() {
         let mut suite = Suite::new();
-        suite.begin(3);
+        suite.begin(3, room(2));
         suite.started(1);
 
         // A child ended inside its parent's leg: the parent's reap settles one line.
@@ -1166,7 +1216,7 @@ mod tests {
 
         // A child alone at a quiescent point, its parent's line already printed: nothing.
         let mut lone = Suite::new();
-        lone.begin(1);
+        lone.begin(1, room(0));
         lone.started(1);
         lone.reaped(None, ProcessEnd::Exited(0), true);
         assert_eq!(settle(&mut lone, 1240), (vec![], AtQuiescence::Rest));

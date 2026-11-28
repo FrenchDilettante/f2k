@@ -52,9 +52,11 @@
 //! Most kinds live in slot pools ([`crate::slots`]) that grow a page at a time from the nonpaged
 //! pool and keep their peak, so a record never moves; their only bound is the u16 index, and a
 //! create that finds no page fails as the platform's out-of-memory would. An event's, a
-//! semaphore's, a mutex's or a waitable timer's body is made in the dispatcher database's side
-//! table at its record's index before the id is handed out, from the same pages. The threads and
-//! the processes keep fixed pools until they move too (a create past one fails the same way).
+//! semaphore's, a mutex's, a waitable timer's or a process's body is made in the dispatcher
+//! database's side table at its record's index before the id is handed out, from the same pages.
+//! The processes' pool hands out its lowest free index first and never the System process's
+//! ([`ProcessIndex`]); no cap holds processes back but memory, as on Windows 2000. The threads
+//! keep a fixed pool until they move too (a create past it fails the same way).
 //! A slot pool's first generation is 1 and moves on at the delete, so no live object's id carries
 //! generation 0.
 
@@ -76,7 +78,18 @@ use crate::sched::mutex::MutexId;
 use crate::sched::thread::ThreadId;
 use crate::sched::timer::TimerId;
 use crate::sched::wait::{WaitableId, MAXIMUM_WAIT_OBJECTS};
-use crate::slots::{entries_per_page, per_page, Id, KernelId, Record, SideTable, Slots};
+use crate::slots::{
+    entries_per_page,
+    per_page,
+    Codec,
+    Id,
+    KernelId,
+    Match,
+    Record,
+    Reuse,
+    SideTable,
+    Slots,
+};
 use crate::status::NtStatus;
 
 /// Run `f` on the dispatcher database, where the dispatcher objects' bodies live: the kernel's one
@@ -217,9 +230,9 @@ pub use rtl::nt::access::{PROCESS_ALL_ACCESS, SECTION_ALL_ACCESS, THREAD_ALL_ACC
 pub const STILL_ACTIVE: u32 = 259;
 
 /// How many image segments may be live before a new one makes room by purging the least recently
-/// cached ([`Directory::make_room_for_segment`]): the bound on the image cache, two for each
-/// process record. Not a cap: while every segment is active, a new one is made all the same.
-pub const SEGMENTS: usize = 2 * PROCESSES;
+/// cached ([`Directory::make_room_for_segment`]): the bound on the image cache. Not a cap: while
+/// every segment is active, a new one is made all the same.
+pub const SEGMENTS: usize = 128;
 /// How many thread records exist, across every process: any process's thread takes any free
 /// record, main thread or created. A record's index is not its thread's ordinal (the process's own
 /// numbering, which places its TEB: see [`crate::process::ordinals`]). Room for two processes at
@@ -250,9 +263,6 @@ impl ThreadRecordSet {
 /// beside the programs'. The tables keyed by process index keep the System process's record there
 /// (the window manager's own class lists, the drivers' stand-in for it).
 pub const SYSTEM_PROCESS_INDEX: u16 = 0;
-/// The process pool's records: [`crate::process::MAX_PROCESSES`] processes at once, from index 1,
-/// past the System process's ([`SYSTEM_PROCESS_INDEX`]).
-pub const PROCESSES: usize = crate::process::MAX_PROCESSES + 1;
 /// The longest object name: MAX_PATH.
 pub const MAX_NAME: usize = 260;
 
@@ -413,7 +423,7 @@ impl Counts {
     }
 }
 
-/// One record's header in a fixed pool (the threads' and the processes'): whether it holds a
+/// One record's header in a fixed pool (the threads'): whether it holds a
 /// live object, its generation, the object's counts, and its security descriptor.
 #[derive(Debug)]
 pub struct Header {
@@ -461,8 +471,8 @@ fn allocate(
 }
 
 /// A fixed pool of records of one kind, each behind its header: the threads' (headers alone, `T`
-/// is `()`: their records are the dispatcher database's) and the processes', until they move onto
-/// slot pools as the other kinds have ([`ObSlots`]).
+/// is `()`: their records are the dispatcher database's), until they move onto a slot pool as the
+/// other kinds have ([`ObSlots`]).
 pub struct Pool<T, const N: usize> {
     headers: [Header; N],
     records: [T; N],
@@ -585,8 +595,8 @@ fn pages() -> &'static crate::slots::HostPages {
 /// (the kind's default when it captured none), as a shared cache handle. None when no page is
 /// left for the pool to grow (or its u16 index is spent), or the cache has no room for the
 /// descriptor's entry.
-fn allocate_record<B, const PER: usize>(
-    pool: &mut ObSlots<B, PER>,
+fn allocate_record<B, C: Codec<Id = Id<B>>, const PER: usize>(
+    pool: &mut Slots<ObRecord<B>, C, PER>,
     kind: ObjectType,
     fallback: Option<SdRef>,
 ) -> Option<(ObjectId, &mut ObRecord<B>)>
@@ -648,6 +658,36 @@ pub struct SemaphoreObject;
 pub struct MutexObject;
 /// A waitable timer's record in the directory (see [`EventObject`]).
 pub struct TimerObject;
+/// A process's record in the directory (see [`EventObject`]): its body is the dispatcher
+/// database's, its thread ordinals the directory's own side table, its process record
+/// [`crate::process::pool`]'s, each at the object's index.
+pub struct ProcessRecord;
+
+/// How the process objects' pool hands out its indices: never the System process's
+/// ([`SYSTEM_PROCESS_INDEX`], which no object takes), and the lowest free one first, as the fixed
+/// pool it was did, since the walks over the processes (the reap's, the console's control events')
+/// go in index order. No cap but the u16 index's 65,534 processes: a representation limit, as
+/// Windows 2000 has none but memory; the pages for the records, bodies and side tables run out
+/// long before it, and either is STATUS_INSUFFICIENT_RESOURCES.
+pub struct ProcessIndex;
+
+impl Codec for ProcessIndex {
+    type Id = Id<ProcessRecord>;
+
+    const LANES: usize = 1;
+    const MAX_INDEX: u32 = 0xFFFE;
+    const MAX_UNIQ: u16 = 0xFFFE;
+    const RESERVED_LOW: u32 = SYSTEM_PROCESS_INDEX as u32 + 1;
+    const REUSE: Reuse = Reuse::Lowest;
+
+    fn encode(index: u32, uniq: u16) -> Id<ProcessRecord> {
+        Id::new(index as u16, uniq)
+    }
+
+    fn decode(id: Id<ProcessRecord>) -> Option<(u32, Match)> {
+        Some((id.index as u32, Match::Exact(id.uniq)))
+    }
+}
 
 /// A section object's body: the mapping itself. A data section is its own segment: its frames are
 /// its own, and a view names it by its object, so its frames outlive the handle that made it while
@@ -1015,19 +1055,22 @@ impl WaitReferences {
     }
 }
 
-/// The kinds' pools, in two tables. The fixed pools' rows (the threads and the processes): the
-/// kind, its pool's field, its body (`()`: a thread's record and a process object's body are the
-/// dispatcher database's, at the same index, and a process's thread ordinals are the directory's
-/// side table, [`Directory`]'s `ordinals`), how a fresh record is made, and the capacity.
-/// The slot pools' rows: the kind, its pool's field, its body and how a fresh body is made (a
-/// marker for an event, a semaphore, a mutex and a waitable timer, whose bodies are the dispatcher
-/// database's, at the same index); the pool holds a page of records a chunk. The tables make the
+/// The kinds' pools, in two tables. The fixed pool's row (the threads'): the kind, its pool's
+/// field, its body (`()`: a thread's record is the dispatcher database's, at the same index), how
+/// a fresh record is made, and the capacity. The slot pools' rows: the kind, its pool's field, its
+/// body and how a fresh body is made (a marker for an event, a semaphore, a mutex, a waitable
+/// timer and a process, whose bodies are the dispatcher database's, at the same index), and its
+/// codec when it is not the kernel ids' ([`ProcessIndex`]); the pool holds a page of records a
+/// chunk. The tables make the
 /// [`Directory`]'s pools, its in-place builder, and the matches the untyped paths (an object's
 /// counts by id, its deletion, the sweep) reach a kind's pool through.
 macro_rules! pools {
+    // A slot row's codec: its own, or the kernel ids' (FIFO reuse from index 0).
+    (@codec $sbody:ty) => { KernelId<$sbody> };
+    (@codec $sbody:ty, $codec:ty) => { $codec };
     (
         fixed { $($kind:ident => $pool:ident: $body:ty = $fresh:expr, $capacity:expr;)* }
-        slots { $($skind:ident => $spool:ident: $sbody:ty = $sfresh:expr;)* }
+        slots { $($skind:ident => $spool:ident: $sbody:ty = $sfresh:expr $(, in $codec:ty)?;)* }
     ) => {
         $(
             // SAFETY: writes a whole record.
@@ -1050,7 +1093,11 @@ macro_rules! pools {
         /// dispatcher database's, at the same index.
         pub struct Directory {
             $($pool: Pool<$body, $capacity>,)*
-            $($spool: ObSlots<$sbody, { per_page::<ObRecord<$sbody>>() }>,)*
+            $($spool: Slots<
+                ObRecord<$sbody>,
+                pools!(@codec $sbody $(, $codec)?),
+                { per_page::<ObRecord<$sbody>>() },
+            >,)*
             segments: ObSlots<ImageSegment, { per_page::<ObRecord<ImageSegment>>() }>,
             names: Names,
             key_sds: KeySds,
@@ -1177,9 +1224,9 @@ macro_rules! pools {
 pools! {
     fixed {
         Thread => threads: () = || (), THREADS;
-        Process => processes: () = || (), PROCESSES;
     }
     slots {
+        Process => processes: ProcessRecord = ProcessRecord, in ProcessIndex;
         Event => events: EventObject = EventObject;
         Semaphore => semaphores: SemaphoreObject = SemaphoreObject;
         Mutex => mutexes: MutexObject = MutexObject;
@@ -1494,15 +1541,15 @@ impl Directory {
     }
 
     /// A process object for a new process, unsignaled and still active, holding the process's own
-    /// reference, with every thread ordinal free; none when every process record is in use, or no
-    /// page is left for its ordinals, its body or its user-APC records (made at its index the
-    /// first time a process takes it, and kept: nothing is made then, the record free again). Its
-    /// index is the process record's, never the System process's.
+    /// reference, with every thread ordinal free, at the lowest free index ([`ProcessIndex`]);
+    /// none when no page is left for its record, its ordinals, its body or its user-APC records
+    /// (made at its index the first time a process takes it, and kept: nothing is made then, the
+    /// record free again), or every u16 index is in use. Its index is the process record's, never
+    /// the System process's.
     pub fn create_process(&mut self) -> Option<ObjectId> {
-        let first = usize::from(SYSTEM_PROCESS_INDEX) + 1;
-        let index = self
-            .processes
-            .allocate_in(first..PROCESSES, security::default_sd(ObjectType::Process)?)?;
+        let fallback = security::default_sd(ObjectType::Process)?;
+        let (id, _) = allocate_record(&mut self.processes, ObjectType::Process, Some(fallback))?;
+        let index = id.index;
         let made = self.ordinals.ensure(index.into(), pages()).is_ok()
             && with_bodies(|bodies| {
                 let made = bodies
@@ -1515,11 +1562,11 @@ impl Directory {
             });
         if !made {
             // Undone before anyone saw the id: the record goes back as a deletion leaves it.
-            self.processes.kill(index);
+            self.kill(id);
             return None;
         }
         self.ordinals_at(index).reset();
-        Some(self.id(ObjectType::Process, index))
+        Some(id)
     }
 
     /// The thread ordinals at process `index`, made with its object.
@@ -1902,10 +1949,14 @@ impl Directory {
         })
     }
 
-    /// The live process object at process pool `index`, if any.
-    pub fn processes_live(&mut self, index: u16) -> Option<ObjectId> {
-        let id = self.id(ObjectType::Process, index);
-        self.is_live(id).then_some(id)
+    /// The live process object at the lowest process pool index from `from` on, if any: a walk
+    /// over every process, a step to a hold, goes from index 0 on, each step from the index after
+    /// the last one found. A dying object (its last reference gone) is not live.
+    pub fn next_live_process(&self, from: u16) -> Option<ObjectId> {
+        self.processes
+            .iter_from(from.into())
+            .map(|(id, _)| object_id(ObjectType::Process, id))
+            .find(|&id| self.is_live(id))
     }
 
     /// The process `id` names has ended with `exit_status`: its object signals, once, and its
@@ -3459,36 +3510,65 @@ mod tests {
         assert!(!dispatcher.waitable_timer_mut(reused.index).armed());
     }
 
-    /// The process table fills at its capacity — a create is refused, nothing made — and a process
-    /// object whose creator's reference was its only one goes with it (a create whose record the
-    /// pool could not make undoes so), its record serving the next create.
+    /// The process table grows past the 64 it once held, from index 1 (the System process's is
+    /// no program's), and refuses a create only when no page is left for it, nothing made. A
+    /// process object whose creator's reference was its only one goes with it (a create whose
+    /// record the pool could not make undoes so), and the lowest free record serves the next
+    /// create, as the fixed pool's did.
     #[test]
-    fn the_process_table_fills_and_reuses() {
+    fn the_process_table_grows_and_reuses() {
         let directory = directory();
-        let capacity = crate::process::MAX_PROCESSES;
-        let processes: Vec<_> = (0..capacity)
+        let mut processes: Vec<_> = (0..100)
             .map(|_| directory.create_process().unwrap())
             .collect();
+        assert_eq!(processes[0].index, SYSTEM_PROCESS_INDEX + 1);
         assert!(
             processes
                 .iter()
                 .all(|process| process.index != SYSTEM_PROCESS_INDEX),
             "the System process's index is no program's"
         );
-        assert_eq!(directory.create_process(), None, "the table is full");
+        page_budget(0);
+        processes.extend(until_refused(|| directory.create_process()));
+        assert_eq!(directory.create_process(), None, "no page is left");
         assert_eq!(
             directory.live_objects(),
-            capacity,
+            processes.len(),
             "the refusal made nothing"
         );
 
-        let undone = processes[capacity - 1];
-        assert_eq!(directory.dereference(undone), None, "nothing to finish");
-        assert!(!directory.is_live(undone));
+        let (lower, higher) = (processes[70], processes[40]);
+        for undone in [lower, higher] {
+            assert_eq!(directory.dereference(undone), None, "nothing to finish");
+            assert!(!directory.is_live(undone));
+        }
         let reused = directory.create_process().unwrap();
-        assert_eq!(reused.index, undone.index, "the freed record is reused");
-        assert_ne!(reused.generation, undone.generation);
-        assert_eq!(directory.create_process(), None, "full again");
+        assert_eq!(reused.index, higher.index, "the lowest free record first");
+        assert_ne!(reused.generation, higher.generation);
+        assert_eq!(directory.create_process().unwrap().index, lower.index);
+        assert_eq!(directory.create_process(), None, "no page is left still");
+    }
+
+    /// A walk over the processes, a step at a time, finds each live one in index order, and
+    /// none whose last reference went.
+    #[test]
+    fn the_process_walk_steps_in_index_order() {
+        let directory = directory();
+        let processes: Vec<_> = (0..5)
+            .map(|_| directory.create_process().unwrap())
+            .collect();
+        assert_eq!(directory.dereference(processes[2]), None);
+        let mut walked = Vec::new();
+        let mut from = 0;
+        while let Some(id) = directory.next_live_process(from) {
+            walked.push(id);
+            from = id.index + 1;
+        }
+        assert_eq!(
+            walked,
+            [0, 1, 3, 4].map(|at| processes[at]),
+            "the dead one skipped"
+        );
     }
 
     /// The section table grows past the 128 it once held, refuses a create only when no page is
@@ -4061,14 +4141,13 @@ mod tests {
 
     /// A process object: waitable, still active and unsignaled until its end, signaled with its
     /// exit code at the end; the sweep leaves it to its own reference, whose
-    /// release frees the record for the next process; the pool's capacity is the process
-    /// pool's.
+    /// release frees the record for the next process.
     #[test]
     fn a_process_object_signals_its_end() {
         let directory = directory();
         let mut dispatcher = dispatcher();
         let id = directory.create_process().unwrap();
-        assert_eq!(directory.processes_live(id.index), Some(id));
+        assert_eq!(directory.next_live_process(id.index), Some(id));
         assert_eq!(
             directory
                 .process(id)
@@ -4100,18 +4179,13 @@ mod tests {
         );
         assert_eq!(closed(directory, id), vec![]);
         assert_eq!(
-            directory.processes_live(id.index),
+            directory.next_live_process(id.index),
             None,
             "the record is free"
         );
-        let ids: Vec<_> = (0..crate::process::MAX_PROCESSES)
-            .map(|_| directory.create_process().unwrap())
-            .collect();
-        assert_eq!(ids[0].index, id.index, "the lowest free record is reused");
-        assert!(
-            directory.create_process().is_none(),
-            "the pool is the process pool's size"
-        );
+        let reused = directory.create_process().unwrap();
+        assert_eq!(reused.index, id.index, "the lowest free record is reused");
+        assert_ne!(reused.generation, id.generation);
     }
 
     /// A handle-table entry names an object by its id (an open file's is its file object).
