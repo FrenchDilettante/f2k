@@ -16,8 +16,8 @@ use rtl::callback::{op, SmokeReply, SmokeRequest, SMOKE_APC_CONTEXT, SMOKE_API, 
 use rtl::pod::Pod;
 
 use super::{call_user_mode, outstanding, Reply};
+use crate::klog;
 use crate::level::{At, Passive};
-use crate::serial_println;
 use crate::status::*;
 use crate::user::args::UserPtr;
 use crate::user::TrapFrame;
@@ -150,32 +150,40 @@ pub fn run_once(passive: &mut At<Passive>) {
 
     let (status, reply) = call(passive, request(op::ECHO, 0, 0x1234));
     clean &= at_own_level();
-    serial_println!(
-        "F2K: callback-smoke: simple: status {:#010x}, answer {:#010x}",
+    klog!(
+        Debug,
+        "smoke",
+        "callback-smoke: simple: status {:#010x}, answer {:#010x}",
         status.0,
         answer(reply)
     );
 
     let (status, reply) = call(passive, request(op::NEST, 3, 0));
     clean &= at_own_level();
-    serial_println!(
-        "F2K: callback-smoke: nested 3 deep: status {:#010x}, answer {}",
+    klog!(
+        Debug,
+        "smoke",
+        "callback-smoke: nested 3 deep: status {:#010x}, answer {}",
         status.0,
         answer(reply)
     );
 
     let (status, reply) = call(passive, request(op::PROBE, 0, UNMAPPED));
     clean &= at_own_level();
-    serial_println!(
-        "F2K: callback-smoke: fault handled inside the callback: status {:#010x}, readable {}",
+    klog!(
+        Debug,
+        "smoke",
+        "callback-smoke: fault handled inside the callback: status {:#010x}, readable {}",
         status.0,
         answer(reply)
     );
 
     let (status, reply) = call(passive, request(op::ESCAPE, 0, UNMAPPED));
     clean &= at_own_level();
-    serial_println!(
-        "F2K: callback-smoke: escape: status {:#010x}, inner issuer got {:#010x}, outer caught {:#010x}",
+    klog!(
+        Debug,
+        "smoke",
+        "callback-smoke: escape: status {:#010x}, inner issuer got {:#010x}, outer caught {:#010x}",
         status.0,
         ESCAPED.load(Ordering::Relaxed),
         answer(reply)
@@ -183,16 +191,20 @@ pub fn run_once(passive: &mut At<Passive>) {
 
     let (status, reply) = call(passive, request(op::APC, 0, 0));
     clean &= at_own_level();
-    serial_println!(
-        "F2K: callback-smoke: user APC at a nested return: status {:#010x}, context {:#010x}",
+    klog!(
+        Debug,
+        "smoke",
+        "callback-smoke: user APC at a nested return: status {:#010x}, context {:#010x}",
         status.0,
         answer(reply)
     );
 
     let (status, _) = call(passive, request(op::NEST, 1000, 0));
     clean &= at_own_level();
-    serial_println!(
-        "F2K: callback-smoke: room check: status {:#010x}, refused {} deep",
+    klog!(
+        Debug,
+        "smoke",
+        "callback-smoke: room check: status {:#010x}, refused {} deep",
         status.0,
         REFUSED_AT.load(Ordering::Relaxed)
     );
@@ -204,19 +216,25 @@ pub fn run_once(passive: &mut At<Passive>) {
         0,
         0,
     );
-    serial_println!(
-        "F2K: callback-smoke: NtCallbackReturn with no callback: {:#010x}",
+    klog!(
+        Debug,
+        "smoke",
+        "callback-smoke: NtCallbackReturn with no callback: {:#010x}",
         refused.unwrap_or_else(|status| status).0
     );
-    serial_println!(
-        "F2K: callback-smoke: back at the thread's own level after each: {}",
+    klog!(
+        Debug,
+        "smoke",
+        "callback-smoke: back at the thread's own level after each: {}",
         if clean { "yes" } else { "no" }
     );
 
-    serial_println!("F2K: callback-smoke: ending the process 2 deep");
+    klog!(Debug, "smoke", "callback-smoke: ending the process 2 deep");
     let (status, _) = call(passive, request(op::EXIT, 2, 0));
-    serial_println!(
-        "F2K: callback-smoke: FAILED: the process outlived its end ({:#010x})",
+    klog!(
+        Debug,
+        "smoke",
+        "callback-smoke: FAILED: the process outlived its end ({:#010x})",
         status.0
     );
 }

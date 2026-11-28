@@ -138,8 +138,10 @@ fn win32k_started(number: u32) -> Result<(), NtStatus> {
         win32k_missing(crate::boot::subsys::STATE.selected_set())
     );
     if !REPORTED.swap(true, Ordering::Relaxed) {
-        crate::serial_println!(
-            "F2K: win32k service {:#06x} refused: subsystem {} not started (subsys=), STATUS_INVALID_SYSTEM_SERVICE",
+        crate::klog!(
+            Debug,
+            "win32k",
+            "win32k service {:#06x} refused: subsystem {} not started (subsys=), STATUS_INVALID_SYSTEM_SERVICE",
             number,
             crate::boot::subsys::Names(&crate::boot::subsys::SUBSYSTEMS, missing)
         );

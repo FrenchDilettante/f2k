@@ -531,11 +531,11 @@ pub fn locate_process_start() {
         let length = match read {
             Some(Ok(length)) => length,
             Some(Err(error)) => {
-                crate::serial_println!("F2K: {} not read: {}", shown, error);
+                crate::klog!(Screen, "loader", "{shown} not read: {error}");
                 crate::halt()
             }
             None => {
-                crate::serial_println!("F2K: {} not read: no boot volume", shown);
+                crate::klog!(Screen, "loader", "{shown} not read: no boot volume");
                 crate::halt()
             }
         };
@@ -544,7 +544,7 @@ pub fn locate_process_start() {
     match found {
         Ok(address) => crate::exec::modules::lookup_entry_points(address),
         Err(error) => {
-            crate::serial_println!("F2K: {} has no start thunk: {:?}", shown, error);
+            crate::klog!(Screen, "loader", "{shown} has no start thunk: {error:?}");
             crate::halt()
         }
     }
@@ -735,16 +735,16 @@ fn load_image(
         )
     });
 
-    crate::serial_println!(
-        "F2K: image loaded (base {:#010x}, entry {:#010x}, {} pages)",
-        image.image_base(),
-        image.entry_va(),
-        pages
+    let (base, entry) = (image.image_base(), image.entry_va());
+    crate::klog!(
+        Debug,
+        "loader",
+        "image loaded (base {base:#010x}, entry {entry:#010x}, {pages} pages)"
     );
-    crate::serial_println!(
-        "F2K: entering ring 3 (entry {:#010x}, stack {:#010x})",
-        image.entry_va(),
-        USER_STACK_TOP
+    crate::klog!(
+        Debug,
+        "loader",
+        "entering ring 3 (entry {entry:#010x}, stack {USER_STACK_TOP:#010x})"
     );
     Ok((process, image.entry_va()))
 }

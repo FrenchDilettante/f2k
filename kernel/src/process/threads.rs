@@ -511,7 +511,8 @@ fn end_thread(end: ThreadEnd) -> ! {
         // the reap waits for the retire all the same (see `pool`).
         let name = process.name();
         let identity = crate::process::runner::identity(process, &name);
-        crate::serial_println!("{}", exit::EndReport { end, identity });
+        let report = exit::EndReport { end, identity };
+        crate::klog!(Debug, "process", raw, "{report}");
         process.set_end(end);
         // The process's end, step 3, in one hold with the retire: the thread object signals, then
         // the process object with the exit code, and their waiters wake — now, not at the idle

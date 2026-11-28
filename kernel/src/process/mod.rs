@@ -1535,13 +1535,13 @@ fn audit_objects(process: &Process, quiescent: bool) {
     leaked += crate::win32k::window::locked(|manager| manager.process_records());
     // So is a GDI table entry: every process's were freed at its end.
     leaked += crate::win32k::gdi::live() as usize;
-    // And a client id naming an object: every process gave its own back at its teardown, and
-    // every thread its own with its object.
+    // And a client id naming an object: a process's goes at teardown, a thread's with its object.
     leaked += cid::objects();
     if leaked != 0 {
-        crate::serial_println!(
-            "F2K: object audit FAILED: {} objects or file records outlived their process",
-            leaked
+        crate::klog!(
+            Debug,
+            "process",
+            "object audit FAILED: {leaked} objects or file records outlived their process"
         );
     }
 }

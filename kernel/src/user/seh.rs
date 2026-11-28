@@ -586,8 +586,10 @@ mod target {
     /// took, or one that could not be dispatched): with no debugger and no exception port, the
     /// process ends with the code.
     pub fn second_chance(code: u32, address: u32) -> ! {
-        crate::serial_println!(
-            "F2K: unhandled exception {code:#010x} at {address:#010x} (second chance)"
+        crate::klog!(
+            File,
+            "exception",
+            "unhandled exception {code:#010x} at {address:#010x} (second chance)"
         );
         crate::process::threads::fault_exit(crate::process::exit::Fault {
             vector: crate::process::exit::RAISED_VECTOR,

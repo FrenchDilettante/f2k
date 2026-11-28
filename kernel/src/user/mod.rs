@@ -420,8 +420,10 @@ pub fn program_image(
     let needs_extension = !file_name.contains(&b'.');
     let total = volume.len() + if needs_extension { 4 } else { 0 };
     if !crate::fs::fat32::path::is_valid(volume) || total >= MAX_PATH {
-        crate::serial_println!(
-            "F2K: command line program {} names no file",
+        crate::klog!(
+            Screen,
+            "process",
+            "command line program {} names no file",
             core::str::from_utf8(token).unwrap_or("(not ASCII)")
         );
         crate::halt()
@@ -469,7 +471,12 @@ pub fn run_fault_stub() -> ! {
     let process =
         crate::process::Process::start(crate::process::ProcessName::new(b"stub"), Some(1))
             .unwrap_or_else(|status| {
-                crate::serial_println!("F2K: process not created (status {:#010x})", status.0);
+                crate::klog!(
+                    Debug,
+                    "process",
+                    "process not created (status {:#010x})",
+                    status.0
+                );
                 crate::halt()
             });
     // Built attached to the process: the pages below land in its directory, the live one.
@@ -484,8 +491,10 @@ pub fn run_fault_stub() -> ! {
         vm::map_zeroed(space, USER_STACK_LOW_PAGE, vm::PAGE_READWRITE);
     });
 
-    crate::serial_println!(
-        "F2K: entering ring 3 (code {:#010x}, stack {:#010x})",
+    crate::klog!(
+        Debug,
+        "process",
+        "entering ring 3 (code {:#010x}, stack {:#010x})",
         USER_CODE_PAGE,
         USER_STACK_TOP
     );
@@ -510,14 +519,18 @@ pub fn check_volume_after_teardown() {
     });
     match found {
         Some(Ok(file)) => {
-            crate::serial_println!(
-                "F2K: exit-during-read: volume usable after teardown (HELLO.EXE, {} bytes)",
+            crate::klog!(
+                Debug,
+                "smoke",
+                "exit-during-read: volume usable after teardown (HELLO.EXE, {} bytes)",
                 file.size
             );
         }
         other => {
-            crate::serial_println!(
-                "F2K: exit-during-read: volume unusable after teardown ({:?})",
+            crate::klog!(
+                Debug,
+                "smoke",
+                "exit-during-read: volume unusable after teardown ({:?})",
                 other
             );
         }

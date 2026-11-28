@@ -378,10 +378,10 @@ mod target {
         let resolve = |module: &str, name: ImportName| {
             resolve_import(module, name).inspect_err(|_| match name {
                 ImportName::Name(name) => {
-                    crate::serial_println!("F2K: dev: {}!{} unresolved", module, name);
+                    crate::klog!(File, "dev", "dev: {module}!{name} unresolved");
                 }
                 ImportName::Ordinal(ordinal) => {
-                    crate::serial_println!("F2K: dev: {}!#{} unresolved", module, ordinal);
+                    crate::klog!(File, "dev", "dev: {module}!#{ordinal} unresolved");
                 }
             })
         };

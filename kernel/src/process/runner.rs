@@ -145,7 +145,7 @@ pub fn process_reaped(leg: Option<u32>, end: ProcessEnd, quiescent: bool) {
     }
     let after = with_suite(|suite| {
         suite.settle(available, baseline, |report| {
-            crate::serial_println!("{}", report);
+            crate::klog!(Debug, "process", raw, "{report}");
         })
     });
     match after {
@@ -154,7 +154,7 @@ pub fn process_reaped(leg: Option<u32>, end: ProcessEnd, quiescent: bool) {
             // Before the summary line: the harness stops the boot on it.
             #[cfg(feature = "perf-trace")]
             crate::perf::report();
-            crate::serial_println!("{}", tally);
+            crate::klog!(Debug, "process", raw, "{tally}");
         }
         AtQuiescence::Rest => {}
     }
@@ -203,10 +203,11 @@ fn load_leg(index: u32) -> &'static crate::process::Process {
     let command_line = programs()
         .nth(index as usize - 1)
         .expect("a leg the list holds");
-    crate::serial_println!(
-        "F2K: process {} of {}: {}",
-        index,
-        leg_count(),
+    let legs = leg_count();
+    crate::klog!(
+        Debug,
+        "process",
+        "process {index} of {legs}: {}",
         core::str::from_utf8(command_line).unwrap_or("(not ASCII)")
     );
     let mut path = [0u8; crate::user::MAX_PATH];
@@ -214,7 +215,7 @@ fn load_leg(index: u32) -> &'static crate::process::Process {
     let path = &path[..length];
     let (process, entry) = crate::exec::loader::load_path(path, name, command_line, Some(index))
         .unwrap_or_else(|error| {
-            crate::serial_println!("F2K: {}", error.report(path));
+            crate::klog!(Screen, "loader", "{}", error.report(path));
             crate::halt()
         });
     crate::process::threads::start_main_thread(process, crate::user::main_thread_start(entry));
