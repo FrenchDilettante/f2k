@@ -388,7 +388,7 @@ pub fn create_thread(
         let mut dispatch = call.passive().raise::<Dispatch>();
         let dispatcher = DISPATCHER.get(&mut dispatch);
         dispatcher.make_ready(thread);
-        dispatcher.boost(crate::sched::current_thread(), LPC_RELEASE_WAIT_INCREMENT);
+        dispatcher.wake_boost(crate::sched::current_thread(), LPC_RELEASE_WAIT_INCREMENT);
         Ok(STATUS_SUCCESS)
     }
     #[cfg(not(target_arch = "x86"))]

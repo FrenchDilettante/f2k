@@ -663,22 +663,37 @@ impl Process {
     }
 
     /// Put the process in the foreground or the background, as Windows 2000's
-    /// PsSetProcessPriorityByClass does: its threads' quantum the one its state and priority class
-    /// take ([`foreground::thread_quantum`]), then its base priority set again — `base`, or the
-    /// one it has — which hands each of its threads a fresh quantum and clears its decay
-    /// (KeSetPriorityProcess, [`crate::sched::dispatcher::Dispatcher::set_process_priority`]).
+    /// PsSetProcessPriorityByClass does: its threads' quantum and foreground boost the ones its
+    /// state and priority class take from the quantum table ([`Process::take_quantum_table`]),
+    /// then its base priority set again — `base`, or the one it has — which hands each of its
+    /// threads a fresh quantum and clears its decay (KeSetPriorityProcess,
+    /// [`crate::sched::dispatcher::Dispatcher::set_process_priority`]).
     pub fn set_priority_by_class(&self, foreground: bool, base: Option<i8>) {
         let class = locked(&self.state, |state| {
             state.foreground = foreground;
             state.priority_class
         });
-        let quantum = foreground::thread_quantum(foreground, class);
         crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
             let dispatcher = crate::sched::DISPATCHER.get(dispatch);
             let sched = self.sched.get_mut(dispatcher);
-            sched.set_thread_quantum(quantum);
+            foreground::apply(&foreground::table(), sched, foreground, class);
             let base = base.unwrap_or(sched.base_priority());
             dispatcher.set_process_priority(self.sched_ptr(), base);
+        });
+    }
+
+    /// Take a new quantum table's values, as Windows 2000's PsChangeQuantumTable does for each
+    /// process when Win32PrioritySeparation changes while the system runs: the thread quantum and
+    /// the foreground boost its state and priority class take from `table`. Nothing else: its
+    /// threads take the new quantum at their next reset, and each wait's end from now on reads the
+    /// new boost.
+    pub fn take_quantum_table(&self, table: &foreground::QuantumTable) {
+        let (foreground, class) = locked(&self.state, |state| {
+            (state.foreground, state.priority_class)
+        });
+        crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
+            let dispatcher = crate::sched::DISPATCHER.get(dispatch);
+            foreground::apply(table, self.sched.get_mut(dispatcher), foreground, class);
         });
     }
 

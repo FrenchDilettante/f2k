@@ -492,6 +492,17 @@ impl Dispatcher {
         }
     }
 
+    /// Boost `thread` for the end of its wait (KiUnwaitThread's boost): [`Dispatcher::boost`] by
+    /// the wake's `increment` plus its process's foreground boost (PsPrioritySeparation while the
+    /// process is in the foreground, 0 otherwise; see `crate::process::foreground`). Windows 2000
+    /// adds the foreground boost at every wait's end, whatever ended it (a timeout's, increment 0,
+    /// too), and only then compares with the current priority.
+    pub fn wake_boost(&mut self, thread: impl Into<ThreadId>, increment: i8) {
+        let thread = thread.into();
+        let foreground = self.thread(thread).process().foreground_boost;
+        self.boost(thread, increment + foreground);
+    }
+
     /// The increment of `thread`'s base priority over its process's: what a base-priority change
     /// would report as the previous value. A saturated thread reports its pin, not the raw delta.
     pub fn base_increment(&self, thread: impl Into<ThreadId>) -> i32 {
@@ -1911,6 +1922,21 @@ mod tests {
         d.boost(t, 2);
         assert_eq!(t.priority(), 10);
         assert_eq!(t.quantum(), 6);
+    }
+
+    /// The wait-end boost outside a wait (the creator's LPC-reply wake at thread creation): the
+    /// increment plus the process's foreground boost, the background's increment alone.
+    #[test]
+    fn a_wake_boost_adds_the_foreground_boost() {
+        let mut d = dispatcher();
+        let foreground = process(8);
+        unsafe { (*foreground).set_foreground_boost(2) };
+        let t = thread(foreground);
+        d.wake_boost(t, 1);
+        assert_eq!(t.priority(), 11);
+        let u = thread(process(8));
+        d.wake_boost(u, 1);
+        assert_eq!(u.priority(), 9);
     }
 
     /// A boost is capped below the realtime band; the cap value is exact and the quantum resets

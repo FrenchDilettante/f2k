@@ -805,8 +805,9 @@ impl Dispatcher {
     /// is the single owner of the Waiting state's exit to the ready ladder — every wake site goes
     /// through it, a termination's exit APC included. It unwinds the wait's blocks from their
     /// objects, leaves the waiting list, cancels the wait's timer if it is still live, applies the
-    /// boost (the thread's no-boost policy gates it here — the boost itself leaves policy to its
-    /// caller), charges the wait, and readies the thread.
+    /// boost with the process's foreground boost added (as [`Dispatcher::wake_boost`]; the
+    /// thread's no-boost policy gates it here — the boost itself leaves policy to its caller),
+    /// charges the wait, and readies the thread.
     pub fn unwait(&mut self, thread: impl Into<ThreadId>, status: NtStatus, increment: i8) {
         let thread = thread.into();
         let record = self.thread_mut(thread);
@@ -817,6 +818,9 @@ impl Dispatcher {
         // The status is OR'd in, not assigned: a wait may carry a status its wake must preserve.
         record.wait_status = NtStatus(record.wait_status.0 | status.0);
         let disable_boost = record.disable_boost;
+        // The foreground boost rides on every wake's increment (see `Dispatcher::wake_boost`),
+        // read here while the record is in hand.
+        let increment = increment + record.process().foreground_boost;
 
         self.unwind_wait(thread);
 
@@ -2533,6 +2537,117 @@ mod tests {
             "the debt survives a charge that does not exhaust"
         );
         assert_eq!(indebted.quantum(), 5);
+    }
+
+    /// The foreground boost (KiUnwaitThread's PsPrioritySeparation): a thread of a process in the
+    /// foreground ends every wait with its process's boost added to the wake's increment — an
+    /// event's 1, a timeout's 0 — and a background process's thread with the increment alone. The
+    /// sum is capped below the realtime band and gated as the increment is.
+    #[test]
+    fn a_foreground_threads_wait_ends_with_the_foreground_boost() {
+        let mut d = dispatcher();
+        let foreground = process(8);
+        unsafe { (*foreground).set_foreground_boost(2) };
+        let background = process(8);
+
+        let t = thread(foreground);
+        block_on(d, t, event(EventKind::Notification, false), None);
+        d.unwait(t, STATUS_SUCCESS, EVENT_WAKE_INCREMENT);
+        assert_eq!(
+            t.priority(),
+            11,
+            "base 8, the event's 1, the foreground's 2"
+        );
+
+        let timed_out = thread(foreground);
+        block_on(d, timed_out, event(EventKind::Notification, false), None);
+        d.unwait(timed_out, STATUS_TIMEOUT, TIMER_WAKE_INCREMENT);
+        assert_eq!(
+            timed_out.priority(),
+            10,
+            "a timeout's 0, the foreground's 2"
+        );
+
+        let b = thread(background);
+        block_on(d, b, event(EventKind::Notification, false), None);
+        d.unwait(b, STATUS_SUCCESS, EVENT_WAKE_INCREMENT);
+        assert_eq!(b.priority(), 9, "the background: the event's 1 alone");
+
+        let high = process(14);
+        unsafe { (*high).set_foreground_boost(2) };
+        let capped = thread(high);
+        block_on(d, capped, event(EventKind::Notification, false), None);
+        d.unwait(capped, STATUS_SUCCESS, EVENT_WAKE_INCREMENT);
+        assert_eq!(capped.priority(), 15, "computed 17 lands capped at 15");
+
+        let mut gated = thread(foreground);
+        gated.disable_boost = true;
+        block_on(d, gated, event(EventKind::Notification, false), None);
+        d.unwait(gated, STATUS_SUCCESS, EVENT_WAKE_INCREMENT);
+        assert_eq!(
+            gated.priority(),
+            8,
+            "the policy gate refuses the foreground boost too"
+        );
+    }
+
+    /// The boost changes who runs: a foreground waiter woken by an equal-priority setter with no
+    /// increment of its own (a timeout's or a release's 0) still preempts it, by the foreground
+    /// boost alone; in the background it queues behind the setter.
+    #[test]
+    fn the_foreground_boost_lets_a_woken_waiter_preempt_its_setter() {
+        let mut d = dispatcher();
+        let foreground = process(8);
+        unsafe { (*foreground).set_foreground_boost(2) };
+        let setter = thread(foreground);
+        let waiter = thread(foreground);
+        run(d, setter);
+        let ev = event(EventKind::Synchronization, false);
+        block_on(d, waiter, ev, None);
+        d.set_event(ev.id(), 0);
+        assert_eq!(
+            d.next_thread(),
+            Some(waiter.id()),
+            "the woken waiter preempts"
+        );
+        assert_eq!(waiter.priority(), 10);
+
+        let mut d = dispatcher();
+        let background = process(8);
+        let setter = thread(background);
+        let waiter = thread(background);
+        run(d, setter);
+        let ev = event(EventKind::Synchronization, false);
+        block_on(d, waiter, ev, None);
+        d.set_event(ev.id(), 0);
+        assert_eq!(
+            d.next_thread(),
+            None,
+            "an equal-priority wake waits its turn"
+        );
+        assert_eq!(waiter.state(), ThreadState::Ready);
+    }
+
+    /// The GUI wake boost: win32k sets a GUI thread's queue event with 2, not an event's 1, and
+    /// a foreground process's thread takes the foreground boost on top: base 8 runs at 12.
+    #[test]
+    fn a_gui_wake_boosts_by_two_and_the_foreground_on_top() {
+        use crate::win32k::queue::GUI_WAKE_INCREMENT;
+        let mut d = dispatcher();
+        let background = process(8);
+        let t = thread(background);
+        let ev = event(EventKind::Synchronization, false);
+        block_on(d, t, ev, None);
+        d.set_event(ev.id(), GUI_WAKE_INCREMENT);
+        assert_eq!(t.priority(), 10);
+
+        let foreground = process(8);
+        unsafe { (*foreground).set_foreground_boost(2) };
+        let f = thread(foreground);
+        let ev = event(EventKind::Synchronization, false);
+        block_on(d, f, ev, None);
+        d.set_event(ev.id(), GUI_WAKE_INCREMENT);
+        assert_eq!(f.priority(), 12);
     }
 
     // --- The re-wait: a kernel-APC-broken wait replays ----------------------

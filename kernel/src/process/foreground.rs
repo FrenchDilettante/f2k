@@ -46,6 +46,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
+use crate::sched::process::SchedProcess;
 use crate::sched::QUANTUM_RESET;
 
 /// Win32PrioritySeparation's default on Windows 2000 Professional: variable short quanta, the
@@ -130,6 +131,24 @@ impl QuantumTable {
         let index = if foreground { self.separation } else { 0 };
         self.quanta[index as usize]
     }
+
+    /// What a wait's end adds to the wake's increment for the threads of a process in the
+    /// foreground or the background (KiUnwaitThread's): PsPrioritySeparation in the foreground,
+    /// whatever the table's quanta and the process's priority class; nothing in the background.
+    pub const fn foreground_boost(&self, foreground: bool) -> i8 {
+        if foreground {
+            self.separation as i8
+        } else {
+            0
+        }
+    }
+}
+
+/// Set a process's scheduling record to what `table` gives a process in the foreground or not, of
+/// the priority class `class`: its thread quantum and its foreground boost.
+pub fn apply(table: &QuantumTable, sched: &mut SchedProcess, foreground: bool, class: u8) {
+    sched.set_thread_quantum(table.thread_quantum(foreground, class == IDLE_PRIORITY_CLASS));
+    sched.set_foreground_boost(table.foreground_boost(foreground));
 }
 
 /// The Win32PrioritySeparation the system runs with: the registry's, read at boot.
@@ -143,6 +162,21 @@ pub fn table() -> QuantumTable {
 /// Take the registry's Win32PrioritySeparation: at boot, before the first process.
 pub fn set_priority_separation(raw: u32) {
     RAW.store(raw, Ordering::Relaxed);
+}
+
+/// Change Win32PrioritySeparation while the system runs (NtSetSystemInformation's
+/// SystemPrioritySeperation, which the System applet's Performance Options call; Windows 2000's
+/// PsChangeQuantumTable with its processes modified): the new table, then every live process's
+/// thread quantum and foreground boost from it ([`super::Process::take_quantum_table`]). No
+/// reboot: each thread takes the new quantum at its next reset, and each wait's end from now on
+/// adds the new boost.
+#[cfg(target_arch = "x86")]
+pub fn change_priority_separation(raw: u32) {
+    set_priority_separation(raw);
+    let table = table();
+    for process in super::pool::listed() {
+        process.take_quantum_table(&table);
+    }
 }
 
 /// The priority class whose processes keep the base quantum (PROCESS_PRIORITY_CLASS_IDLE).
@@ -294,6 +328,43 @@ mod tests {
         );
         // A value of 3 in either two-bit field is no choice: the default.
         assert_eq!(quanta(0x3E, false), [6, 12, 18]);
+    }
+
+    /// The foreground boost is the separation, for the foreground alone: 2 by Professional's
+    /// default, whatever the quanta (a fixed table stretches nothing but still boosts); none at a
+    /// separation of 0 (Server's default, 0x18).
+    #[test]
+    fn the_foreground_boost_is_the_separation() {
+        let boost = |raw, foreground| QuantumTable::new(raw, false).foreground_boost(foreground);
+        assert_eq!(boost(DEFAULT_PRIORITY_SEPARATION, true), 2);
+        assert_eq!(boost(DEFAULT_PRIORITY_SEPARATION, false), 0);
+        assert_eq!([boost(0, true), boost(1, true), boost(3, true)], [0, 1, 2]);
+        assert_eq!(boost(0x29, true), 1, "fixed quanta still boost");
+        assert_eq!(QuantumTable::new(0x18, true).foreground_boost(true), 0);
+    }
+
+    /// A process's record takes its quantum and boost from the table by its state and class, and
+    /// takes a new table's at a run-time change (PsChangeQuantumTable's walk): the foreground
+    /// process of a "background services" setting (0x18: long fixed, no separation) keeps 36
+    /// units and loses its boost, and back at 2 regains 18 and 2. The idle class keeps the base
+    /// quantum but is boosted in the foreground.
+    #[test]
+    fn a_process_takes_a_new_tables_quantum_and_boost() {
+        let mut sched = SchedProcess::new(0, 8);
+        let normal = crate::process::NORMAL_PRIORITY_CLASS;
+        apply(&QuantumTable::new(2, false), &mut sched, true, normal);
+        assert_eq!((sched.thread_quantum(), sched.foreground_boost()), (18, 2));
+        apply(&QuantumTable::new(0x18, false), &mut sched, true, normal);
+        assert_eq!((sched.thread_quantum(), sched.foreground_boost()), (36, 0));
+        apply(&QuantumTable::new(2, false), &mut sched, false, normal);
+        assert_eq!((sched.thread_quantum(), sched.foreground_boost()), (6, 0));
+        apply(
+            &QuantumTable::new(2, false),
+            &mut sched,
+            true,
+            IDLE_PRIORITY_CLASS,
+        );
+        assert_eq!((sched.thread_quantum(), sched.foreground_boost()), (6, 2));
     }
 
     /// A process of the idle priority class keeps the base quantum, foreground or not.

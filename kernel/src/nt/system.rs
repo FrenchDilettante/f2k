@@ -243,6 +243,41 @@ pub fn query_system_information(
     Ok(STATUS_SUCCESS)
 }
 
+info_class! {
+    /// The classes NtSetSystemInformation takes (SYSTEM_INFORMATION_CLASS).
+    pub enum SetSystemClass {
+        /// SystemPrioritySeperation (sic): a ULONG, the new Win32PrioritySeparation.
+        PrioritySeparation = 39,
+    }
+}
+
+/// NtSetSystemInformation: SystemPrioritySeperation, Win32PrioritySeparation changed while the
+/// system runs (the System applet's Performance Options), the quantum table and every process's
+/// quantum and foreground boost with it (`crate::process::foreground::change_priority_separation`);
+/// its information is one ULONG, another length STATUS_INFO_LENGTH_MISMATCH. The other classes are
+/// STATUS_INVALID_INFO_CLASS. No privilege is checked: F2K has no tokens.
+pub fn set_system_information(
+    _call: &mut NtCall,
+    class: u32,
+    information: UserAddr,
+    length: u32,
+) -> NtResult {
+    match SetSystemClass::try_from(class)? {
+        SetSystemClass::PrioritySeparation => {
+            if length != size_of::<u32>() as u32 {
+                return Err(STATUS_INFO_LENGTH_MISMATCH);
+            }
+            let raw = information.cast::<u32>().read()?;
+            #[cfg(target_arch = "x86")]
+            crate::process::foreground::change_priority_separation(raw);
+            // Host builds have no processes to change.
+            #[cfg(not(target_arch = "x86"))]
+            let _ = raw;
+        }
+    }
+    Ok(STATUS_SUCCESS)
+}
+
 /// NtQueryPerformanceCounter: the counter (the interval timer's input clock: the ticks taken and
 /// the timer's count within the current one, see `crate::time`) and, when asked, its frequency.
 pub fn query_performance_counter(
@@ -488,6 +523,66 @@ mod tests {
         assert_eq!(word(&zeroed, 0x4C), 0);
     }
 
+    /// A page of user memory at 0x10000, for the services' host paths.
+    struct Page(std::vec::Vec<u8>);
+
+    impl crate::user::syscall::host::UserMemory for Page {
+        fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
+            let at = pointer
+                .checked_sub(0x10000)
+                .ok_or(STATUS_ACCESS_VIOLATION)? as usize;
+            bytes.copy_from_slice(
+                self.0
+                    .get(at..at + bytes.len())
+                    .ok_or(STATUS_ACCESS_VIOLATION)?,
+            );
+            Ok(())
+        }
+
+        fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), NtStatus> {
+            let at = pointer
+                .checked_sub(0x10000)
+                .ok_or(STATUS_ACCESS_VIOLATION)? as usize;
+            self.0
+                .get_mut(at..at + bytes.len())
+                .ok_or(STATUS_ACCESS_VIOLATION)?
+                .copy_from_slice(bytes);
+            Ok(())
+        }
+    }
+
+    /// NtSetSystemInformation takes SystemPrioritySeperation (39) as one ULONG: another length is
+    /// STATUS_INFO_LENGTH_MISMATCH, an unreadable one STATUS_ACCESS_VIOLATION, another class
+    /// STATUS_INVALID_INFO_CLASS.
+    #[test]
+    fn the_priority_separation_is_set_as_one_ulong() {
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let memory = Rc::new(RefCell::new(Page(std::vec![0; 0x1000])));
+        let _installed = crate::user::syscall::host::install(memory.clone());
+        let mut frame = crate::user::TrapFrame::default();
+        let mut passive = crate::level::passive_for_test();
+        let mut call = NtCall::new(&mut frame, &mut passive);
+        let set = |call: &mut NtCall, class, at, length| {
+            set_system_information(call, class, UserAddr(at), length)
+        };
+        assert_eq!(set(&mut call, 39, 0x10000, 4), Ok(STATUS_SUCCESS));
+        assert_eq!(
+            set(&mut call, 39, 0x10000, 8),
+            Err(STATUS_INFO_LENGTH_MISMATCH)
+        );
+        assert_eq!(
+            set(&mut call, 39, 0x10000, 2),
+            Err(STATUS_INFO_LENGTH_MISMATCH)
+        );
+        assert_eq!(set(&mut call, 39, 0x20000, 4), Err(STATUS_ACCESS_VIOLATION));
+        assert_eq!(
+            set(&mut call, 2, 0x10000, 4),
+            Err(STATUS_INVALID_INFO_CLASS)
+        );
+    }
+
     /// The service reports the live fault counters: a query of the performance class through
     /// NtQuerySystemInformation's host path writes the fault-stats counts() the boot has noted.
     #[test]
@@ -495,32 +590,7 @@ mod tests {
         use std::cell::RefCell;
         use std::rc::Rc;
 
-        use crate::user::syscall::host::{install, UserMemory};
-        struct Page(std::vec::Vec<u8>);
-        impl UserMemory for Page {
-            fn read(&self, pointer: u32, bytes: &mut [u8]) -> Result<(), NtStatus> {
-                let at = pointer
-                    .checked_sub(0x10000)
-                    .ok_or(STATUS_ACCESS_VIOLATION)? as usize;
-                bytes.copy_from_slice(
-                    self.0
-                        .get(at..at + bytes.len())
-                        .ok_or(STATUS_ACCESS_VIOLATION)?,
-                );
-                Ok(())
-            }
-
-            fn write(&mut self, pointer: u32, bytes: &[u8]) -> Result<(), NtStatus> {
-                let at = pointer
-                    .checked_sub(0x10000)
-                    .ok_or(STATUS_ACCESS_VIOLATION)? as usize;
-                self.0
-                    .get_mut(at..at + bytes.len())
-                    .ok_or(STATUS_ACCESS_VIOLATION)?
-                    .copy_from_slice(bytes);
-                Ok(())
-            }
-        }
+        use crate::user::syscall::host::install;
         let memory = Rc::new(RefCell::new(Page(std::vec![0; 0x1000])));
         let _installed = install(memory.clone());
         let mut frame = crate::user::TrapFrame::default();

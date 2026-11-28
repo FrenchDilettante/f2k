@@ -579,6 +579,10 @@ pub fn open_refusal(device_flags: u32, references: i32, extension_flags: u32) ->
 /// requests, a load or an unload among them.
 pub const DRIVER_STACKS: usize = 4;
 
+/// The priority increment of a completion that grants none (IO_NO_INCREMENT): the I/O manager's
+/// own completions'.
+pub const IO_NO_INCREMENT: i8 = 0;
+
 /// What a thread's claim on the drivers' stacks got.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Claim {
@@ -686,8 +690,8 @@ pub trait Packets {
     fn dispatch(&mut self, entry: u32, device: u32, irp: u32) -> NtStatus;
     /// The completion routine at `routine` called: IoCompletion(DeviceObject, Irp, Context).
     fn completion(&mut self, routine: u32, device: u32, irp: u32, context: u32) -> NtStatus;
-    /// Its waiting sender woken: the IRP completed.
-    fn wake(&mut self, irp: u32);
+    /// Its waiting sender woken with the priority increment `boost`: the IRP completed.
+    fn wake(&mut self, irp: u32, boost: i8);
     /// An orphaned IRP's end: its block and what it holds given back.
     fn retire(&mut self, irp: u32);
 }
@@ -716,8 +720,10 @@ pub fn call<P: Packets>(packets: &mut P, irp: u32, device: u32, entry: u32) -> D
 /// up from the current one, each one's PendingReturned carried up, its completion routine run when
 /// its Control asks for it (on success, on an error or a warning, on a cancel); a routine's
 /// STATUS_MORE_PROCESSING_REQUIRED stops the walk, the IRP the routine's to complete again. Past
-/// the top, the IRP is completed: its waiting sender woken, an orphan retired.
-pub fn complete_request<P: Packets>(packets: &mut P, irp: u32) {
+/// the top, the IRP is completed: its waiting sender woken with the completer's `boost` (the
+/// PriorityBoost the driver passed, IO_DISK_INCREMENT's 1, IO_KEYBOARD_INCREMENT's 6, ...: Windows
+/// 2000 hands it to the wake of the sender's thread), an orphan retired.
+pub fn complete_request<P: Packets>(packets: &mut P, irp: u32, boost: i8) {
     loop {
         let packet = packets.irp(irp);
         let (number, stack_count) = (packet.current_location, packet.stack_count);
@@ -764,7 +770,7 @@ pub fn complete_request<P: Packets>(packets: &mut P, irp: u32) {
         other => other,
     });
     match before {
-        Progress::Awaited => packets.wake(irp),
+        Progress::Awaited => packets.wake(irp, boost),
         Progress::Orphaned => packets.retire(irp),
         // Completed inside its dispatch (its sender reads it on the dispatch's return), or by a
         // routine that kept it and completes it again past the top.
@@ -831,7 +837,7 @@ mod target {
     use crate::level::{self, High, LevelCell};
     use crate::mem::heap::KernelHeap;
     use crate::mem::pool::Block;
-    use crate::sched::event::{Event, EventKind, EVENT_WAKE_INCREMENT};
+    use crate::sched::event::{Event, EventKind};
     use crate::sched::wait::{WaitMode, WaitReason, WaitableId};
     use crate::slots::{
         entries_per_page,
@@ -1341,7 +1347,7 @@ mod target {
         let packet = unsafe { at::<Irp>(irp) };
         packet.io_status_status = STATUS_INVALID_DEVICE_REQUEST.0 as i32;
         packet.io_status_information = 0;
-        complete_irp(irp);
+        complete_irp(irp, IO_NO_INCREMENT);
         STATUS_INVALID_DEVICE_REQUEST.0 as i32
     }
 
@@ -1410,11 +1416,11 @@ mod target {
             NtStatus(completion(device, irp, context) as u32)
         }
 
-        fn wake(&mut self, irp: u32) {
+        fn wake(&mut self, irp: u32, boost: i8) {
             level::raised::<crate::level::Dispatch, _>(|dispatch| {
                 crate::sched::DISPATCHER
                     .get(dispatch)
-                    .set_event(completion_event(irp), EVENT_WAKE_INCREMENT)
+                    .set_event(completion_event(irp), boost)
             });
         }
 
@@ -1423,9 +1429,9 @@ mod target {
         }
     }
 
-    /// IofCompleteRequest (see [`complete_request`]).
-    pub fn complete_irp(irp: u32) {
-        complete_request(&mut Kernel, irp);
+    /// IofCompleteRequest(Irp, PriorityBoost) (see [`complete_request`]).
+    pub fn complete_irp(irp: u32, boost: i8) {
+        complete_request(&mut Kernel, irp, boost);
     }
 
     /// A request for a device: the IRP's fields its builder sets.
@@ -2849,6 +2855,7 @@ mod tests {
         routines: std::vec::Vec<Routine>,
         held: std::vec::Vec<u32>,
         woken: std::vec::Vec<u32>,
+        boosts: std::vec::Vec<i8>,
         retired: std::vec::Vec<u32>,
         completions: std::vec::Vec<(u32, u32)>,
         /// The drivers' stacks, the thread running, the names, and what its opens reached.
@@ -2865,6 +2872,7 @@ mod tests {
                 routines: routines.to_vec(),
                 held: std::vec::Vec::new(),
                 woken: std::vec::Vec::new(),
+                boosts: std::vec::Vec::new(),
                 retired: std::vec::Vec::new(),
                 completions: std::vec::Vec::new(),
                 stacks: Stacks::new(),
@@ -2890,12 +2898,17 @@ mod tests {
             self.irps[irp as usize].2
         }
 
-        /// The IRP's I/O status set, and the IRP completed (IoCompleteRequest).
+        /// The IRP's I/O status set, and the IRP completed (IoCompleteRequest) with no boost.
         fn finish(&mut self, irp: u32, status: NtStatus, information: u32) {
+            self.finish_boosted(irp, status, information, IO_NO_INCREMENT);
+        }
+
+        /// [`Fake::finish`] with the PriorityBoost `boost`.
+        fn finish_boosted(&mut self, irp: u32, status: NtStatus, information: u32, boost: i8) {
             let packet = self.irp(irp);
             packet.io_status_status = status.0 as i32;
             packet.io_status_information = information;
-            complete_request(self, irp);
+            complete_request(self, irp, boost);
         }
 
         /// The IRP's current location marked pending (IoMarkIrpPending).
@@ -2930,8 +2943,9 @@ mod tests {
             (self.routines[routine as usize - 1])(self, device, irp, context)
         }
 
-        fn wake(&mut self, irp: u32) {
+        fn wake(&mut self, irp: u32, boost: i8) {
             self.woken.push(irp);
+            self.boosts.push(boost);
         }
 
         fn retire(&mut self, irp: u32) {
@@ -3031,6 +3045,20 @@ mod tests {
         assert!(fake.woken.is_empty() && fake.retired.is_empty());
     }
 
+    /// The completer's PriorityBoost goes to its waiting sender's wake, as IofCompleteRequest's
+    /// does on Windows 2000 (a keyboard driver's IO_KEYBOARD_INCREMENT, 6, here).
+    #[test]
+    fn a_completion_wakes_its_sender_with_the_completers_boost() {
+        let mut fake = fake();
+        let irp = fake.make(1);
+        let dispatched = call(&mut fake, irp, DEVICE, PENDS);
+        assert!(!dispatched.completed);
+        assert!(!await_completion(&mut fake, irp));
+        fake.finish_boosted(irp, STATUS_SUCCESS, 0, 6);
+        assert_eq!(fake.woken, [irp]);
+        assert_eq!(fake.boosts, [6]);
+    }
+
     /// A request its driver leaves pending stays its driver's: not completed, so its sender
     /// waits, keeping what the IRP points to; the completion, from another request, wakes it, and
     /// its status is the IRP's, not STATUS_PENDING.
@@ -3119,7 +3147,7 @@ mod tests {
         assert!(!dispatched.completed);
         assert!(!await_completion(&mut fake, irp));
         // The routine's owner completes it again: past the top already, so it is completed.
-        complete_request(&mut fake, irp);
+        complete_request(&mut fake, irp, IO_NO_INCREMENT);
         assert_eq!(fake.woken, [irp]);
         assert_eq!(
             outcome(&mut fake, irp, dispatched),

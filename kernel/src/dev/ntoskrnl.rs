@@ -80,10 +80,10 @@ mod target {
     }
 
     /// IofCompleteRequest(Irp, PriorityBoost), fastcall: the IRP completed up its stack, its
-    /// waiting sender woken. The boost is not granted: the sender's wake takes the event's.
+    /// waiting sender woken with the PriorityBoost as its wake's increment.
     #[no_mangle]
-    pub extern "fastcall" fn f2k_export_IofCompleteRequest(irp: u32, _boost: i8) {
-        io::complete_irp(irp);
+    pub extern "fastcall" fn f2k_export_IofCompleteRequest(irp: u32, boost: i8) {
+        io::complete_irp(irp, boost);
     }
 
     /// IoGetCurrentProcess: the current process's stand-in (PsGetCurrentProcess is the DDK's

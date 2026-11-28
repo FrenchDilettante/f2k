@@ -41,6 +41,11 @@ pub struct SchedProcess {
     /// The quantum every thread of this process resets to (KPROCESS's ThreadQuantum): the two-tick
     /// base, stretched while the process is in the foreground (`crate::process::foreground`).
     pub(super) thread_quantum: i8,
+    /// What a wait's end adds to the wake's increment for this process's threads (KiUnwaitThread's
+    /// foreground boost): PsPrioritySeparation while the process is in the foreground (Windows
+    /// 2000 keeps that state as its memory priority, MEMORY_PRIORITY_FOREGROUND), 0 in the
+    /// background (`crate::process::foreground`).
+    pub(super) foreground_boost: i8,
     /// Whether wait-exit boosts are refused for this process's threads (inherited at thread
     /// attach).
     pub(super) disable_boost: bool,
@@ -125,6 +130,7 @@ impl SchedProcess {
             dir_phys,
             base_priority,
             thread_quantum: QUANTUM_RESET,
+            foreground_boost: 0,
             disable_boost: false,
             disable_quantum: false,
             stack_count: NO_THREADS,
@@ -170,6 +176,18 @@ impl SchedProcess {
     /// Set the quantum this process's threads reset to: each thread takes it at its next reset.
     pub fn set_thread_quantum(&mut self, quantum: i8) {
         self.thread_quantum = quantum;
+    }
+
+    /// What a wait's end adds to the wake's increment for this process's threads: the foreground
+    /// boost, 0 in the background.
+    pub fn foreground_boost(&self) -> i8 {
+        self.foreground_boost
+    }
+
+    /// Set the foreground boost: PsPrioritySeparation for a process in the foreground, 0 for one
+    /// in the background. Each wait's end from now on reads it.
+    pub fn set_foreground_boost(&mut self, boost: i8) {
+        self.foreground_boost = boost;
     }
 
     /// The kernel stacks lent out (the sentinel before the first thread).

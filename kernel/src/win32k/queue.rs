@@ -3300,6 +3300,14 @@ impl Signals {
     }
 }
 
+/// The increment a queue's event is set with (Windows 2000's win32k sets a GUI thread's
+/// wake event, SetWakeBit's, with 2 where other events take EVENT_INCREMENT's 1): a thread
+/// woken for window-manager input — a message posted or sent to it, a reply to its send,
+/// keyboard or mouse input — runs 2 above its base, the foreground boost besides when its
+/// process is in the foreground (`crate::process::foreground`). The server's event, a reply's
+/// to its send, takes it too.
+pub const GUI_WAKE_INCREMENT: i8 = 2;
+
 // --- The target's side: the queues' events, the waits, the services ------------------------------
 
 #[cfg(target_arch = "x86")]
@@ -3309,7 +3317,7 @@ mod target {
 
     use super::*;
     use crate::level::{At, Dispatch, Passive};
-    use crate::sched::event::{Event, EventKind, EVENT_WAKE_INCREMENT};
+    use crate::sched::event::{Event, EventKind};
     use crate::sched::wait::{self, WaitMode, WaitReason, WaitableId};
 
     /// A queue's event: a synchronization event, set whenever its queue is given something (see
@@ -3439,10 +3447,10 @@ mod target {
             let mut dispatch = passive.raise::<Dispatch>();
             let dispatcher = crate::sched::DISPATCHER.get(&mut dispatch);
             for index in wakes.each(made) {
-                dispatcher.set_event(event_id(index.into()), EVENT_WAKE_INCREMENT);
+                dispatcher.set_event(event_id(index.into()), GUI_WAKE_INCREMENT);
             }
             if server {
-                dispatcher.set_event(SERVER.id(), EVENT_WAKE_INCREMENT);
+                dispatcher.set_event(SERVER.id(), GUI_WAKE_INCREMENT);
             }
         }
     }

@@ -240,6 +240,15 @@ zw_ordinal = 921
 note = "the system time set (a NULL SystemTime only reads the previous one); no privilege is checked: F2K has no tokens"
 
 [[export]]
+name = "NtSetSystemInformation"
+group = "nt"
+args = ["u32 SystemInformationClass", "ptr SystemInformation", "u32 SystemInformationLength"]
+impl = { syscall = "crate::nt::system::set_system_information" }
+ordinal = 274
+zw_ordinal = 919
+note = "takes SystemPrioritySeperation (39), Win32PrioritySeparation changed at run time; the other classes are STATUS_INVALID_INFO_CLASS; no privilege is checked: F2K has no tokens"
+
+[[export]]
 name = "NtShutdownSystem"
 group = "nt"
 args = ["u32 Action"]
@@ -2429,9 +2438,6 @@ zw_ordinal = 917
 name = "NtSetSystemEnvironmentValue"
 ordinal = 273
 
-[[export]]
-name = "NtSetSystemInformation"
-ordinal = 274
 
 [[export]]
 name = "NtSetSystemPowerState"
@@ -4503,10 +4509,6 @@ ordinal = 916
 [[export]]
 name = "ZwSetSystemEnvironmentValue"
 ordinal = 918
-
-[[export]]
-name = "ZwSetSystemInformation"
-ordinal = 919
 
 [[export]]
 name = "ZwSetSystemPowerState"
