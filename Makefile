@@ -356,16 +356,21 @@ MIRI_TESTS ?= sched::dispatcher sched::thread sched::switch sched::semaphore sch
 	dev::io hal::exports csr:: win32k::text ob:: process:: fs::file interrupt::clock user::apc \
 	sched::wait:: sched::apc sched::timer sched::waitable_timer sched::mutex sched::event \
 	block::lock nt::signal nt::wait nt::tests
-MIRI_CARGO = cd $(MIRI_DIR) && CARGO_TARGET_DIR=$(MIRI_TARGET_DIR) MIRIFLAGS="$(MIRIFLAGS)" \
-	cargo +$(MIRI_TOOLCHAIN) miri test --manifest-path $(MIRI_MANIFEST) --lib
+MIRI_ENV = cd $(MIRI_DIR) && CARGO_TARGET_DIR=$(MIRI_TARGET_DIR) MIRIFLAGS="$(MIRIFLAGS)"
+MIRI_TEST = cargo +$(MIRI_TOOLCHAIN) miri test --manifest-path $(MIRI_MANIFEST) --lib
+# A group still running after MIRI_GROUP_TIMEOUT seconds fails, naming the test it was running
+# (scripts/test_timeout.py): the default groups take a few minutes each on a loaded machine.
+MIRI_GROUP_TIMEOUT ?= 900
+MIRI_RUN = python3 $(CURDIR)/$(SCRIPTS_DIR)/test_timeout.py --test-timeout 0 \
+	--run-timeout $(MIRI_GROUP_TIMEOUT) --
 
 .PHONY: miri
 miri: userland
 	@mkdir -p $(MIRI_DIR) $(MIRI_TARGET_DIR)/logs
-	$(MIRI_CARGO) --no-run
+	$(MIRI_ENV) $(MIRI_TEST) --no-run
 	@printf '%s\n' $(MIRI_TESTS) | xargs -P $(MIRI_JOBS) -n 1 sh -c '\
 		log="$(MIRI_TARGET_DIR)/logs/$$1.log"; \
-		if ($(MIRI_CARGO) -q -- "$$1") > "$$log" 2>&1; then \
+		if ($(MIRI_ENV) $(MIRI_RUN) $(MIRI_TEST) -q -- "$$1") > "$$log" 2>&1; then \
 			echo "miri ok: $$1 ($$(grep -o "[0-9]* passed" "$$log"))"; \
 		else \
 			echo "miri FAILED: $$1 (see $$log)"; tail -40 "$$log"; exit 1; \
@@ -393,33 +398,39 @@ check-all:
 compat: userland
 	@$(UV) run scripts/compat.py --check --run --report
 
+# Each host test runs under scripts/test_timeout.py: a test still running after HOST_TEST_TIMEOUT
+# seconds (the slowest takes about 10 s on a loaded machine) is named and the run fails, instead of
+# a looping test holding the run forever. `make run-tests HOST_TEST_TIMEOUT=0` turns it off.
+HOST_TEST_TIMEOUT ?= 120
+HOST_TEST = python3 $(CURDIR)/$(SCRIPTS_DIR)/test_timeout.py --test-timeout $(HOST_TEST_TIMEOUT) --
+
 .PHONY: run-tests
 run-tests: userland
 	@echo "Running host unit tests..."
 	# CARGO_UNSTABLE_BUILD_STD=std: the workspace config builds core from
 	# source for the kernel; for host tests that collides with the host's
 	# prebuilt std, so build std (and its deps) from source instead.
-	cd $(KERNEL_DIR) && CARGO_UNSTABLE_BUILD_STD=std cargo test --lib --target $(RUST_HOST_TARGET)
+	cd $(KERNEL_DIR) && CARGO_UNSTABLE_BUILD_STD=std $(HOST_TEST) cargo test --lib --target $(RUST_HOST_TARGET)
 	# The kernel's documentation tests: the compile-fail examples of the level tokens and the
 	# locks, each checked for the error code it names (against the library's plain host build).
-	cd $(KERNEL_DIR) && CARGO_UNSTABLE_BUILD_STD=std cargo test --doc --target $(RUST_HOST_TARGET)
+	cd $(KERNEL_DIR) && CARGO_UNSTABLE_BUILD_STD=std $(HOST_TEST) cargo test --doc --target $(RUST_HOST_TARGET)
 	# The boot loader's work on the kernel's image (its library).
-	cd $(LOADER_DIR) && CARGO_UNSTABLE_BUILD_STD=std cargo test --lib --target $(RUST_HOST_TARGET)
+	cd $(LOADER_DIR) && CARGO_UNSTABLE_BUILD_STD=std $(HOST_TEST) cargo test --lib --target $(RUST_HOST_TARGET)
 	# The export-spec generator the build scripts run (a host crate of its own).
-	cd $(EXPORTGEN_DIR) && CARGO_UNSTABLE_BUILD_STD=std cargo test --target $(RUST_HOST_TARGET)
+	cd $(EXPORTGEN_DIR) && CARGO_UNSTABLE_BUILD_STD=std $(HOST_TEST) cargo test --target $(RUST_HOST_TARGET)
 	# The userland runtime's host tests, under the root configuration as the kernel's are (std
 	# built from source): the userland workspace's own configuration would hand them a from-source
 	# core beside the prebuilt std (its build-std array cannot be emptied from the command line).
-	CARGO_UNSTABLE_BUILD_STD=std cargo test --manifest-path $(USERLAND_DIR)/rtl/Cargo.toml --target $(RUST_HOST_TARGET) --target-dir target/userland-host
+	CARGO_UNSTABLE_BUILD_STD=std $(HOST_TEST) cargo test --manifest-path $(USERLAND_DIR)/rtl/Cargo.toml --target $(RUST_HOST_TARGET) --target-dir target/userland-host
 	# The system DLLs' user-mode code (their libraries).
 	for dll in kernel32 msvcrt advapi32 user32 gdi32 shell32; do \
-		CARGO_UNSTABLE_BUILD_STD=std cargo test --manifest-path $(USERLAND_DIR)/$$dll/Cargo.toml --lib --target $(RUST_HOST_TARGET) --target-dir target/userland-host || exit 1; \
+		CARGO_UNSTABLE_BUILD_STD=std $(HOST_TEST) cargo test --manifest-path $(USERLAND_DIR)/$$dll/Cargo.toml --lib --target $(RUST_HOST_TARGET) --target-dir target/userland-host || exit 1; \
 	done
 	# The compiler's helpers, F2K's own programs' runtime, and the programs' libraries (a program
 	# without one, fontshow, is passed over).
 	for crate in compiler-helpers exe $(SYSTEM_PROGRAMS) $(CMD_PROGRAM) $(TEST_PROGRAMS); do \
 		[ -f $(USERLAND_DIR)/$$crate/src/lib.rs ] || continue; \
-		CARGO_UNSTABLE_BUILD_STD=std cargo test --manifest-path $(USERLAND_DIR)/$$crate/Cargo.toml --lib --target $(RUST_HOST_TARGET) --target-dir target/userland-host || exit 1; \
+		CARGO_UNSTABLE_BUILD_STD=std $(HOST_TEST) cargo test --manifest-path $(USERLAND_DIR)/$$crate/Cargo.toml --lib --target $(RUST_HOST_TARGET) --target-dir target/userland-host || exit 1; \
 	done
 
 .PHONY: check

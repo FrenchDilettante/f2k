@@ -3052,7 +3052,10 @@ mod tests {
         for index in 0..1000 {
             directory.bind_name(&w(&format!("n{index}")), id).unwrap();
         }
-        for index in 0..1000 {
+        // Each lookup walks the table, so looking every name up costs the square of the names;
+        // under Miri, every 99th name and the last (names past the 256 among them) are enough.
+        let step = if cfg!(miri) { 99 } else { 1 };
+        for index in (0..1000).step_by(step).chain([999]) {
             assert_eq!(
                 directory.lookup_name(&w(&format!("n{index}")), false),
                 Some(id)
