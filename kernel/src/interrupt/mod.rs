@@ -821,13 +821,14 @@ mod tests {
         }
     }
 
-    /// The service recorder: logs calls.
+    /// The service recorder: logs each call's context. No other service records, so a call logged
+    /// here identifies the service as this one.
     thread_local! {
-        static SERVICE_CALLS: RefCell<Vec<u8>> = RefCell::new(Vec::new());
+        static SERVICE_CALLS: RefCell<Vec<usize>> = RefCell::new(Vec::new());
     }
 
-    fn recording_service(_object: &InterruptObject, _context: usize) -> bool {
-        SERVICE_CALLS.with(|calls| calls.borrow_mut().push(1));
+    fn recording_service(_object: &InterruptObject, context: usize) -> bool {
+        SERVICE_CALLS.with(|calls| calls.borrow_mut().push(context));
         true
     }
 
@@ -891,10 +892,14 @@ mod tests {
         assert!(object.shareable);
         assert!(!object.is_connected());
         assert!(!object.lock.load(Ordering::SeqCst));
-        // The service is the one that was installed, untyped (it takes no level token).
-        assert!(
-            matches!(object.service, Service::Untyped(service) if core::ptr::fn_addr_eq(service, recording_service as InterruptService))
-        );
+        // The service is the one that was installed, untyped (it takes no level token): called,
+        // it is the recorder that logs, with the object's context.
+        let Service::Untyped(service) = object.service else {
+            panic!("the service is installed untyped");
+        };
+        SERVICE_CALLS.with(|calls| calls.borrow_mut().clear());
+        assert!(service(&object, object.service_context));
+        assert_eq!(SERVICE_CALLS.with(|calls| calls.borrow().clone()), [0xABCD]);
     }
 
     /// The validity gate: an over-scaled level, a synchronize level below the service level, or an
