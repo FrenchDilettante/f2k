@@ -10,8 +10,7 @@
 //! block: made by the first query, it goes with the object.
 
 use rtl::array_vec::ArrayVec;
-
-use super::fat32::dir::fold_unit;
+use rtl::text::upcase;
 
 /// The longest expression kept, in units.
 pub const MAX_EXPRESSION: usize = 260;
@@ -124,7 +123,7 @@ impl Search {
             Some(units) => units
                 .iter()
                 .take(MAX_EXPRESSION)
-                .for_each(|&unit| kept.push(fold_unit(unit))),
+                .for_each(|&unit| kept.push(upcase(unit))),
             None => kept.push(STAR),
         }
         Search {
@@ -151,7 +150,7 @@ mod tests {
     use super::*;
 
     fn units(text: &str) -> Vec<u16> {
-        text.encode_utf16().map(fold_unit).collect()
+        text.encode_utf16().map(upcase).collect()
     }
 
     /// kernel32's transformation of a FindFirstFile pattern (FindFirstFileExW's, restated), after
@@ -180,7 +179,7 @@ mod tests {
         if pattern.ends_with('.') && out.last() == Some(&STAR) {
             *out.last_mut().unwrap() = DOS_STAR;
         }
-        out.into_iter().map(fold_unit).collect()
+        out.into_iter().map(upcase).collect()
     }
 
     fn found(pattern: &str, name: &str) -> bool {

@@ -23,7 +23,6 @@ use rtl::path::{
     full_path_name,
     nt_path,
     path_type,
-    upcase,
     PathError,
     PathType,
     MAX_PATH,
@@ -31,6 +30,7 @@ use rtl::path::{
 use rtl::status::{STATUS_NAME_TOO_LONG, STATUS_OBJECT_NAME_INVALID, STATUS_SUCCESS};
 use rtl::string::UnicodeString;
 use rtl::sys;
+use rtl::text::eq_ignore_case;
 
 use crate::params::{with_own_parameters, OwnParameters};
 use crate::service::{self, ObjectAttributes};
@@ -137,11 +137,7 @@ fn same_directory(full: &[u16], current: &[u16]) -> bool {
         [rest @ .., last] if current.len() > 3 && *last == u16::from(b'\\') => rest,
         _ => current,
     };
-    full.len() == current.len()
-        && full
-            .iter()
-            .zip(current)
-            .all(|(&a, &b)| upcase(a) == upcase(b))
+    eq_ignore_case(full, current)
 }
 
 /// RtlGetCurrentDirectory_U: the current directory's DOS path into the caller's buffer of

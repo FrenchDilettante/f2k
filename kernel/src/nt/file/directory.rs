@@ -9,12 +9,13 @@
 //! name; a listing reports the 8.3 name beside a long one only.
 
 use rtl::nt::UnicodeString;
+use rtl::text::upcase;
 
 use super::super::call::{Handle, NtCall, NtResult, UserAddr};
 use super::common::{check_access, cluster_bytes, complete, completion_event, file_object, signal};
 use super::info::{self, Entry, Listing, ListingClass};
 use super::{expression_length, resume_search};
-use crate::fs::fat32::dir::{decode_byte, fold_unit, walk, Listed};
+use crate::fs::fat32::dir::{decode_byte, walk, Listed};
 use crate::fs::fat32::lookup::File;
 use crate::fs::fat32::path::MAX_NAME;
 use crate::fs::file::{rights, Context, IoState};
@@ -54,7 +55,7 @@ fn entry_matches(listed: &Listed, expression: &[u16]) -> bool {
     let length = name_units(listed, &mut units);
     units[..length]
         .iter_mut()
-        .for_each(|unit| *unit = fold_unit(*unit));
+        .for_each(|unit| *unit = upcase(*unit));
     if matches(expression, &units[..length]) {
         return true;
     }
@@ -65,7 +66,7 @@ fn entry_matches(listed: &Listed, expression: &[u16]) -> bool {
     let length = short_units(listed, &mut short);
     short[..length]
         .iter_mut()
-        .for_each(|unit| *unit = fold_unit(*unit));
+        .for_each(|unit| *unit = upcase(*unit));
     matches(expression, &short[..length])
 }
 

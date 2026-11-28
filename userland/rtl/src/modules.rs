@@ -39,6 +39,7 @@ use crate::status::{
     STATUS_ORDINAL_NOT_FOUND,
     STATUS_PROCEDURE_NOT_FOUND,
 };
+use crate::text::{eq_ignore_case, upcase};
 
 /// The memory the lists and the images are read from, by user address.
 pub trait Memory {
@@ -294,8 +295,7 @@ pub fn module_name(name: &[u16], out: &mut [u16]) -> Option<usize> {
 fn string_is<M: Memory>(memory: &M, string: &UnicodeString<u32>, name: &[u16]) -> bool {
     usize::from(string.length) / 2 == name.len()
         && name.iter().enumerate().all(|(index, &unit)| {
-            crate::path::upcase(memory.half(string.buffer + 2 * index as u32))
-                == crate::path::upcase(unit)
+            upcase(memory.half(string.buffer + 2 * index as u32)) == upcase(unit)
         })
 }
 
@@ -621,7 +621,7 @@ pub fn search_place(
     let mut system = [0u16; 16];
     let parts: [&[u16]; 3] = match index {
         0 => [image_directory, &[], name],
-        1 if same_path(search.current, image_directory) => return None,
+        1 if eq_ignore_case(search.current, image_directory) => return None,
         1 => [search.current, &[], name],
         _ if index < 2 + SYSTEM_PLACES.len() => {
             let place = SYSTEM_PLACES[index - 2];
@@ -635,14 +635,6 @@ pub fn search_place(
         ],
     };
     absolute(&parts, search.current, out)
-}
-
-/// Whether two directories' paths are one, without regard to case.
-fn same_path(a: &[u16], b: &[u16]) -> bool {
-    a.len() == b.len()
-        && a.iter()
-            .zip(b)
-            .all(|(&a, &b)| crate::path::upcase(a) == crate::path::upcase(b))
 }
 
 /// `parts` joined into one path (a separator before the last part, the name, unless what precedes

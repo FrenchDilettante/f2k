@@ -13,6 +13,8 @@
 //! long name, or the 8.3 name with the NT case bits applied; the short name it shows beside a long
 //! one is the 8.3 name as stored — both in code page 1252.
 
+use rtl::text::upcase;
+
 use super::dirent::{
     checksum,
     decode,
@@ -80,7 +82,7 @@ impl Listed {
                 && units
                     .iter()
                     .zip(name)
-                    .all(|(&unit, &byte)| fold_unit(unit) == fold_unit(decode_byte(byte)))
+                    .all(|(&unit, &byte)| upcase(unit) == upcase(decode_byte(byte)))
             {
                 return true;
             }
@@ -95,18 +97,6 @@ impl Listed {
 /// A codepage 1252 byte as a UTF-16 unit.
 pub fn decode_byte(byte: u8) -> u16 {
     rtl::cp1252::MB_TO_WC[byte as usize]
-}
-
-/// A unit's case-folded form, for name comparison: upper case, over the units codepage 1252 maps.
-pub fn fold_unit(unit: u16) -> u16 {
-    match unit {
-        0x61..=0x7A => unit - 0x20,
-        0xE0..=0xFE if unit != 0xF7 => unit - 0x20,
-        0xFF => 0x178,
-        0x153 | 0x161 => unit - 1,
-        0x17E => 0x17D,
-        _ => unit,
-    }
 }
 
 /// Format a stored 8.3 name as `NAME.EXT` (no dot without an extension) in code page 1252, lowering

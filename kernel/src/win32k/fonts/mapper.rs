@@ -3,7 +3,8 @@
 //! weight asks for a bold face; and the stock fonts' LOGFONTs. The table ([`super::table`]) applies
 //! them to the faces loaded.
 //!
-//! - A face name is compared without regard to case (ASCII letters).
+//! - A face name is compared without regard to case, by NT's upcase rule ([`rtl::text::upcase`]),
+//!   as win32k's font tables upcase the names they hash.
 //! - "MS Shell Dlg 2" is Tahoma and "MS Shell Dlg" Microsoft Sans Serif, as Windows 2000's
 //!   `...\Windows NT\CurrentVersion\FontSubstitutes` key says (F2K has no registry on disk: a
 //!   built-in list stands in for the key). GetTextFace answers the name asked for, as Windows 2000
@@ -42,6 +43,7 @@ use rtl::gdi::{
     SYSTEM_FONT,
     VARIABLE_PITCH,
 };
+use rtl::text::eq_ignore_case_str;
 
 /// The face substitutes: the name asked for, the face it stands for.
 pub const SUBSTITUTES: [(&str, &str); 2] = [
@@ -61,32 +63,11 @@ pub const DEFAULT_FACE: &str = "System";
 /// The LOGFONT height a height of 0 stands for: a cell of 16 pixels.
 pub const DEFAULT_HEIGHT: i32 = 16;
 
-/// Whether the two names are the same, without regard to the case of ASCII letters.
-pub fn same_name(a: &[u16], b: &[u16]) -> bool {
-    let fold = |unit: u16| {
-        if (u16::from(b'a')..=u16::from(b'z')).contains(&unit) {
-            unit - 0x20
-        } else {
-            unit
-        }
-    };
-    a.len() == b.len() && a.iter().zip(b).all(|(&x, &y)| fold(x) == fold(y))
-}
-
-/// Whether `units` spell the ASCII `text`, without regard to case.
-pub fn names(units: &[u16], text: &str) -> bool {
-    units.len() == text.len()
-        && units
-            .iter()
-            .zip(text.bytes())
-            .all(|(&unit, byte)| unit < 0x80 && (unit as u8).eq_ignore_ascii_case(&byte))
-}
-
 /// The face `face` stands for when it is a substitute's name.
 pub fn substitute(face: &[u16]) -> Option<&'static str> {
     SUBSTITUTES
         .iter()
-        .find(|(name, _)| names(face, name))
+        .find(|(name, _)| eq_ignore_case_str(face, name))
         .map(|&(_, target)| target)
 }
 
@@ -94,7 +75,7 @@ pub fn substitute(face: &[u16]) -> Option<&'static str> {
 pub fn stand_in(face: &[u16]) -> Option<&'static str> {
     STAND_INS
         .iter()
-        .find(|(name, _)| names(face, name))
+        .find(|(name, _)| eq_ignore_case_str(face, name))
         .map(|&(_, target)| target)
 }
 
@@ -199,16 +180,14 @@ mod tests {
 
     use super::*;
 
-    /// Names match without regard to ASCII case, and only whole.
+    /// A substitute's name matches without regard to case.
     #[test]
-    fn names_match_without_case() {
-        assert!(same_name(&wide("F2K Tahoma"), &wide("f2k tAHOMA")));
-        assert!(!same_name(&wide("F2K Tahoma"), &wide("F2K Tahom")));
-        assert!(
-            !same_name(&wide("É"), &wide("é")),
-            "ASCII letters alone fold"
+    fn substitutes_match_without_case() {
+        assert_eq!(
+            substitute(&wide("ms shell dlg")),
+            substitute(&wide("MS Shell Dlg"))
         );
-        assert!(names(&wide("ms shell dlg"), "MS Shell Dlg"));
+        assert!(substitute(&wide("ms shell dlg")).is_some());
     }
 
     /// The dialog faces stand for Tahoma and Microsoft Sans Serif; another name stands for none.

@@ -4758,13 +4758,9 @@ pub mod atoms {
         Ok(Err(units))
     }
 
-    /// Whether two names match, ASCII letters in either case.
+    /// Whether two names match, as the atom tables match them.
     fn same(a: &[u16], b: &[u16]) -> bool {
-        let fold = |unit: u16| match unit {
-            0x61..=0x7A => unit - 0x20,
-            _ => unit,
-        };
-        a.len() == b.len() && a.iter().zip(b).all(|(&x, &y)| fold(x) == fold(y))
+        rtl::text::same_atom_name(a.iter().copied(), b.iter().copied())
     }
 
     /// The index of the entry named `units`.

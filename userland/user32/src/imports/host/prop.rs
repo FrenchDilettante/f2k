@@ -61,13 +61,7 @@ fn atom_name(units: Vec<u16>) -> Result<Result<u16, Vec<u16>>, u32> {
     }
     Ok(Err(units
         .iter()
-        .map(|&u| {
-            if (0x61..=0x7A).contains(&u) {
-                u - 0x20
-            } else {
-                u
-            }
-        })
+        .map(|&u| rtl::text::atom_upcase(u))
         .collect()))
 }
 
