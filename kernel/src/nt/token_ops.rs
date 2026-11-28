@@ -281,75 +281,18 @@ mod services {
     use rtl::nt::LuidAndAttributes;
     use rtl::pod::Pod;
 
-    use super::super::call::{calling_process, Handle, NtCall, NtResult, UserAddr, UserPtr};
-    use super::super::object::{
-        is_console_handle,
-        CURRENT_PROCESS,
-        CURRENT_THREAD,
-        THREAD_QUERY_INFORMATION,
-    };
+    use super::super::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
+    use super::super::capture::read_required_sid;
+    use super::super::object::THREAD_QUERY_INFORMATION;
     use super::super::thread::thread_of;
-    use super::super::token::granted;
+    use super::super::token::{granted, quality_of_service, token_of};
     use super::*;
     use crate::level::Dispatch;
-    use crate::ob::{self, ObRef, ObjectType};
+    use crate::ob;
     use crate::sched::DISPATCHER;
-    use crate::sec::sid::is_valid;
 
     /// A caller's list copied in at a time, through a buffer on the stack (32 entries).
     const CHUNK: usize = 32;
-
-    /// The token `handle` names in the calling process, its open granted `needed`, referenced
-    /// for the service's scope, with the handle's granted access: STATUS_INVALID_HANDLE for a
-    /// handle naming nothing (a console handle included), STATUS_OBJECT_TYPE_MISMATCH for
-    /// another kind of object (the process and thread pseudo-handles among them),
-    /// STATUS_ACCESS_DENIED for an open without the rights.
-    fn token_of(handle: u32, needed: u32) -> Result<(ObRef, u32), NtStatus> {
-        if handle == CURRENT_PROCESS || handle == CURRENT_THREAD {
-            return Err(STATUS_OBJECT_TYPE_MISMATCH);
-        }
-        if is_console_handle(handle) {
-            return Err(STATUS_INVALID_HANDLE);
-        }
-        let entry = calling_process()
-            .lookup_handle(handle)
-            .ok_or(STATUS_INVALID_HANDLE)?;
-        let id = entry.object_id().ok_or(STATUS_INVALID_HANDLE)?;
-        if id.kind != ObjectType::Token {
-            return Err(STATUS_OBJECT_TYPE_MISMATCH);
-        }
-        if entry.access & needed != needed {
-            return Err(STATUS_ACCESS_DENIED);
-        }
-        let access = entry.access;
-        Ok((ob::reference(id).ok_or(STATUS_INVALID_HANDLE)?, access))
-    }
-
-    /// The SID at the caller's address `ptr` (a list entry's SID pointer), read and validated:
-    /// a null or unmapped one faults (STATUS_ACCESS_VIOLATION), a malformed one is
-    /// STATUS_INVALID_SID.
-    fn read_sid(ptr: u32) -> Result<se::SidBytes, NtStatus> {
-        if ptr == 0 {
-            return Err(STATUS_ACCESS_VIOLATION);
-        }
-        let at = UserAddr(ptr);
-        let mut header = [0u8; 2];
-        at.read(&mut header)?;
-        if header[0] & 0x0F != crate::sec::REVISION
-            || usize::from(header[1]) > crate::sec::MAX_SUB_AUTHORITIES
-        {
-            return Err(se::STATUS_INVALID_SID);
-        }
-        let mut sid = se::SidBytes::new();
-        let length = crate::sec::length_required(usize::from(header[1]));
-        sid.try_extend_default(length)
-            .map_err(|_| se::STATUS_INVALID_SID)?;
-        at.read(sid.as_mut_slice())?;
-        if !is_valid(sid.as_slice()) {
-            return Err(se::STATUS_INVALID_SID);
-        }
-        Ok(sid)
-    }
 
     /// A TOKEN_GROUPS at the caller's address `at` read whole: its count, then its entries (a
     /// SID pointer and attributes each) in chunks, each SID read and validated, each entry
@@ -367,7 +310,7 @@ mod services {
             cursor.read(&mut buffer[..take * 8])?;
             cursor = cursor.offset((take * 8) as u32);
             for entry in buffer[..take * 8].chunks_exact(8) {
-                let sid = read_sid(u32::from_le_bytes(entry[..4].try_into().unwrap()))?;
+                let sid = read_required_sid(u32::from_le_bytes(entry[..4].try_into().unwrap()))?;
                 each(sid, u32::from_le_bytes(entry[4..8].try_into().unwrap()))?;
             }
             left -= take;
@@ -391,30 +334,6 @@ mod services {
             left -= take;
         }
         Ok(count)
-    }
-
-    /// An OBJECT_ATTRIBUTES' impersonation level (its SECURITY_QUALITY_OF_SERVICE's dword at
-    /// offset 4; None for no attributes, no quality of service, or one whose length is neither
-    /// the plain nor the advanced one — that length is STATUS_INVALID_PARAMETER) and whether it
-    /// asks for an inheritable handle.
-    fn quality_of_service(attributes: UserAddr) -> Result<(Option<u32>, bool), NtStatus> {
-        if attributes.is_null() {
-            return Ok((None, false));
-        }
-        let header = attributes.cast::<rtl::nt::ObjectAttributes<u32>>().read()?;
-        let inherit = header.attributes & super::super::attributes::OBJ_INHERIT != 0;
-        let quality = UserAddr(header.security_quality_of_service);
-        if quality.is_null() {
-            return Ok((None, inherit));
-        }
-        // The plain and the advanced quality of service's length, on the target's 32 bits.
-        const QOS: u32 = 12;
-        const ADVANCED_QOS: u32 = 20;
-        let length = quality.cast::<u32>().read()?;
-        if length != QOS && length != ADVANCED_QOS {
-            return Err(STATUS_INVALID_PARAMETER);
-        }
-        Ok((Some(quality.offset(4).cast::<u32>().read()?), inherit))
     }
 
     /// NtAdjustGroupsToken: the token's groups moved as NewState says, or all reset to their

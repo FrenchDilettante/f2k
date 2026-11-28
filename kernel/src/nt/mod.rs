@@ -60,6 +60,7 @@ pub mod atom;
 pub mod attributes;
 pub mod audit;
 pub mod call;
+pub mod capture;
 pub mod driver;
 pub mod exception;
 pub mod file;

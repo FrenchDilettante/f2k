@@ -1,26 +1,19 @@
-//! The services themselves, on the calling process's handles and the caller's memory:
-//! the captures (the descriptor, the SID, the type list, the mapping), the handle lookup, and
-//! the out-param writes.
+//! The services themselves, on the calling process's handles and the caller's memory: the
+//! handle lookup and the out-param writes, over the captures `nt::capture` makes (the
+//! descriptor, the SID, the type list, the mapping).
 
 use rtl::nt::access::TOKEN_QUERY;
 
 use super::super::call::{calling_process, Handle, NtCall, NtResult, UserAddr, UserPtr};
+use super::super::capture::{capture_sd, capture_type_list, read_mapping, read_sid, MAX_TYPE_LIST};
 use super::super::object::{is_console_handle, CURRENT_PROCESS, CURRENT_THREAD};
 use super::*;
 use crate::ob::{self, ObRef};
-use crate::sec::sd::{self, Memory};
-use crate::sec::{self, Owned};
-
-/// The most object types a captured list holds.
-const MAX_TYPE_LIST: usize = 128;
-/// An OBJECT_TYPE_LIST entry's bytes: its level, a spare word and its GUID's address.
-const TYPE_ENTRY: usize = 8;
-/// The highest level an entry may name.
-const MAX_LEVEL: u16 = 4;
+use crate::sec;
 
 /// The token `handle` names in the calling process: looked up as any handle (the pseudo- and
 /// console handles name no token), referenced, its body copied out.
-fn token_of(handle: u32, needed: u32) -> Result<(ObRef, se::TokenBody), NtStatus> {
+pub(crate) fn token_of(handle: u32, needed: u32) -> Result<(ObRef, se::TokenBody), NtStatus> {
     if handle == CURRENT_PROCESS || handle == CURRENT_THREAD {
         return Err(STATUS_OBJECT_TYPE_MISMATCH);
     }
@@ -36,131 +29,9 @@ fn token_of(handle: u32, needed: u32) -> Result<(ObRef, se::TokenBody), NtStatus
     Ok((reference, body))
 }
 
-/// The caller's address space as a descriptor-capture seam: the probe checks the alignment
-/// the read needs, then that the range is the caller's.
-struct UserMemory;
-
-impl Memory for UserMemory {
-    fn probe(&self, addr: u32, align: u32, len: u32) -> Result<(), NtStatus> {
-        if addr % align != 0 {
-            return Err(sd::STATUS_DATATYPE_MISALIGNMENT);
-        }
-        UserAddr(addr).probe(len)?;
-        Ok(())
-    }
-
-    fn read(&self, addr: u32, align: u32, buf: &mut [u8]) -> Result<(), NtStatus> {
-        if addr % align != 0 {
-            return Err(sd::STATUS_DATATYPE_MISALIGNMENT);
-        }
-        UserAddr(addr).read(buf)?;
-        Ok(())
-    }
-}
-
-/// The security descriptor at `at`, captured self-relative into a fresh buffer (None for a
-/// null pointer): every range probed, each part sized from its own header and validated.
-fn capture_sd(at: UserAddr) -> Result<Option<Owned>, NtStatus> {
-    if at.is_null() {
-        return Ok(None);
-    }
-    let mem = UserMemory;
-    let len = sd::length(&mem, at.raw()).ok_or(STATUS_ACCESS_VIOLATION)?;
-    let mut out = sec::allocate(len as usize).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-    let mut written = 0u32;
-    let status = sd::capture(
-        &mem,
-        at.raw(),
-        true,
-        false,
-        sec::bytes_mut(&mut out),
-        &mut written,
-    );
-    if status != STATUS_SUCCESS {
-        return Err(status);
-    }
-    Ok(Some(out))
-}
-
-/// The SID at `ptr` (None for a null pointer), read and validated: a malformed one is
-/// STATUS_INVALID_SID.
-fn read_sid(ptr: UserAddr) -> Result<Option<se::SidBytes>, NtStatus> {
-    if ptr.is_null() {
-        return Ok(None);
-    }
-    let mut header = [0u8; 2];
-    ptr.read(&mut header)?;
-    if header[0] & 0x0F != sec::REVISION || usize::from(header[1]) > sec::MAX_SUB_AUTHORITIES {
-        return Err(sd::STATUS_INVALID_SID);
-    }
-    let mut sid = se::SidBytes::new();
-    sid.try_extend_default(sec::length_required(usize::from(header[1])))
-        .map_err(|_| sd::STATUS_INVALID_SID)?;
-    ptr.read(sid.as_mut_slice())?;
-    if !sec::sid::is_valid(sid.as_slice()) {
-        return Err(sd::STATUS_INVALID_SID);
-    }
-    Ok(Some(sid))
-}
-
-/// The caller's object type list at `list`, `count` entries, captured as its GUIDs in order:
-/// a null list with a count, or a level past the maximum, is STATUS_INVALID_PARAMETER, a
-/// list too long for the capture STATUS_INSUFFICIENT_RESOURCES.
-fn capture_type_list(
-    list: UserAddr,
-    count: u32,
-) -> Result<ArrayVec<Guid, MAX_TYPE_LIST>, NtStatus> {
-    let mut guids = ArrayVec::new();
-    if count == 0 {
-        return Ok(guids);
-    }
-    if list.is_null() {
-        return Err(STATUS_INVALID_PARAMETER);
-    }
-    if count as usize > MAX_TYPE_LIST {
-        return Err(STATUS_INSUFFICIENT_RESOURCES);
-    }
-    let bytes = count as usize * TYPE_ENTRY;
-    list.probe(bytes as u32)?;
-    let mut entries = sec::allocate(bytes).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-    list.read(sec::bytes_mut(&mut entries))?;
-    let entries = sec::bytes(&entries);
-    for i in 0..count as usize {
-        let at = i * TYPE_ENTRY;
-        if u16::from_le_bytes([entries[at], entries[at + 1]]) > MAX_LEVEL {
-            return Err(STATUS_INVALID_PARAMETER);
-        }
-        let guid_at = UserAddr(u32::from_le_bytes(
-            entries[at + 4..at + 8].try_into().unwrap(),
-        ));
-        let mut raw = [0u8; 16];
-        guid_at.read(&mut raw)?;
-        guids.push(Guid {
-            data1: u32::from_le_bytes(raw[0..4].try_into().unwrap()),
-            data2: u16::from_le_bytes(raw[4..6].try_into().unwrap()),
-            data3: u16::from_le_bytes(raw[6..8].try_into().unwrap()),
-            data4: raw[8..16].try_into().unwrap(),
-        });
-    }
-    Ok(guids)
-}
-
-/// The GENERIC_MAPPING at `at`, read whole (16 bytes).
-fn read_mapping(at: UserAddr) -> Result<GenericMapping, NtStatus> {
-    at.probe(16)?;
-    let mut raw = [0u8; 16];
-    at.read(&mut raw)?;
-    Ok(GenericMapping {
-        generic_read: u32::from_le_bytes(raw[0..4].try_into().unwrap()),
-        generic_write: u32::from_le_bytes(raw[4..8].try_into().unwrap()),
-        generic_execute: u32::from_le_bytes(raw[8..12].try_into().unwrap()),
-        generic_all: u32::from_le_bytes(raw[12..16].try_into().unwrap()),
-    })
-}
-
 /// Probe one out-param of `bytes` bytes (an array's worth for the result list); a null
 /// pointer is a fault.
-fn probe_out(out: UserPtr<u32>, bytes: u32) -> Result<(), NtStatus> {
+pub(crate) fn probe_out(out: UserPtr<u32>, bytes: u32) -> Result<(), NtStatus> {
     if out.is_null() {
         return Err(STATUS_ACCESS_VIOLATION);
     }
