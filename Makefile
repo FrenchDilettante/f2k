@@ -150,6 +150,8 @@ help:
 	@echo "                 and the DLL compatibility report written (target/compat/report.html)"
 	@echo "  check-all    - run-tests, then compat, then test"
 	@echo "  check        - cargo check + clippy"
+	@echo "  dup          - Copy-paste detection (jscpd, tools/jscpd/): fail if duplicated lines grow"
+	@echo "                 past the baseline; dup-update writes today's numbers as the baseline"
 	@echo "  miri         - The kernel's host tests (those MIRI_TESTS names) under Miri, the"
 	@echo "                 undefined-behaviour checker (MIRI_TESTS=:: for every test)"
 	@echo "  fmt          - Format the Rust sources (rustfmt) and the Markdown files (rumdl)"
@@ -447,6 +449,16 @@ check: userland
 	cd $(KERNEL_DIR) && cargo check
 	cd $(KERNEL_DIR) && cargo clippy -- $(CLIPPY_LINTS)
 	cd $(LOADER_DIR) && cargo clippy -- $(CLIPPY_LINTS)
+
+# Copy-paste detection: jscpd over the Rust sources, its config and baseline in tools/jscpd/. Not
+# part of check; run by hand. The script builds jscpd with cargo install into target/tools/jscpd/
+# on first use.
+.PHONY: dup dup-update
+dup:
+	tools/jscpd/dup.sh
+
+dup-update:
+	tools/jscpd/dup.sh --update
 
 # Formatting: the Rust sources' settings live in rustfmt.toml at the workspace root, the Markdown
 # files' (rumdl) in pyproject.toml.

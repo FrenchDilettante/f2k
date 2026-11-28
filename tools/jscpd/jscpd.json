@@ -1,0 +1,20 @@
+{
+  "format": [
+    "rust"
+  ],
+  "minTokens": 100,
+  "minLines": 10,
+  "mode": "mild",
+  "ignore": [
+    "**/target/**",
+    "**/.worktrees/**",
+    "**/node_modules/**",
+    "**/userland/kernel32/src/locale/sortkey/weights.rs",
+    "**/userland/rtl/src/codepage/tables.rs",
+    "**/userland/rtl/src/status_table.rs"
+  ],
+  "reporters": [
+    "console"
+  ],
+  "noTips": true
+}
