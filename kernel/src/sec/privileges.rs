@@ -241,8 +241,9 @@ pub const fn privilege(low: u32, attributes: u32) -> LuidAndAttributes {
 /// Administrators group's, held disabled: the token fixture's `privs` block enables
 /// SeSystemtimePrivilege, SeBackupPrivilege, SeShutdownPrivilege and SeDebugPrivilege and finds
 /// each held and disabled, and `notheld` finds SeTcbPrivilege not held (no account holds it but
-/// the system's own). SeUndockPrivilege, which every interactive user holds, is enabled by
-/// default as SeChangeNotifyPrivilege is. The privileges no administrator's token holds
+/// the system's own). SeUndockPrivilege, which every interactive user holds, starts disabled
+/// (Inside Windows 2000; winlogon may change its state later, and F2K has no winlogon). The
+/// privileges no administrator's token holds
 /// (SeCreateTokenPrivilege, SeAssignPrimaryTokenPrivilege, SeLockMemoryPrivilege,
 /// SeMachineAccountPrivilege, SeTcbPrivilege, SeSyncAgentPrivilege, SeEnableDelegationPrivilege)
 /// are refused: not all assigned.
@@ -268,10 +269,7 @@ pub const DEFAULT_PRIVILEGES: [LuidAndAttributes; HELD] = [
     privilege(SE_CREATE_PAGEFILE_PRIVILEGE, 0),
     privilege(SE_CREATE_PERMANENT_PRIVILEGE, 0),
     privilege(SE_INCREASE_QUOTA_PRIVILEGE, 0),
-    privilege(
-        SE_UNDOCK_PRIVILEGE,
-        SE_PRIVILEGE_ENABLED_BY_DEFAULT | SE_PRIVILEGE_ENABLED,
-    ),
+    privilege(SE_UNDOCK_PRIVILEGE, 0),
 ];
 
 /// What a NewState asks of a set, folded from its entries in their order: for each privilege the
@@ -506,14 +504,16 @@ mod tests {
     }
 
     /// The check reads the enabled bit of a held privilege: over the default set,
-    /// SeChangeNotifyPrivilege and SeUndockPrivilege pass (enabled by default), SeShutdownPrivilege
-    /// is held but does not pass until enabled, and SeTcbPrivilege is not held at all.
+    /// SeChangeNotifyPrivilege passes (enabled by default), SeShutdownPrivilege and
+    /// SeUndockPrivilege are held but do not pass until enabled, and SeTcbPrivilege is not held at
+    /// all.
     #[test]
     fn the_check_reads_the_enabled_bit_of_a_held_privilege() {
         let privileges = DEFAULT_PRIVILEGES;
         assert!(held(&privileges, luid(SE_CHANGE_NOTIFY_PRIVILEGE)));
         assert!(held_enabled(&privileges, luid(SE_CHANGE_NOTIFY_PRIVILEGE)));
-        assert!(held_enabled(&privileges, luid(SE_UNDOCK_PRIVILEGE)));
+        assert!(held(&privileges, luid(SE_UNDOCK_PRIVILEGE)));
+        assert!(!held_enabled(&privileges, luid(SE_UNDOCK_PRIVILEGE)));
         assert!(held(&privileges, luid(SE_SHUTDOWN_PRIVILEGE)));
         assert!(!held_enabled(&privileges, luid(SE_SHUTDOWN_PRIVILEGE)));
         assert!(!held(&privileges, luid(SE_TCB_PRIVILEGE)));
@@ -619,8 +619,8 @@ mod tests {
         assert_eq!(adjust(&mut set, &disable, Some(4)).unwrap().length(), 4);
     }
 
-    /// DisableAll disables what is enabled, reporting it (SeChangeNotifyPrivilege and
-    /// SeUndockPrivilege as 0x3, left 0x1).
+    /// DisableAll disables what is enabled, reporting it (SeChangeNotifyPrivilege as 0x3, left
+    /// 0x1; SeUndockPrivilege, already disabled, not reported).
     #[test]
     fn disable_all_disables_what_is_enabled() {
         let mut set = DEFAULT_PRIVILEGES;
@@ -628,12 +628,10 @@ mod tests {
         assert!(!all.not_all_assigned);
         assert_eq!(
             all.previous.as_slice(),
-            [
-                privilege(SE_CHANGE_NOTIFY_PRIVILEGE, 3),
-                privilege(SE_UNDOCK_PRIVILEGE, 3)
-            ]
+            [privilege(SE_CHANGE_NOTIFY_PRIVILEGE, 3)]
         );
         assert_eq!(attributes_of(&set, SE_CHANGE_NOTIFY_PRIVILEGE), Some(1));
+        assert_eq!(attributes_of(&set, SE_UNDOCK_PRIVILEGE), Some(0));
         assert_eq!(attributes_of(&set, SE_SHUTDOWN_PRIVILEGE), Some(0));
         assert!(!held_enabled(&set, luid(SE_CHANGE_NOTIFY_PRIVILEGE)));
     }

@@ -25,8 +25,9 @@
 //! (ExitWindowsEx, NtShutdownSystem), F2K does not.
 //!
 //! Every token holds the same privileges, in the state Windows 2000 gives an administrator's token
-//! ([`DEFAULT_PRIVILEGES`]: seventeen, SeChangeNotifyPrivilege and SeUndockPrivilege enabled by
-//! default); a privilege it does not hold is refused (STATUS_NOT_ALL_ASSIGNED).
+//! ([`DEFAULT_PRIVILEGES`]: nineteen, SeChangeNotifyPrivilege alone enabled by default,
+//! SeUndockPrivilege among the disabled); a privilege it does not hold is refused
+//! (STATUS_NOT_ALL_ASSIGNED).
 //!
 //! A process has one token, made at its first open (Windows 2000 makes a process's primary token
 //! with the process; F2K makes it on demand, since nothing reads it before it is opened). The
@@ -539,7 +540,7 @@ mod tests {
 
     /// A new token holds an administrator's privileges: the four the `privs` capture enables
     /// (SeSystemtimePrivilege, SeBackupPrivilege, SeShutdownPrivilege, SeDebugPrivilege) and
-    /// SeLoadDriverPrivilege disabled, SeChangeNotifyPrivilege and SeUndockPrivilege enabled by
+    /// SeLoadDriverPrivilege and SeUndockPrivilege disabled, SeChangeNotifyPrivilege enabled by
     /// default, SeTcbPrivilege not at all; each once. TOKEN_PRIVILEGES for them takes 232 bytes.
     #[test]
     fn a_new_token_holds_an_administrators_privileges() {
@@ -550,11 +551,11 @@ mod tests {
             SE_SHUTDOWN_PRIVILEGE,
             SE_DEBUG_PRIVILEGE,
             SE_LOAD_DRIVER_PRIVILEGE,
+            SE_UNDOCK_PRIVILEGE,
         ] {
             assert_eq!(attributes_of(&token, luid), Some(0), "{luid}");
         }
         assert_eq!(attributes_of(&token, SE_CHANGE_NOTIFY_PRIVILEGE), Some(3));
-        assert_eq!(attributes_of(&token, SE_UNDOCK_PRIVILEGE), Some(3));
         for luid in [2, 3, 4, 6, TCB, 26, 27] {
             assert_eq!(attributes_of(&token, luid), None, "{luid}");
         }
@@ -658,20 +659,19 @@ mod tests {
         assert_eq!(token.adjust(&disable, Some(4)).unwrap().length(), 4);
     }
 
-    /// DisableAllPrivileges disables what is enabled, reporting it (SeChangeNotifyPrivilege and
-    /// SeUndockPrivilege as 0x3, left 0x1); its report given back as NewState restores them.
+    /// DisableAllPrivileges disables what is enabled, reporting it (SeChangeNotifyPrivilege as 0x3,
+    /// left 0x1; SeUndockPrivilege, already disabled, not reported); its report given back as
+    /// NewState restores it.
     #[test]
     fn disable_all_and_its_restore() {
         let mut token = token();
         let all = token.adjust(&Change::DisableAll, Some(4096)).unwrap();
         assert_eq!(
             all.previous.as_slice(),
-            [
-                privilege(SE_CHANGE_NOTIFY_PRIVILEGE, 3),
-                privilege(SE_UNDOCK_PRIVILEGE, 3)
-            ]
+            [privilege(SE_CHANGE_NOTIFY_PRIVILEGE, 3)]
         );
         assert_eq!(attributes_of(&token, SE_CHANGE_NOTIFY_PRIVILEGE), Some(1));
+        assert_eq!(attributes_of(&token, SE_UNDOCK_PRIVILEGE), Some(0));
         assert_eq!(attributes_of(&token, SE_SHUTDOWN_PRIVILEGE), Some(0));
         let mut requests = Requests::new();
         for &entry in all.previous.as_slice() {
