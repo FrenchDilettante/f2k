@@ -454,6 +454,9 @@ enum Carried {
     /// WM_GETTEXT's answer, sent to another process's window: a block of the queues' store
     /// ([`Queues::store`]), as long as it is.
     Text(Text),
+    /// No structure: SendMessageCallback's message from another thread, which carries where its
+    /// answer goes instead ([`Queues::answer`]).
+    Callback(Callback),
 }
 
 impl Carried {
@@ -480,9 +483,19 @@ impl Carried {
             Carried::WindowPos(pos) => Payload::WindowPos(pos),
             Carried::Style(style) => Payload::Style(style),
             Carried::MinMax(mmi) => Payload::MinMax(mmi),
+            Carried::Callback(_) => Payload::None,
             Carried::Text(_) => return None,
         })
     }
+}
+
+/// Where a SendMessageCallback's answer goes: the callback (0 for none: the answer goes to nobody)
+/// and the data it is called with, in the sending thread's queue.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Callback {
+    proc: u32,
+    data: u32,
+    sender: QueueId,
 }
 
 /// A sent message.
@@ -497,6 +510,10 @@ struct Sent {
     server: bool,
     /// SendNotifyMessage's: another thread sent it and waits for no answer.
     notify: bool,
+    /// The answer to a SendMessageCallback, on its way to the sender's callback: delivered as a
+    /// sent message whose procedure is the callback, its wParam the caller's data and its lParam
+    /// the answer, as Windows 2000's SMF_CB_REPLY reaches CallClientProc.
+    reply: bool,
     window: Option<WindowId>,
     hwnd: Hwnd,
     proc: u32,
@@ -516,6 +533,7 @@ impl Sent {
         sender: None,
         server: false,
         notify: false,
+        reply: false,
         window: None,
         hwnd: 0,
         proc: 0,
@@ -527,6 +545,11 @@ impl Sent {
         result: 0,
         next: None,
     };
+
+    /// SendMessageCallback's message from another thread ([`Carried::Callback`]).
+    fn is_callback(&self) -> bool {
+        matches!(self.carried, Carried::Callback(_))
+    }
 }
 
 // SAFETY: `write_fresh` writes a whole record.
@@ -738,6 +761,11 @@ impl Queues {
     fn answer(&mut self, id: SentId, result: LResult) {
         let sent = self.sent.at_mut(id);
         sent.next = None;
+        if let Carried::Callback(callback) = sent.carried {
+            sent.carried = Carried::None;
+            self.answer_to_callback(id, callback, result);
+            return;
+        }
         if sent.server {
             sent.state = State::Answered;
             sent.result = result;
@@ -752,6 +780,34 @@ impl Queues {
             }
             _ => self.free_sent(id),
         }
+    }
+
+    /// SendMessageCallback's message `id` answered `result`: the record becomes the answer's way
+    /// back, queued for the sending thread as a sent message its next read delivers to the
+    /// callback (QS_SENDMESSAGE), as Windows 2000 queues an SMF_CB_REPLY; with no callback, or the
+    /// sender's queue gone, back to the pool.
+    fn answer_to_callback(&mut self, id: SentId, callback: Callback, result: LResult) {
+        let sender = callback.sender;
+        if callback.proc == 0
+            || self.queues[sender.index as usize].generation != sender.generation
+            || !self.queues[sender.index as usize].live
+        {
+            self.free_sent(id);
+            return;
+        }
+        let sent = self.sent.at_mut(id);
+        *sent = Sent {
+            receiver: Some(sender),
+            reply: true,
+            window: sent.window,
+            hwnd: sent.hwnd,
+            proc: callback.proc,
+            message: sent.message,
+            wparam: callback.data,
+            lparam: result,
+            ..Sent::EMPTY
+        };
+        self.push_sent(sender, id);
     }
 
     /// The sent message `id` will never be answered (its window or its receiver's queue went): a
@@ -1944,7 +2000,7 @@ pub fn in_send(windows: &Windows, caller: ThreadId) -> bool {
         return false;
     };
     let sent = queues.sent.at(index);
-    sent.sender.is_some() || sent.server || sent.notify
+    sent.sender.is_some() || sent.server || sent.notify || sent.is_callback()
 }
 
 // --- Sending -------------------------------------------------------------------------------------
@@ -2096,6 +2152,60 @@ pub fn send_notify(
         .ok_or(STATUS_NO_MEMORY)?;
     queues.push_sent(receiver, id);
     Ok(Sending::Answered(0))
+}
+
+/// SendMessageCallback's step: as [`send_notify`]'s, but another thread's window has the message
+/// queued with the caller's `callback` and `data`, its answer coming back to the caller as a sent
+/// message that calls the callback on the caller's next read ([`Queues::answer`]); a window of
+/// the caller's own thread is called ([`Sending::Call`]) and one whose procedure is the window
+/// manager's answered at once, user32 calling the callback itself then.
+#[allow(clippy::too_many_arguments)]
+pub fn send_callback(
+    windows: &mut Windows,
+    caller: ThreadId,
+    hwnd: Hwnd,
+    message: u32,
+    wparam: WParam,
+    lparam: LParam,
+    callback: u32,
+    data: u32,
+) -> Result<Sending, NtStatus> {
+    let window = windows
+        .window_from_handle(hwnd)
+        .ok_or(STATUS_INVALID_HANDLE)?;
+    let Some(proc) = windows.client_proc(window) else {
+        return Ok(Sending::Answered(default_answer(message)));
+    };
+    let thread = windows.window_thread(window);
+    if thread == caller {
+        return Ok(Sending::Call(proc));
+    }
+    if sync_only(message) {
+        return Err(MESSAGE_SYNC_ONLY);
+    }
+    let queues = &mut windows.queues;
+    let (Some(receiver), Some(sender)) = (queues.queue_of(thread), queues.queue_of(caller)) else {
+        return Ok(Sending::Answered(0));
+    };
+    let id = queues
+        .allocate_sent(Sent {
+            receiver: Some(receiver),
+            carried: Carried::Callback(Callback {
+                proc: callback,
+                data,
+                sender,
+            }),
+            window: Some(window),
+            hwnd,
+            proc,
+            message,
+            wparam,
+            lparam,
+            ..Sent::EMPTY
+        })
+        .ok_or(STATUS_NO_MEMORY)?;
+    queues.push_sent(receiver, id);
+    Ok(Sending::Waiting(id))
 }
 
 /// The caller's send `id` timed out (SendMessageTimeout): a message its receiver has not read yet
@@ -2404,7 +2514,8 @@ pub fn take_for_callback(windows: &mut Windows, caller: ThreadId) -> Option<Sent
         let sent = *windows.queues.sent.at(index);
         let window_gone = sent.window.is_none_or(|w| !windows.is_live(w));
         let queues = &mut windows.queues;
-        if (sent.sender.is_some() || sent.server || sent.notify) && window_gone {
+        let from_thread = sent.sender.is_some() || sent.server || sent.notify || sent.is_callback();
+        if from_thread && window_gone {
             queues.drop_unanswered(index);
             continue;
         }
@@ -2454,6 +2565,8 @@ pub fn end_received(
             sender,
             server,
             notify,
+            carried,
+            reply,
             ..
         } = *queues.sent.at(top);
         let answer = if top == id {
@@ -2473,7 +2586,11 @@ pub fn end_received(
         if top == id {
             // Another thread's activation deactivating this one, its WM_NCACTIVATE (FALSE)
             // answered FALSE: the deactivation stops there ([`super::focus`]).
-            let deferred = sender.is_none() && !server && !notify;
+            let deferred = sender.is_none()
+                && !server
+                && !notify
+                && !reply
+                && !matches!(carried, Carried::Callback(_));
             if let (WM_NCACTIVATE, 0, true, 0, Some(window)) =
                 (message, wparam, deferred, answer, window)
             {
@@ -3801,6 +3918,47 @@ mod services {
         Ok(STATUS_SUCCESS)
     }
 
+    /// NtUserSendMessageCallback(Window, Msg, wParam, lParam, Callback, Data, Proc, Result):
+    /// SendMessageCallback's kernel side ([`send_callback`]): the procedure to call for a window
+    /// of the caller's own thread into `proc`, user32 calling the callback after it; for a window
+    /// whose procedure is the window manager's, `proc` 0 and the answer into `result`, user32
+    /// calling the callback with it; STATUS_PENDING for a message queued for another thread, its
+    /// answer to reach the callback on a later read.
+    #[allow(clippy::too_many_arguments)]
+    pub fn send_message_callback(
+        call: &mut NtCall,
+        window: Handle,
+        message: u32,
+        wparam: u32,
+        lparam: i32,
+        callback: u32,
+        data: u32,
+        proc: UserPtr<u32>,
+        result: UserPtr<i32>,
+    ) -> NtResult {
+        let caller = gui_thread(call)?.thread;
+        proc.write(0)?;
+        result.write(0)?;
+        let sending = with_manager(call.passive(), |m| {
+            send_callback(
+                &mut m.windows,
+                caller,
+                window.raw(),
+                message,
+                wparam,
+                lparam,
+                callback,
+                data,
+            )
+        })?;
+        match sending {
+            Sending::Call(target) => proc.write(target)?,
+            Sending::Answered(answer) => result.write(answer)?,
+            Sending::Waiting(_) => return Ok(STATUS_PENDING),
+        }
+        Ok(STATUS_SUCCESS)
+    }
+
     /// NtUserWaitMessage(): the caller waits on its queue until something new comes to it
     /// ([`wait_ready`]), its timers' dues waking it to look; the messages sent to it are delivered
     /// by callback before it returns.
@@ -3883,6 +4041,7 @@ pub use services::{
     peek_message,
     post_message,
     post_thread_message,
+    send_message_callback,
     send_notify_message,
     wait_message,
 };
@@ -3938,6 +4097,21 @@ mod services {
         _: u32,
         _: i32,
         _: UserPtr<u32>,
+    ) -> NtResult {
+        Err(STATUS_NOT_IMPLEMENTED)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn send_message_callback(
+        _: &mut NtCall,
+        _: Handle,
+        _: u32,
+        _: u32,
+        _: i32,
+        _: u32,
+        _: u32,
+        _: UserPtr<u32>,
+        _: UserPtr<i32>,
     ) -> NtResult {
         Err(STATUS_NOT_IMPLEMENTED)
     }
@@ -5656,6 +5830,102 @@ mod tests {
         } = &mut *m;
         Windows::destroy_window_handle(&mut QueueSession::new(windows, classes), b, hb).unwrap();
         assert_eq!(deliver(m, b), vec![(hb, WM_DESTROY), (hb, WM_NCDESTROY)]);
+        assert_eq!(live_sends(m), base);
+    }
+
+    /// SendMessageCallback: a window of the caller's thread is called; another thread's has the
+    /// message queued (InSendMessage TRUE), and its answer comes back to the sender as a sent
+    /// message that calls the callback (its data the wParam, the answer the lParam), new to the
+    /// sender's queue (QS_SENDMESSAGE) until a read delivers it; a NULL callback's answer goes to
+    /// nobody; a window gone before its thread reads the message is answered 0, still to the
+    /// callback; a handle naming no window is refused.
+    #[test]
+    fn a_callback_send_answers_through_the_senders_queue() {
+        const CALLBACK: u32 = 0x0040_2000;
+        let (m, atom) = manager();
+        let a = thread(m, 1, 0x100);
+        let b = thread(m, 2, 0x200);
+        let ha = popup(m, atom, a);
+        let hb = popup(m, atom, b);
+        deliver(m, a);
+        deliver(m, b);
+        let base = live_sends(m);
+        assert_eq!(
+            send_callback(&mut m.windows, a, ha, WM_USER, 1, 2, CALLBACK, 0x1111),
+            Ok(Sending::Call(PROC))
+        );
+        assert_eq!(
+            send_callback(&mut m.windows, a, 0x7FFF_FFFC, WM_USER, 0, 0, CALLBACK, 0),
+            Err(STATUS_INVALID_HANDLE)
+        );
+        assert_eq!(
+            send_callback(&mut m.windows, a, hb, WM_SETTEXT, 0, 0, CALLBACK, 0),
+            Err(MESSAGE_SYNC_ONLY)
+        );
+        assert!(matches!(
+            send_callback(&mut m.windows, a, hb, WM_USER + 30, 3, 4, CALLBACK, 0x3333),
+            Ok(Sending::Waiting(_))
+        ));
+        assert_eq!(
+            queue_status(&mut m.windows, a, 0, QS_SENDMESSAGE),
+            0,
+            "nothing for a yet"
+        );
+        let Taken::Sent(id) = read(m, b, &all(), 0) else {
+            panic!("the receiver reads it");
+        };
+        assert_eq!(head_of(&m.windows, id).unwrap().msg.wparam, 3);
+        assert!(in_send(&m.windows, b));
+        assert!(end_sent(&mut m.windows, b, 103));
+        assert_eq!(
+            queue_status(&mut m.windows, a, 0, QS_ALLINPUT),
+            QS_SENDMESSAGE << 16 | QS_SENDMESSAGE,
+            "the answer waits in the sender's queue"
+        );
+        let Taken::Sent(back) = read(m, a, &all(), 0) else {
+            panic!("the sender's read hands the answer out");
+        };
+        let head = head_of(&m.windows, back).unwrap();
+        assert_eq!(
+            (
+                head.proc,
+                head.msg.hwnd,
+                head.msg.message,
+                head.msg.wparam,
+                head.msg.lparam
+            ),
+            (CALLBACK, hb, WM_USER + 30, 0x3333, 103)
+        );
+        assert!(
+            !in_send(&m.windows, a),
+            "the callback is no other thread's send"
+        );
+        assert!(end_sent(&mut m.windows, a, 0));
+        assert_eq!(live_sends(m), base, "both records back in the pool");
+
+        // No callback: the answer goes to nobody.
+        send_callback(&mut m.windows, a, hb, WM_USER + 30, 5, 6, 0, 0).unwrap();
+        assert!(matches!(read(m, b, &all(), 0), Taken::Sent(_)));
+        assert!(end_sent(&mut m.windows, b, 1));
+        assert_eq!(read(m, a, &all(), 0), Taken::Nothing { due: None });
+        assert_eq!(live_sends(m), base);
+
+        // The window gone before b reads: answered 0, to the callback.
+        send_callback(&mut m.windows, a, hb, WM_USER + 30, 7, 8, CALLBACK, 0x7777).unwrap();
+        let WindowManager {
+            windows, classes, ..
+        } = &mut *m;
+        Windows::destroy_window_handle(&mut QueueSession::new(windows, classes), b, hb).unwrap();
+        deliver(m, b);
+        let Taken::Sent(back) = read(m, a, &all(), 0) else {
+            panic!("the answer comes back");
+        };
+        let head = head_of(&m.windows, back).unwrap();
+        assert_eq!(
+            (head.proc, head.msg.wparam, head.msg.lparam),
+            (CALLBACK, 0x7777, 0)
+        );
+        assert!(end_sent(&mut m.windows, a, 0));
         assert_eq!(live_sends(m), base);
     }
 

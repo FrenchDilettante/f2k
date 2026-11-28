@@ -595,6 +595,17 @@ mod raw {
             lparam: i32,
             proc: *mut u32,
         ) -> u32;
+        #[link_name = "\u{1}_f2k_nt_NtUserSendMessageCallback"]
+        pub fn NtUserSendMessageCallback(
+            window: usize,
+            message: u32,
+            wparam: u32,
+            lparam: i32,
+            callback: u32,
+            data: u32,
+            proc: *mut u32,
+            result: *mut i32,
+        ) -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserWaitMessage"]
         pub fn NtUserWaitMessage() -> u32;
         #[link_name = "\u{1}_f2k_nt_NtUserDispatchMessage"]
@@ -2082,6 +2093,52 @@ pub fn send_notify_message(
     // SAFETY: the kernel writes the local.
     checked(unsafe { raw::NtUserSendNotifyMessage(window, message, wparam, lparam, &mut proc) })?;
     Ok(proc)
+}
+
+/// What NtUserSendMessageCallback did with a message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallbackSend {
+    /// A window of the calling thread's: user32 calls this procedure, then the callback.
+    Call(u32),
+    /// Answered at once (a window whose procedure is the window manager's): user32 calls the
+    /// callback with the answer.
+    Answered(i32),
+    /// Queued for another thread's window: its answer reaches the callback on a later read.
+    Queued,
+}
+
+/// NtUserSendMessageCallback: SendMessageCallback's kernel side, the message sent with the
+/// callback `callback` and its data `data` (see [`CallbackSend`]).
+pub fn send_message_callback(
+    window: usize,
+    message: u32,
+    wparam: u32,
+    lparam: i32,
+    callback: u32,
+    data: u32,
+) -> Result<CallbackSend, NtStatus> {
+    let (mut proc, mut result) = (0u32, 0i32);
+    // SAFETY: the kernel writes the two locals.
+    let status = unsafe {
+        raw::NtUserSendMessageCallback(
+            window,
+            message,
+            wparam,
+            lparam,
+            callback,
+            data,
+            &mut proc,
+            &mut result,
+        )
+    };
+    if status == rtl::status::STATUS_PENDING {
+        return Ok(CallbackSend::Queued);
+    }
+    checked(status)?;
+    Ok(match proc {
+        0 => CallbackSend::Answered(result),
+        _ => CallbackSend::Call(proc),
+    })
 }
 
 /// NtUserWaitMessage: the calling thread waits until something new comes to its queue.

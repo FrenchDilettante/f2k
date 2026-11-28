@@ -1745,6 +1745,16 @@ impl = { syscall = "crate::win32k::queue::send_notify_message" }
 internal = true
 
 [[export]]
+name = "NtUserSendMessageCallback"
+group = "message"
+args = [
+    "handle Window", "u32 Msg", "u32 wParam", "i32 lParam", "u32 Callback", "u32 Data",
+    "ptr<u32> Proc", "ptr<i32> Result",
+]
+impl = { syscall = "crate::win32k::queue::send_message_callback" }
+internal = true
+
+[[export]]
 name = "NtUserWaitMessage"
 group = "message"
 args = []
@@ -5122,7 +5132,7 @@ ordinal = 535
 name = "SendMessageCallbackA"
 group = "message"
 args = ["handle hWnd", "u32 Msg", "u32 wParam", "u32 lParam", "u32 lpCallBack", "u32 dwData"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SendMessageCallbackA" }
 ordinal = 538
 fails = "FALSE"
 
@@ -5130,7 +5140,7 @@ fails = "FALSE"
 name = "SendMessageCallbackW"
 group = "message"
 args = ["handle hWnd", "u32 Msg", "u32 wParam", "u32 lParam", "u32 lpCallBack", "u32 dwData"]
-impl = { stub = "not yet implemented" }
+impl = { native = "SendMessageCallbackW" }
 ordinal = 539
 fails = "FALSE"
 

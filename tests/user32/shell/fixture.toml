@@ -11,7 +11,7 @@ gate = true
 timeout = 60
 
 [pending]
-# Every export observed here but SendMessageCallbackA/W (stubs) is catalogued only in F2K's user32
+# Every export observed here but SendMessageCallbackA/W is catalogued only in F2K's user32
 # (userland/user32/exports.toml): the program resolves each through GetProcAddress and prints it
 # absent.
 windows = "F2K's user32 lacks GetShellWindow, GetProgmanWindow and GetTaskmanWindow; and F2K runs no shell (the capture's explorer holds the three windows): environmental once they land"
@@ -24,7 +24,6 @@ caption = "F2K's user32 lacks DrawCaptionTempA and DrawCaptionTempW"
 arrange = "F2K's user32 lacks CascadeWindows and TileWindows"
 hotkey = "F2K's user32 lacks RegisterHotKey and UnregisterHotKey"
 switchto = "F2K's user32 lacks SwitchToThisWindow"
-callback = "SendMessageCallbackA and SendMessageCallbackW are stubs"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

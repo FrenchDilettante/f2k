@@ -1625,6 +1625,32 @@ pub unsafe extern "system" fn NtUserSendNotifyMessage(
     }
 }
 
+/// SendMessageCallback's kernel side: the stand-ins' windows are the calling thread's, their
+/// procedure to call; a window manager's procedure answers 0 at once.
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "system" fn NtUserSendMessageCallback(
+    window: usize,
+    _message: u32,
+    _wparam: u32,
+    _lparam: i32,
+    _callback: u32,
+    _data: u32,
+    proc: *mut u32,
+    result: *mut i32,
+) -> u32 {
+    match wm(|wm| wm.window(window).map(|w| w.proc)) {
+        Ok(target) => {
+            // SAFETY: the caller's out-pointers.
+            unsafe {
+                proc.write(target);
+                result.write(0);
+            }
+            STATUS_SUCCESS
+        }
+        Err(status) => status,
+    }
+}
+
 /// The stand-ins' queue never waits: something is always new to it.
 pub unsafe extern "system" fn NtUserWaitMessage() -> u32 {
     STATUS_SUCCESS

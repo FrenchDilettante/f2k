@@ -372,6 +372,78 @@ pub extern "system" fn get_input_state() -> u32 {
     (get_queue_status(QS_KEY | QS_MOUSEBUTTON) & 0xFFFF != 0) as u32
 }
 
+/// SendMessageCallbackW: the message sent to the window without waiting for its answer, which
+/// goes to `callback` (a SENDASYNCPROC: the window, the message, `data` and the answer): a window
+/// of the calling thread's has its procedure called, then the callback, before the return;
+/// another thread's has it queued for its thread, the callback called once that thread answered,
+/// on a later read of the calling thread's (a NULL callback: the answer goes to nobody). TRUE;
+/// FALSE with 1400 for a handle naming no window, with ERROR_MESSAGE_SYNC_ONLY for a message
+/// carrying a pointer to another thread's window.
+#[unsafe(export_name = "f2k_export_SendMessageCallbackW")]
+pub extern "system" fn send_message_callback_w(
+    window: usize,
+    message: u32,
+    wparam: u32,
+    lparam: i32,
+    callback: u32,
+    data: u32,
+) -> u32 {
+    send_callback(window, message, wparam, lparam, callback, data, false)
+}
+
+/// SendMessageCallbackA: SendMessageCallbackW's, for a narrow message.
+#[unsafe(export_name = "f2k_export_SendMessageCallbackA")]
+pub extern "system" fn send_message_callback_a(
+    window: usize,
+    message: u32,
+    wparam: u32,
+    lparam: i32,
+    callback: u32,
+    data: u32,
+) -> u32 {
+    send_callback(window, message, wparam, lparam, callback, data, true)
+}
+
+/// SendMessageCallback's core, for a message of the narrow (`ansi`) or wide form (a narrow
+/// character message going as wide, as [`send_notify`]'s).
+fn send_callback(
+    window: usize,
+    message: u32,
+    wparam: u32,
+    lparam: i32,
+    callback: u32,
+    data: u32,
+    ansi: bool,
+) -> u32 {
+    if ansi && procedure::char_message(message) {
+        let wparam = procedure::char_to_wide(message, wparam);
+        return send_callback(window, message, wparam, lparam, callback, data, false);
+    }
+    let Some(sending) = answered(imports::send_message_callback(
+        window, message, wparam, lparam, callback, data,
+    )) else {
+        return 0;
+    };
+    let answer = match sending {
+        imports::CallbackSend::Queued => return 1,
+        imports::CallbackSend::Answered(answer) => answer,
+        imports::CallbackSend::Call(proc) => {
+            let msg = Msg {
+                hwnd: window as u32,
+                message,
+                wparam,
+                lparam,
+                ..Msg::default()
+            };
+            call(proc, Some(ansi), &msg)
+        }
+    };
+    if callback != 0 {
+        imports::call_procedure(callback, window as u32, message, data, answer);
+    }
+    1
+}
+
 /// SendMessage's core, for a message of the narrow (`ansi`) or wide form: the window procedure's
 /// answer (called here for a window of the calling thread, translated for a procedure of the
 /// other form; the kernel's answer otherwise); none with 1400 for a handle naming no window.
@@ -2177,6 +2249,49 @@ mod tests {
         let mut msg = Msg::default();
         // SAFETY: the test's own MSG.
         while unsafe { peek_message_w(&mut msg, 0, 0, 0, PM_REMOVE) } != 0 {}
+    }
+
+    fn callback_recorder(window: u32, message: u32, data: u32, result: i32) -> i32 {
+        SEEN.with(|seen| {
+            seen.borrow_mut()
+                .push((window, message, data | 0x8000_0000, result))
+        });
+        0
+    }
+
+    /// SendMessageCallback to a window of the calling thread: the procedure, then the callback
+    /// with the window, the message, the data and the procedure's answer, before the return; no
+    /// callback with a NULL one; 1400 for a handle naming no window.
+    ///
+    /// Pins: user32.SendMessageCallbackW, user32.SendMessageCallbackA
+    #[test]
+    fn a_callback_send_calls_the_procedure_then_the_callback() {
+        let window = window();
+        let callback = procedure(callback_recorder);
+        arm();
+        assert_eq!(
+            send_message_callback_w(window, WM_USER + 30, 1, 2, callback, 0x11),
+            1
+        );
+        assert_eq!(
+            send_message_callback_a(window, WM_USER + 30, 3, 4, 0, 0x22),
+            1
+        );
+        assert_eq!(last_error(), UNSET);
+        assert_eq!(
+            seen(),
+            [
+                (window as u32, WM_USER + 30, 1, 2),
+                (window as u32, WM_USER + 30, 0x8000_0011, 0),
+                (window as u32, WM_USER + 30, 3, 4),
+            ]
+        );
+        assert_eq!(
+            send_message_callback_w(0x7FFF_FFFC, WM_USER, 1, 2, callback, 0),
+            0
+        );
+        assert_eq!(last_error(), 1400);
+        assert!(seen().is_empty());
     }
 
     /// GetQueueStatus and GetInputState over the stand-ins' queue, and ShowCursor's count from
