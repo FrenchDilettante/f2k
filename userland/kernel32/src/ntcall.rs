@@ -60,6 +60,14 @@ fn answered(status: NtStatus) -> Result<NtStatus, NtStatus> {
     checked(status).map(|()| status)
 }
 
+/// A service that writes one value (a handle, a count, an address): `call` handed the place of a
+/// local, zeroed first, as the service's out-parameter; what it wrote, or the service's failure.
+fn written<T: Default>(call: impl FnOnce(*mut T) -> NtStatus) -> Result<T, NtStatus> {
+    let mut value = T::default();
+    checked(call(&raw mut value))?;
+    Ok(value)
+}
+
 /// SECTION_IMAGE_INFORMATION, NT 5.0's (0x30 bytes): an image section's entry point, stack sizes,
 /// subsystem and characteristics (NtQuerySection's SectionImageInformation). Its addresses are
 /// another process's, 32-bit on any host.
@@ -244,11 +252,9 @@ pub fn nt_status_to_dos_error(status: NtStatus) -> u32 {
 
 /// NtOpenDirectoryObject: a handle to the object directory the attributes name.
 pub fn open_directory_object(access: u32, attributes: &ObjectAttributes) -> Result<u32, NtStatus> {
-    let mut opened = 0;
     // SAFETY: ntdll's export, over the attributes (their name a counted string whose buffer holds
     // its length), into the local handle.
-    checked(unsafe { nt::NtOpenDirectoryObject(&mut opened, access, attributes) })?;
-    Ok(opened)
+    written(|opened| unsafe { nt::NtOpenDirectoryObject(opened, access, attributes) })
 }
 
 /// NtClose: the handle closed (a handle is no memory: closing one kernel32 or its caller still
@@ -289,10 +295,8 @@ pub fn duplicate_object(
 
 /// NtOpenKey: the key the attributes name, opened with `access`.
 pub fn open_key(access: u32, attributes: &ObjectAttributes) -> Result<u32, NtStatus> {
-    let mut key = 0;
     // SAFETY: ntdll's export: it writes the local handle and reads the attributes and their name.
-    checked(unsafe { nt::NtOpenKey(&mut key, access, attributes) })?;
-    Ok(key)
+    written(|key| unsafe { nt::NtOpenKey(key, access, attributes) })
 }
 
 /// NtQueryValueKey: `key`'s value `name`, its information of `class` into `information`: the
@@ -303,20 +307,18 @@ pub fn query_value_key(
     class: u32,
     information: &mut [u8],
 ) -> Result<u32, NtStatus> {
-    let mut length = 0;
     // SAFETY: ntdll's export: it reads the name, writes at most the buffer's length into it, and
     // the length into the local.
-    checked(unsafe {
+    written(|length| unsafe {
         nt::NtQueryValueKey(
             key,
             name,
             class,
             information.as_mut_ptr(),
             information.len() as u32,
-            &mut length,
+            length,
         )
-    })?;
-    Ok(length)
+    })
 }
 
 // --- Events, mutants, semaphores and timers ------------------------------------------------------
@@ -329,8 +331,10 @@ pub struct Created {
     pub existed: bool,
 }
 
-/// A create's status and handle as a [`Created`].
-fn created(status: NtStatus, handle: u32) -> Result<Created, NtStatus> {
+/// A create (`call` handed the handle's place, as [`written`]) as a [`Created`].
+fn created(call: impl FnOnce(*mut u32) -> NtStatus) -> Result<Created, NtStatus> {
+    let mut handle = 0;
+    let status = call(&raw mut handle);
     checked(status)?;
     Ok(Created {
         handle,
@@ -346,27 +350,23 @@ pub fn create_event(
     event_type: u32,
     signaled: bool,
 ) -> Result<Created, NtStatus> {
-    let mut handle = 0;
     // SAFETY: ntdll's export: it writes the local handle and reads the attributes (a live
     // reference, or null for none) and what they name.
-    let status = unsafe {
+    created(|handle| unsafe {
         nt::NtCreateEvent(
-            &mut handle,
+            handle,
             access,
             pointer(attributes),
             event_type,
             u32::from(signaled),
         )
-    };
-    created(status, handle)
+    })
 }
 
 /// NtOpenEvent: a handle with `access` to the event the attributes name.
 pub fn open_event(access: u32, attributes: &ObjectAttributes) -> Result<u32, NtStatus> {
-    let mut handle = 0;
     // SAFETY: ntdll's export: it writes the local handle and reads the attributes.
-    checked(unsafe { nt::NtOpenEvent(&mut handle, access, attributes) })?;
-    Ok(handle)
+    written(|handle| unsafe { nt::NtOpenEvent(handle, access, attributes) })
 }
 
 /// NtSetEvent: the event signaled (its previous state not asked for).
@@ -394,20 +394,17 @@ pub fn create_mutant(
     attributes: Option<&ObjectAttributes>,
     owned: bool,
 ) -> Result<Created, NtStatus> {
-    let mut handle = 0;
     // SAFETY: ntdll's export: it writes the local handle and reads the attributes (a live
     // reference, or null for none).
-    let status =
-        unsafe { nt::NtCreateMutant(&mut handle, access, pointer(attributes), u32::from(owned)) };
-    created(status, handle)
+    created(|handle| unsafe {
+        nt::NtCreateMutant(handle, access, pointer(attributes), u32::from(owned))
+    })
 }
 
 /// NtOpenMutant: a handle with `access` to the mutant the attributes name.
 pub fn open_mutant(access: u32, attributes: &ObjectAttributes) -> Result<u32, NtStatus> {
-    let mut handle = 0;
     // SAFETY: ntdll's export: it writes the local handle and reads the attributes.
-    checked(unsafe { nt::NtOpenMutant(&mut handle, access, attributes) })?;
-    Ok(handle)
+    written(|handle| unsafe { nt::NtOpenMutant(handle, access, attributes) })
 }
 
 /// NtReleaseMutant: one unit of the caller's ownership given up (the previous count not asked
@@ -425,21 +422,17 @@ pub fn create_semaphore(
     initial: i32,
     maximum: i32,
 ) -> Result<Created, NtStatus> {
-    let mut handle = 0;
     // SAFETY: ntdll's export: it writes the local handle and reads the attributes (a live
     // reference, or null for none).
-    let status = unsafe {
-        nt::NtCreateSemaphore(&mut handle, access, pointer(attributes), initial, maximum)
-    };
-    created(status, handle)
+    created(|handle| unsafe {
+        nt::NtCreateSemaphore(handle, access, pointer(attributes), initial, maximum)
+    })
 }
 
 /// NtOpenSemaphore: a handle with `access` to the semaphore the attributes name.
 pub fn open_semaphore(access: u32, attributes: &ObjectAttributes) -> Result<u32, NtStatus> {
-    let mut handle = 0;
     // SAFETY: ntdll's export: it writes the local handle and reads the attributes.
-    checked(unsafe { nt::NtOpenSemaphore(&mut handle, access, attributes) })?;
-    Ok(handle)
+    written(|handle| unsafe { nt::NtOpenSemaphore(handle, access, attributes) })
 }
 
 /// NtReleaseSemaphore: `count` added to the semaphore, the previous count written where asked.
@@ -460,19 +453,15 @@ pub fn create_timer(
     attributes: Option<&ObjectAttributes>,
     timer_type: u32,
 ) -> Result<Created, NtStatus> {
-    let mut handle = 0;
     // SAFETY: ntdll's export: it writes the local handle and reads the attributes (a live
     // reference, or null for none).
-    let status = unsafe { nt::NtCreateTimer(&mut handle, access, pointer(attributes), timer_type) };
-    created(status, handle)
+    created(|handle| unsafe { nt::NtCreateTimer(handle, access, pointer(attributes), timer_type) })
 }
 
 /// NtOpenTimer: a handle with `access` to the timer the attributes name.
 pub fn open_timer(access: u32, attributes: &ObjectAttributes) -> Result<u32, NtStatus> {
-    let mut handle = 0;
     // SAFETY: ntdll's export: it writes the local handle and reads the attributes.
-    checked(unsafe { nt::NtOpenTimer(&mut handle, access, attributes) })?;
-    Ok(handle)
+    written(|handle| unsafe { nt::NtOpenTimer(handle, access, attributes) })
 }
 
 /// NtSetTimer: the timer armed for the due time the source's eight bytes hold (a LARGE_INTEGER:
@@ -650,10 +639,8 @@ pub fn thread_basic_information(thread: u32) -> Result<ThreadBasicInformation, N
 
 /// NtSuspendThread: the thread's suspend count raised; the count it had.
 pub fn suspend_thread(thread: u32) -> Result<u32, NtStatus> {
-    let mut previous = 0;
     // SAFETY: ntdll's export: it writes the local count.
-    checked(unsafe { nt::NtSuspendThread(thread, &mut previous) })?;
-    Ok(previous)
+    written(|previous| unsafe { nt::NtSuspendThread(thread, previous) })
 }
 
 /// NtGetContextThread: the register sets the CONTEXT's flags name, read from the thread into it.
@@ -704,12 +691,11 @@ pub fn create_section(
     allocation: u32,
     file: u32,
 ) -> Result<Created, NtStatus> {
-    let mut handle = 0;
     // SAFETY: ntdll's export: it writes the local handle and reads the attributes and the maximum
     // size (live references, or null for none).
-    let status = unsafe {
+    created(|handle| unsafe {
         nt::NtCreateSection(
-            &mut handle,
+            handle,
             access,
             pointer(attributes),
             pointer(maximum),
@@ -717,8 +703,7 @@ pub fn create_section(
             allocation,
             file,
         )
-    };
-    created(status, handle)
+    })
 }
 
 use rtl::nt::access::SECTION_ALL_ACCESS;
@@ -741,10 +726,8 @@ pub fn create_image_section(file: u32) -> Result<u32, NtStatus> {
 
 /// NtOpenSection: a handle with `access` to the section the attributes name.
 pub fn open_section(access: u32, attributes: &ObjectAttributes) -> Result<u32, NtStatus> {
-    let mut handle = 0;
     // SAFETY: ntdll's export: it writes the local handle and reads the attributes.
-    checked(unsafe { nt::NtOpenSection(&mut handle, access, attributes) })?;
-    Ok(handle)
+    written(|handle| unsafe { nt::NtOpenSection(handle, access, attributes) })
 }
 
 /// A view NtMapViewOfSection maps: `size` bytes (zero: to the section's end) from `offset`, at
@@ -767,11 +750,11 @@ pub fn map_view_of_section(section: u32, process: u32, view: View) -> Result<usi
         nt::NtMapViewOfSection(
             section,
             process,
-            &mut base,
+            &raw mut base,
             0,
             0,
-            &mut offset,
-            &mut size,
+            &raw mut offset,
+            &raw mut size,
             view.inherit,
             view.allocation,
             view.protect,
@@ -802,11 +785,11 @@ impl MappedView {
             nt::NtMapViewOfSection(
                 section,
                 crate::base::CURRENT_PROCESS,
-                &mut base,
+                &raw mut base,
                 0,
                 0,
-                &mut offset,
-                &mut size,
+                &raw mut offset,
+                &raw mut size,
                 VIEW_SHARE,
                 0,
                 PAGE_READWRITE,
@@ -879,11 +862,10 @@ pub fn create_process(
     inherit_handles: bool,
     section: u32,
 ) -> Result<u32, NtStatus> {
-    let mut process = 0;
     // SAFETY: ntdll's export, over the local and the attributes.
-    checked(unsafe {
+    written(|process| unsafe {
         nt::NtCreateProcess(
-            &mut process,
+            process,
             PROCESS_ALL_ACCESS,
             pointer(attributes),
             parent,
@@ -892,8 +874,7 @@ pub fn create_process(
             0,
             0,
         )
-    })?;
-    Ok(process)
+    })
 }
 
 /// NtOpenProcess: a handle with `access` to the process the client id names.
@@ -902,10 +883,8 @@ pub fn open_process(
     attributes: &ObjectAttributes,
     client_id: &ClientId,
 ) -> Result<u32, NtStatus> {
-    let mut process = 0;
     // SAFETY: ntdll's export, over the local and the structures.
-    checked(unsafe { nt::NtOpenProcess(&mut process, access, attributes, client_id) })?;
-    Ok(process)
+    written(|process| unsafe { nt::NtOpenProcess(process, access, attributes, client_id) })
 }
 
 /// NtOpenThread: a handle with `access` to the thread the client id names.
@@ -914,10 +893,8 @@ pub fn open_thread(
     attributes: &ObjectAttributes,
     client_id: &ClientId,
 ) -> Result<u32, NtStatus> {
-    let mut thread = 0;
     // SAFETY: ntdll's export, over the local and the structures.
-    checked(unsafe { nt::NtOpenThread(&mut thread, access, attributes, client_id) })?;
-    Ok(thread)
+    written(|thread| unsafe { nt::NtOpenThread(thread, access, attributes, client_id) })
 }
 
 /// NtQueryInformationProcess: the class's value into `out`, as long as it is.
@@ -1051,7 +1028,7 @@ pub fn allocate_virtual_memory(
     let (mut base, mut size) = (base, size);
     // SAFETY: ntdll's export, over the locals above.
     checked(unsafe {
-        nt::NtAllocateVirtualMemory(process, &mut base, 0, &mut size, kind, protect)
+        nt::NtAllocateVirtualMemory(process, &raw mut base, 0, &raw mut size, kind, protect)
     })?;
     Ok((base, size))
 }
@@ -1064,7 +1041,7 @@ const MEM_RELEASE: u32 = 0x8000;
 pub fn free_virtual_memory(process: u32, base: usize) {
     let (mut base, mut size) = (base, 0usize);
     // SAFETY: ntdll's export, over the locals above.
-    unsafe { nt::NtFreeVirtualMemory(process, &mut base, &mut size, MEM_RELEASE) };
+    unsafe { nt::NtFreeVirtualMemory(process, &raw mut base, &raw mut size, MEM_RELEASE) };
 }
 
 /// NtFreeVirtualMemory in a process, of either kind (MEM_RELEASE, MEM_DECOMMIT): the pages of
@@ -1077,7 +1054,7 @@ pub fn free_virtual_memory_range(
 ) -> Result<(), NtStatus> {
     let (mut base, mut size) = (base, size);
     // SAFETY: ntdll's export, over the locals above.
-    checked(unsafe { nt::NtFreeVirtualMemory(process, &mut base, &mut size, kind) })
+    checked(unsafe { nt::NtFreeVirtualMemory(process, &raw mut base, &raw mut size, kind) })
 }
 
 /// NtProtectVirtualMemory in a process, the old protection written where the caller asked: the
@@ -1093,7 +1070,13 @@ pub fn protect_virtual_memory_reporting(
     // SAFETY: ntdll's export, over the locals above and the caller's old protection (which the
     // service probes) or null.
     checked(unsafe {
-        nt::NtProtectVirtualMemory(process, &mut base, &mut size, protect, out_pointer(old))
+        nt::NtProtectVirtualMemory(
+            process,
+            &raw mut base,
+            &raw mut size,
+            protect,
+            out_pointer(old),
+        )
     })
 }
 
@@ -1107,20 +1090,18 @@ pub fn query_virtual_memory(
     address: usize,
     destination: Destination,
 ) -> Result<usize, NtStatus> {
-    let mut returned = 0;
     // SAFETY: ntdll's export: the service probes the destination (kernel32's own bytes, or its
     // caller's under the export's contract).
-    checked(unsafe {
+    written(|returned| unsafe {
         nt::NtQueryVirtualMemory(
             process,
             address,
             MEMORY_BASIC_INFORMATION,
             destination.address as *mut u8,
             destination.length,
-            &mut returned,
+            returned,
         )
-    })?;
-    Ok(returned)
+    })
 }
 
 /// NtProtectVirtualMemory in a process: the pages of `[base, base + size)` given the protection;
@@ -1134,7 +1115,7 @@ pub fn protect_virtual_memory(
     let (mut base, mut size, mut old) = (base, size, 0);
     // SAFETY: ntdll's export, over the locals above.
     checked(unsafe {
-        nt::NtProtectVirtualMemory(process, &mut base, &mut size, protect, &mut old)
+        nt::NtProtectVirtualMemory(process, &raw mut base, &raw mut size, protect, &raw mut old)
     })?;
     Ok(old)
 }
@@ -1206,7 +1187,7 @@ pub fn create_thread(
     // SAFETY: ntdll's export, over the locals and the structures.
     checked(unsafe {
         nt::NtCreateThread(
-            &mut thread,
+            &raw mut thread,
             access,
             pointer(attributes),
             process,
@@ -1227,10 +1208,8 @@ pub fn create_thread(
 
 /// NtResumeThread: the thread's suspend count lowered; the count it had.
 pub fn resume_thread(thread: u32) -> Result<u32, NtStatus> {
-    let mut previous = 0;
     // SAFETY: ntdll's export, over the local above.
-    checked(unsafe { nt::NtResumeThread(thread, &mut previous) })?;
-    Ok(previous)
+    written(|previous| unsafe { nt::NtResumeThread(thread, previous) })
 }
 
 /// REG_SZ: the option's text.
@@ -1249,19 +1228,17 @@ pub fn image_file_execution_option(
         "the option's name is NUL-terminated"
     );
     let image = UnicodeString::from_units(image_path).ok_or(rtl::status::STATUS_NAME_TOO_LONG)?;
-    let mut returned = 0;
     // SAFETY: ntdll's export, over the strings and into the buffer of its length.
-    checked(unsafe {
+    written(|returned| unsafe {
         nt::LdrQueryImageFileExecutionOptions(
-            &image,
+            &raw const image,
             option.as_ptr(),
             REG_SZ,
             buffer.as_mut_ptr(),
             buffer.len() as u32,
-            &mut returned,
+            returned,
         )
-    })?;
-    Ok(returned)
+    })
 }
 
 /// What a new process parameters block holds: the image's path, the DLL search path, the current
@@ -1301,8 +1278,9 @@ impl ParametersBlock {
     pub fn strings(&self) -> &[u8] {
         let header = size_of::<ProcessParameters>();
         let length = (self.header().length as usize).saturating_sub(header);
-        // SAFETY: the block holds its Length bytes, the structure's first.
-        unsafe { core::slice::from_raw_parts((self.0 as *const u8).add(header), length) }
+        let strings = self.0.cast::<u8>().wrapping_add(header);
+        // SAFETY: the block holds its Length bytes, the structure's first, then the strings'.
+        unsafe { core::slice::from_raw_parts(strings, length) }
     }
 }
 
@@ -1333,7 +1311,7 @@ pub fn create_process_parameters(strings: &ParameterStrings) -> Result<Parameter
             Ok::<_, NtStatus>(UnicodeString {
                 length,
                 maximum_length: length,
-                buffer: bytes.as_ptr() as *mut u16,
+                buffer: bytes.as_ptr().cast_mut().cast(),
             })
         })
         .transpose()?;
@@ -1342,11 +1320,11 @@ pub fn create_process_parameters(strings: &ParameterStrings) -> Result<Parameter
     // local slot.
     checked(unsafe {
         nt::RtlCreateProcessParameters(
-            &mut block,
-            &image_path_name,
-            &dll_path,
+            &raw mut block,
+            &raw const image_path_name,
+            &raw const dll_path,
             pointer(current_directory.as_ref()),
-            &command_line,
+            &raw const command_line,
             strings.environment,
             pointer(window_title.as_ref()),
             pointer(desktop_info.as_ref()),
@@ -1366,7 +1344,7 @@ pub fn multi_byte_to_unicode(out: &mut [u16], bytes: &[u8]) -> usize {
         nt::RtlMultiByteToUnicodeN(
             out.as_mut_ptr(),
             (2 * out.len()) as u32,
-            &mut written,
+            &raw mut written,
             bytes.as_ptr(),
             bytes.len() as u32,
         )
@@ -1385,7 +1363,7 @@ pub fn full_path_name(path: &[u16], out: &mut [u16]) -> Option<usize> {
             path.as_ptr(),
             (2 * out.len()) as u32,
             out.as_mut_ptr(),
-            &mut part,
+            &raw mut part,
         )
     } as usize;
     (bytes != 0 && bytes < 2 * out.len()).then_some(bytes / 2)
@@ -1658,7 +1636,7 @@ pub fn query_information_file(file: u32, class: u32, out: &mut [u8]) -> Result<(
     checked(unsafe {
         nt::NtQueryInformationFile(
             file,
-            &mut io_status,
+            &raw mut io_status,
             out.as_mut_ptr(),
             out.len() as u32,
             class,
@@ -1674,7 +1652,7 @@ pub fn set_information_file(file: u32, class: u32, value: &[u8]) -> Result<(), N
     checked(unsafe {
         nt::NtSetInformationFile(
             file,
-            &mut io_status,
+            &raw mut io_status,
             value.as_ptr(),
             value.len() as u32,
             class,
@@ -1692,21 +1670,19 @@ pub fn open_file(
     share: u32,
     options: u32,
 ) -> Result<u32, NtStatus> {
-    let mut handle = 0;
     let mut io_status = IoStatus::default();
     // SAFETY: ntdll's export, over the attributes (their name a counted string whose buffer holds
     // its length), into the local handle and I/O status.
-    checked(unsafe {
+    written(|handle| unsafe {
         nt::NtOpenFile(
-            &mut handle,
+            handle,
             access,
             attributes,
-            &mut io_status,
+            &raw mut io_status,
             share,
             options,
         )
-    })?;
-    Ok(handle)
+    })
 }
 
 /// A file NtCreateFile opened or made: its handle, and what the open did (the I/O status's
@@ -1733,10 +1709,10 @@ pub fn create_file(
     // I/O status; the allocation size and the extended attributes none.
     checked(unsafe {
         nt::NtCreateFile(
-            &mut handle,
+            &raw mut handle,
             access,
             attributes,
-            &mut io_status,
+            &raw mut io_status,
             core::ptr::null(),
             file_attributes,
             share,
@@ -1837,7 +1813,7 @@ pub fn write_file(
 pub fn flush_buffers_file(file: u32) -> Result<(), NtStatus> {
     let mut io_status = IoStatus::default();
     // SAFETY: ntdll's export, into the local I/O status.
-    checked(unsafe { nt::NtFlushBuffersFile(file, &mut io_status) })
+    checked(unsafe { nt::NtFlushBuffersFile(file, &raw mut io_status) })
 }
 
 /// NtLockFile, as LockFile asks it: an exclusive lock of `length` bytes at `offset`, refused at
@@ -1845,14 +1821,35 @@ pub fn flush_buffers_file(file: u32) -> Result<(), NtStatus> {
 pub fn lock_file(file: u32, offset: u64, length: u64) -> Result<(), NtStatus> {
     let mut io_status = IoStatus::default();
     // SAFETY: ntdll's export, over the locals.
-    checked(unsafe { nt::NtLockFile(file, 0, 0, 0, &mut io_status, &offset, &length, 0, 1, 1) })
+    checked(unsafe {
+        nt::NtLockFile(
+            file,
+            0,
+            0,
+            0,
+            &raw mut io_status,
+            &raw const offset,
+            &raw const length,
+            0,
+            1,
+            1,
+        )
+    })
 }
 
 /// NtUnlockFile, as UnlockFile asks it: the lock of exactly `length` bytes at `offset` (key 0).
 pub fn unlock_file(file: u32, offset: u64, length: u64) -> Result<(), NtStatus> {
     let mut io_status = IoStatus::default();
     // SAFETY: ntdll's export, over the locals.
-    checked(unsafe { nt::NtUnlockFile(file, &mut io_status, &offset, &length, 0) })
+    checked(unsafe {
+        nt::NtUnlockFile(
+            file,
+            &raw mut io_status,
+            &raw const offset,
+            &raw const length,
+            0,
+        )
+    })
 }
 
 /// NtQueryDirectoryFile, synchronously: the open directory's entries of the class into `out` —
@@ -1874,7 +1871,7 @@ pub fn query_directory_file(
             0,
             0,
             0,
-            &mut io_status,
+            &raw mut io_status,
             out.as_mut_ptr(),
             out.len() as u32,
             class,
@@ -1916,7 +1913,7 @@ pub fn query_volume_information_file(
     checked(unsafe {
         nt::NtQueryVolumeInformationFile(
             file,
-            &mut io_status,
+            &raw mut io_status,
             out.as_mut_ptr(),
             out.len() as u32,
             class,
@@ -1948,17 +1945,16 @@ pub fn create_named_pipe_file(
     options: u32,
     pipe: &NamedPipe,
 ) -> Result<u32, NtStatus> {
-    let mut handle = 0;
     let mut io_status = IoStatus::default();
     // SAFETY: ntdll's export, over the attributes (their name a counted string whose buffer holds
     // its length) and the timeout (a live reference, or null for none), into the local handle and
     // I/O status.
-    checked(unsafe {
+    written(|handle| unsafe {
         nt::NtCreateNamedPipeFile(
-            &mut handle,
+            handle,
             access,
             attributes,
-            &mut io_status,
+            &raw mut io_status,
             share,
             disposition,
             options,
@@ -1970,8 +1966,7 @@ pub fn create_named_pipe_file(
             pipe.outbound_quota,
             pointer(pipe.default_timeout.as_ref()),
         )
-    })?;
-    Ok(handle)
+    })
 }
 
 /// NtFsControlFile, synchronously: the control `code` on the open file, from `input` into
@@ -1993,7 +1988,7 @@ pub fn fs_control_file(
             0,
             0,
             0,
-            &mut io_status,
+            &raw mut io_status,
             code,
             input.as_ptr(),
             input.len() as u32,
@@ -2073,7 +2068,12 @@ pub fn dos_path_name_to_nt_path_name(dos: &[u16]) -> Option<NtPathName> {
     };
     // SAFETY: ntdll's export, over the terminated path, into the local strings and place.
     let made = unsafe {
-        nt::RtlDosPathNameToNtPathName_U(dos.as_ptr(), &mut full, &mut file_part, &mut relative)
+        nt::RtlDosPathNameToNtPathName_U(
+            dos.as_ptr(),
+            &raw mut full,
+            &raw mut file_part,
+            &raw mut relative,
+        )
     };
     if made as u8 == 0 {
         return None;
@@ -2102,7 +2102,7 @@ pub fn get_full_path_name(path: &[u16], out: &mut [u16]) -> (usize, Option<usize
             path.as_ptr(),
             (2 * out.len()) as u32,
             out.as_mut_ptr(),
-            &mut part,
+            &raw mut part,
         )
     } as usize;
     (bytes, place_in(out.as_ptr() as usize, part as usize))
@@ -2181,14 +2181,16 @@ pub fn unicode_string_to_ansi(out: &mut OutBuf<'_, u8>, units: &[u16]) {
     };
     // SAFETY: ntdll's export, over the string above (kernel32's own units) and into the caller's
     // buffer (the edge value's contract), no more than the ANSI string's room, its length.
-    unsafe { nt::RtlUnicodeStringToAnsiString(&mut narrow, &source, 0) };
+    unsafe { nt::RtlUnicodeStringToAnsiString(&raw mut narrow, &raw const source, 0) };
 }
 
 /// RtlUnicodeToMultiByteSize: the bytes `units` take narrowed through the ANSI code page.
 pub fn unicode_to_multi_byte_size(units: &[u16]) -> usize {
     let mut size = 0u32;
     // SAFETY: ntdll's export, over the units and into the local size.
-    unsafe { nt::RtlUnicodeToMultiByteSize(&mut size, units.as_ptr(), (2 * units.len()) as u32) };
+    unsafe {
+        nt::RtlUnicodeToMultiByteSize(&raw mut size, units.as_ptr(), (2 * units.len()) as u32)
+    };
     size as usize
 }
 
@@ -2212,7 +2214,7 @@ pub fn init_ansi_string(text: Option<&InStr<'_>>) -> nt::AnsiString {
     let mut ansi = nt::AnsiString::empty();
     // SAFETY: ntdll's export, into the local string and over the caller's string, which it reads
     // to its terminator (the edge's contract), or null.
-    unsafe { nt::RtlInitAnsiString(&mut ansi, text.map_or(core::ptr::null(), InStr::as_ptr)) };
+    unsafe { nt::RtlInitAnsiString(&raw mut ansi, text.map_or(core::ptr::null(), InStr::as_ptr)) };
     ansi
 }
 
@@ -2225,7 +2227,7 @@ pub fn ansi_to_unicode(text: Option<&InStr<'_>>, out: &mut [u16]) -> Result<usiz
     let mut wide = crate::base::unicode_string(out, 0);
     // SAFETY: ntdll's export, over the counted caller's string and into the buffer, of the room
     // its counted string gives.
-    checked(unsafe { nt::RtlAnsiStringToUnicodeString(&mut wide, &ansi, 0) })?;
+    checked(unsafe { nt::RtlAnsiStringToUnicodeString(&raw mut wide, &raw const ansi, 0) })?;
     Ok(usize::from(wide.length) / 2)
 }
 
@@ -2236,7 +2238,7 @@ pub fn ansi_to_unicode_on_heap(ansi: &nt::AnsiString) -> Result<UnicodeString, N
     let mut wide = UnicodeString::empty();
     // SAFETY: ntdll's export, over the counted string and into the local string, whose buffer it
     // allocates on the process heap.
-    checked(unsafe { nt::RtlAnsiStringToUnicodeString(&mut wide, ansi, 1) })?;
+    checked(unsafe { nt::RtlAnsiStringToUnicodeString(&raw mut wide, ansi, 1) })?;
     Ok(wide)
 }
 
@@ -2247,7 +2249,8 @@ pub fn unicode_to_ansi_on_heap(units: &[u16]) -> Option<NonNull<u8>> {
     let mut narrow = nt::AnsiString::empty();
     // SAFETY: ntdll's export, over the string above (kernel32's own units) and into the local
     // string, whose buffer it allocates on the process heap.
-    checked(unsafe { nt::RtlUnicodeStringToAnsiString(&mut narrow, &source, 1) }).ok()?;
+    checked(unsafe { nt::RtlUnicodeStringToAnsiString(&raw mut narrow, &raw const source, 1) })
+        .ok()?;
     NonNull::new(narrow.buffer)
 }
 
@@ -2268,7 +2271,7 @@ pub fn upcase_into(units: &[u16], out: &mut [u16]) -> Result<(), NtStatus> {
     );
     // SAFETY: ntdll's export, over the string above (the caller's units) and into kernel32's
     // buffer, no more than its room, which holds the string.
-    checked(unsafe { nt::RtlUpcaseUnicodeString(&mut upper, &source, 0) })
+    checked(unsafe { nt::RtlUpcaseUnicodeString(&raw mut upper, &raw const source, 0) })
 }
 
 /// RtlUnicodeStringToInteger: the number `units` spell in `base` (0: decimal unless a prefix says
@@ -2279,10 +2282,8 @@ pub fn upcase_into(units: &[u16], out: &mut [u16]) -> Result<(), NtStatus> {
 /// When `units` are past a counted string's reach: the callers check.
 pub fn unicode_string_to_integer(units: &[u16], base: u32) -> Result<u32, NtStatus> {
     let text = UnicodeString::from_units(units).expect("a string within a counted one's reach");
-    let mut value = 0;
     // SAFETY: ntdll's export, over the string above (the caller's units) and into the local.
-    checked(unsafe { nt::RtlUnicodeStringToInteger(&text, base, &mut value) })?;
-    Ok(value)
+    written(|value| unsafe { nt::RtlUnicodeStringToInteger(&raw const text, base, value) })
 }
 
 // --- The clocks ----------------------------------------------------------------------------------
@@ -2291,7 +2292,7 @@ pub fn unicode_string_to_integer(units: &[u16], base: u32) -> Result<u32, NtStat
 pub fn time_to_fields(time: i64) -> nt::TimeFields {
     let mut fields = nt::TimeFields::default();
     // SAFETY: ntdll's export, over the local time and structure.
-    unsafe { nt::RtlTimeToTimeFields(&time, &mut fields) };
+    unsafe { nt::RtlTimeToTimeFields(&raw const time, &raw mut fields) };
     fields
 }
 
@@ -2299,7 +2300,7 @@ pub fn time_to_fields(time: i64) -> nt::TimeFields {
 pub fn fields_to_time(fields: &nt::TimeFields) -> Option<i64> {
     let mut time = 0i64;
     // SAFETY: ntdll's export, over the structure and the local time.
-    (unsafe { nt::RtlTimeFieldsToTime(fields, &mut time) } != 0).then_some(time)
+    (unsafe { nt::RtlTimeFieldsToTime(fields, &raw mut time) } != 0).then_some(time)
 }
 
 /// RtlVerifyVersionInfo: whether the system's version meets `mask`'s conditions for `types`
@@ -2343,7 +2344,7 @@ pub fn query_system_information_into(
             class,
             buffer.as_mut_ptr(),
             buffer.len() as u32,
-            &mut returned,
+            &raw mut returned,
         )
     };
     checked(status)
@@ -2365,7 +2366,7 @@ pub fn query_performance_counter(
 /// NtSetSystemTime: the system time (UTC) set.
 pub fn set_system_time(time: u64) -> Result<(), NtStatus> {
     // SAFETY: ntdll's export, over the local time, no previous time asked.
-    checked(unsafe { nt::NtSetSystemTime(&time, core::ptr::null_mut()) })
+    checked(unsafe { nt::NtSetSystemTime(&raw const time, core::ptr::null_mut()) })
 }
 
 // --- The environment and the current directory ---------------------------------------------------
@@ -2440,19 +2441,20 @@ pub fn find_message(
 ) -> Result<MessageText, NtStatus> {
     let mut entry = core::ptr::null();
     // SAFETY: ntdll's export, over the module's mapped image, into the local pointer.
-    checked(unsafe { nt::RtlFindMessage(module, table, language, id, &mut entry) })?;
-    // SAFETY: the MESSAGE_RESOURCE_ENTRY RtlFindMessage found in the module's mapped image (which
-    // stays mapped while the module is loaded): its length and flags (two words, read unaligned),
-    // then its NUL-terminated text, 4 bytes in.
-    unsafe {
-        let flags = entry.add(2).cast::<u16>().read_unaligned();
-        let text = entry.add(4);
-        Ok(if flags & MESSAGE_RESOURCE_UNICODE != 0 {
-            MessageText::Wide(InWStr::new(text.cast()))
-        } else {
-            MessageText::Ansi(InStr::new(text))
-        })
-    }
+    checked(unsafe { nt::RtlFindMessage(module, table, language, id, &raw mut entry) })?;
+    // The MESSAGE_RESOURCE_ENTRY RtlFindMessage found in the module's mapped image (which stays
+    // mapped while the module is loaded): its length and flags (two words), then its
+    // NUL-terminated text, 4 bytes in.
+    let (flags, text) = (entry.wrapping_add(2).cast::<u16>(), entry.wrapping_add(4));
+    // SAFETY: the entry's flags word, inside the entry, read unaligned.
+    let wide = unsafe { flags.read_unaligned() } & MESSAGE_RESOURCE_UNICODE != 0;
+    Ok(if wide {
+        // SAFETY: the entry's text, NUL-terminated (the message compiler ends every entry).
+        MessageText::Wide(unsafe { InWStr::new(text.cast()) })
+    } else {
+        // SAFETY: as above.
+        MessageText::Ansi(unsafe { InStr::new(text) })
+    })
 }
 
 /// A resource's type or name as LdrFindResource_U takes it: a number, or a name, NUL-terminated
@@ -2497,12 +2499,10 @@ pub fn find_resource(
     language: u16,
 ) -> Result<usize, NtStatus> {
     let path = [kind.element(), name.element(), usize::from(language)];
-    let mut entry = 0;
     // SAFETY: ntdll's export, over the module's mapped image (a module handle that is not one
     // faults the caller, as on the platform), the path's names terminated inside their slices,
     // into the local.
-    checked(unsafe { nt::LdrFindResource_U(module, path.as_ptr(), 3, &mut entry) })?;
-    Ok(entry)
+    written(|entry| unsafe { nt::LdrFindResource_U(module, path.as_ptr(), 3, entry) })
 }
 
 /// LdrAccessResource: the data of the module's resource whose IMAGE_RESOURCE_DATA_ENTRY is at
@@ -2513,7 +2513,7 @@ pub fn access_resource(module: usize, entry: usize) -> Result<(usize, u32), NtSt
     // SAFETY: ntdll's export, reading the data entry at the caller's address in the module's
     // mapped image (one that is not a data entry faults the caller, as on the platform), into the
     // locals.
-    checked(unsafe { nt::LdrAccessResource(module, entry, &mut address, &mut size) })?;
+    checked(unsafe { nt::LdrAccessResource(module, entry, &raw mut address, &raw mut size) })?;
     Ok((address, size))
 }
 
@@ -2555,10 +2555,9 @@ pub fn format_message(
     arguments: MessageArguments,
     out: &mut [u16],
 ) -> Result<usize, NtStatus> {
-    let mut returned = 0u32;
     // SAFETY: ntdll's export, over the NUL-terminated text (the edge's contract) and the arguments
     // (theirs), into the buffer, of its length in bytes.
-    checked(unsafe {
+    written(|returned: *mut u32| unsafe {
         nt::RtlFormatMessage(
             text.as_ptr(),
             layout.width,
@@ -2568,23 +2567,21 @@ pub fn format_message(
             arguments.0,
             out.as_mut_ptr(),
             (2 * out.len()) as u32,
-            &mut returned,
+            returned,
         )
-    })?;
-    Ok(returned as usize)
+    })
+    .map(|returned| returned as usize)
 }
 
 // --- The loader ----------------------------------------------------------------------------------
 
 /// LdrGetDllHandle: the handle of the loaded module the name names.
 pub fn get_dll_handle(name: &UnicodeString) -> Result<u32, NtStatus> {
-    let mut handle = 0;
     // SAFETY: ntdll's export, over the counted name (its buffer holds its length), into the local
     // handle; no path, no characteristics.
-    checked(unsafe {
-        nt::LdrGetDllHandle(core::ptr::null(), core::ptr::null(), name, &mut handle)
-    })?;
-    Ok(handle)
+    written(|handle| unsafe {
+        nt::LdrGetDllHandle(core::ptr::null(), core::ptr::null(), name, handle)
+    })
 }
 
 /// LdrLoadDll: the module the name names, loaded (or its count raised); its handle.
@@ -2601,7 +2598,7 @@ pub fn load_dll_with(name: &UnicodeString, characteristics: Option<u32>) -> Resu
         .map_or(core::ptr::null(), |value| value);
     // SAFETY: ntdll's export, over the counted name (its buffer holds its length) and the local
     // characteristics or null, into the local handle; no path.
-    checked(unsafe { nt::LdrLoadDll(core::ptr::null(), characteristics, name, &mut handle) })?;
+    checked(unsafe { nt::LdrLoadDll(core::ptr::null(), characteristics, name, &raw mut handle) })?;
     Ok(handle)
 }
 
@@ -2628,7 +2625,7 @@ pub fn get_procedure_address(
     // SAFETY: ntdll's export, over the counted name (its buffer holds its length) or null, into
     // the local address.
     let status =
-        unsafe { nt::LdrGetProcedureAddress(module, pointer(name), ordinal, &mut address) };
+        unsafe { nt::LdrGetProcedureAddress(module, pointer(name), ordinal, &raw mut address) };
     (status, address)
 }
 
@@ -2767,25 +2764,21 @@ pub fn unicode_string_to_ansi_checked(
     };
     // SAFETY: ntdll's export, over the string above (kernel32's own units) and into the caller's
     // buffer (the edge value's contract), no more than the ANSI string's room, its length.
-    checked(unsafe { nt::RtlUnicodeStringToAnsiString(&mut narrow, &source, 0) })?;
+    checked(unsafe { nt::RtlUnicodeStringToAnsiString(&raw mut narrow, &raw const source, 0) })?;
     Ok(usize::from(narrow.length))
 }
 
 /// NtAddAtom: the atom of a name (its string atom's reference counted), the name `units`, which
 /// ntdll's service reads where they are.
 pub fn add_atom(units: &[u16]) -> Result<u16, NtStatus> {
-    let mut atom = 0u16;
     // SAFETY: ntdll's export, over the units of their length in bytes and into the local atom.
-    checked(unsafe { nt::NtAddAtom(units.as_ptr(), (2 * units.len()) as u32, &mut atom) })?;
-    Ok(atom)
+    written(|atom| unsafe { nt::NtAddAtom(units.as_ptr(), (2 * units.len()) as u32, atom) })
 }
 
 /// NtFindAtom: the atom a name has, its reference count untouched.
 pub fn find_atom(units: &[u16]) -> Result<u16, NtStatus> {
-    let mut atom = 0u16;
     // SAFETY: as in `add_atom`.
-    checked(unsafe { nt::NtFindAtom(units.as_ptr(), (2 * units.len()) as u32, &mut atom) })?;
-    Ok(atom)
+    written(|atom| unsafe { nt::NtFindAtom(units.as_ptr(), (2 * units.len()) as u32, atom) })
 }
 
 /// NtDeleteAtom: a string atom's reference given back.
