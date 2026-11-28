@@ -795,7 +795,7 @@ def boot(
             log = read_log(log_path)
             if during is not None:
                 during(qmp_directory / "qmp.sock", log)
-            if done(log):
+            if done(complete_lines(log)):
                 reason = "done"
                 if observe is not None:
                     observe(qmp_directory / "qmp.sock")
@@ -812,6 +812,9 @@ def boot(
         if qmp_directory is not None:
             shutil.rmtree(qmp_directory, ignore_errors=True)
     log = read_log(log_path)
+    if reason != "exited":
+        # Killed mid-line: the guest never finished its last line, so nothing reads that part.
+        log = complete_lines(log)
     if reason != "done" and done(log):
         reason = "done"  # QEMU wrote the answer just before it stopped
     elif reason == "exited" and ended_by_reset(log):
@@ -1600,6 +1603,14 @@ def read_log(path: Path) -> str:
         return path.read_text(encoding="latin-1")
     except FileNotFoundError:
         return ""
+
+
+def complete_lines(log: str) -> str:
+    """`log` up to its last line end. QEMU writes COM1 to the log a byte at a time as the guest
+    sends it, so a log read while the guest runs can end inside a line: "F2K: user process exited
+    normally (exit c" is not yet its exit code, nor "F2" a line of the program's. A boot's `done`
+    sees only finished lines, and a boot stopped by its harness keeps only those."""
+    return log[:log.rfind("\n") + 1]
 
 
 def lines_of(log: str) -> list[str]:

@@ -441,6 +441,44 @@ def test_a_kept_boot_attaches_its_disk_and_a_restart_ends_it(tmp_path, monkeypat
     assert arguments[arguments.index("-append") + 1] == "redirected --"
 
 
+SLOW_QEMU = """#!{python}
+import sys, time
+arguments = sys.argv[1:]
+serial = arguments[arguments.index("-serial") + 1].removeprefix("file:")
+with open(serial, "w") as com1:
+    for part in {parts!r}:
+        com1.write(part)
+        com1.flush()
+        time.sleep(0.5)
+    time.sleep(60)
+"""
+
+
+def test_a_boot_reads_only_the_lines_the_guest_finished(tmp_path, monkeypatch):
+    """QEMU writes COM1 a byte at a time as the guest sends it, so a look at the log can land
+    inside a line. A process's end line seen up to "exited normally" is not its end yet (its exit
+    code is still to come), and a line the guest had begun when the boot was stopped is none of
+    the program's. A stand-in QEMU writes its lines in pieces, pausing between them, and runs
+    on."""
+    monkeypatch.setattr(f2kboot, "FULL_SYSTEM", True)
+    parts = ["F2K: entering ring 3\nhello\nF2K: user process exited normally (exit c",
+             "ode=0)\nF2"]
+    qemu = tmp_path / "qemu"
+    qemu.write_text(SLOW_QEMU.format(python=sys.executable, parts=parts))
+    qemu.chmod(0o755)
+    monkeypatch.setattr(f2kboot, "QEMU", str(qemu))
+    monkeypatch.setattr(f2kboot, "exit_with_parent", lambda: [])
+    build = f2kboot.Build(tmp_path / "f2k-kernel", tmp_path / "f2k-disk.img")
+    log, stopped = f2kboot.boot(build, image="kernel", log_path=tmp_path / "com1.log", timeout=20,
+                                done=f2kboot.process_ended)
+    assert stopped == "done", log
+    assert f2kboot.program_output(log) == (["hello"], 0), log
+    assert log.endswith("(exit code=0)\n"), log
+    # A teardown audit line begun is not yet its verdict: a painting boot's `done` waits for it.
+    begun = "\n".join(ENDED) + "\nF2K: teardown audit: frame databas"
+    assert f2kboot.teardown_audited(begun) and not f2kboot.teardown_audited(f2kboot.complete_lines(begun))
+
+
 # --- Storage: the disk in memory, or on the IDE controller ------------------------------------
 
 
