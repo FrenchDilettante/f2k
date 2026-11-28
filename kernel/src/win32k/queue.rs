@@ -1,92 +1,84 @@
-//! Message queues: each thread's queue of posted messages, of the messages sent to its windows,
-//! and its WM_QUIT; the reads that take them in Windows 2000's documented order; and the session
-//! the window manager's decisions send their messages through ([`QueueSession`]).
+//! Message queues: each thread's posted, input and sent messages and its WM_QUIT; the reads that
+//! take them in Windows 2000's documented order; and the session the window manager's decisions
+//! send through ([`QueueSession`]).
 //!
-//! A queue is a record of the window manager's ([`Queues`], in the window registry, behind its
-//! one lock), one per thread record ([`window::Thread`]), made when a thread connects (its first
-//! win32k service makes it a GUI thread, as on Windows 2000) and named by a generation-tagged id
-//! ([`QueueId`]), the object manager's pattern. Posted messages are entries of one pool the queues
-//! share, which grows a page at a time as they need it ([`super::posted`]), linked oldest first, in
-//! two lanes: the messages posted to the thread, at most [`POSTED_LIMIT`] of them (Windows 2000's
-//! USERPostMessageLimit), and the input messages the keyboard's keystrokes became
-//! ([`super::input`], [`post_input`]), which the limit does not count. A read ([`take`])
-//! answers, in the documented order: the messages sent to the thread's windows; the posted
-//! messages its filter takes; the input messages it takes, each bound to its window as it is read
-//! ([`super::input::bind`]: the focus window then, not when the key was pressed), a key message
-//! read updating the thread's key state; the WM_QUIT PostQuitMessage left; a WM_PAINT for a window
-//! of the thread's with an update region ([`super::paint`]); a WM_TIMER for one of its timers that
-//! came due ([`super::timer`]). WM_QUIT, WM_PAINT and WM_TIMER
-//! are never posted: they are made when a read finds nothing posted before them, as Windows 2000
-//! makes them. A read that finds nothing for its filter blocks GetMessage's caller on its queue's
-//! event, set by whatever gives the queue something: a post, a send, an answer, a timer set, an
-//! invalidation. The wait is the scheduler's, outside the lock; its timeout is the thread's next
-//! timer's due.
+//! A queue ([`Queues`], in the window registry, behind its lock) belongs to a thread record
+//! ([`window::Thread`]), made at the thread's first win32k service (which makes it a GUI thread, as
+//! on Windows 2000), and is named by a generation-tagged id ([`QueueId`]). Posted messages are
+//! entries of one shared pool that grows a page at a time ([`super::posted`]), linked oldest first
+//! in two lanes: those posted to the thread, at most [`POSTED_LIMIT`] (USERPostMessageLimit), and
+//! the input messages ([`super::input`], [`post_input`]), which the limit does not count.
 //!
-//! A message the window manager's decisions send to a window of the deciding thread's own, with a
-//! client-side procedure — the creation's WM_NCCREATE to WM_MOVE, the destruction's WM_DESTROY and
-//! WM_NCDESTROY, what showing, moving and activating send — is a callback into user mode
-//! (KeUserModeCallback, [`crate::user::callback`]): the decision lets the window manager's lock go,
-//! user32 calls the procedure, and its answer comes back to the decision ([`QueueSession`]), as
-//! Windows 2000's `xxx` routines call back. So a zero answer to WM_NCCREATE cancels the creation,
-//! -1 to WM_CREATE fails it, and whatever the procedure does meanwhile (SetFocus from WM_ACTIVATE,
-//! another window made from WM_CREATE) happens inside the decision, in Windows' order. What the
-//! structure the procedure was handed comes back through the callback's output block, bounded by
-//! the structure's size ([`read_back`]): WM_NCCALCSIZE's client rectangle, WM_WINDOWPOSCHANGING's
-//! new place, WM_STYLECHANGING's new style, WM_GETMINMAXINFO's sizes. A message to another
-//! thread's window is queued for that thread as a sent message with the window manager's copy of
-//! the structure, and the decision waits for the answer with the lock let go
-//! ([`send_for_decision`], [`decision_reply`]), as Windows 2000's `xxxInterSendMsgEx` waits; a
-//! receiving thread that ends first fails the send (answered 0, the structure as sent). The
-//! activation of another thread's windows is not waited for: Windows 2000 hands it to that thread
-//! as an event, F2K queues its messages for that thread ([`defer`], [`Session::queue_for`]), as it
-//! does a decision of a thread with no queue (the console server's), the decision going on with
-//! the default procedure's answer.
+//! A read ([`take`]) answers in the documented order: the sent messages; the posted messages its
+//! filter takes; the input messages, each bound to its window as it is read
+//! ([`super::input::bind`]: the focus window then, not at the key press), a key message updating
+//! the key state; PostQuitMessage's WM_QUIT; a WM_PAINT for a window with an update region
+//! ([`super::paint`]); a WM_TIMER for a due timer ([`super::timer`]). WM_QUIT, WM_PAINT and
+//! WM_TIMER are never posted: a read makes them when nothing posted comes first, as Windows 2000
+//! does. A read that finds nothing blocks GetMessage on its queue's event, set by a post, a send,
+//! an answer, a timer set or an invalidation; the wait is the scheduler's, outside the lock, its
+//! timeout the thread's next timer's due.
 //!
-//! The messages sent to a thread reach their procedures the same way, by callback from inside the
-//! thread's own calls, oldest first, before anything posted, as Windows 2000's xxxReceiveMessage
-//! delivers them: GetMessage and PeekMessage deliver them all before they read on, WaitMessage
-//! those that woke it, and a thread waiting for another's answer — its SendMessage, or a decision's
-//! send — those that come meanwhile ([`take_for_callback`], [`delivery`], [`end_received`]), so
-//! two threads that send to each other do not wait on each other. The callback carries the window
-//! manager's copy of the structure, its in-out part coming back to the sender; a text another
-//! process's message carries goes in the callback's block, WM_GETTEXT's answer coming back in its
-//! output block ([`rtl::callback`]'s text slots).
+//! A decision's message to a window of the deciding thread's own with a client-side procedure (the
+//! creation's WM_NCCREATE to WM_MOVE, the destruction's WM_DESTROY and WM_NCDESTROY, what showing,
+//! moving and activating send) is a callback into user mode (KeUserModeCallback,
+//! [`crate::user::callback`]) with the lock let go, its answer coming back to the decision
+//! ([`QueueSession`]), as Windows 2000's `xxx` routines call back. So a zero answer to WM_NCCREATE
+//! cancels the creation, -1 to WM_CREATE fails it, and what the procedure does meanwhile (SetFocus
+//! from WM_ACTIVATE, a window made from WM_CREATE) happens inside the decision, in Windows' order.
+//! The structure handed to the procedure comes back through the callback's output block, bounded by
+//! its size ([`read_back`]): WM_NCCALCSIZE's client rectangle, WM_WINDOWPOSCHANGING's new place,
+//! WM_STYLECHANGING's new style, WM_GETMINMAXINFO's sizes. A message to another thread's window is
+//! queued for that thread as a sent message with the window manager's copy of the structure, the
+//! decision waiting for the answer with the lock let go ([`send_for_decision`],
+//! [`decision_reply`]), as `xxxInterSendMsgEx` waits; a receiver that ends first fails the send
+//! (answered 0, the structure as sent). Another thread's activation is not waited for: Windows 2000
+//! hands it to that thread as an event, F2K queues its messages for it ([`defer`],
+//! [`Session::queue_for`]), as for a decision of a thread with no queue (the console server's), the
+//! decision going on with the default procedure's answer.
 //!
-//! SendMessage to another thread's window is queued the same way, its sender waiting for the answer
-//! ([`send`], [`await_reply`]); to a window of its own thread, the service names the procedure and
-//! user32 calls it itself, as Windows 2000's user32 does. So do the console server's
-//! WM_QUERYENDSESSION and WM_ENDSESSION at the session's end ([`server_send`]), the server, which
-//! has no queue, waiting on an event of its own ([`wait_for_server`]). SendMessageTimeout's
-//! sender waits no longer than its timeout, a message its receiver has not read by then taken back
-//! ([`abandon_send`]); SendNotifyMessage's waits for nothing, its message answered to nobody
-//! ([`send_notify`]). Sent messages are records of a slot pool ([`crate::slots`]) that grows a
-//! page at a time and keeps its peak, each named by an id its slot's count checks ([`SentId`]).
+//! Sent messages reach their procedures by callback from inside the receiving thread's own calls,
+//! oldest first, before anything posted, as xxxReceiveMessage delivers them: GetMessage and
+//! PeekMessage deliver them all before reading on, WaitMessage those that woke it, and a thread
+//! waiting for an answer (its SendMessage, or a decision's send) those that come meanwhile
+//! ([`take_for_callback`], [`delivery`], [`end_received`]), so two threads that send to each other
+//! do not wait on each other. The callback carries the window manager's copy of the structure, its
+//! in-out part coming back to the sender; a text another process's message carries goes in the
+//! callback's block, WM_GETTEXT's answer in its output block ([`rtl::callback`]'s text slots).
 //!
-//! A queue keeps what Windows 2000 keeps of its thread's reads: the kinds of message given it
-//! since a read last looked for them (the change bits WaitMessage wakes on, [`wait_ready`]: a
-//! message a peek saw and left is no longer new), the time and cursor position of the last message
-//! retrieved (GetMessageTime, GetMessagePos), and when the thread last read and whether that read
-//! found nothing — a thread that has not read for [`HUNG_TIMEOUT`] after a read that found
-//! something is hung ([`hung`]: IsHungAppWindow, SendMessageTimeout's SMTO_ABORTIFHUNG).
+//! SendMessage to another thread's window is queued the same way, its sender waiting ([`send`],
+//! [`await_reply`]); to a window of its own thread, the service names the procedure and user32
+//! calls it, as Windows 2000's user32 does. So do the console server's WM_QUERYENDSESSION and
+//! WM_ENDSESSION at the session's end ([`server_send`]), the server, which has no queue, waiting on
+//! an event of its own ([`wait_for_server`]). SendMessageTimeout waits no longer than its timeout,
+//! a message not read by then taken back ([`abandon_send`]); SendNotifyMessage waits for nothing,
+//! its message answered to nobody ([`send_notify`]). Sent messages are records of a slot pool
+//! ([`crate::slots`]) that grows a page at a time and keeps its peak, named by ids their slot's
+//! count checks ([`SentId`]).
 //!
-//! The services, user32's calls (F2K's argument lists, see [`crate::win32k`]):
+//! A queue keeps Windows 2000's state of its thread's reads: the kinds of message given since a
+//! read last looked for them (the change bits WaitMessage wakes on, [`wait_ready`]: a message a
+//! peek saw and left is no longer new), the last retrieved message's time and cursor position
+//! (GetMessageTime, GetMessagePos), and when the thread last read and whether that read found
+//! nothing: a thread that has not read for [`HUNG_TIMEOUT`] after finding something is hung
+//! ([`hung`]: IsHungAppWindow, SendMessageTimeout's SMTO_ABORTIFHUNG).
 //!
-//! - NtUserPostMessage(handle Window, u32 Msg, u32 wParam, i32 lParam): a window's message posted
-//!   to the window's thread; a null window posts to the calling thread, HWND_BROADCAST to every
-//!   top-level window of the caller's desktop;
-//! - NtUserPostThreadMessage(u32 ThreadId, u32 Msg, u32 wParam, i32 lParam): a thread message;
-//! - NtUserGetMessage(ptr Receipt, handle Window, u32 MsgFilterMin, u32 MsgFilterMax): the next
-//!   message the filter takes, waiting for one, into the receipt, the sent messages delivered
-//!   first;
+//! Services (F2K's argument lists, see [`crate::win32k`]):
+//!
+//! - NtUserPostMessage(handle Window, u32 Msg, u32 wParam, i32 lParam): a null window posts to the
+//!   calling thread, HWND_BROADCAST to every top-level window of the caller's desktop;
+//! - NtUserPostThreadMessage(u32 ThreadId, u32 Msg, u32 wParam, i32 lParam);
+//! - NtUserGetMessage(ptr Receipt, handle Window, u32 MsgFilterMin, u32 MsgFilterMax): waits for a
+//!   message, the sent messages delivered first;
 //! - NtUserPeekMessage(ptr Receipt, handle Window, u32 MsgFilterMin, u32 MsgFilterMax, u32
-//!   RemoveMsg): the same without waiting (RECEIVED_NONE when there is nothing);
+//!   RemoveMsg): the same without waiting (RECEIVED_NONE for nothing);
 //! - NtUserMessageCall(handle Window, u32 Msg, u32 wParam, i32 lParam, ptr<u32> Proc, ptr<i32>
 //!   Result, ptr Timeout): SendMessage and SendMessageTimeout (rtl::user::SendTimeout; null for
-//!   SendMessage): the procedure to call for a window of the caller's own thread, or the answer,
-//!   STATUS_TIMEOUT for none in time;
-//! - NtUserSendNotifyMessage(handle Window, u32 Msg, u32 wParam, i32 lParam, ptr<u32> Proc):
-//!   SendNotifyMessage: the procedure to call for a window of the caller's own thread, or 0;
-//! - NtUserWaitMessage(): WaitMessage, the sent messages that woke it delivered;
+//!   SendMessage): the procedure to call for the caller's own window, or the answer, STATUS_TIMEOUT
+//!   for none in time;
+//! - NtUserSendNotifyMessage(handle Window, u32 Msg, u32 wParam, i32 lParam, ptr<u32> Proc): the
+//!   procedure to call for the caller's own window, or 0;
+//! - NtUserWaitMessage(): the sent messages that woke it delivered;
 //! - NtUserDispatchMessage(ptr Msg, ptr<u32> Proc): the procedure DispatchMessage calls;
 //! - NtUserCallOneParam(u32 Param, u32 Routine, ptr<u32> Result): PostQuitMessage, ReplyMessage,
 //!   InSendMessage, IsHungAppWindow ([`rtl::user`]'s ONE_PARAM_* routines).
@@ -1078,11 +1070,11 @@ pub fn detach(windows: &mut Windows, thread: ThreadId) {
     }
 }
 
-/// The queue of the thread whose client id is `client_id`, as PostThreadMessage names it, and the
-/// thread it serves: the queue of the thread the client-id table names by it now. A queue whose
-/// thread ended and whose object went keeps the id it had until its record goes (a GUI thread
-/// that ended above the passive level leaves its queue to its process's reap), and the id may be
-/// another thread's by then (client ids are reused, LIFO): that queue is not the id's.
+/// The queue of the thread whose client id is `client_id` (PostThreadMessage's), and the thread it
+/// serves: the thread the client-id table names by it now. A queue whose thread and object went
+/// keeps its id until its record goes (a GUI thread that ended above the passive level leaves its
+/// queue to its process's reap), and the id may be another thread's by then (client ids are
+/// reused, LIFO): that queue is not the id's.
 pub fn queue_by_client_id(windows: &Windows, client_id: u32) -> Option<(ThreadId, ThreadKey)> {
     queue_by_client_id_in(windows, client_id, thread_named_by)
 }
@@ -1228,10 +1220,9 @@ fn post_to(windows: &mut Windows, thread: ThreadId, msg: Msg) -> Result<(), NtSt
 
 /// An input message for the thread record `thread`'s queue: `msg`, a key message with no window
 /// yet (the read binds it, [`super::input::bind`]), whose key the key state names `key`
-/// ([`super::input`]). A key-down that repeats its key (`repeat`) while the queue's last input
-/// message, not read yet, is the same message of the same key raises that message's repeat count
-/// (lParam's low word) instead, as Windows 2000's queue folds a held key's repeats (the folded
-/// message's window is bound when it is read, as any other's). Nothing when the thread has no
+/// ([`super::input`]). A repeating key-down (`repeat`) whose queue's last unread input message is
+/// the same message of the same key raises that message's repeat count (lParam's low word)
+/// instead, as Windows 2000's queue folds a held key's repeats. Nothing when the thread has no
 /// queue; the message is lost when the pool cannot grow.
 pub fn post_input(windows: &mut Windows, thread: ThreadId, msg: Msg, key: u8, repeat: bool) {
     let queues = &mut windows.queues;
@@ -1893,10 +1884,10 @@ pub fn message_pos(windows: &Windows, caller: ThreadId) -> u32 {
     (pos.x as u16 as u32) | ((pos.y as u16 as u32) << 16)
 }
 
-/// Whether the thread record `thread` is hung at `time` (milliseconds): it has gone more than
-/// [`HUNG_TIMEOUT`] without reading its queue, and does not idle — its last read found something,
-/// as Windows 2000 deems a thread that is not waiting for input (one whose last read found its
-/// queue empty, a GetMessage's caller waiting or a PeekMessage loop polling, is not hung).
+/// Whether the thread record `thread` is hung at `time` (milliseconds): more than
+/// [`HUNG_TIMEOUT`] without reading its queue, its last read having found something. As on
+/// Windows 2000, a thread whose last read found nothing (GetMessage waiting, a PeekMessage loop
+/// polling) is not hung.
 pub fn hung(windows: &Windows, thread: ThreadId, time: u32) -> bool {
     windows.queues.queue_of(thread).is_some_and(|id| {
         let queue = &windows.queues.queues[id.index as usize];
@@ -2426,10 +2417,10 @@ pub enum ServerReply {
 }
 
 /// The console server's SendMessage, for the session's end (`crate::session`): `message` queued
-/// for the window `hwnd`'s thread as another thread's send is, the server, which has no queue,
-/// waiting for its answer on its own event ([`wait_for_server`]). Windows 2000's csrss sends its
-/// WM_QUERYENDSESSION and WM_ENDSESSION from a thread of its own, a GUI thread with a queue; F2K's
-/// server is the console's control thread, a system thread, so the answer is marked for it instead.
+/// for the window `hwnd`'s thread as another thread's send is, the server (no queue) waiting on its
+/// own event ([`wait_for_server`]). Windows 2000's csrss sends WM_QUERYENDSESSION and
+/// WM_ENDSESSION from a GUI thread with a queue; F2K's server is the console's control thread, a
+/// system thread, so the answer is marked for it instead.
 pub fn server_send(
     windows: &mut Windows,
     hwnd: Hwnd,
@@ -2522,14 +2513,12 @@ pub fn dispatch_target(windows: &Windows, caller: ThreadId, msg: &Msg) -> Result
     Ok(windows.client_proc(window).unwrap_or(0))
 }
 
-/// Queue `message` for the window `target`'s thread as a message the window manager sent (no
-/// thread waits for its answer): a decision of a thread with no queue (the console server's), or
-/// the activation of another thread's windows, which Windows 2000 hands that thread to do
-/// ([`Session::queue_for`]). Nothing for a window whose procedure is the window manager's, or a
-/// thread with no queue; nothing either when the pool cannot grow (the message is lost), nor for
-/// a creation message, which goes to the creating thread's own window, by callback
-/// ([`QueueSession`]), nor for WM_GETMINMAXINFO, whose defaults stand when nobody waits for the
-/// answer.
+/// Queue `message` for the window `target`'s thread as a message the window manager sent, no
+/// thread waiting for its answer: a decision of a thread with no queue (the console server's), or
+/// another thread's activation, which Windows 2000 hands that thread ([`Session::queue_for`]).
+/// Nothing for a window whose procedure is the window manager's, a thread with no queue, a pool
+/// that cannot grow (the message is lost), a creation message (by callback alone,
+/// [`QueueSession`]), or WM_GETMINMAXINFO, whose defaults stand when nobody waits.
 pub fn defer(windows: &mut Windows, target: WindowId, message: &Message) {
     let Some(proc) = windows.client_proc(target) else {
         return;
@@ -2744,14 +2733,13 @@ fn slot(message: u32, payload: &Payload) -> u32 {
     }
 }
 
-/// The callback a message the window manager sends to `target` (whose procedure is `proc`) is
-/// (rtl::callback's notes): the `__fn*` slot its payload's kind names ([`slot`]), the input
-/// block's head, and the structure the block carries after it (its first `length` bytes). A
-/// creation message's window name follows the structure in the block
-/// ([`Windows::create_text`]); its CREATESTRUCTW's lpszClass is the class's atom, as a receipt's
-/// was. WM_NCCALCSIZE's NCCALCSIZE_PARAMS is followed by its WINDOWPOS (its lppos 0: user32 points
-/// it at the copy); WM_WINDOWPOSCHANGING goes to the in-out WINDOWPOS slot, WM_WINDOWPOSCHANGED to
-/// the input-only one.
+/// The callback for a message the window manager sends to `target` (procedure `proc`), per
+/// rtl::callback's notes: the `__fn*` slot of its payload's kind ([`slot`]), the input block's
+/// head, and the structure after it (its first `length` bytes). A creation message's window name
+/// follows the structure ([`Windows::create_text`]); its CREATESTRUCTW's lpszClass is the class's
+/// atom. WM_NCCALCSIZE's NCCALCSIZE_PARAMS is followed by its WINDOWPOS (lppos 0: user32 points it
+/// at the copy); WM_WINDOWPOSCHANGING takes the in-out WINDOWPOS slot, WM_WINDOWPOSCHANGED the
+/// input-only one.
 pub fn callback_input(
     windows: &Windows,
     classes: &class::Registry,
@@ -2842,12 +2830,11 @@ pub struct CallbackOut {
     pub length: usize,
 }
 
-/// The structure `message` carried written back from the callback output `out` (the bytes after
-/// the LRESULT): for the in-out slots only ([`rtl::callback::out_size`]) and only when the routine
-/// handed back the whole structure; anything shorter (an untrusted routine's short or missing
-/// block) leaves the structure as it was sent, anything longer is not read. WM_NCCALCSIZE's
-/// TRUE form takes back its three rectangles, not lppos; WM_WINDOWPOSCHANGED and the creation's
-/// structures are input only.
+/// The structure `message` carried, written back from the callback output `out` (the bytes after
+/// the LRESULT): in-out slots only ([`rtl::callback::out_size`]), and only when the routine handed
+/// back the whole structure; anything shorter (an untrusted routine's short or missing block)
+/// leaves it as sent, anything longer is not read. WM_NCCALCSIZE's TRUE form takes back its three
+/// rectangles, not lppos; WM_WINDOWPOSCHANGED and the creation's structures are input only.
 pub fn read_back(api: u32, message: &mut Message, out: &CallbackOut) {
     let wanted = rtl::callback::out_size(api, message.wparam);
     if wanted == 0 || out.length < wanted {
@@ -2934,20 +2921,17 @@ pub fn window_gone(windows: &mut Windows, window: WindowId) {
 }
 
 /// The session the services run the window manager's decisions in. A message to a window of the
-/// deciding thread's own, with a client-side procedure, is a callback to it: the lock let go
-/// meanwhile ([`Hold::unlocked`]), the procedure's answer the send's, as Windows 2000's `xxx`
-/// routines call back (rtl::callback's notes). A message to another thread's window is queued
-/// for that thread, the decision waiting for the answer and the structure with the lock let go,
-/// delivering by callback the messages sent to its own thread meanwhile ([`send_and_wait`]), as
-/// Windows 2000's `xxxInterSendMsgEx` waits; the activation of another thread's windows is
-/// queued for that thread and not waited for ([`Session::queue_for`]), as Windows 2000 hands it
-/// to the thread as an event. A decision of a thread with no queue queues its messages too
-/// ([`defer`]), answered as the default procedure answers. A window whose procedure is the window
-/// manager's is answered as the default procedure answers. A window's end takes its posted
-/// messages, timers and update region with it; the activation and the destroy's focus check are
-/// [`super::focus`]'s. The other window-manager calls are [`Session`]'s defaults. The services
-/// hold it by the window manager's lock ([`with_session`]); the host tests by the registries,
-/// which cannot be let go of: their sends are all queued.
+/// deciding thread's own with a client-side procedure is a callback, the lock let go meanwhile
+/// ([`Hold::unlocked`]), as Windows 2000's `xxx` routines call back (rtl::callback's notes). A
+/// message to another thread's window is queued for it, the decision waiting for the answer and
+/// the structure with the lock let go, delivering the messages sent to its own thread meanwhile
+/// ([`send_and_wait`]), as `xxxInterSendMsgEx` waits; another thread's activation is queued and
+/// not waited for ([`Session::queue_for`]). A thread with no queue queues its messages too
+/// ([`defer`]). Those, and a window whose procedure is the window manager's, are answered as the
+/// default procedure answers. A window's end takes its posted messages, timers and update region;
+/// the activation and the destroy's focus check are [`super::focus`]'s; the other calls are
+/// [`Session`]'s defaults. The services hold it by the lock ([`with_session`]); the host tests by
+/// the registries, which cannot be let go of, so their sends are all queued.
 pub struct QueueSession<H: Hold> {
     pub hold: H,
     /// The thread whose windows' messages are queued for it, not waited for
@@ -3124,17 +3108,15 @@ fn call_back<H: Hold>(
     Some(answer)
 }
 
-/// The send of `message` to `target`, a window of another thread's (whose procedure is `proc`),
-/// from a decision of the running thread, when it has a queue and `hold` can let the lock go: the
-/// message queued for the window's thread with the window manager's copy of its structure
-/// ([`send_for_decision`]), and the decision waiting on its queue, the lock let go, until the
-/// receiver's procedure answers at its thread's next read (or inside its own wait), as Windows
-/// 2000's `xxxInterSendMsgEx` waits. The answer, and the structure as the procedure left it. The
-/// messages sent to the waiting thread meanwhile are delivered by callback as they come
-/// ([`take_for_callback`]), so that two threads whose decisions send to each other do not wait on
-/// each other for good. A receiving thread that ends first answers 0, the structure as it was
-/// sent. A wait has no end: a receiver that never reads holds the decision, as on Windows 2000;
-/// the thread may still be terminated inside it. None when the message is not one to wait for.
+/// A decision's send of `message` to `target`, another thread's window (procedure `proc`), when
+/// the running thread has a queue and `hold` can let the lock go: queued with the window manager's
+/// copy of its structure ([`send_for_decision`]), the decision waiting on its queue with the lock
+/// let go until the receiver answers, as `xxxInterSendMsgEx` waits. The answer, and the structure
+/// as the procedure left it. Messages sent to the waiting thread meanwhile are delivered as they
+/// come ([`take_for_callback`]), so two decisions sending to each other do not deadlock. A receiver
+/// that ends first answers 0, the structure as sent. The wait has no end: a receiver that never
+/// reads holds the decision, as on Windows 2000, though the thread may still be terminated inside
+/// it. None when the message is not one to wait for.
 #[cfg(target_arch = "x86")]
 fn send_and_wait<H: Hold>(
     hold: &mut H,
@@ -3300,12 +3282,11 @@ impl Signals {
     }
 }
 
-/// The increment a queue's event is set with (Windows 2000's win32k sets a GUI thread's
-/// wake event, SetWakeBit's, with 2 where other events take EVENT_INCREMENT's 1): a thread
-/// woken for window-manager input — a message posted or sent to it, a reply to its send,
-/// keyboard or mouse input — runs 2 above its base, the foreground boost besides when its
-/// process is in the foreground (`crate::process::foreground`). The server's event, a reply's
-/// to its send, takes it too.
+/// The increment a queue's event is set with: Windows 2000's SetWakeBit sets a GUI thread's wake
+/// event with 2 where other events take EVENT_INCREMENT's 1. A thread woken for window-manager
+/// input (a post, a send, a reply to its send, keyboard or mouse input) runs 2 above its base,
+/// plus the foreground boost when its process is in the foreground
+/// (`crate::process::foreground`). The server's event takes it too.
 pub const GUI_WAKE_INCREMENT: i8 = 2;
 
 // --- The target's side: the queues' events, the waits, the services ------------------------------
@@ -3712,13 +3693,12 @@ mod services {
         write_receipt(receipt, taken)
     }
 
-    /// A read of the caller's queue ([`take`]) at `now`, each sent message it hands out delivered
+    /// A read of the caller's queue ([`take`]) at `now`: each sent message it hands out delivered
     /// by callback before it reads on ([`receive_by_callback`]), as Windows 2000's reads receive
-    /// the sent messages first; a mouse message's window asked where its point is
-    /// (WM_NCHITTEST, [`crate::win32k::mouse::hit_test`]) before the read goes on, and a mouse
-    /// message read out followed by its WM_MOUSEACTIVATE and WM_SETCURSOR
-    /// ([`crate::win32k::mouse::after_read`]), the message eaten as they say. What it took: a
-    /// message, or nothing.
+    /// them first; a mouse message's window asked where its point is (WM_NCHITTEST,
+    /// [`crate::win32k::mouse::hit_test`]), and a mouse message read out followed by its
+    /// WM_MOUSEACTIVATE and WM_SETCURSOR ([`crate::win32k::mouse::after_read`]), eaten as they
+    /// say. What it took: a message, or nothing.
     fn read_delivering(
         call: &mut NtCall,
         caller: ThreadId,
@@ -3859,16 +3839,14 @@ mod services {
     }
 
     /// NtUserMessageCall(Window, Msg, wParam, lParam, Proc, Result, Timeout): SendMessage's and
-    /// SendMessageTimeout's kernel side ([`send`]): the procedure to call into `proc` for a window
-    /// of the caller's own thread (`result` 0), otherwise 0 into `proc` and the answer into
-    /// `result` — the caller waiting for it when another thread's procedure gives it, and
-    /// delivering by callback the messages sent to it meanwhile, as Windows 2000's SendMessage
-    /// does ([`receive_by_callback`]). With a timeout (rtl::user::SendTimeout,
-    /// SendMessageTimeout's; null for SendMessage), the wait ends at its end, the message taken
-    /// back if its receiver has not read it ([`abandon_send`]), and at once with SMTO_ABORTIFHUNG
-    /// when the receiver is hung ([`window_hung`]): STATUS_TIMEOUT then (user32's ERROR_TIMEOUT),
-    /// `result` 0. STATUS_INVALID_HANDLE when the receiving thread ends before it answers, its
-    /// window gone with it ([`Awaited::Failed`]).
+    /// SendMessageTimeout's kernel side ([`send`]): into `proc` the procedure to call for a window
+    /// of the caller's own thread, otherwise 0, and the answer into `result`, the caller waiting
+    /// for another thread's and delivering the messages sent to it meanwhile, as Windows 2000's
+    /// SendMessage does ([`receive_by_callback`]). With a timeout (rtl::user::SendTimeout; null for
+    /// SendMessage) the wait ends at its end, an unread message taken back ([`abandon_send`]), and
+    /// at once with SMTO_ABORTIFHUNG for a hung receiver ([`window_hung`]): STATUS_TIMEOUT
+    /// (user32's ERROR_TIMEOUT), `result` 0. STATUS_INVALID_HANDLE when the receiving thread ends
+    /// before it answers, its window gone with it ([`Awaited::Failed`]).
     #[allow(clippy::too_many_arguments)]
     pub fn message_call(
         call: &mut NtCall,
