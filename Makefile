@@ -148,6 +148,8 @@ help:
 	@echo "  run-tests    - Run host unit tests (cargo test --lib, and the kernel's doc tests)"
 	@echo "  compat       - The tests' pins checked against the export specs, the host scenarios run,"
 	@echo "                 and the DLL compatibility report written (target/compat/report.html)"
+	@echo "  precommit    - The gate before every commit, fastest first: build (disk), check,"
+	@echo "                 fmt-check, dup, run-tests, test"
 	@echo "  check-all    - run-tests, then compat, then test"
 	@echo "  check        - cargo check + clippy"
 	@echo "  dup          - Copy-paste detection (jscpd, tools/jscpd/): fail if duplicated lines grow"
@@ -380,6 +382,19 @@ miri: userland
 			echo "miri FAILED: $$1 (see $$log)"; tail -40 "$$log"; exit 1; \
 		fi' sh
 
+# The gate every change passes before it is committed, roughly in order of the time each step
+# takes, stopping at the first failure: the build (the system DLLs, the kernel and the disk), cargo
+# check and clippy, formatting, copy-paste detection, the host unit tests, then the on-target suite
+# (PYTEST_FLAGS passes through, e.g. "-n 2").
+.PHONY: precommit
+precommit:
+	$(MAKE) disk
+	$(MAKE) check
+	$(MAKE) fmt-check
+	$(MAKE) dup
+	$(MAKE) run-tests
+	$(MAKE) test
+
 # Everything a change is verified with, fastest first, stopping at the first failure: the host unit
 # tests, the pins and the host scenarios (every scenario run), and the on-target suite
 # (PYTEST_FLAGS passes through, e.g. "-n 2").
@@ -446,8 +461,10 @@ CLIPPY_LINTS = -D clippy::debug_assert_with_mut_call
 check: userland
 	@echo "Checking code..."
 	cd $(USERLAND_DIR) && cargo clippy --release -- $(CLIPPY_LINTS)
-	cd $(KERNEL_DIR) && cargo check
 	cd $(KERNEL_DIR) && cargo clippy -- $(CLIPPY_LINTS)
+	# The loader's build script reads the kernel's dev link (target/x86-f2k/debug/ntoskrnl) for its
+	# exports, so build that link first: a stale one fails the check on a new export.
+	cd $(KERNEL_DIR) && cargo build
 	cd $(LOADER_DIR) && cargo clippy -- $(CLIPPY_LINTS)
 
 # Copy-paste detection: jscpd over the Rust sources, its config and baseline in tools/jscpd/. Not
