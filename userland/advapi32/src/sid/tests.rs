@@ -1,23 +1,9 @@
+use rtl::testing::sec::sid;
+
 use super::*;
-use crate::imports::host::LAST_ERROR;
+use crate::testkit::{arm, last_error};
 
 const NT_AUTHORITY: [u8; 6] = [0, 0, 0, 0, 0, 5];
-
-fn last_error() -> u32 {
-    LAST_ERROR.with(|error| error.get())
-}
-
-fn arm() {
-    LAST_ERROR.with(|error| error.set(0xF2F2));
-}
-
-fn sid(authority: u8, subs: &[u32]) -> Vec<u8> {
-    let mut bytes = vec![1, subs.len() as u8, 0, 0, 0, 0, 0, authority];
-    for sub in subs {
-        bytes.extend(sub.to_le_bytes());
-    }
-    bytes
-}
 
 /// AllocateAndInitializeSid builds S-1-5-32-544 byte for byte, leaving the last error;
 /// EqualSid compares, the last error ERROR_SUCCESS either way; FreeSid answers NULL. Nine

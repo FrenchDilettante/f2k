@@ -389,121 +389,12 @@ pub fn caller_mode() -> crate::sec::CallerMode {
 
 #[cfg(test)]
 mod tests {
-
-    /// A handle's descriptor bytes, copied out of its cache entry (the tests' own).
-    #[cfg(test)]
-    fn sd_bytes(handle: &SdRef) -> Vec<u8> {
-        handle.with_bytes(|bytes| bytes.to_vec()).unwrap()
-    }
-
     use std::vec::Vec;
 
     use super::*;
-    use crate::sec::{
-        SecurityDescriptor,
-        ACCESS_ALLOWED_ACE_TYPE,
-        ACCESS_DENIED_ACE_TYPE,
-        ACL_REVISION2,
-        SE_DACL_PRESENT,
-        SE_SELF_RELATIVE,
-    };
+    use crate::sec::testkit::{acl, allowed, sd, sd_bytes, sid, user_sid};
+    use crate::sec::{SecurityDescriptor, SE_DACL_PRESENT, SE_SELF_RELATIVE};
     use crate::status::STATUS_ACCESS_VIOLATION;
-
-    // -- the byte builders -------------------------------------------------------
-
-    /// A SID's bytes: revision 1, the count, a zeroed 6-byte authority with the authority's
-    /// low byte last, then a little-endian dword per sub-authority.
-    fn sid(authority: u8, subs: &[u32]) -> Vec<u8> {
-        let mut v = vec![1u8, subs.len() as u8, 0, 0, 0, 0, 0, authority];
-        for &s in subs {
-            v.extend_from_slice(&s.to_le_bytes());
-        }
-        v
-    }
-
-    /// An ACE's bytes: the type, the flags, the dword-padded size, then the body.
-    fn ace(ace_type: u8, flags: u8, body: &[u8]) -> Vec<u8> {
-        let size = (4 + body.len() + 3) & !3;
-        let mut v = vec![ace_type, flags];
-        v.extend_from_slice(&(size as u16).to_le_bytes());
-        v.extend_from_slice(body);
-        v.resize(size, 0);
-        v
-    }
-
-    /// An access-allowed ACE of `mask` to `sid`.
-    fn allowed(mask: u32, sid: &[u8]) -> Vec<u8> {
-        let mut body = mask.to_le_bytes().to_vec();
-        body.extend_from_slice(sid);
-        ace(ACCESS_ALLOWED_ACE_TYPE, 0, &body)
-    }
-
-    /// An access-denied ACE of `mask` to `sid`.
-    fn denied(mask: u32, sid: &[u8]) -> Vec<u8> {
-        let mut body = mask.to_le_bytes().to_vec();
-        body.extend_from_slice(sid);
-        ace(ACCESS_DENIED_ACE_TYPE, 0, &body)
-    }
-
-    /// An ACL's bytes: the header, then the ACEs.
-    fn acl(aces: &[Vec<u8>]) -> Vec<u8> {
-        let size = 8 + aces.iter().map(|a| a.len()).sum::<usize>();
-        let mut v = vec![ACL_REVISION2, 0];
-        v.extend_from_slice(&(size as u16).to_le_bytes());
-        v.extend_from_slice(&(aces.len() as u16).to_le_bytes());
-        v.extend_from_slice(&0u16.to_le_bytes());
-        for a in aces {
-            v.extend_from_slice(a);
-        }
-        v
-    }
-
-    /// A self-relative security descriptor in one buffer: the header, then the DACL (when
-    /// present) and the owner, dword-aligned.
-    fn descriptor(owner: Option<&[u8]>, dacl_present: bool, dacl: Option<&[u8]>) -> Vec<u8> {
-        let mut control = SE_SELF_RELATIVE;
-        let mut dacl_field = 0u32;
-        let mut v = vec![0u8; 20];
-        if dacl_present {
-            control |= SE_DACL_PRESENT;
-            if let Some(d) = dacl {
-                dacl_field = v.len() as u32;
-                v.extend_from_slice(d);
-                while v.len() % 4 != 0 {
-                    v.push(0);
-                }
-            }
-        }
-        let mut owner_field = 0u32;
-        if let Some(o) = owner {
-            owner_field = v.len() as u32;
-            v.extend_from_slice(o);
-            while v.len() % 4 != 0 {
-                v.push(0);
-            }
-        }
-        let h = SecurityDescriptor {
-            revision: 1,
-            sbz1: 0,
-            control,
-            owner: owner_field,
-            group: 0,
-            sacl: 0,
-            dacl: dacl_field,
-        };
-        assert!(h.write(&mut v[..]));
-        v
-    }
-
-    /// A descriptor with a present DACL of `aces` and the given owner.
-    fn sd(owner: &[u8], aces: &[Vec<u8>]) -> Vec<u8> {
-        descriptor(Some(owner), true, Some(&acl(aces)))
-    }
-
-    /// The test user's SID, S-1-5-21-111-222-333-1000.
-    fn user_sid() -> Vec<u8> {
-        sid(5, &[21, 111, 222, 333, 1000])
-    }
 
     // -- the defaults --------------------------------------------------------------
 

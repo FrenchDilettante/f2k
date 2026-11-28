@@ -371,28 +371,11 @@ pub unsafe extern "system" fn get_mangled_site_sid(sid: *const u8, mangled: *mut
 
 #[cfg(test)]
 mod tests {
+    use rtl::testing::sec::sid;
+    use rtl::testing::wide_z;
+
     use super::*;
-    use crate::imports::host::LAST_ERROR;
-
-    fn last_error() -> u32 {
-        LAST_ERROR.with(|error| error.get())
-    }
-
-    fn arm() {
-        LAST_ERROR.with(|error| error.set(0xF2F2));
-    }
-
-    fn sid(authority: u8, subs: &[u32]) -> Vec<u8> {
-        let mut bytes = vec![1, subs.len() as u8, 0, 0, 0, 0, 0, authority];
-        for sub in subs {
-            bytes.extend(sub.to_le_bytes());
-        }
-        bytes
-    }
-
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().chain([0]).collect()
-    }
+    use crate::testkit::{arm, last_error};
 
     /// LookupAccountNameA for a well-known name: the size query reports the SID's size and the
     /// domain's one unit and leaves the account type untouched; with room the SID is written, the
@@ -444,7 +427,7 @@ mod tests {
         assert_eq!(use_, SID_TYPE_WELL_KNOWN_GROUP);
 
         // The wide form resolves the wide name.
-        let wname = wide("Everyone");
+        let wname = wide_z("Everyone");
         let mut cb: u32 = 64;
         let mut domw = vec![0xCCu16; 128];
         let mut cch: u32 = 128;
@@ -530,7 +513,7 @@ mod tests {
             )
         };
         assert_eq!(ret, 1);
-        assert_eq!(&namew[..9], &wide("Everyone")[..]);
+        assert_eq!(&namew[..9], &wide_z("Everyone")[..]);
         assert_eq!(cch, 9);
 
         // An account-domain SID no well-known account holds.

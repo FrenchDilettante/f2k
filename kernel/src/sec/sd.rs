@@ -902,50 +902,10 @@ pub fn capture(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sec::testkit::{acl, allowed, sid};
 
     fn mem(bytes: &[u8]) -> SliceMemory<'_> {
         SliceMemory::new(bytes)
-    }
-
-    /// A SID's bytes: revision 1, the count, a zeroed 6-byte authority, the authority's low
-    /// byte, then the sub-authorities.
-    fn sid(authority: u8, subs: &[u32]) -> Vec<u8> {
-        let mut v = vec![1u8, subs.len() as u8, 0, 0, 0, 0, 0, authority];
-        for &s in subs {
-            v.extend_from_slice(&s.to_le_bytes());
-        }
-        v
-    }
-
-    /// An ACE's bytes: type, flags, size, then the body (padded to a dword, the size
-    /// rewritten).
-    fn ace(ace_type: u8, flags: u8, body: &[u8]) -> Vec<u8> {
-        let size = align4((4 + body.len()) as u32) as usize;
-        let mut v = vec![ace_type, flags];
-        v.extend_from_slice(&(size as u16).to_le_bytes());
-        v.extend_from_slice(body);
-        v.resize(size, 0);
-        v
-    }
-
-    /// An allowed ACE: mask, then the SID.
-    fn allowed_ace(mask: u32, sid: &[u8]) -> Vec<u8> {
-        let mut body = mask.to_le_bytes().to_vec();
-        body.extend_from_slice(sid);
-        ace(0, 0, &body)
-    }
-
-    /// An ACL's bytes: revision, then size, count and the ACEs.
-    fn acl(revision: u8, aces: &[Vec<u8>]) -> Vec<u8> {
-        let size = ACL_HEADER_LEN as usize + aces.iter().map(|a| a.len()).sum::<usize>();
-        let mut v = vec![revision, 0];
-        v.extend_from_slice(&(size as u16).to_le_bytes());
-        v.extend_from_slice(&(aces.len() as u16).to_le_bytes());
-        v.extend_from_slice(&0u16.to_le_bytes());
-        for a in aces {
-            v.extend_from_slice(a);
-        }
-        v
     }
 
     /// A header's bytes from a `SecurityDescriptor`.
@@ -977,8 +937,8 @@ mod tests {
         let sd_addr = 0x100u32;
         let owner_sid = sid(5, &[32, 544]);
         let group_sid = sid(1, &[0]);
-        let dacl = acl(2, &[allowed_ace(0x000F_01FF, &sid(1, &[0]))]);
-        let sacl = acl(2, &[]);
+        let dacl = acl(&[allowed(0x000F_01FF, &sid(1, &[0]))]);
+        let sacl = acl(&[]);
         assert_eq!(
             (owner_sid.len(), group_sid.len(), dacl.len(), sacl.len()),
             (16, 12, 28, 8)
@@ -1271,7 +1231,7 @@ mod tests {
         // A self-relative SD: header, owner SID (16), group SID (12), DACL (28).
         let owner = sid(5, &[32, 544]);
         let group = sid(1, &[0]);
-        let dacl = acl(2, &[allowed_ace(0x1FF, &sid(1, &[0]))]);
+        let dacl = acl(&[allowed(0x1FF, &sid(1, &[0]))]);
         let mut buf = vec![0u8; 20];
         let h = SecurityDescriptor {
             revision: 1,
@@ -1439,8 +1399,8 @@ mod tests {
     fn pack_of_self_relative_matches_absolute() {
         let owner = sid(5, &[32, 544]);
         let group = sid(1, &[0]);
-        let dacl = acl(2, &[allowed_ace(0x000F_01FF, &sid(1, &[0]))]);
-        let sacl = acl(2, &[]);
+        let dacl = acl(&[allowed(0x000F_01FF, &sid(1, &[0]))]);
+        let sacl = acl(&[]);
         // A self-relative SD: header, SACL (8), DACL (28), owner (16), group (12).
         let mut rel = vec![0u8; 20];
         let h = SecurityDescriptor {
@@ -1616,7 +1576,7 @@ mod tests {
     fn capture_self_relative_input() {
         let owner = sid(5, &[32, 544]); // 16
         let group = sid(1, &[0]); // 12
-        let dacl = acl(2, &[allowed_ace(0x1FF, &sid(1, &[0]))]); // 28
+        let dacl = acl(&[allowed(0x1FF, &sid(1, &[0]))]); // 28
         let mut img = vec![0u8; 20];
         let h = SecurityDescriptor {
             revision: 1,

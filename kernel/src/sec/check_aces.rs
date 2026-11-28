@@ -189,113 +189,16 @@ mod tests {
 
     use super::*;
     use crate::sec::acl::is_valid as acl_is_valid;
+    use crate::sec::testkit::{acl, compound, guid, object_ace, plain_ace, sid};
     use crate::sec::{
         equal,
         ACCESS_ALLOWED_ACE_TYPE,
         ACCESS_ALLOWED_COMPOUND_ACE_TYPE,
         ACCESS_ALLOWED_OBJECT_ACE_TYPE,
         ACCESS_DENIED_ACE_TYPE,
-        ACE_OBJECT_TYPE_PRESENT,
-        ACL_REVISION2,
-        ACL_REVISION3,
-        ACL_REVISION_DS,
-        COMPOUND_ACE_IMPERSONATION,
         INHERIT_ONLY_ACE,
         WORLD_SID,
     };
-
-    /// A SID's bytes.
-    fn sid(authority: u8, subs: &[u32]) -> Vec<u8> {
-        let mut v = vec![1u8, subs.len() as u8, 0, 0, 0, 0, 0, authority];
-        for &s in subs {
-            v.extend_from_slice(&s.to_le_bytes());
-        }
-        v
-    }
-
-    /// An ACE's bytes: the type, the flags, the dword-padded size, then the body.
-    fn ace(ace_type: u8, flags: u8, body: &[u8]) -> Vec<u8> {
-        let size = (4 + body.len() + 3) & !3;
-        let mut v = vec![ace_type, flags];
-        v.extend_from_slice(&(size as u16).to_le_bytes());
-        v.extend_from_slice(body);
-        v.resize(size, 0);
-        v
-    }
-
-    /// A plain ACE: the mask, then the SID.
-    fn plain(ace_type: u8, flags: u8, mask: u32, sid: &[u8]) -> Vec<u8> {
-        let mut body = mask.to_le_bytes().to_vec();
-        body.extend_from_slice(sid);
-        ace(ace_type, flags, &body)
-    }
-
-    /// A GUID, named by its first field.
-    fn guid(data1: u32) -> Guid {
-        Guid {
-            data1,
-            data2: 0,
-            data3: 0,
-            data4: [0; 8],
-        }
-    }
-
-    /// A GUID's bytes.
-    fn guid_bytes(g: &Guid) -> Vec<u8> {
-        let mut v = g.data1.to_le_bytes().to_vec();
-        v.extend_from_slice(&g.data2.to_le_bytes());
-        v.extend_from_slice(&g.data3.to_le_bytes());
-        v.extend_from_slice(&g.data4);
-        v
-    }
-
-    /// An object ACE: the mask, the flags, the GUID when named, then the SID.
-    fn object(ace_type: u8, mask: u32, object_type: Option<Guid>, sid: &[u8]) -> Vec<u8> {
-        let mut body = mask.to_le_bytes().to_vec();
-        let flags = if object_type.is_some() {
-            ACE_OBJECT_TYPE_PRESENT
-        } else {
-            0
-        };
-        body.extend_from_slice(&flags.to_le_bytes());
-        if let Some(g) = object_type {
-            body.extend_from_slice(&guid_bytes(&g));
-        }
-        body.extend_from_slice(sid);
-        ace(ace_type, 0, &body)
-    }
-
-    /// A compound ACE: the mask, the impersonation compound type, then the server and
-    /// client SIDs.
-    fn compound(mask: u32, server: &[u8], client: &[u8]) -> Vec<u8> {
-        let mut body = mask.to_le_bytes().to_vec();
-        body.extend_from_slice(&COMPOUND_ACE_IMPERSONATION.to_le_bytes());
-        body.extend_from_slice(&0u16.to_le_bytes());
-        body.extend_from_slice(server);
-        body.extend_from_slice(client);
-        ace(ACCESS_ALLOWED_COMPOUND_ACE_TYPE, 0, &body)
-    }
-
-    /// An ACL's bytes, with the revision raised to fit the ACEs.
-    fn acl(aces: &[Vec<u8>]) -> Vec<u8> {
-        let mut revision = ACL_REVISION2;
-        for a in aces {
-            match a[0] {
-                ACCESS_ALLOWED_COMPOUND_ACE_TYPE => revision = revision.max(ACL_REVISION3),
-                t if (0x5..=0x8).contains(&t) => revision = revision.max(ACL_REVISION_DS),
-                _ => {}
-            }
-        }
-        let size = 8 + aces.iter().map(|a| a.len()).sum::<usize>();
-        let mut v = vec![revision, 0];
-        v.extend_from_slice(&(size as u16).to_le_bytes());
-        v.extend_from_slice(&(aces.len() as u16).to_le_bytes());
-        v.extend_from_slice(&0u16.to_le_bytes());
-        for a in aces {
-            v.extend_from_slice(a);
-        }
-        v
-    }
 
     /// The views read each ACE kind's fields back out of its bytes.
     #[test]
@@ -304,16 +207,16 @@ mod tests {
         let client = sid(5, &[1001]);
         let g = guid(0xABCD);
         let dacl = acl(&[
-            plain(
+            plain_ace(
                 ACCESS_ALLOWED_ACE_TYPE,
                 INHERIT_ONLY_ACE,
                 0x1234_5678,
                 &user,
             ),
-            plain(ACCESS_DENIED_ACE_TYPE, 0, 0x55, WORLD_SID),
+            plain_ace(ACCESS_DENIED_ACE_TYPE, 0, 0x55, WORLD_SID),
             compound(0x9, &user, &client),
-            object(ACCESS_ALLOWED_OBJECT_ACE_TYPE, 0x7, Some(g), &user),
-            object(ACCESS_ALLOWED_OBJECT_ACE_TYPE, 0x3, None, &user),
+            object_ace(ACCESS_ALLOWED_OBJECT_ACE_TYPE, 0x7, Some(g), &user),
+            object_ace(ACCESS_ALLOWED_OBJECT_ACE_TYPE, 0x3, None, &user),
         ]);
         assert!(acl_is_valid(&dacl));
         assert_eq!(ace_count(&dacl), 5);
@@ -357,8 +260,8 @@ mod tests {
     fn the_iterator_walks_in_order_and_stops() {
         let user = sid(5, &[1000]);
         let dacl = acl(&[
-            plain(ACCESS_ALLOWED_ACE_TYPE, 0, 0x1, &user),
-            plain(ACCESS_ALLOWED_ACE_TYPE, 0, 0x2, &user),
+            plain_ace(ACCESS_ALLOWED_ACE_TYPE, 0, 0x1, &user),
+            plain_ace(ACCESS_ALLOWED_ACE_TYPE, 0, 0x2, &user),
         ]);
         let masks: Vec<Option<u32>> = AceViews::new(&dacl).map(|a| a.mask()).collect();
         assert_eq!(masks, [Some(0x1), Some(0x2)]);

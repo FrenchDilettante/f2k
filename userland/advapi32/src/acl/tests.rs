@@ -1,3 +1,5 @@
+use rtl::testing::sec::sid;
+
 use super::edit::*;
 use super::exports::*;
 use super::*;
@@ -19,25 +21,9 @@ use super::{
     GUID_SIZE,
     SYSTEM_AUDIT_ACE_TYPE,
 };
-use crate::imports::host::LAST_ERROR;
-use crate::sid::{set_ptr_field, SID_REVISION};
+use crate::sid::set_ptr_field;
+use crate::testkit::{arm, last_error};
 use crate::trustee::{FORM_NAME, FORM_SID, TRUSTEE_FORM, TRUSTEE_NAME, TRUSTEE_SIZE};
-
-fn last_error() -> u32 {
-    LAST_ERROR.with(|error| error.get())
-}
-
-fn arm() {
-    LAST_ERROR.with(|error| error.set(0xF2F2));
-}
-
-fn sid(authority: u8, subs: &[u32]) -> Vec<u8> {
-    let mut bytes = vec![SID_REVISION, subs.len() as u8, 0, 0, 0, 0, 0, authority];
-    for sub in subs {
-        bytes.extend(sub.to_le_bytes());
-    }
-    bytes
-}
 
 /// InitializeAcl writes the header (the size rounded down to a dword), fails a 4-byte buffer
 /// with ERROR_INSUFFICIENT_BUFFER and revision 9 with ERROR_INVALID_PARAMETER; IsValidAcl

@@ -533,183 +533,36 @@ pub fn access_check(check: &AccessCheck<'_>) -> Outcome {
 
 #[cfg(test)]
 mod tests {
-    use std::vec::Vec;
-
     use rtl::nt::access::{DELETE, STANDARD_RIGHTS_REQUIRED, SYNCHRONIZE};
 
     use super::*;
     use crate::sec::acl::STATUS_INVALID_ACL;
     use crate::sec::sd::STATUS_INVALID_SID;
+    use crate::sec::testkit::{
+        acl,
+        allowed,
+        compound,
+        denied,
+        descriptor,
+        guid,
+        object_ace,
+        other_sid,
+        plain_ace,
+        sd,
+        sid,
+        user_sid,
+    };
     use crate::sec::{
         privilege,
-        ACL_REVISION2,
-        ACL_REVISION3,
-        ACL_REVISION_DS,
         ALIAS_ADMINS_SID,
-        COMPOUND_ACE_IMPERSONATION,
         PRINCIPAL_SELF_SID as SELF_SID,
         SE_PRIVILEGE_ENABLED,
-        SE_SELF_RELATIVE,
         SYSTEM_AUDIT_ACE_TYPE,
         WORLD_SID,
     };
     use crate::status::STATUS_BUFFER_TOO_SMALL;
 
-    // -- the byte builders -------------------------------------------------------
-
-    /// A SID's bytes: revision 1, the count, a zeroed 6-byte authority with the authority's
-    /// low byte last, then a little-endian dword per sub-authority.
-    fn sid(authority: u8, subs: &[u32]) -> Vec<u8> {
-        let mut v = vec![1u8, subs.len() as u8, 0, 0, 0, 0, 0, authority];
-        for &s in subs {
-            v.extend_from_slice(&s.to_le_bytes());
-        }
-        v
-    }
-
-    /// An ACE's bytes: the type, the flags, the dword-padded size, then the body.
-    fn ace(ace_type: u8, flags: u8, body: &[u8]) -> Vec<u8> {
-        let size = (4 + body.len() + 3) & !3;
-        let mut v = vec![ace_type, flags];
-        v.extend_from_slice(&(size as u16).to_le_bytes());
-        v.extend_from_slice(body);
-        v.resize(size, 0);
-        v
-    }
-
-    /// A plain ACE: the mask, then the SID.
-    fn plain_ace(ace_type: u8, flags: u8, mask: u32, sid: &[u8]) -> Vec<u8> {
-        let mut body = mask.to_le_bytes().to_vec();
-        body.extend_from_slice(sid);
-        ace(ace_type, flags, &body)
-    }
-
-    /// An access-allowed ACE of `mask` to `sid`.
-    fn allowed(mask: u32, sid: &[u8]) -> Vec<u8> {
-        plain_ace(ACCESS_ALLOWED_ACE_TYPE, 0, mask, sid)
-    }
-
-    /// An access-denied ACE of `mask` to `sid`.
-    fn denied(mask: u32, sid: &[u8]) -> Vec<u8> {
-        plain_ace(ACCESS_DENIED_ACE_TYPE, 0, mask, sid)
-    }
-
-    /// A GUID, named by its first field.
-    fn guid(data1: u32) -> Guid {
-        Guid {
-            data1,
-            data2: 0,
-            data3: 0,
-            data4: [0; 8],
-        }
-    }
-
-    /// A GUID's bytes: the first three fields little-endian, the last eight as they are.
-    fn guid_bytes(g: &Guid) -> Vec<u8> {
-        let mut v = g.data1.to_le_bytes().to_vec();
-        v.extend_from_slice(&g.data2.to_le_bytes());
-        v.extend_from_slice(&g.data3.to_le_bytes());
-        v.extend_from_slice(&g.data4);
-        v
-    }
-
-    /// An object ACE of `mask` to `sid`, naming `object_type` when given.
-    fn object_ace(ace_type: u8, mask: u32, object_type: Option<Guid>, sid: &[u8]) -> Vec<u8> {
-        let mut body = mask.to_le_bytes().to_vec();
-        let flags = u32::from(object_type.is_some());
-        body.extend_from_slice(&flags.to_le_bytes());
-        if let Some(g) = object_type {
-            body.extend_from_slice(&guid_bytes(&g));
-        }
-        body.extend_from_slice(sid);
-        ace(ace_type, 0, &body)
-    }
-
-    /// A compound access-allowed ACE of `mask`, server SID first, then the client's.
-    fn compound(mask: u32, server: &[u8], client: &[u8]) -> Vec<u8> {
-        let mut body = mask.to_le_bytes().to_vec();
-        body.extend_from_slice(&COMPOUND_ACE_IMPERSONATION.to_le_bytes());
-        body.extend_from_slice(&0u16.to_le_bytes());
-        body.extend_from_slice(server);
-        body.extend_from_slice(client);
-        ace(ACCESS_ALLOWED_COMPOUND_ACE_TYPE, 0, &body)
-    }
-
-    /// An ACL's bytes: the header, then the ACEs, with the revision raised to fit them.
-    fn acl(aces: &[Vec<u8>]) -> Vec<u8> {
-        let mut revision = ACL_REVISION2;
-        for a in aces {
-            match a[0] {
-                ACCESS_ALLOWED_COMPOUND_ACE_TYPE => revision = revision.max(ACL_REVISION3),
-                t if (0x5..=0x8).contains(&t) => revision = revision.max(ACL_REVISION_DS),
-                _ => {}
-            }
-        }
-        let size = 8 + aces.iter().map(|a| a.len()).sum::<usize>();
-        let mut v = vec![revision, 0];
-        v.extend_from_slice(&(size as u16).to_le_bytes());
-        v.extend_from_slice(&(aces.len() as u16).to_le_bytes());
-        v.extend_from_slice(&0u16.to_le_bytes());
-        for a in aces {
-            v.extend_from_slice(a);
-        }
-        v
-    }
-
-    /// A self-relative security descriptor in one buffer: the header, then the DACL (when
-    /// present) and the owner, each packed dword-aligned. A present DACL of None is a null
-    /// DACL; `dacl_present == false` leaves the flag clear.
-    fn descriptor(owner: Option<&[u8]>, dacl_present: bool, dacl: Option<&[u8]>) -> Vec<u8> {
-        let mut control = SE_SELF_RELATIVE;
-        let mut dacl_field = 0u32;
-        let mut v = vec![0u8; 20];
-        if dacl_present {
-            control |= SE_DACL_PRESENT;
-            if let Some(d) = dacl {
-                dacl_field = v.len() as u32;
-                v.extend_from_slice(d);
-                while v.len() % 4 != 0 {
-                    v.push(0);
-                }
-            }
-        }
-        let mut owner_field = 0u32;
-        if let Some(o) = owner {
-            owner_field = v.len() as u32;
-            v.extend_from_slice(o);
-            while v.len() % 4 != 0 {
-                v.push(0);
-            }
-        }
-        let h = SecurityDescriptor {
-            revision: 1,
-            sbz1: 0,
-            control,
-            owner: owner_field,
-            group: 0,
-            sacl: 0,
-            dacl: dacl_field,
-        };
-        assert!(h.write(&mut v[..]));
-        v
-    }
-
-    /// A descriptor with a present DACL of `aces` and the given owner.
-    fn sd(owner: &[u8], aces: &[Vec<u8>]) -> Vec<u8> {
-        descriptor(Some(owner), true, Some(&acl(aces)))
-    }
-
     // -- the subject builders ------------------------------------------------------
-
-    /// The test user's SID, S-1-5-21-111-222-333-1000.
-    fn user_sid() -> Vec<u8> {
-        sid(5, &[21, 111, 222, 333, 1000])
-    }
-
-    /// Another account's SID, S-1-5-21-111-222-333-1001.
-    fn other_sid() -> Vec<u8> {
-        sid(5, &[21, 111, 222, 333, 1001])
-    }
 
     /// A subject whose effective and primary tokens are the same.
     fn same_tokens<'a>(

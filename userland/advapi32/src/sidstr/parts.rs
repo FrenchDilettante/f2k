@@ -66,25 +66,10 @@ pub unsafe extern "system" fn get_sid_length_required(count: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use rtl::testing::sec::sid;
+
     use super::*;
-    use crate::imports::host::LAST_ERROR;
-
-    fn last_error() -> u32 {
-        LAST_ERROR.with(|error| error.get())
-    }
-
-    fn arm() {
-        LAST_ERROR.with(|error| error.set(0xF2F2));
-    }
-
-    /// The SID of `authority` and `subs`: S-1-<authority>-<subs...>.
-    fn sid(authority: u8, subs: &[u32]) -> Vec<u8> {
-        let mut bytes = vec![1, subs.len() as u8, 0, 0, 0, 0, 0, authority];
-        for sub in subs {
-            bytes.extend(sub.to_le_bytes());
-        }
-        bytes
-    }
+    use crate::testkit::{arm, last_error};
 
     /// GetSidIdentifierAuthority, GetSidSubAuthority and GetSidSubAuthorityCount answer the
     /// field's address inside the SID with the last error ERROR_SUCCESS; GetSidLengthRequired

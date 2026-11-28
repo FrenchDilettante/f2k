@@ -32,6 +32,8 @@ pub mod sd;
 pub mod sid;
 pub mod sidstr;
 pub mod stub;
+#[cfg(test)]
+mod testkit;
 pub mod token;
 pub mod trustee;
 

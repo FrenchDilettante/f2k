@@ -178,27 +178,11 @@ pub unsafe extern "system" fn convert_string_sid_to_sid_a(
 
 #[cfg(test)]
 mod tests {
+    use rtl::testing::sec::sid;
     use rtl::testing::{wide, wide_z};
 
     use super::*;
-    use crate::imports::host::LAST_ERROR;
-
-    fn last_error() -> u32 {
-        LAST_ERROR.with(|error| error.get())
-    }
-
-    fn arm() {
-        LAST_ERROR.with(|error| error.set(0xF2F2));
-    }
-
-    /// The SID of `authority` and `subs`: S-1-<authority>-<subs...>.
-    fn sid(authority: u8, subs: &[u32]) -> Vec<u8> {
-        let mut bytes = vec![1, subs.len() as u8, 0, 0, 0, 0, 0, authority];
-        for sub in subs {
-            bytes.extend(sub.to_le_bytes());
-        }
-        bytes
-    }
+    use crate::testkit::{arm, last_error};
 
     /// The bytes of the NUL-terminated narrow string at `block`.
     fn narrow_of(block: *const u8) -> Vec<u8> {

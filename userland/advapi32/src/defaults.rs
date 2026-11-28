@@ -232,15 +232,9 @@ pub(crate) fn sid_string(sid: &[u8]) -> Option<ArrayVec<u16, 64>> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use rtl::testing::sec::sid;
 
-    fn sid(authority: u8, subs: &[u32]) -> Vec<u8> {
-        let mut bytes = vec![1, subs.len() as u8, 0, 0, 0, 0, 0, authority];
-        for sub in subs {
-            bytes.extend(sub.to_le_bytes());
-        }
-        bytes
-    }
+    use super::*;
 
     /// The blank descriptor the kernel keeps is told from a real one.
     #[test]

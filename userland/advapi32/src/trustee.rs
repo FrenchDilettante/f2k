@@ -519,28 +519,11 @@ pub unsafe extern "system" fn get_trustee_type_w(trustee: *const u8) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use rtl::testing::sec::sid;
+    use rtl::testing::wide_z;
+
     use super::*;
-    use crate::imports::host::LAST_ERROR;
-
-    fn last_error() -> u32 {
-        LAST_ERROR.with(|error| error.get())
-    }
-
-    fn arm() {
-        LAST_ERROR.with(|error| error.set(0xF2F2));
-    }
-
-    fn sid(authority: u8, subs: &[u32]) -> Vec<u8> {
-        let mut bytes = vec![1, subs.len() as u8, 0, 0, 0, 0, 0, authority];
-        for sub in subs {
-            bytes.extend(sub.to_le_bytes());
-        }
-        bytes
-    }
-
-    fn wide(text: &str) -> Vec<u16> {
-        text.encode_utf16().chain([0]).collect()
-    }
+    use crate::testkit::{arm, last_error};
 
     /// The name and SID builders fill the caller's structure (armed bytes come back set): the
     /// form, type 0, the name's address; the queries read them back and touch no error.
@@ -563,7 +546,7 @@ mod tests {
         );
         assert_eq!(unsafe { get_trustee_type_a(tr.as_ptr()) }, TYPE_UNKNOWN);
         // The W form.
-        let wname = wide("Everyone");
+        let wname = wide_z("Everyone");
         let mut tr = vec![0xCCu8; TRUSTEE_SIZE];
         unsafe { build_trustee_with_name_w(tr.as_mut_ptr(), wname.as_ptr()) };
         assert_eq!(dword(&tr, TRUSTEE_FORM), Some(FORM_NAME));
@@ -645,7 +628,7 @@ mod tests {
     fn objects_and_name_trustees_are_built() {
         let objtype = b"F2KObjectType\0";
         let name = b"Everyone\0";
-        let wname = wide("Everyone");
+        let wname = wide_z("Everyone");
         let mut on = vec![0u8; OAN_SIZE];
         set_dword(&mut on, 0, OBJECT_TYPE_PRESENT);
         let mut tr = vec![0xCCu8; TRUSTEE_SIZE];
@@ -676,7 +659,7 @@ mod tests {
         // The W form.
         let mut on = vec![0xCCu8; OAN_SIZE];
         let mut tr = vec![0xCCu8; TRUSTEE_SIZE];
-        let wobjtype = wide("F2KObjectType");
+        let wobjtype = wide_z("F2KObjectType");
         unsafe {
             build_trustee_with_objects_and_name_w(
                 tr.as_mut_ptr(),
@@ -745,7 +728,7 @@ mod tests {
             FORM_NAME
         );
         // The W form.
-        let wname = wide("Everyone");
+        let wname = wide_z("Everyone");
         let mut ea = vec![0xCCu8; EA_SIZE];
         unsafe {
             build_impersonate_explicit_access_with_name_w(

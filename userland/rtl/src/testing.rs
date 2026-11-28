@@ -11,6 +11,8 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+pub mod sec;
+
 /// `text`'s UTF-16 units, without a terminator.
 pub fn wide(text: &str) -> Vec<u16> {
     text.encode_utf16().collect()

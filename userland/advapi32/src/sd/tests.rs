@@ -1,6 +1,8 @@
 //! The security descriptor, builder and string conversion tests.
 
 use rtl::heap::ProcessHeap as _;
+use rtl::testing::sec::sid;
+use rtl::testing::wide_z;
 
 use super::build::*;
 use super::sddl::*;
@@ -16,9 +18,9 @@ use crate::acl::{
     ACL_HEADER,
     ACL_REVISION,
 };
-use crate::imports::host::LAST_ERROR;
 use crate::imports::ProcessHeap;
 use crate::sid::{sid_len, PTR};
+use crate::testkit::{arm, last_error};
 use crate::trustee::{
     build_trustee_with_name_a,
     EA_INHERITANCE,
@@ -28,26 +30,6 @@ use crate::trustee::{
     EA_TRUSTEE,
     TRUSTEE_SIZE,
 };
-
-fn last_error() -> u32 {
-    LAST_ERROR.with(|error| error.get())
-}
-
-fn arm() {
-    LAST_ERROR.with(|error| error.set(0xF2F2));
-}
-
-fn sid(authority: u8, subs: &[u32]) -> Vec<u8> {
-    let mut bytes = vec![1, subs.len() as u8, 0, 0, 0, 0, 0, authority];
-    for sub in subs {
-        bytes.extend(sub.to_le_bytes());
-    }
-    bytes
-}
-
-fn wide(text: &str) -> Vec<u16> {
-    text.encode_utf16().chain([0]).collect()
-}
 
 fn read_wide(at: *const u16) -> String {
     (0..)
@@ -635,7 +617,7 @@ fn access_conversions() {
         "the empty DACL"
     );
     unsafe { ProcessHeap::free(newsd) };
-    let wname = wide("Everyone");
+    let wname = wide_z("Everyone");
     let mut newsd: *mut u8 = core::ptr::null_mut();
     arm();
     let ret = unsafe {
@@ -700,7 +682,7 @@ fn access_conversions() {
 #[test]
 fn sddl_round_trips() {
     let text = b"D:(A;;000F01FF;;;S-1-1-0)\0";
-    let wtext = wide("D:(A;;000F01FF;;;S-1-1-0)");
+    let wtext = wide_z("D:(A;;000F01FF;;;S-1-1-0)");
     let mut sd: *mut u8 = core::ptr::null_mut();
     let mut size = 0u32;
     arm();
@@ -759,7 +741,7 @@ fn sddl_round_trips() {
     assert!(back.contains(";;;WD)"), "{back}");
     unsafe { ProcessHeap::free(s.cast()) };
     // Round trip: parse the string again, the same DACL.
-    let wback = wide(&back);
+    let wback = wide_z(&back);
     let mut sd2: *mut u8 = core::ptr::null_mut();
     let mut size2 = 0u32;
     assert_eq!(
@@ -783,7 +765,7 @@ fn sddl_round_trips() {
         sid(1, &[0]).as_slice()
     );
     // The moniker form, both directions.
-    let moniker = wide("O:BAD:(A;;FA;;;WD)");
+    let moniker = wide_z("O:BAD:(A;;FA;;;WD)");
     let mut sd3: *mut u8 = core::ptr::null_mut();
     let mut size3 = 0u32;
     assert_eq!(

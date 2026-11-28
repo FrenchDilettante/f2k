@@ -9,6 +9,8 @@ pub mod check_aces;
 pub mod privileges;
 pub mod sd;
 pub mod sid;
+#[cfg(test)]
+pub mod testkit;
 
 pub use acl::*;
 pub use check::*;
