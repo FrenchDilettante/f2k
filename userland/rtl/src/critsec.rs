@@ -51,6 +51,11 @@ pub trait System {
     fn close(&self, handle: u32);
     /// Raise `status` as a noncontinuable exception (RtlRaiseStatus).
     fn raise(&self, status: u32) -> !;
+    /// One turn of a contended enter's spin, between two looks at the lock word: the processor's
+    /// spin-wait hint (`pause`).
+    fn spin(&self) {
+        core::hint::spin_loop();
+    }
 }
 
 // An initialization asked to preallocate the event answers STATUS_NO_MEMORY when none can be
@@ -77,9 +82,10 @@ impl CriticalSection {
     }
 
     /// RtlInitializeCriticalSectionAndSpinCount: free, owned by nobody, no event unless the spin
-    /// count's high bit asks for one now. A uniprocessor ignores the spin count (it stores 0);
-    /// otherwise the count is stored without the high bit. No debug information is kept (DebugInfo
-    /// stays NULL). STATUS_NO_MEMORY when the preallocated event cannot be made.
+    /// count's high bit asks for one now. The spin count is kept (without the high bit) only when
+    /// the PEB's NumberOfProcessors is more than 1; with 1 it is ignored and 0 stored. No debug
+    /// information is kept (DebugInfo stays NULL). STATUS_NO_MEMORY when the preallocated event
+    /// cannot be made.
     pub fn initialize(&self, system: &impl System, spin_count: u32) -> Result<(), u32> {
         self.debug_info.store(0, Relaxed);
         self.lock_count.store(-1, Relaxed);
@@ -103,9 +109,15 @@ impl CriticalSection {
     }
 
     /// RtlEnterCriticalSection: count the entry; the first acquires, the owner's re-enters, anyone
-    /// else's waits on the event until a leave hands the section over, then takes it.
+    /// else's waits on the event until a leave hands the section over, then takes it. A section
+    /// with a spin count first spins: up to that many looks at the lock word for the section to
+    /// come free, taking it the way a try does, before being counted and waiting.
     pub fn enter(&self, system: &impl System) {
         let thread = system.thread_id();
+        let spin = self.spin_count.load(Relaxed);
+        if spin != 0 && self.spin_for(system, thread, spin) {
+            return;
+        }
         if self.lock_count.fetch_add(1, SeqCst) == -1 {
             return self.take(thread);
         }
@@ -122,7 +134,11 @@ impl CriticalSection {
     /// compare-exchange), re-enter an owned one, or fail leaving no trace. It never enters the
     /// kernel.
     pub fn try_enter(&self, system: &impl System) -> bool {
-        let thread = system.thread_id();
+        self.try_enter_as(system.thread_id())
+    }
+
+    /// The try for `thread`: [`try_enter`](Self::try_enter)'s body, and each look of a spin.
+    fn try_enter_as(&self, thread: u32) -> bool {
         if self
             .lock_count
             .compare_exchange(-1, 0, SeqCst, SeqCst)
@@ -172,8 +188,9 @@ impl CriticalSection {
         }
     }
 
-    /// RtlSetCriticalSectionSpinCount: store a new spin count (0 on a uniprocessor), answering
-    /// the previous one.
+    /// RtlSetCriticalSectionSpinCount: store a new spin count, answering the previous one. As at
+    /// initialization, the count is kept only when the PEB's NumberOfProcessors is more than 1;
+    /// with 1, 0 is stored.
     pub fn set_spin_count(&self, system: &impl System, spin_count: u32) -> u32 {
         let spin = if system.processors() > 1 {
             spin_count
@@ -181,6 +198,22 @@ impl CriticalSection {
             0
         };
         self.spin_count.swap(spin, Relaxed)
+    }
+
+    /// A contended enter's spin: `count` looks at the lock word, each after a [`System::spin`],
+    /// for the section to come free (or be found already `thread`'s), entering it as a try does.
+    /// False when it stayed held throughout, and nothing was counted.
+    fn spin_for(&self, system: &impl System, thread: u32, count: u32) -> bool {
+        if self.try_enter_as(thread) {
+            return true;
+        }
+        for _ in 0..count {
+            system.spin();
+            if self.lock_count.load(Relaxed) == -1 && self.try_enter_as(thread) {
+                return true;
+            }
+        }
+        false
     }
 
     /// The section passes to `thread`, entered once.
@@ -255,6 +288,9 @@ mod tests {
         calls: RefCell<Vec<Call>>,
         while_waiting: RefCell<Vec<Step<'a>>>,
         while_creating: RefCell<Vec<Step<'a>>>,
+        /// What happens at each spin turn, by turn (the first is the first turn's).
+        while_spinning: RefCell<Vec<Option<Step<'a>>>>,
+        spins: Cell<u32>,
     }
 
     impl<'a> Scripted<'a> {
@@ -268,6 +304,8 @@ mod tests {
                 calls: RefCell::new(Vec::new()),
                 while_waiting: RefCell::new(Vec::new()),
                 while_creating: RefCell::new(Vec::new()),
+                while_spinning: RefCell::new(Vec::new()),
+                spins: Cell::new(0),
             }
         }
 
@@ -330,6 +368,19 @@ mod tests {
 
         fn raise(&self, status: u32) -> ! {
             panic!("raised {status:#010x}")
+        }
+
+        fn spin(&self) {
+            let turn = self.spins.get();
+            self.spins.set(turn + 1);
+            let step = self
+                .while_spinning
+                .borrow_mut()
+                .get_mut(turn as usize)
+                .and_then(Option::take);
+            if let Some(step) = step {
+                step(self);
+            }
         }
     }
 
@@ -394,8 +445,8 @@ mod tests {
         assert!(system.calls().is_empty());
     }
 
-    /// Initialization: free, no owner, no event, no debug information; a uniprocessor stores no
-    /// spin count, a multiprocessor the count without the high bit.
+    /// Initialization: free, no owner, no event, no debug information; with NumberOfProcessors 1
+    /// the spin count is stored as 0, with more the count without the high bit.
     #[test]
     fn initialization_is_the_free_state() {
         let system = Scripted::new(1);
@@ -405,7 +456,7 @@ mod tests {
         assert_eq!(
             fields(&section).5,
             0,
-            "a uniprocessor ignores the spin count"
+            "NumberOfProcessors 1 ignores the spin count"
         );
         let system = Scripted::new(2);
         section.initialize(&system, 4000).unwrap();
@@ -602,7 +653,7 @@ mod tests {
         assert_eq!(fields(&section), (0, -1, 0, 0, 0, 0));
     }
 
-    /// Setting the spin count answers the previous one; a uniprocessor stores 0.
+    /// Setting the spin count answers the previous one; with NumberOfProcessors 1, 0 is stored.
     #[test]
     fn the_spin_count_swaps() {
         let system = Scripted::new(2);
@@ -614,8 +665,72 @@ mod tests {
         assert_eq!(fields(&section).5, 0);
     }
 
+    /// With NumberOfProcessors above 1, a contended enter spins: here the owner leaves during the
+    /// second turn, and the contender takes the section as a try does — no event, no wait, and no
+    /// waiter ever counted.
+    #[test]
+    fn a_spin_takes_a_section_freed_meanwhile() {
+        let section = junk();
+        let system = Scripted::new(2);
+        section.initialize(&system, 3).unwrap();
+        let section = &section;
+        section.enter(&system);
+        assert_eq!(system.spins.get(), 0, "a free section takes no turn");
+        system.while_spinning.borrow_mut().extend([
+            None,
+            Some(Box::new(move |system: &Scripted| {
+                system.as_thread(8, || section.leave(system));
+            }) as Step),
+        ]);
+        system.as_thread(12, || section.enter(&system));
+        assert_eq!(system.spins.get(), 2);
+        assert_eq!(fields(&section), (0, 0, 1, 12, 0, 3));
+        assert_eq!(system.calls(), []);
+        system.as_thread(12, || section.enter(&system));
+        assert_eq!(system.spins.get(), 2, "the owner's re-entry takes no turn");
+        assert_eq!(fields(&section), (0, 1, 2, 12, 0, 3));
+    }
+
+    /// A spin that finds the section held for all its turns is counted and waits, as an enter
+    /// with no spin count does; with NumberOfProcessors 1 the count was never stored, and no turn
+    /// is taken.
+    #[test]
+    fn a_spun_out_enter_waits() {
+        let section = junk();
+        let system = Scripted::new(2);
+        section.initialize(&system, 3).unwrap();
+        let section = &section;
+        section.enter(&system);
+        system
+            .while_waiting
+            .borrow_mut()
+            .push(Box::new(move |system: &Scripted| {
+                system.as_thread(8, || section.leave(system));
+            }));
+        system.as_thread(12, || section.enter(&system));
+        assert_eq!(system.spins.get(), 3);
+        assert_eq!(fields(&section), (0, 0, 1, 12, 0x44, 3));
+        assert_eq!(
+            system.calls(),
+            [Call::Create(0x44), Call::Wait(0x44), Call::Set(0x44)]
+        );
+
+        let one = Scripted::new(1);
+        section.initialize(&one, 3).unwrap();
+        section.enter(&one);
+        one.while_waiting
+            .borrow_mut()
+            .push(Box::new(move |system: &Scripted| {
+                system.as_thread(8, || section.leave(system));
+            }));
+        one.as_thread(12, || section.enter(&one));
+        assert_eq!(one.spins.get(), 0);
+        assert_eq!(fields(&section), (0, 0, 1, 12, 0x44, 0));
+    }
+
     /// Real threads: the sync fixture's shape (4 threads × 100000 increments of a plain counter
-    /// under the section) totals exactly, the contended enters waiting on one event.
+    /// under the section) totals exactly, the contended enters waiting on one event — without a
+    /// spin count, and with one (4 processors keep it).
     #[test]
     fn real_threads_exclude_each_other() {
         use std::sync::atomic::AtomicU32 as Next;
@@ -672,25 +787,28 @@ mod tests {
             signaled: Mutex::new(Vec::new()),
             ready: Condvar::new(),
         };
-        let section = initialized(&system);
-        let counter = Counter(std::cell::UnsafeCell::new(0));
-        std::thread::scope(|scope| {
-            for id in 1..=4u32 {
-                let (system, section, counter) = (&system, &section, &counter);
-                scope.spawn(move || {
-                    ID.with(|cell| cell.set(id * 4));
-                    for _ in 0..100_000 {
-                        section.enter(system);
-                        // SAFETY: the section is held.
-                        unsafe { *counter.0.get() += 1 };
-                        section.leave(system);
-                    }
-                });
-            }
-        });
-        // SAFETY: the scope joined every thread that wrote the counter; none touches it now.
-        assert_eq!(unsafe { *counter.0.get() }, 400_000);
-        assert_eq!(fields(&section).1, -1);
-        assert_eq!(fields(&section).3, 0);
+        for spin_count in [0, 4000] {
+            let section = junk();
+            section.initialize(&system, spin_count).unwrap();
+            let counter = Counter(std::cell::UnsafeCell::new(0));
+            std::thread::scope(|scope| {
+                for id in 1..=4u32 {
+                    let (system, section, counter) = (&system, &section, &counter);
+                    scope.spawn(move || {
+                        ID.with(|cell| cell.set(id * 4));
+                        for _ in 0..100_000 {
+                            section.enter(system);
+                            // SAFETY: the section is held.
+                            unsafe { *counter.0.get() += 1 };
+                            section.leave(system);
+                        }
+                    });
+                }
+            });
+            // SAFETY: the scope joined every thread that wrote the counter; none touches it now.
+            assert_eq!(unsafe { *counter.0.get() }, 400_000);
+            assert_eq!(fields(&section).1, -1);
+            assert_eq!(fields(&section).3, 0);
+        }
     }
 }

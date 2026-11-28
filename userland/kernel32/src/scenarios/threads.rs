@@ -7,6 +7,7 @@ use crate::base::last_error;
 use crate::nt::threads::{HostThread, ENDED_THREAD, THREAD, THREADS, ZEROED_TLS};
 use crate::process::{
     get_priority_class,
+    get_process_affinity_mask,
     set_error_mode,
     set_priority_class,
     set_process_affinity_mask,
@@ -200,14 +201,22 @@ fn priority_classes_round_trip() {
     assert_eq!((get_priority_class(BOGUS), last_error()), (0, 6));
 }
 
-/// SetProcessAffinityMask: the one processor's mask; an empty mask or one naming a processor the
-/// system lacks is ERROR_INVALID_PARAMETER, another handle ERROR_INVALID_HANDLE.
+/// SetProcessAffinityMask: the system's mask (GetProcessAffinityMask's, the processors the boot
+/// started); an empty mask or one naming a processor outside it is ERROR_INVALID_PARAMETER,
+/// another handle ERROR_INVALID_HANDLE.
 ///
 /// Pins: kernel32.SetProcessAffinityMask
 #[test]
-fn affinity_is_the_one_processor() {
-    assert_eq!(set_process_affinity_mask(CURRENT_PROCESS, 1), 1);
-    for mask in [0, 2, 3] {
+fn affinity_is_within_the_system_mask() {
+    let (mut process, mut system) = (0, 0);
+    // SAFETY: two writable slots.
+    assert_eq!(
+        unsafe { get_process_affinity_mask(CURRENT_PROCESS, &mut process, &mut system) },
+        1
+    );
+    assert_eq!(set_process_affinity_mask(CURRENT_PROCESS, system), 1);
+    let outside = !system & system.wrapping_add(1);
+    for mask in [0, outside, system | outside] {
         assert_eq!(
             (
                 set_process_affinity_mask(CURRENT_PROCESS, mask),
@@ -217,7 +226,10 @@ fn affinity_is_the_one_processor() {
             "{mask:#x}"
         );
     }
-    assert_eq!((set_process_affinity_mask(BOGUS, 1), last_error()), (0, 6));
+    assert_eq!(
+        (set_process_affinity_mask(BOGUS, system), last_error()),
+        (0, 6)
+    );
 }
 
 /// SetErrorMode returns the previous mode: zero at the start (the process's hard-error mode 1,

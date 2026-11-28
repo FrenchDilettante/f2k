@@ -346,8 +346,9 @@ fn affinity_masks(
     Ok(())
 }
 
-/// SetProcessAffinityMask: ProcessAffinityMask (a non-empty subset of the one processor, which
-/// changes nothing; ERROR_INVALID_PARAMETER otherwise).
+/// SetProcessAffinityMask: ProcessAffinityMask (a non-empty subset of the system's mask, the
+/// processors the boot started, as GetProcessAffinityMask answers it; ERROR_INVALID_PARAMETER
+/// otherwise).
 #[unsafe(export_name = "f2k_export_SetProcessAffinityMask")]
 pub extern "system" fn set_process_affinity_mask(process: u32, mask: u32) -> u32 {
     win32_bool(ntcall::set_process(process, PROCESS_AFFINITY_MASK, &mask))
