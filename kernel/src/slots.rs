@@ -825,9 +825,16 @@ impl<T: Record, C: Codec, const PER: usize, D: ChunkDir> Slots<T, C, PER, D> {
         }
     }
 
-    /// Free `index` into its lane's list, which is kept in ascending order.
+    /// Free `index` into its lane's list, which is kept in ascending order. An index above the
+    /// list's last goes on its end without the walk: frees in ascending order (a program
+    /// destroying its windows in the order it made them) would otherwise walk the whole list each.
     fn push_sorted(&mut self, index: u32) {
         let lane = index as usize % C::LANES;
+        let tail = self.free[lane].tail;
+        if tail != NONE && tail < index {
+            self.push_tail(index);
+            return;
+        }
         let mut before = NONE;
         let mut after = self.free[lane].head;
         while after != NONE && after < index {
@@ -1952,6 +1959,22 @@ mod tests {
         assert_eq!(pool.allocate(0).unwrap().0.index, 6);
         let (fresh, _) = pool.allocate_or_grow(0, &pages).unwrap();
         assert_eq!((fresh.index, fresh.uniq), (12, 1), "a fresh slot");
+    }
+
+    /// Lowest's frees in ascending order go on the list's end, and a lower one freed after them
+    /// still sorts in: the order taken is the lowest first either way.
+    #[test]
+    fn lowest_reuse_sorts_ascending_frees_too() {
+        let pages = HostPages::new();
+        let mut pool = boxed(Slots::<Rec, LowestFirst<()>, 4, Inline<8>>::new());
+        let ids: Vec<_> = (0..10)
+            .map(|_| pool.allocate_or_grow(0, &pages).unwrap().0)
+            .collect();
+        for i in [3, 4, 6, 8, 1] {
+            assert!(pool.free(ids[i]));
+        }
+        let taken: Vec<_> = (0..5).map(|_| pool.allocate(0).unwrap().0.index).collect();
+        assert_eq!(taken, [1, 3, 4, 6, 8]);
     }
 
     /// A freed id names nothing; the next id in its slot has the count one more; an id with a
