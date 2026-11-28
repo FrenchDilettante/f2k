@@ -2042,6 +2042,37 @@ fn needs_window_edge(style: u32, ex_style: u32, new_app: bool) -> bool {
     }
 }
 
+/// A new window's place, as [`Windows::place_new_window`] decides it.
+struct Placement {
+    z_order: ZOrder,
+    tiled: bool,
+    x: i32,
+    y: i32,
+    cx: i32,
+    cy: i32,
+    src: SizeRect,
+    sw: i32,
+}
+
+/// What the creation's messages ([`Windows::create_messages`]) carry over from its setup.
+struct Creation {
+    caller: ThreadId,
+    id: WindowId,
+    child: bool,
+    tiled: bool,
+    ex_style: u32,
+    parent: Option<WindowId>,
+    message_window: Option<WindowId>,
+    desktop_window: Option<WindowId>,
+    z_order: ZOrder,
+    sw: i32,
+    x: i32,
+    y: i32,
+    cx: i32,
+    cy: i32,
+    params: CreateParams,
+}
+
 impl Windows {
     /// The top-level window of `window`: walk up the parent chain while the window is a child.
     fn top_level_window(&self, window: WindowId) -> Option<WindowId> {
@@ -2448,6 +2479,172 @@ impl Windows {
         }
         let windows = s.windows();
 
+        let Placement {
+            z_order,
+            tiled,
+            x,
+            y,
+            cx,
+            cy,
+            mut src,
+            sw,
+        } = windows.place_new_window(caller, id, args, child, desktop_window);
+
+        // The class menu when no menu was given (top-level windows only); a load failure is
+        // tolerated and leaves the window without a menu.
+        let mut menu = args.menu;
+        if !child && menu.is_none() && info.menu_name != class::MenuName::None {
+            if let Some(handle) = s.load_class_menu(info.instance, &info.menu_name) {
+                menu = MenuInput::Handle(handle);
+                params.menu = handle;
+            }
+        }
+        let windows = s.windows();
+        let menu = if child {
+            menu.as_child_menu()
+        } else {
+            menu.as_window_menu()
+        };
+        windows.give_menu(id, menu);
+
+        // Owner and parent wiring for top-level windows: the owner is the parent's top-level
+        // window; the parent itself becomes the desktop window (a message-window parent stays).
+        let mut parent = args.parent;
+        if !child {
+            {
+                let w = windows.at_mut(id);
+                w.last_active = Some(id);
+                w.owner = None;
+            }
+            if let Some(p) = parent {
+                if Some(p) != message_window && Some(p) != desktop_window {
+                    let owner = windows.top_level_window(p);
+                    if !windows.validate_owner_depth(id, owner) {
+                        Windows::rollback_create(s, caller, id);
+                        return Err(Failure::OutOfMemory);
+                    }
+                    let windows = s.windows();
+                    {
+                        let owner_topmost =
+                            owner.is_some_and(|o| windows.at(o).ex_style & WS_EX_TOPMOST != 0);
+                        let w = windows.at_mut(id);
+                        w.owner = owner;
+                        // A window must sit above a topmost owner.
+                        if owner_topmost {
+                            w.ex_style |= WS_EX_TOPMOST;
+                        }
+                    }
+                    // An owner on another thread shares input state.
+                    if let Some(o) = owner {
+                        let owner_thread = windows.at(o).thread;
+                        if owner_thread != caller {
+                            s.attach_input(caller, owner_thread, true);
+                        }
+                    }
+                }
+            }
+            if parent.is_none() || parent != message_window {
+                parent = desktop_window;
+            }
+        }
+        let windows = s.windows();
+        if let Some(p) = parent {
+            windows.at_mut(id).parent = Some(p);
+        }
+
+        // The CS_PARENTDC compat hack (skipped for pre-4.0 windows): the class style overrides
+        // the clip bits unless the parent clips children.
+        if !windows.at(id).flags.win31_compat && info.style & CS_PARENTDC != 0 {
+            if let Some(p) = parent {
+                if windows.at(p).style & WS_CLIPCHILDREN == 0 {
+                    let w = windows.at_mut(id);
+                    w.style &= !(WS_CLIPCHILDREN | WS_CLIPSIBLINGS);
+                }
+            }
+        }
+
+        // A child of another thread's parent shares input state.
+        if child {
+            if let Some(p) = parent {
+                if Some(p) != desktop_window && windows.at(p).thread != caller {
+                    let parent_thread = windows.at(p).thread;
+                    s.attach_input(caller, parent_thread, true);
+                }
+            }
+        }
+
+        // Size clamping (WM_GETMINMAXINFO, the creation's first message to a tiled or thick-framed
+        // window), the full-screen check, negative sizes, and the final window rect.
+        Windows::adjust_size(s, id, &mut src.cx, &mut src.cy);
+        if Windows::gone_in_creation(s, id) {
+            return Err(Failure::Refused);
+        }
+        if !child && ex_style & WS_EX_TOOLWINDOW == 0 {
+            s.check_full_screen(id, &mut src);
+        }
+        let windows = s.windows();
+        if src.cx < 0 {
+            src.cx = 0;
+        }
+        if src.cy < 0 {
+            src.cy = 0;
+        }
+        {
+            let w = windows.at_mut(id);
+            w.window_rect = Rect {
+                left: src.x,
+                top: src.y,
+                right: src.x.saturating_add(src.cx),
+                bottom: src.y.saturating_add(src.cy),
+            };
+        }
+
+        // Layered windows and class/own DCs: a failure rolls the creation back.
+        if ex_style & WS_EX_LAYERED != 0 && !s.set_layered(id) {
+            Windows::rollback_create(s, caller, id);
+            return Err(Failure::OutOfMemory);
+        }
+        if info.style & (CS_OWNDC | CS_CLASSDC) != 0
+            && !s.create_window_dc(id, info.style & CS_OWNDC != 0)
+        {
+            Windows::rollback_create(s, caller, id);
+            return Err(Failure::OutOfMemory);
+        }
+
+        Windows::create_messages(
+            s,
+            args,
+            Creation {
+                caller,
+                id,
+                child,
+                tiled,
+                ex_style,
+                parent,
+                message_window,
+                desktop_window,
+                z_order,
+                sw,
+                x,
+                y,
+                cx,
+                cy,
+                params,
+            },
+        )
+    }
+
+    /// The new window `id`'s place: CW_USEDEFAULT, a child's offset, the tiled cascade and
+    /// monitor clamping, and the clip and caption bits they force.
+    fn place_new_window(
+        &mut self,
+        caller: ThreadId,
+        id: WindowId,
+        args: &CreateArgs,
+        child: bool,
+        desktop_window: Option<WindowId>,
+    ) -> Placement {
+        let windows = self;
         let mut z_order = ZOrder::Top;
         let tiled = windows.at(id).kind() == Kind::Tiled;
 
@@ -2571,128 +2768,43 @@ impl Windows {
         if tiled {
             windows.at_mut(id).style |= WS_CAPTION | WS_BORDER;
         }
+        Placement {
+            z_order,
+            tiled,
+            x,
+            y,
+            cx,
+            cy,
+            src,
+            sw,
+        }
+    }
 
-        // The class menu when no menu was given (top-level windows only); a load failure is
-        // tolerated and leaves the window without a menu.
-        let mut menu = args.menu;
-        if !child && menu.is_none() && info.menu_name != class::MenuName::None {
-            if let Some(handle) = s.load_class_menu(info.instance, &info.menu_name) {
-                menu = MenuInput::Handle(handle);
-                params.menu = handle;
-            }
-        }
-        let windows = s.windows();
-        let menu = if child {
-            menu.as_child_menu()
-        } else {
-            menu.as_window_menu()
-        };
-        windows.give_menu(id, menu);
-
-        // Owner and parent wiring for top-level windows: the owner is the parent's top-level
-        // window; the parent itself becomes the desktop window (a message-window parent stays).
-        let mut parent = args.parent;
-        if !child {
-            {
-                let w = windows.at_mut(id);
-                w.last_active = Some(id);
-                w.owner = None;
-            }
-            if let Some(p) = parent {
-                if Some(p) != message_window && Some(p) != desktop_window {
-                    let owner = windows.top_level_window(p);
-                    if !windows.validate_owner_depth(id, owner) {
-                        Windows::rollback_create(s, caller, id);
-                        return Err(Failure::OutOfMemory);
-                    }
-                    let windows = s.windows();
-                    {
-                        let owner_topmost =
-                            owner.is_some_and(|o| windows.at(o).ex_style & WS_EX_TOPMOST != 0);
-                        let w = windows.at_mut(id);
-                        w.owner = owner;
-                        // A window must sit above a topmost owner.
-                        if owner_topmost {
-                            w.ex_style |= WS_EX_TOPMOST;
-                        }
-                    }
-                    // An owner on another thread shares input state.
-                    if let Some(o) = owner {
-                        let owner_thread = windows.at(o).thread;
-                        if owner_thread != caller {
-                            s.attach_input(caller, owner_thread, true);
-                        }
-                    }
-                }
-            }
-            if parent.is_none() || parent != message_window {
-                parent = desktop_window;
-            }
-        }
-        let windows = s.windows();
-        if let Some(p) = parent {
-            windows.at_mut(id).parent = Some(p);
-        }
-
-        // The CS_PARENTDC compat hack (skipped for pre-4.0 windows): the class style overrides
-        // the clip bits unless the parent clips children.
-        if !windows.at(id).flags.win31_compat && info.style & CS_PARENTDC != 0 {
-            if let Some(p) = parent {
-                if windows.at(p).style & WS_CLIPCHILDREN == 0 {
-                    let w = windows.at_mut(id);
-                    w.style &= !(WS_CLIPCHILDREN | WS_CLIPSIBLINGS);
-                }
-            }
-        }
-
-        // A child of another thread's parent shares input state.
-        if child {
-            if let Some(p) = parent {
-                if Some(p) != desktop_window && windows.at(p).thread != caller {
-                    let parent_thread = windows.at(p).thread;
-                    s.attach_input(caller, parent_thread, true);
-                }
-            }
-        }
-
-        // Size clamping (WM_GETMINMAXINFO, the creation's first message to a tiled or thick-framed
-        // window), the full-screen check, negative sizes, and the final window rect.
-        Windows::adjust_size(s, id, &mut src.cx, &mut src.cy);
-        if Windows::gone_in_creation(s, id) {
-            return Err(Failure::Refused);
-        }
-        if !child && ex_style & WS_EX_TOOLWINDOW == 0 {
-            s.check_full_screen(id, &mut src);
-        }
-        let windows = s.windows();
-        if src.cx < 0 {
-            src.cx = 0;
-        }
-        if src.cy < 0 {
-            src.cy = 0;
-        }
-        {
-            let w = windows.at_mut(id);
-            w.window_rect = Rect {
-                left: src.x,
-                top: src.y,
-                right: src.x.saturating_add(src.cx),
-                bottom: src.y.saturating_add(src.cy),
-            };
-        }
-
-        // Layered windows and class/own DCs: a failure rolls the creation back.
-        if ex_style & WS_EX_LAYERED != 0 && !s.set_layered(id) {
-            Windows::rollback_create(s, caller, id);
-            return Err(Failure::OutOfMemory);
-        }
-        if info.style & (CS_OWNDC | CS_CLASSDC) != 0
-            && !s.create_window_dc(id, info.style & CS_OWNDC != 0)
-        {
-            Windows::rollback_create(s, caller, id);
-            return Err(Failure::OutOfMemory);
-        }
-
+    /// The creation's messages, once the record is made, placed and wired: WM_NCCREATE, the
+    /// link, WM_NCCALCSIZE, WM_CREATE, WM_SIZE/WM_MOVE, the min/max setup, WM_PARENTNOTIFY, the
+    /// show and the hotkey.
+    fn create_messages(
+        s: &mut dyn Session,
+        args: &CreateArgs,
+        creation: Creation,
+    ) -> Result<WindowId, Failure> {
+        let Creation {
+            caller,
+            id,
+            child,
+            tiled,
+            ex_style,
+            parent,
+            message_window,
+            desktop_window,
+            mut z_order,
+            sw,
+            x,
+            y,
+            cx,
+            cy,
+            mut params,
+        } = creation;
         // The create parameters carry the final position.
         params.x = x;
         params.y = y;
