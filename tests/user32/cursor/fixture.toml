@@ -8,15 +8,13 @@
 description = "cursor - ShowCursor's counter (and a second thread's), SetCursor and GetCursor (stock, NULL, a destroyed cursor, a second thread), ClipCursor and GetClipCursor with SetCursorPos clamped to the rectangle, GetCursorInfo, Get/SetDoubleClickTime, SwapMouseButton, TrackMouseEvent's WM_MOUSELEAVE and WM_MOUSEHOVER (TME_QUERY, TME_CANCEL, the errors), mouse_event's moves and clicks, GetMouseMovePointsEx after mouse_event moves, and DragDetect with a move, a release and no button."
 kind = "sectioned"
 gate = true
-# show never ends on F2K (its pending entry says why): a boot of its own, so the other blocks run.
-separate = ["show"]
 
 [pending]
-# U3 (.scratch/plans/user32-gdi32-completeness.md): cursor.exe imports ShowCursor, ClipCursor,
-# GetClipCursor, Get/SetDoubleClickTime, SwapMouseButton, mouse_event, CreateCursor and
-# DestroyCursor, which F2K's user32 has as stubs only; GetCursorInfo, TrackMouseEvent,
+# U3 (.scratch/plans/user32-gdi32-completeness.md): cursor.exe imports ClipCursor, GetClipCursor,
+# Get/SetDoubleClickTime, SwapMouseButton, mouse_event, CreateCursor and DestroyCursor, which F2K's
+# user32 has as stubs only; GetCursorInfo, TrackMouseEvent,
 # GetMouseMovePointsEx and DragDetect are catalogued only. Drop each entry once its block passes.
-show = "ShowCursor is a stub (no display counter: it answers 0 every time) and GetCursorInfo is absent; the section's loop putting the counter back then never ends, and the block runs out its timeout (a boot of its own: separate)"
+show = "ShowCursor's display count starts at -1, as Windows 2000's does without a mouse (F2K answers SM_MOUSEPRESENT 0), where the capture machine had one and started at 0; GetCursorInfo not yet implemented (catalogued only)"
 setget = "SetCursor answers NULL where Windows 2000 answers the cursor it replaces (the hourglass at the start), the cursor is not kept per thread (a second thread's SetCursor changes what the first's GetCursor answers), and CreateCursor is a stub"
 clip = "ClipCursor and GetClipCursor are stubs; SetCursorPos not clamped to a clipping rectangle"
 info = "GetCursorInfo not yet implemented (catalogued only)"

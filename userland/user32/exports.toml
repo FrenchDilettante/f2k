@@ -4571,7 +4571,7 @@ ordinal = 272
 name = "GetInputState"
 group = "message"
 args = []
-impl = { stub = "not yet implemented" }
+impl = { native = "GetInputState" }
 ordinal = 273
 fails = "0"
 
@@ -4660,7 +4660,7 @@ ordinal = 317
 name = "GetQueueStatus"
 group = "message"
 args = ["u32 flags"]
-impl = { stub = "not yet implemented" }
+impl = { native = "GetQueueStatus" }
 ordinal = 320
 fails = "0"
 
@@ -5083,7 +5083,7 @@ ordinal = 516
 name = "ReplyMessage"
 group = "message"
 args = ["u32 lResult"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ReplyMessage" }
 ordinal = 524
 fails = "FALSE"
 
@@ -5310,9 +5310,10 @@ ordinal = 618
 name = "ShowCursor"
 group = "input"
 args = ["bool bShow"]
-impl = { stub = "not yet implemented" }
+impl = { native = "ShowCursor" }
 ordinal = 620
 fails = "0"
+note = "the display count kept each thread's queue, from -1 (no mouse); nothing draws the cursor yet"
 
 [[export]]
 name = "ShowOwnedPopups"

@@ -515,6 +515,8 @@ pub struct Wm {
     pub capture: u32,
     pub cursor_pos: u32,
     pub cursor: u32,
+    /// ShowCursor's display count (the kernel's starts at -1: [`Wm::boot`]).
+    pub cursor_level: i32,
 }
 
 std::thread_local! {
@@ -526,6 +528,7 @@ impl Wm {
     fn boot() -> Wm {
         let mut wm = Wm {
             next_atom: 0xC010,
+            cursor_level: -1,
             ..Wm::default()
         };
         for (handle, atom) in [(MESSAGE_WINDOW, 0xC000), (DESKTOP_WINDOW, DESKTOP_ATOM)] {
@@ -1668,6 +1671,18 @@ pub unsafe extern "system" fn NtUserCallOneParam(
             Ok(0)
         }
         ONE_PARAM_REPLY_MESSAGE | ONE_PARAM_IN_SEND_MESSAGE => Ok(0),
+        ONE_PARAM_SHOW_CURSOR => {
+            wm.cursor_level += if param != 0 { 1 } else { -1 };
+            Ok(wm.cursor_level as u32)
+        }
+        // What the stand-ins' queue holds, the posted messages alone: held and new alike.
+        ONE_PARAM_GET_QUEUE_STATUS => {
+            let held = match wm.posted.is_empty() && wm.quit.is_none() {
+                true => 0,
+                false => QS_POSTMESSAGE & param,
+            };
+            Ok(held << 16 | held)
+        }
         // The stand-ins' windows are the calling thread's, which is never hung.
         ONE_PARAM_IS_HUNG_APP_WINDOW => wm.window(param as usize).map(|_| 0),
         _ => Err(STATUS_INVALID_PARAMETER),

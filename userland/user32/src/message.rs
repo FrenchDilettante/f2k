@@ -347,6 +347,31 @@ pub extern "system" fn in_send_message() -> u32 {
     imports::call_one_param(0, ONE_PARAM_IN_SEND_MESSAGE).unwrap_or(0)
 }
 
+/// ReplyMessage: the message the calling thread's procedure is handling answered `result` now,
+/// its sender woken before the procedure returns; TRUE when another thread sent it and waits for
+/// the answer, FALSE otherwise (no send, the thread's own, a notification, or answered already);
+/// the last error untouched.
+#[unsafe(export_name = "f2k_export_ReplyMessage")]
+pub extern "system" fn reply_message(result: i32) -> u32 {
+    imports::call_one_param(result as u32, ONE_PARAM_REPLY_MESSAGE).unwrap_or(0)
+}
+
+/// GetQueueStatus: the kinds of message among `flags` the calling thread's queue holds now (the
+/// high word) and those given it since a read or this call last looked for them and still held
+/// (the low word), the latter then no longer new, as Windows 2000's.
+#[unsafe(export_name = "f2k_export_GetQueueStatus")]
+pub extern "system" fn get_queue_status(flags: u32) -> u32 {
+    imports::call_one_param(flags, ONE_PARAM_GET_QUEUE_STATUS).unwrap_or(0)
+}
+
+/// GetInputState: whether a key or a mouse button's message came to the calling thread's queue
+/// since it last looked and is still there, as Windows 2000's _GetInputState asks
+/// _GetQueueStatus for QS_KEY and QS_MOUSEBUTTON (so they are no longer new after it).
+#[unsafe(export_name = "f2k_export_GetInputState")]
+pub extern "system" fn get_input_state() -> u32 {
+    (get_queue_status(QS_KEY | QS_MOUSEBUTTON) & 0xFFFF != 0) as u32
+}
+
 /// SendMessage's core, for a message of the narrow (`ansi`) or wide form: the window procedure's
 /// answer (called here for a window of the calling thread, translated for a procedure of the
 /// other form; the kernel's answer otherwise); none with 1400 for a handle naming no window.
@@ -2145,6 +2170,35 @@ mod tests {
         assert_eq!(last_error(), UNSET);
         assert_eq!(is_hung_app_window(0x7FFF_FFFC), 0);
         assert_eq!(last_error(), 1400);
+    }
+
+    /// Every message the stand-ins' queue holds taken out.
+    fn drain() {
+        let mut msg = Msg::default();
+        // SAFETY: the test's own MSG.
+        while unsafe { peek_message_w(&mut msg, 0, 0, 0, PM_REMOVE) } != 0 {}
+    }
+
+    /// GetQueueStatus and GetInputState over the stand-ins' queue, and ShowCursor's count from
+    /// -1, the last error untouched.
+    ///
+    /// Pins: user32.GetQueueStatus, user32.GetInputState, user32.ShowCursor, user32.ReplyMessage
+    #[test]
+    fn the_queue_status_and_the_cursor_count() {
+        let window = window();
+        drain();
+        arm();
+        assert_eq!(get_queue_status(QS_ALLINPUT), 0);
+        assert_eq!(post_message_w(window, WM_USER, 0, 0), 1);
+        assert_eq!(get_queue_status(QS_ALLINPUT), 0x0008_0008);
+        assert_eq!(get_input_state(), 0);
+        drain();
+        assert_eq!(reply_message(5), 0, "no send to reply to");
+        assert_eq!(crate::mouse::show_cursor(1), 0);
+        assert_eq!(crate::mouse::show_cursor(0), -1);
+        assert_eq!(crate::mouse::show_cursor(0), -2);
+        assert_eq!(crate::mouse::show_cursor(7), -1);
+        assert_eq!(last_error(), UNSET);
     }
 
     /// RegisterWindowMessage answers one message a name, in either form and any case, the

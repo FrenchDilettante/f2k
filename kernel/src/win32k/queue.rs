@@ -367,6 +367,8 @@ struct Queue {
     /// The last button press a read took out, for the next one's double-click
     /// ([`super::mouse::Click`]).
     click: Option<super::mouse::Click>,
+    /// ShowCursor's display count ([`show_cursor`]).
+    cursor_level: i32,
 }
 
 impl Queue {
@@ -386,6 +388,7 @@ impl Queue {
         message_time: 0,
         message_pos: Point { x: 0, y: 0 },
         click: None,
+        cursor_level: CURSOR_LEVEL_START,
     };
 }
 
@@ -1648,6 +1651,42 @@ fn holds(windows: &Windows, caller: ThreadId, id: QueueId) -> u32 {
         kinds |= QS_PAINT;
     }
     kinds
+}
+
+/// GetQueueStatus: the kinds of message among `flags` (QS_* bits) the caller's queue holds now in
+/// the high word (Windows 2000's wake bits), and those given it since a read or this call last
+/// looked for them and still held in the low word (its change bits, which a kind's last message
+/// taken out clears with its wake bit); the change bits of `flags` are cleared, as Windows 2000's
+/// _GetQueueStatus clears them. Its timers' expirations mark it first.
+pub fn queue_status(windows: &mut Windows, caller: ThreadId, now: u64, flags: u32) -> u32 {
+    let Some(id) = windows.queues.queue_of(caller) else {
+        return 0;
+    };
+    if windows.queues.timers.expire(caller, now) {
+        windows.queues.queues[id.index as usize].changed |= QS_TIMER;
+    }
+    let flags = flags & (QS_ALLINPUT | QS_ALLPOSTMESSAGE);
+    let held = holds(windows, caller, id) & flags;
+    let queue = &mut windows.queues.queues[id.index as usize];
+    let changed = queue.changed & held;
+    queue.changed &= !flags;
+    (held & 0xFFFF) << 16 | (changed & 0xFFFF)
+}
+
+/// ShowCursor's display count at a queue's start: -1, the cursor hidden, on a machine without a
+/// mouse, as Windows 2000's CreateQueue starts it (F2K's user32 answers SM_MOUSEPRESENT 0); 0 with
+/// one.
+const CURSOR_LEVEL_START: i32 = -1;
+
+/// ShowCursor: the caller's queue's display count, one up when `show`, one down otherwise; the new
+/// count (Windows 2000 keeps it a queue, a thread's own while it attaches to no other).
+pub fn show_cursor(windows: &mut Windows, caller: ThreadId, show: bool) -> i32 {
+    let Some(id) = windows.queues.queue_of(caller) else {
+        return 0;
+    };
+    let queue = &mut windows.queues.queues[id.index as usize];
+    queue.cursor_level += if show { 1 } else { -1 };
+    queue.cursor_level
 }
 
 /// GetMessageTime: the time of the last message the caller's reads retrieved (PeekMessage's
@@ -3272,10 +3311,12 @@ mod services {
         MWMO_INPUTAVAILABLE,
         MWMO_WAITALL,
         ONE_PARAM_ENUM_CLIPBOARD_FORMATS,
+        ONE_PARAM_GET_QUEUE_STATUS,
         ONE_PARAM_IN_SEND_MESSAGE,
         ONE_PARAM_IS_HUNG_APP_WINDOW,
         ONE_PARAM_POST_QUIT_MESSAGE,
         ONE_PARAM_REPLY_MESSAGE,
+        ONE_PARAM_SHOW_CURSOR,
         RECEIVED_NONE,
         SMTO_ABORTIFHUNG,
     };
@@ -3797,8 +3838,9 @@ mod services {
     /// NtUserCallOneParam(Param, Routine, Result): PostQuitMessage (the result 0), ReplyMessage
     /// (the result whether it answered another thread's message), EnumClipboardFormats (the
     /// result the format after the parameter's), InSendMessage (the result whether another thread
-    /// sent the message being delivered), IsHungAppWindow; STATUS_INVALID_PARAMETER for another
-    /// routine.
+    /// sent the message being delivered), IsHungAppWindow, ShowCursor (the result the new display
+    /// count), GetQueueStatus (the parameter the flags; the result [`queue_status`]'s);
+    /// STATUS_INVALID_PARAMETER for another routine.
     pub fn call_one_param(
         call: &mut NtCall,
         param: u32,
@@ -3821,6 +3863,8 @@ mod services {
             ONE_PARAM_IS_HUNG_APP_WINDOW => {
                 window_hung(&m.windows, caller, param, time).map(|hung| hung as u32)
             }
+            ONE_PARAM_SHOW_CURSOR => Ok(show_cursor(&mut m.windows, caller, param != 0) as u32),
+            ONE_PARAM_GET_QUEUE_STATUS => Ok(queue_status(&mut m.windows, caller, now(), param)),
             _ => Err(STATUS_INVALID_PARAMETER),
         })?;
         result.write(answer)?;
@@ -5613,6 +5657,74 @@ mod tests {
         Windows::destroy_window_handle(&mut QueueSession::new(windows, classes), b, hb).unwrap();
         assert_eq!(deliver(m, b), vec![(hb, WM_DESTROY), (hb, WM_NCDESTROY)]);
         assert_eq!(live_sends(m), base);
+    }
+
+    /// GetQueueStatus, as the msgwait capture's status section steps it: the kinds held in the
+    /// high word, those new since the last look in the low word, which the call then clears for
+    /// its flags; a peek clears what it looked for; a kind no longer held is not new; a timer
+    /// counts once due.
+    #[test]
+    fn the_queue_status_has_what_is_held_and_what_is_new() {
+        let (m, atom) = manager();
+        let t = thread(m, 1, 0x100);
+        let h = popup(m, atom, t);
+        deliver(m, t);
+        while !matches!(read(m, t, &all(), 0), Taken::Nothing { .. }) {}
+        let status = |m: &mut WindowManager, flags| queue_status(&mut m.windows, t, 0, flags);
+        assert_eq!(status(m, QS_ALLINPUT), 0);
+        post(&mut m.windows, t, h, WM_USER, 1, 0, 0).unwrap();
+        assert_eq!(status(m, QS_ALLINPUT), 0x0008_0008);
+        assert_eq!(status(m, QS_ALLINPUT), 0x0008_0000, "no longer new");
+        post(&mut m.windows, t, h, WM_USER, 2, 0, 0).unwrap();
+        take(&mut m.windows, t, &all(), false, 0).unwrap();
+        assert_eq!(status(m, QS_ALLINPUT), 0x0008_0000, "a peek saw it");
+        while !matches!(read(m, t, &all(), 0), Taken::Nothing { .. }) {}
+        assert_eq!(status(m, QS_ALLINPUT), 0);
+        post(&mut m.windows, t, h, WM_USER, 3, 0, 0).unwrap();
+        assert_eq!(status(m, QS_TIMER | QS_PAINT), 0);
+        assert_eq!(
+            status(m, QS_POSTMESSAGE),
+            0x0008_0008,
+            "other flags left it new"
+        );
+        assert_eq!(status(m, 0), 0);
+        while !matches!(read(m, t, &all(), 0), Taken::Nothing { .. }) {}
+        post(&mut m.windows, t, h, WM_USER, 4, 0, 0).unwrap();
+        while !matches!(read(m, t, &all(), 0), Taken::Nothing { .. }) {}
+        assert_eq!(status(m, QS_ALLINPUT), 0, "taken out: neither held nor new");
+
+        let ms = 10_000;
+        super::super::timer::set(&mut m.windows, t, h, 9, 50, 0, 0).unwrap();
+        assert_eq!(queue_status(&mut m.windows, t, 10 * ms, QS_ALLINPUT), 0);
+        assert_eq!(
+            queue_status(&mut m.windows, t, 150 * ms, QS_ALLINPUT),
+            0x0010_0010
+        );
+        super::super::timer::kill(&mut m.windows, t, h, 9).unwrap();
+        assert_eq!(queue_status(&mut m.windows, t, 160 * ms, QS_ALLINPUT), 0);
+
+        post_quit(&mut m.windows, t, 3);
+        assert_eq!(status(m, QS_ALLINPUT), 0x0008_0008);
+        assert_eq!(status(m, QS_POSTMESSAGE), 0x0008_0000);
+    }
+
+    /// ShowCursor: each queue's own display count, from -1 (no mouse), the new count answered.
+    #[test]
+    fn each_queue_counts_its_cursor_shows() {
+        let (m, _) = manager();
+        let a = thread(m, 1, 0x100);
+        let b = thread(m, 2, 0x200);
+        assert_eq!(show_cursor(&mut m.windows, a, true), 0);
+        assert_eq!(show_cursor(&mut m.windows, a, true), 1);
+        assert_eq!(
+            show_cursor(&mut m.windows, b, true),
+            0,
+            "b counts on its own"
+        );
+        assert_eq!(show_cursor(&mut m.windows, a, false), 0);
+        assert_eq!(show_cursor(&mut m.windows, a, false), -1);
+        assert_eq!(show_cursor(&mut m.windows, a, false), -2);
+        assert_eq!(show_cursor(&mut m.windows, b, false), -1);
     }
 
     /// A send that times out is taken back when its receiver has not read it (it never reaches

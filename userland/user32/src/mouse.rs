@@ -95,6 +95,14 @@ pub extern "system" fn set_cursor(cursor: usize) -> usize {
     answered(imports::set_cursor(cursor)).unwrap_or(0) as usize
 }
 
+/// ShowCursor: the calling thread's display count one up (`show`) or one down, the new count
+/// answered; the cursor shows while it is 0 or more (nothing draws it yet). The count starts at
+/// -1, F2K's machine having no mouse (SM_MOUSEPRESENT 0), as Windows 2000 starts it then.
+#[unsafe(export_name = "f2k_export_ShowCursor")]
+pub extern "system" fn show_cursor(show: u32) -> i32 {
+    imports::call_one_param((show != 0) as u32, ONE_PARAM_SHOW_CURSOR).unwrap_or(0) as i32
+}
+
 /// GetCursor: the cursor's shape, as SetCursor set it.
 #[unsafe(export_name = "f2k_export_GetCursor")]
 pub extern "system" fn get_cursor() -> usize {

@@ -554,6 +554,11 @@ pub const ONE_PARAM_ENUM_CLIPBOARD_FORMATS: u32 = 3;
 pub const ONE_PARAM_IN_SEND_MESSAGE: u32 = 4;
 /// IsHungAppWindow (the parameter is the window; the result whether its thread is hung).
 pub const ONE_PARAM_IS_HUNG_APP_WINDOW: u32 = 5;
+/// ShowCursor (the parameter is whether to show; the result the new display count, an i32).
+pub const ONE_PARAM_SHOW_CURSOR: u32 = 6;
+/// GetQueueStatus (the parameter is the QS_* flags; the result the kinds held in the high word,
+/// those new since the last look in the low word).
+pub const ONE_PARAM_GET_QUEUE_STATUS: u32 = 7;
 
 /// F2K's NtUserMessageCall's timeout, SendMessageTimeout's (none for SendMessage's): its SMTO_*
 /// flags, and how long the sender waits for another thread's answer, in milliseconds.
