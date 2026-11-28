@@ -7,7 +7,10 @@
 //! The listing is built in kernel memory first ([`Listing`]: the facts gathered at the levels that
 //! guard them — a process's handle table and address space under their locks, its threads inside
 //! a borrow of the dispatcher — never touching user memory there), then copied to the caller's
-//! buffer at the passive level ([`query_processes`]). The idle process comes first, as on Windows
+//! buffer at the passive level ([`query_processes`]). Its size is the system's at the call, with no
+//! bound of its own: a first pass counts the listing without writing it, the second builds it in a
+//! block of that size from the nonpaged pool, and a listing that grew between the two is counted
+//! again. The idle process comes first, as on Windows
 //! 2000, then the System process, then the processes in creation order (their client ids grow with
 //! it). A process is listed until its last thread ends: one that has ended is not, whatever handles
 //! hold it (the toolhelp fixture's capture).
@@ -75,15 +78,6 @@ const RECORD_ALIGN: usize = 8;
 /// room is the one public documentation gives.
 const NAME_BUFFER: usize = (crate::process::NAME_ROOM + 1) * 2;
 
-/// The room a process record takes at most beside its threads': its structure and its name's
-/// buffer, aligned.
-const PROCESS_ROOM: usize = size_of::<SystemProcessInformation>() + NAME_BUFFER + RECORD_ALIGN;
-
-/// The longest listing: every process record in use, the idle and System processes', every thread
-/// record.
-pub const LISTING_BOUND: usize = (crate::process::MAX_PROCESSES + 2) * PROCESS_ROOM
-    + crate::sched::database::THREAD_RECORDS * size_of::<SystemThreadInformation>();
-
 /// A listing built into `buffer` (kernel memory), for a caller whose buffer starts at `user_base`:
 /// the image names' buffers are addresses there. What does not fit `buffer` is counted, not
 /// written, so [`Listing::length`] is always the length the whole listing needs.
@@ -116,6 +110,7 @@ impl<'b> Listing<'b> {
     }
 
     /// The listing's bytes, when all of them fit.
+    #[cfg(test)]
     pub fn bytes(&self) -> Option<&[u8]> {
         self.buffer.get(..self.length)
     }
@@ -232,8 +227,9 @@ pub use target::query_processes;
 mod target {
     use super::*;
     use crate::level::{raised, Dispatch};
+    use crate::mem::paging::PAGE_SIZE;
     use crate::nt::call::{NtResult, UserAddr, UserPtr};
-    use crate::process::{Process, MAX_PROCESSES};
+    use crate::process::Process;
     use crate::sched::thread::Thread;
     use crate::sched::DISPATCHER;
     use crate::status::*;
@@ -302,6 +298,26 @@ mod target {
         });
     }
 
+    /// The listing as the system stands, into `buffer`, for the caller's buffer at `user_base`:
+    /// the idle and System processes, then every listed process in client-id order (found one at a
+    /// time, the next id up, so nothing holds the processes between). The length it takes, all of
+    /// it counted whether or not it fits `buffer`.
+    fn build(buffer: &mut [u8], user_base: u32) -> usize {
+        let mut listing = Listing::new(buffer, user_base);
+        let (idle, system) = crate::sched::idle::kernel_processes();
+        list_kernel_process(&mut listing, &IDLE_PROCESS, idle);
+        list_kernel_process(&mut listing, &SYSTEM_PROCESS, system);
+        let mut last = None;
+        while let Some(process) = crate::process::pool::listed()
+            .filter(|process| last.is_none_or(|last| process.id() > last))
+            .min_by_key(|process| process.id())
+        {
+            list_process(&mut listing, process);
+            last = Some(process.id());
+        }
+        listing.length()
+    }
+
     /// NtQuerySystemInformation's process information into the caller's buffer of `length` bytes
     /// at `information`: the listing, and its length to `return_length`. A buffer too short for it
     /// is STATUS_INFO_LENGTH_MISMATCH with a length of zero reported (see the module doc); no pool
@@ -312,31 +328,25 @@ mod target {
         return_length: UserPtr<u32>,
     ) -> NtResult {
         information.probe(length)?;
-        let mut block =
-            crate::mem::pool::allocate(LISTING_BOUND).ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
-        let mut listing = Listing::new(block.as_mut(), information.raw());
-        let (idle, system) = crate::sched::idle::kernel_processes();
-        list_kernel_process(&mut listing, &IDLE_PROCESS, idle);
-        list_kernel_process(&mut listing, &SYSTEM_PROCESS, system);
-        let mut processes: [Option<&'static Process>; MAX_PROCESSES] = [None; MAX_PROCESSES];
-        for (slot, process) in processes.iter_mut().zip(crate::process::pool::listed()) {
-            *slot = Some(process);
+        let base = information.raw();
+        // The count, then the listing in a block of its size (rounded to whole pages: room for
+        // a little growth); counted again when it grew past the block meanwhile.
+        let mut room = build(&mut [], base);
+        loop {
+            if room > length as usize {
+                return_length.write_optional(0)?;
+                return Err(STATUS_INFO_LENGTH_MISMATCH);
+            }
+            let mut block = crate::mem::pool::allocate(room.next_multiple_of(PAGE_SIZE as usize))
+                .ok_or(STATUS_INSUFFICIENT_RESOURCES)?;
+            let needed = build(block.as_mut(), base);
+            if needed <= block.as_ref().len() && needed <= length as usize {
+                return_length.write_optional(needed as u32)?;
+                information.write(&block.as_ref()[..needed])?;
+                return Ok(STATUS_SUCCESS);
+            }
+            room = needed;
         }
-        processes.sort_unstable_by_key(|process| process.map_or(u32::MAX, Process::id));
-        for process in processes.into_iter().flatten() {
-            list_process(&mut listing, process);
-        }
-        let needed = listing.length() as u32;
-        if needed > length {
-            return_length.write_optional(0)?;
-            return Err(STATUS_INFO_LENGTH_MISMATCH);
-        }
-        return_length.write_optional(needed)?;
-        let bytes = listing
-            .bytes()
-            .expect("the listing fits its bound, every record counted in it");
-        information.write(bytes)?;
-        Ok(STATUS_SUCCESS)
     }
 }
 
@@ -454,25 +464,32 @@ mod tests {
         assert!(listing.bytes().is_none(), "the record does not fit");
     }
 
-    /// The bound holds every process record with a name and every thread record.
+    /// An empty buffer counts the whole listing, writing nothing: the first pass's size, which
+    /// a buffer of that size then holds whole, however many processes and threads it lists.
     #[test]
-    fn the_bound_holds_the_fullest_listing() {
-        let mut buffer = std::vec![0u8; LISTING_BOUND];
-        let mut listing = Listing::new(&mut buffer, BASE);
-        let mut threads = crate::sched::database::THREAD_RECORDS as u32;
-        for process in 0..crate::process::MAX_PROCESSES as u32 + 2 {
-            listing.open();
-            let share = if process == 0 { threads } else { 0 };
-            for id in 0..share {
-                listing.thread(process, thread(id, 5));
+    fn an_empty_buffer_counts_the_listing_a_buffer_of_its_size_holds() {
+        fn many(buffer: &mut [u8]) -> usize {
+            let mut listing = Listing::new(buffer, BASE);
+            for process in 0..300u32 {
+                listing.open();
+                for id in 0..(process % 4) {
+                    listing.thread(process, thread(id, 5));
+                }
+                listing.close(&ProcessFacts {
+                    id: process * 4,
+                    image_name: "averyveryverylo",
+                    ..IDLE_PROCESS
+                });
             }
-            threads -= share;
-            listing.close(&ProcessFacts {
-                id: process,
-                image_name: "averyveryverylo",
-                ..IDLE_PROCESS
-            });
+            listing.length()
         }
-        assert!(listing.bytes().is_some());
+        let needed = many(&mut []);
+        let mut buffer = std::vec![0u8; needed];
+        assert_eq!(many(&mut buffer), needed);
+        assert_eq!(
+            many(&mut buffer[..needed - 1]),
+            needed,
+            "a byte short still counts it all"
+        );
     }
 }

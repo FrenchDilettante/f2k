@@ -53,7 +53,7 @@ pub const DC_KIND: u32 = 0;
 const TYPE_BITS: u32 = 0x00FF_0000;
 
 /// A table entry: the object (its creator's reference, which the entry holds), its owner, the
-/// process that made it, by its object's index (the low byte: a process's index is below 64), and
+/// process that made it, by its object's index (the low byte: a process's index is at most 64), and
 /// the kind its handle carries (the high byte), in one word so an entry keeps to its 16-byte slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GdiEntry {
@@ -71,7 +71,7 @@ impl GdiEntry {
     }
 }
 
-const _: () = assert!(crate::process::MAX_PROCESSES <= 0x100);
+const _: () = assert!(crate::ob::PROCESSES <= 0x100);
 
 // SAFETY: writes a whole entry (an id that names nothing, generation 0).
 unsafe impl Record for GdiEntry {

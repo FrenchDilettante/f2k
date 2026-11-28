@@ -175,18 +175,18 @@ fn start_leg(index: u32) {
 }
 
 /// With the `concurrent` option, start all `legs` at once: load every leg, in order, then ready
-/// every main thread, in the same order (see the module's documentation). More legs than there can
-/// be processes at once are refused by the first load past the pool's capacity, as any leg that
-/// does not load is.
+/// every main thread, in the same order (see the module's documentation). Two passes, keeping
+/// nothing between them: the second finds each leg's process among the listed ones by its leg
+/// number (none of them runs yet, so none has ended). A leg that does not load — more legs than
+/// there can be processes at once among the reasons — halts the boot, as any does.
 fn start_every_leg(legs: u32) {
-    use crate::process::MAX_PROCESSES;
-    let mut loaded: [Option<&'static Process>; MAX_PROCESSES] = [None; MAX_PROCESSES];
     for index in 1..=legs {
-        let process = load_leg(index);
-        // Every loaded leg holds a process record, so the pool's capacity bounds the index.
-        loaded[index as usize - 1] = Some(process);
+        load_leg(index);
     }
-    for process in loaded.iter().flatten() {
+    for index in 1..=legs {
+        let process = crate::process::pool::listed()
+            .find(|process| process.leg() == Some(index))
+            .expect("a loaded leg's process, listed until it runs");
         crate::process::threads::ready_main_thread(process);
     }
 }

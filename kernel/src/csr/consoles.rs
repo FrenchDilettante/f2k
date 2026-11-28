@@ -30,8 +30,9 @@
 
 use rtl::console::Console;
 
-use super::ctrl::SERVER_PROCESSES;
+use super::ctrl::{ByProcess, Held};
 use crate::ob::ObjectId;
+use crate::slots::entries_per_page;
 use crate::status::*;
 
 /// How many consoles the server holds at once: the boot's, and three made for programs.
@@ -93,12 +94,15 @@ pub struct Making<'a> {
     pub hidden: bool,
 }
 
+/// The attachments to a chunk of their table: a page's worth.
+const ATTACHED_PER_CHUNK: usize = entries_per_page::<Held<Option<u8>>>();
+
 /// The consoles, the processes' attachments, and the console the screen shows.
 pub struct Consoles {
     slots: [Slot; CONSOLES],
     /// The processes the server attached to a console, or took off one: each with its console's
     /// index, none for no console.
-    attached: [Option<(ObjectId, Option<u8>)>; SERVER_PROCESSES],
+    attached: ByProcess<Option<u8>, ATTACHED_PER_CHUNK>,
     /// The console the screen shows and the keyboard types into.
     foreground: usize,
     /// How many consoles were made.
@@ -118,7 +122,7 @@ impl Consoles {
         }
         Consoles {
             slots,
-            attached: [None; SERVER_PROCESSES],
+            attached: ByProcess::new(),
             foreground: BOOT,
             made: 0,
         }
@@ -141,8 +145,8 @@ impl Consoles {
 
     /// The console `process` is attached to; none when it has none.
     pub fn console_of(&self, process: ObjectId) -> Option<usize> {
-        match self.entry(process) {
-            Some(entry) => self.attached[entry].and_then(|(_, console)| console.map(usize::from)),
+        match self.attached.get(process) {
+            Some(console) => console.map(usize::from),
             None => Some(BOOT),
         }
     }
@@ -152,32 +156,17 @@ impl Consoles {
         self.slots[index].window
     }
 
-    /// The entry holding `process`.
-    fn entry(&self, process: ObjectId) -> Option<usize> {
-        self.attached
-            .iter()
-            .position(|held| held.is_some_and(|(held, _)| held == process))
-    }
-
     /// Attach `process` to the console at `console` (none: no console); false, nothing changed,
-    /// when the server has no room for it.
+    /// when the server has no room for it (no page).
     pub fn attach(&mut self, process: ObjectId, console: Option<usize>) -> bool {
-        let Some(entry) = self
-            .entry(process)
-            .or_else(|| self.attached.iter().position(Option::is_none))
-        else {
-            return false;
-        };
-        self.attached[entry] = Some((process, console.map(|index| index as u8)));
-        true
+        self.attached
+            .insert(process, console.map(|index| index as u8))
     }
 
     /// Forget `process` (its end): the console it was attached to, if any.
     pub fn forget(&mut self, process: ObjectId) -> Option<usize> {
         let console = self.console_of(process);
-        if let Some(entry) = self.entry(process) {
-            self.attached[entry] = None;
-        }
+        self.attached.remove(process);
         console
     }
 
@@ -188,8 +177,7 @@ impl Consoles {
             || self
                 .attached
                 .iter()
-                .flatten()
-                .any(|&(_, console)| console == Some(index as u8))
+                .any(|(_, &console)| console == Some(index as u8))
     }
 
     /// AllocConsole's work for `process`: a console made as `making` says, `process` attached to

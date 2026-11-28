@@ -794,18 +794,15 @@ pub fn inherit(creator: ObjectId, child: ObjectId) {
     crate::process::foreground::console_changed();
 }
 
-/// Whether each of `processes` is attached to the foreground console, into `out` (as long): the
-/// console's half of the foreground processes (see `crate::process::foreground`), as csrss marks
-/// the processes of the console that has the focus.
+/// Whether `process` is attached to the foreground console: the console's half of the foreground
+/// processes (see `crate::process::foreground`), as csrss marks the processes of the console that
+/// has the focus.
 #[cfg(target_arch = "x86")]
-pub fn on_foreground_console(processes: &[Option<ObjectId>], out: &mut [bool]) {
+pub fn on_foreground_console(process: ObjectId) -> bool {
     crate::level::raised::<Dispatch, _>(|dispatch| {
         let consoles = &SERVER.get(dispatch).consoles;
-        let foreground = consoles.foreground();
-        for (process, out) in processes.iter().zip(out) {
-            *out = process.is_some_and(|process| consoles.console_of(process) == Some(foreground));
-        }
-    });
+        consoles.console_of(process) == Some(consoles.foreground())
+    })
 }
 
 /// The server learns of `process` (see [`ctrl`]), at its first win32k service: from then on the

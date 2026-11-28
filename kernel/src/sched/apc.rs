@@ -85,8 +85,9 @@ pub enum ApcId {
     Exit(ThreadId),
     /// The completion APC of the waitable timer at its pool index.
     Timer(u16),
-    /// The user-APC record at its pool index.
-    User(u16),
+    /// A user-APC record: its process object's index, and its place among the process's
+    /// [`crate::sched::database::USER_APCS`].
+    User(u16, u8),
 }
 
 /// An APC record names itself: the queueing entry points take the record or its id alike.

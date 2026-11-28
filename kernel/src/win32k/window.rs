@@ -6353,8 +6353,8 @@ mod tests {
         Box::leak(unsafe { registry.assume_init() })
     }
 
-    const OWNER: class::Owner = 0;
-    const OTHER_OWNER: class::Owner = 1;
+    const OWNER: class::Owner = 1;
+    const OTHER_OWNER: class::Owner = 2;
     const MODULE: u32 = 0x0040_0000;
     const OTHER_MODULE: u32 = 0x0050_0000;
     const DESKTOP: u32 = 1;

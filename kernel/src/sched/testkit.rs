@@ -358,10 +358,13 @@ fn side<T: Record>(address: Option<core::ptr::NonNull<T>>) -> Rec<T> {
 
 /// A fresh user-APC record of the installed dispatcher, unbound.
 pub fn apc() -> Rec<Apc> {
+    use super::database::USER_APCS;
     let index = take(3);
-    let apc = installed().user_apc_mut(index) as *mut Apc;
-    let apc = rebased(apc);
+    let process = index / USER_APCS as u16;
+    let id = ApcId::User(process, (index % USER_APCS as u16) as u8);
+    made(WaitableId::Process(process));
+    let apc = side(installed().user_apc_address(id));
     // SAFETY: a record of the installed dispatcher, no borrow of which is live.
-    unsafe { *apc.as_ptr() = Apc::new(ApcId::User(index)) };
+    unsafe { *apc.as_ptr() = Apc::new(id) };
     apc
 }

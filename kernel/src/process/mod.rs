@@ -687,17 +687,17 @@ impl Process {
 
     /// A user-APC record of the process's that is in no queue in `dispatcher`, or none (every
     /// record is queued). The records are the dispatcher database's (its APC queues link them by
-    /// name): each process has its share of them, [`crate::sched::database::USER_APCS`] from its
-    /// record's index on.
+    /// name): each process has its share of them, [`crate::sched::database::USER_APCS`] at its
+    /// object's index, made with the object.
     pub fn free_apc(
         &self,
         dispatcher: &mut crate::sched::dispatcher::Dispatcher,
     ) -> Option<crate::sched::apc::ApcId> {
         use crate::sched::database::USER_APCS;
-        let base = self.object().index * USER_APCS as u16;
-        (base..base + USER_APCS as u16)
-            .find(|&index| !dispatcher.user_apc_mut(index).inserted())
-            .map(crate::sched::apc::ApcId::User)
+        let process = self.object().index;
+        (0..USER_APCS as u8)
+            .map(|k| crate::sched::apc::ApcId::User(process, k))
+            .find(|&apc| !dispatcher.apc_mut(apc).inserted())
     }
 
     /// Close a handle: the table's claim ends — the object's handle, with its reference (the last
@@ -1623,6 +1623,9 @@ mod tests {
 
         let mut dispatcher = crate::sched::testkit::dispatcher();
         let target = crate::sched::testkit::thread(crate::sched::testkit::process(8));
+        for index in [0, 1] {
+            crate::sched::testkit::made(crate::sched::wait::WaitableId::Process(index));
+        }
         let process = fresh_process();
         let mut queued = Vec::new();
         while let Some(apc) = process.free_apc(&mut dispatcher) {

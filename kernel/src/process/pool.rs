@@ -71,7 +71,7 @@ pub fn record(index: u16) -> &'static Process {
 
 /// The process objects that live now, by pool index, as one hold of the directory finds them.
 #[cfg(target_arch = "x86")]
-fn live_objects() -> [Option<crate::ob::ObjectId>; MAX_PROCESSES] {
+fn live_objects() -> [Option<crate::ob::ObjectId>; crate::ob::PROCESSES] {
     crate::ob::locked(|directory| {
         core::array::from_fn(|index| directory.processes_live(index as u16))
     })
@@ -104,7 +104,8 @@ pub fn listed() -> impl Iterator<Item = &'static Process> {
 /// the address space at `dir_phys`, named `name`, created by the process whose client id is
 /// `parent_id` (zero: none), running as leg `leg` (none for a child).
 /// STATUS_INSUFFICIENT_RESOURCES when every process record is in use, or a record not yet made
-/// finds no room in the nonpaged pool (Windows 2000's answer to a full table and to an exhausted
+/// (or the drivers' stand-in for the process, [`crate::dev::io`]'s) finds no room in the nonpaged
+/// pool (Windows 2000's answer to a full table and to an exhausted
 /// pool); nothing is taken then — the object made goes again — and the address space stays the
 /// caller's.
 #[cfg(target_arch = "x86")]
@@ -116,7 +117,8 @@ pub(super) fn create(
 ) -> Result<&'static Process, crate::status::NtStatus> {
     let object = crate::ob::locked(|directory| directory.create_process())
         .ok_or(crate::status::STATUS_INSUFFICIENT_RESOURCES)?;
-    let Some(process) = make(object.index) else {
+    let made = make(object.index).filter(|_| crate::dev::io::make_process_stand_in(object.index));
+    let Some(process) = made else {
         // Nothing names the object yet, and nothing ran on it: its creator's reference was its
         // only one, and a process object's deletion leaves nothing to finish.
         let left = crate::ob::locked(|directory| directory.dereference(object));

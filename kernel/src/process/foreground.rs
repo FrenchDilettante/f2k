@@ -238,22 +238,9 @@ pub fn sync() {
 /// [`wanted`] says, where that is not its state already.
 #[cfg(target_arch = "x86")]
 fn refresh() {
-    use super::{pool, Process, MAX_PROCESSES};
     let gui = PUBLISHED.gui();
-    let mut processes: [Option<&'static Process>; MAX_PROCESSES] = [None; MAX_PROCESSES];
-    let mut count = 0;
-    for process in pool::listed() {
-        processes[count] = Some(process);
-        count += 1;
-    }
-    let processes = &processes[..count];
-    let mut objects = [None; MAX_PROCESSES];
-    for (object, process) in objects.iter_mut().zip(processes) {
-        *object = process.map(Process::object);
-    }
-    let mut on_console = [false; MAX_PROCESSES];
-    crate::csr::on_foreground_console(&objects[..count], &mut on_console[..count]);
-    for (process, &on_console) in processes.iter().flatten().zip(&on_console) {
+    for process in super::pool::listed() {
+        let on_console = crate::csr::on_foreground_console(process.object());
         let foreground = wanted(gui, process.object().index, on_console);
         if foreground != process.foreground() {
             process.set_priority_by_class(foreground, None);

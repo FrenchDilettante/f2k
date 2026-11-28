@@ -5,8 +5,10 @@
 //! dispatcher lock guards. Here that database lives inside the [`Dispatcher`]: the event,
 //! semaphore, mutex and waitable-timer bodies in side tables ([`SideTable`]) that grow a page at a
 //! time from the nonpaged pool, made at an index before the object directory hands that index out
-//! ([`Dispatcher::ensure_body`]) and kept at their peak, so a body never moves; the thread
-//! records, the process objects' bodies and the user-APC records in fixed pools. The object
+//! ([`Dispatcher::ensure_body`]) and kept at their peak, so a body never moves. A process object's
+//! body and its process's user-APC records are side tables' too, keyed by the process object's
+//! index, made with the object: Windows 2000 keeps a process's KPROCESS and its APCs with its
+//! EPROCESS, in the nonpaged pool. The thread records are a fixed pool still. The object
 //! directory keeps the objects' headers (liveness, generation, counts) and names a body by its
 //! index, which is the same in both.
 //!
@@ -28,7 +30,7 @@ use super::thread::{Thread, ThreadId};
 use super::timer::{TimerId, TimerList};
 use super::wait::{BlockId, Header, Timer, WaitBlock, Waitable, WaitableId, Waiters, WaitingList};
 use super::waitable_timer::WaitableTimer;
-use crate::ob::{PROCESSES, THREADS};
+use crate::ob::THREADS;
 use crate::slots::{entries_per_page, Exhausted, Pages, Record, SideTable};
 
 /// How many thread records the pool holds: one per thread object, the idle thread's, and the
@@ -49,8 +51,12 @@ pub const RAW_INPUT_THREAD: ThreadId = ThreadId(THREADS as u16 + 2);
 /// How many user-APC records each process has (QueueUserAPC's, across its threads).
 pub const USER_APCS: usize = 64;
 
-/// How many user-APC records the pool holds: each process record's share, at its index.
-pub const USER_APC_RECORDS: usize = USER_APCS * PROCESSES;
+/// One process's user-APC records, at its process object's index: the record `k` of them is
+/// [`ApcId::User`]`(process, k)`.
+pub struct UserApcs(pub(crate) [Apc; USER_APCS]);
+
+/// The process objects' bodies to a chunk: a page's worth.
+const PROCESS_BODIES: usize = entries_per_page::<ProcessObject>();
 
 /// The records the dispatcher owns.
 pub struct Database {
@@ -59,8 +65,8 @@ pub struct Database {
     pub(crate) semaphores: SideTable<Semaphore, { entries_per_page::<Semaphore>() }>,
     pub(crate) mutexes: SideTable<Mutex, { entries_per_page::<Mutex>() }>,
     pub(crate) timers: SideTable<WaitableTimer, { entries_per_page::<WaitableTimer>() }>,
-    pub(crate) processes: Pool<ProcessObject, PROCESSES>,
-    pub(crate) user_apcs: Pool<Apc, USER_APC_RECORDS>,
+    pub(crate) processes: SideTable<ProcessObject, PROCESS_BODIES>,
+    pub(crate) user_apcs: SideTable<UserApcs, 1>,
 }
 
 impl Database {
@@ -82,10 +88,8 @@ impl Database {
             addr_of_mut!((*database).semaphores).write(SideTable::new());
             addr_of_mut!((*database).mutexes).write(SideTable::new());
             addr_of_mut!((*database).timers).write(SideTable::new());
-            Pool::write_empty(addr_of_mut!((*database).processes), ProcessObject::new);
-            Pool::write_empty(addr_of_mut!((*database).user_apcs), |index| {
-                Apc::new(ApcId::User(index))
-            });
+            addr_of_mut!((*database).processes).write(SideTable::new());
+            addr_of_mut!((*database).user_apcs).write(SideTable::new());
         }
     }
 }
@@ -114,6 +118,30 @@ unsafe impl Record for Mutex {
     unsafe fn write_fresh(at: *mut Self, index: u32) {
         // SAFETY: the caller's contract.
         unsafe { at.write(Mutex::new(MutexId(index as u16))) };
+    }
+}
+
+// SAFETY: writes a whole record.
+unsafe impl Record for ProcessObject {
+    unsafe fn write_fresh(at: *mut Self, index: u32) {
+        // SAFETY: the caller's contract.
+        unsafe { at.write(ProcessObject::new(index as u16)) };
+    }
+}
+
+// SAFETY: writes every record of the array.
+unsafe impl Record for UserApcs {
+    unsafe fn write_fresh(at: *mut Self, index: u32) {
+        let records = at.cast::<Apc>();
+        for k in 0..USER_APCS {
+            // SAFETY: the caller's contract: the array's every element, in place (by value it
+            // would pass through the stack).
+            unsafe {
+                records
+                    .add(k)
+                    .write(Apc::new(ApcId::User(index as u16, k as u8)))
+            };
+        }
     }
 }
 
@@ -180,7 +208,7 @@ impl Dispatcher {
             WaitableId::Semaphore(index) => &made(self.db.semaphores.get(index.into())).waitable,
             WaitableId::Mutex(index) => &made(self.db.mutexes.get(index.into())).waitable,
             WaitableId::Timer(index) => &made(self.db.timers.get(index.into())).timer.waitable,
-            WaitableId::Process(index) => &self.db.processes.get(index).waitable,
+            WaitableId::Process(index) => &made(self.db.processes.get(index.into())).waitable,
             WaitableId::Thread(thread) => &self.thread(thread).waitable,
             WaitableId::ThreadTimer(thread) => &self.thread(thread).timer.waitable,
             WaitableId::Suspend(thread) => &self.thread(thread).suspend_semaphore.waitable,
@@ -243,7 +271,7 @@ impl Dispatcher {
             ApcId::Suspend(thread) => &self.thread(thread).suspend_apc,
             ApcId::Exit(thread) => &self.thread(thread).exit_apc,
             ApcId::Timer(index) => &made(self.db.timers.get(index.into())).apc,
-            ApcId::User(index) => self.db.user_apcs.get(index),
+            ApcId::User(process, k) => &made(self.db.user_apcs.get(process.into())).0[k as usize],
         }
     }
 
@@ -253,7 +281,9 @@ impl Dispatcher {
             ApcId::Suspend(thread) => &mut self.thread_mut(thread).suspend_apc,
             ApcId::Exit(thread) => &mut self.thread_mut(thread).exit_apc,
             ApcId::Timer(index) => &mut made(self.db.timers.get_mut(index.into())).apc,
-            ApcId::User(index) => self.db.user_apcs.get_mut(index),
+            ApcId::User(process, k) => {
+                &mut made(self.db.user_apcs.get_mut(process.into())).0[k as usize]
+            }
         }
     }
 
@@ -284,19 +314,28 @@ impl Dispatcher {
 
     /// The process object body at pool `index`, to change.
     pub fn process_object_mut(&mut self, index: u16) -> &mut ProcessObject {
-        self.db.processes.get_mut(index)
+        made(self.db.processes.get_mut(index.into()))
     }
 
-    /// The user-APC record at pool `index`, to change.
-    pub fn user_apc_mut(&mut self, index: u16) -> &mut Apc {
-        self.db.user_apcs.get_mut(index)
+    /// The address of the user-APC record `apc` names, made with its process; none for another
+    /// kind of APC, or a process index never made. Takes no borrow beyond the call.
+    pub fn user_apc_address(&self, apc: ApcId) -> Option<core::ptr::NonNull<Apc>> {
+        let ApcId::User(process, k) = apc else {
+            return None;
+        };
+        let records = self.db.user_apcs.address(process.into())?;
+        // SAFETY: a made record's element: only the address is taken.
+        Some(unsafe {
+            core::ptr::NonNull::new_unchecked(records.as_ptr().cast::<Apc>().add(k as usize))
+        })
     }
 
     // --- Fresh bodies for new objects ---
 
     /// Make the body record `object` names, with any page its side table needs from `pages`,
-    /// before an object is handed its index: an event's, a semaphore's, a mutex's or a waitable
-    /// timer's (a thread's record and a process object's body are fixed pools', always there).
+    /// before an object is handed its index: an event's, a semaphore's, a mutex's, a waitable
+    /// timer's, or a process object's with its process's user-APC records (a thread's record is a
+    /// fixed pool's, always there).
     /// Takes no page once the record is made; no record is ever given back. Fails with the table as
     /// it was when no page is left (or, never before memory, the index is past the table's reach).
     pub fn ensure_body(&self, object: WaitableId, pages: &impl Pages) -> Result<(), Exhausted> {
@@ -305,8 +344,13 @@ impl Dispatcher {
             WaitableId::Semaphore(index) => self.db.semaphores.ensure(index.into(), pages),
             WaitableId::Mutex(index) => self.db.mutexes.ensure(index.into(), pages),
             WaitableId::Timer(index) => self.db.timers.ensure(index.into(), pages),
-            WaitableId::Process(_)
-            | WaitableId::Thread(_)
+            WaitableId::Process(index) => {
+                // Either may be made and the other not: what is made stays, for the next process
+                // at the index.
+                self.db.processes.ensure(index.into(), pages)?;
+                self.db.user_apcs.ensure(index.into(), pages)
+            }
+            WaitableId::Thread(_)
             | WaitableId::ThreadTimer(_)
             | WaitableId::Suspend(_)
             | WaitableId::Embedded(_) => Ok(()),
@@ -344,7 +388,7 @@ impl Dispatcher {
 
     /// A fresh process object body, unsignaled and still active, in the record `index`.
     pub fn renew_process_object(&mut self, index: u16) -> &mut ProcessObject {
-        let process = self.db.processes.get_mut(index);
+        let process = made(self.db.processes.get_mut(index.into()));
         *process = ProcessObject::new(index);
         process
     }
@@ -510,7 +554,6 @@ mod tests {
         assert_eq!(d.timer(TimerId::Waitable(3)).id(), TimerId::Waitable(3));
         assert_eq!(d.apc(ApcId::Timer(3)).id(), ApcId::Timer(3));
         let fixed = [
-            WaitableId::Process(0),
             WaitableId::Thread(ThreadId(0)),
             WaitableId::ThreadTimer(ThreadId(0)),
             WaitableId::Suspend(ThreadId(0)),
@@ -519,6 +562,44 @@ mod tests {
             d.ensure_body(body, &pages).unwrap();
         }
         assert_eq!(pages.held(), 4, "the fixed pools' records take no page");
+    }
+
+    /// A process object's body is made with its process's user-APC records, at its index, past
+    /// the fixed pools' old 64 processes; each APC record named by its process and its place.
+    #[test]
+    fn a_process_body_comes_with_its_user_apcs() {
+        let mut d = testkit::dispatcher();
+        let pages = HostPages::new();
+        d.ensure_body(WaitableId::Process(300), &pages).unwrap();
+        let held = pages.held();
+        assert!(
+            held > SideTable::<UserApcs, 1>::CHUNK_PAGES,
+            "a chunk of bodies, the process's APCs, their directories' pages"
+        );
+        d.ensure_body(WaitableId::Process(300), &pages).unwrap();
+        assert_eq!(pages.held(), held, "made once");
+        d.renew_process_object(300);
+        assert_eq!(
+            d.waitable(WaitableId::Process(300)).id(),
+            WaitableId::Process(300)
+        );
+        let last = ApcId::User(300, USER_APCS as u8 - 1);
+        assert_eq!(d.apc(last).id(), last);
+        assert_eq!(
+            d.user_apc_address(last),
+            Some(core::ptr::NonNull::from(d.apc_mut(last)))
+        );
+        assert!(
+            d.user_apc_address(ApcId::User(301, 0)).is_none(),
+            "not made"
+        );
+        pages.set_budget(0);
+        assert_eq!(
+            d.ensure_body(WaitableId::Process(301), &pages),
+            Err(Exhausted::NoPages),
+            "the bodies' chunk is made, the APCs' finds no page"
+        );
+        assert!(d.user_apc_address(ApcId::User(301, 0)).is_none());
     }
 
     /// The tables grow past the caps the fixed pools had (256 events, 64 semaphores), a body

@@ -1,6 +1,7 @@
 //! A process's thread ordinals: which of its threads holds which TEB page.
 //!
-//! The ledger is kept with the process's object, in the object directory ([`crate::ob`]): whether
+//! The ledger is kept with the process's object, in the object directory ([`crate::ob`]'s side
+//! table at the object's index, made with it): whether
 //! an ordinal is free is whether its holder's thread object still lives, so it is read and taken in
 //! the directory's one hold, with the thread object the new thread takes.
 //!
@@ -55,6 +56,14 @@ pub struct Ordinals {
     /// STATUS_PROCESS_IS_TERMINATING). Set in the directory hold that decides it, so a create,
     /// whose ordinal and attach are one hold too, either comes before it or is refused.
     closed: bool,
+}
+
+// SAFETY: writes a whole record.
+unsafe impl crate::slots::Record for Ordinals {
+    unsafe fn write_fresh(at: *mut Self, _: u32) {
+        // SAFETY: the caller's contract.
+        unsafe { at.write(Ordinals::empty()) };
+    }
 }
 
 impl Ordinals {

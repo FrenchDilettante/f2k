@@ -1,13 +1,18 @@
 //! The window manager's per-process records: what win32k keeps for each process that holds its
 //! objects, as Windows 2000's win32k keeps a W32PROCESS (its PROCESSINFO) beside each EPROCESS.
 //! F2K's record holds the counts of the process's USER objects and GDI objects, which the
-//! per-process quotas bound ([`super::quota`]); slot-pool slice 18 adds the class lists.
+//! per-process quotas bound ([`super::quota`]), and the heads of its two class lists, private and
+//! public (Windows 2000's PROCESSINFO.pclsPrivateList and pclsPublicList).
 //!
 //! The records are a side table of the slot pool ([`crate::slots::SideTable`]) keyed by the
 //! process object's index (a class [`Owner`]), made a page at a time as processes come: a record
-//! is ensured at its process's first counted object and kept, each count reset at the process's
-//! end. The table takes no lock of its own (a side table's records are made and found without
-//! one), and the counts are atomic: each is changed under its own table's lock, the USER count
+//! is ensured at its process's first counted object or first class and kept, each count reset at
+//! the process's end, its class lists emptied by it. The window manager's own record is at the
+//! System process's index ([`crate::ob::SYSTEM_PROCESS_INDEX`], the class owner
+//! [`super::class::SYSTEM_OWNER`]), which no program's process takes. The table takes no lock of
+//! its own (a side table's records are made and found without one), and its fields are atomic:
+//! the class lists change under the window manager's lock alone; each count under its own table's
+//! lock, the USER count
 //! under the window manager's by the user handle table ([`super::handle::UserHandles`], as
 //! Windows 2000's HMAllocObject and HMFreeObject count it inside the USER lock), the GDI count
 //! under the GDI handle table's ([`super::gdi`], as Windows 2000's GDI moves its W32PROCESS
@@ -24,7 +29,7 @@ use core::sync::atomic::{AtomicU32, Ordering};
 
 use rtl::winerror::ERROR_NO_MORE_USER_HANDLES;
 
-use super::class::Owner;
+use super::class::{ClassId, Owner};
 use crate::slots::{Exhausted, Pages, Record, SideTable, PAGE};
 use crate::status::*;
 
@@ -51,6 +56,32 @@ pub struct W32Process {
     /// counted from its GDI handle's insert to its delete or the process's end (under the GDI
     /// table's lock).
     pub gdi_objects: AtomicU32,
+    /// The heads of the process's private and public class lists ([`ClassList`]), each a class
+    /// id's word (zero: an empty list), changed under the window manager's lock.
+    classes: [AtomicU32; 2],
+}
+
+/// Which of a process's two class lists.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ClassList {
+    /// Its private classes: its own modules' alone.
+    Private = 0,
+    /// Its public classes (CS_GLOBALCLASS, and the server-side registrations made for it).
+    Public = 1,
+}
+
+/// A class list's head as its record's word: the id's index and uniqueness, zero for none (a
+/// class's uniqueness is never zero).
+fn class_word(head: Option<ClassId>) -> u32 {
+    head.map_or(0, |id| {
+        debug_assert_ne!(id.uniq, 0, "a class id's uniqueness starts at 1");
+        u32::from(id.index) | u32::from(id.uniq) << 16
+    })
+}
+
+/// The class list's head a record's word holds.
+fn class_of(word: u32) -> Option<ClassId> {
+    (word != 0).then(|| ClassId::new(word as u16, (word >> 16) as u16))
 }
 
 // SAFETY: `write_fresh` writes a whole record.
@@ -96,6 +127,8 @@ pub enum Refusal {
 /// The per-process records, by process index.
 pub struct W32Processes {
     table: SideTable<W32Process, RECORDS_PER_CHUNK>,
+    /// One past the highest index ensured: the records a walk visits lie below it.
+    end: AtomicU32,
 }
 
 impl W32Processes {
@@ -103,7 +136,46 @@ impl W32Processes {
     pub const fn new() -> Self {
         W32Processes {
             table: SideTable::new(),
+            end: AtomicU32::new(0),
         }
+    }
+
+    /// The record of the process `process`, made if it had none: NoMemory when no page is left.
+    pub fn make(&self, process: Owner, pages: &impl Pages) -> Result<(), Refusal> {
+        let index = u32::from(process);
+        self.table.ensure(index, pages).map_err(|why| match why {
+            Exhausted::NoPages | Exhausted::Limit => Refusal::NoMemory,
+        })?;
+        self.end.fetch_max(index + 1, Ordering::Relaxed);
+        Ok(())
+    }
+
+    /// The head of the process `process`'s class list `list`: none for an empty list, or a
+    /// process with no record.
+    pub fn classes(&self, process: Owner, list: ClassList) -> Option<ClassId> {
+        let record = self.table.get(u32::from(process))?;
+        class_of(record.classes[list as usize].load(Ordering::Relaxed))
+    }
+
+    /// Set the head of the process `process`'s class list `list`, under the window manager's
+    /// lock.
+    ///
+    /// # Panics
+    ///
+    /// The process has no record ([`W32Processes::make`], before its first class).
+    pub fn set_classes(&self, process: Owner, list: ClassList, head: Option<ClassId>) {
+        let record = self
+            .table
+            .get(u32::from(process))
+            .expect("a class owner's record made at its registration");
+        record.classes[list as usize].store(class_word(head), Ordering::Relaxed);
+    }
+
+    /// Every process that has a record, by index.
+    pub fn owners(&self) -> impl Iterator<Item = Owner> + '_ {
+        (0..self.end.load(Ordering::Relaxed))
+            .filter(|&index| self.table.get(index).is_some())
+            .map(|index| index as Owner)
     }
 
     /// How many objects of `objects`' kind the process `process` holds: 0 for one with no
@@ -135,10 +207,7 @@ impl W32Processes {
         quota: u32,
         pages: &impl Pages,
     ) -> Result<(), Refusal> {
-        let index = u32::from(process);
-        self.table.ensure(index, pages).map_err(|why| match why {
-            Exhausted::NoPages | Exhausted::Limit => Refusal::NoMemory,
-        })?;
+        self.make(process, pages)?;
         if self.count(objects, process) >= quota {
             return Err(Refusal::Quota);
         }
@@ -340,6 +409,32 @@ mod tests {
         p.took(User, far);
         assert_eq!(p.user_objects(far), 1);
         assert_eq!(p.user_objects(1), 0);
+    }
+
+    /// The class lists: empty for a process with no record, each list its own, a record found by
+    /// the walk once made, and the walk past the first chunk.
+    #[test]
+    fn the_class_lists_are_kept_in_the_record() {
+        let p = W32Processes::new();
+        let far = RECORDS_PER_CHUNK as Owner * 2 + 5;
+        assert_eq!(p.classes(3, ClassList::Private), None);
+        assert_eq!(p.owners().count(), 0);
+        p.make(3, test_pages::current()).unwrap();
+        p.make(far, test_pages::current()).unwrap();
+        let class = ClassId::new(7, 0xFFFE);
+        p.set_classes(3, ClassList::Public, Some(class));
+        assert_eq!(p.classes(3, ClassList::Public), Some(class));
+        assert_eq!(p.classes(3, ClassList::Private), None);
+        p.set_classes(far, ClassList::Private, Some(ClassId::new(0, 1)));
+        assert_eq!(p.classes(far, ClassList::Private), Some(ClassId::new(0, 1)));
+        let owners = p.owners().collect::<std::vec::Vec<_>>();
+        assert!(owners.contains(&3) && owners.last() == Some(&far));
+        assert!(
+            !owners.contains(&(RECORDS_PER_CHUNK as Owner)),
+            "a chunk never made"
+        );
+        p.set_classes(3, ClassList::Public, None);
+        assert_eq!(p.classes(3, ClassList::Public), None);
     }
 
     /// The refusal's status carries ERROR_NO_MORE_USER_HANDLES to user32.

@@ -87,6 +87,7 @@ use rtl::winerror::{
 
 use super::handle::UserHandles;
 pub use super::icon::{CursorId, CursorTable};
+use super::process::{ClassList, W32Processes};
 use crate::nt::call::{Handle, NtCall, NtResult, UserAddr, UserPtr};
 use crate::slots::{Id, LowestFirst, Record, Slots, PAGE};
 use crate::status::*;
@@ -428,11 +429,10 @@ pub const MAX_CLASS_EXTRA: usize = 512;
 pub const MAX_ANSI_NAME: usize = 256;
 /// The longest menu name, in UTF-16 units.
 pub const MAX_MENU_NAME: usize = 128;
-/// How many owners hold class lists: every process, and the window manager itself.
-const MAX_OWNERS: usize = crate::process::MAX_PROCESSES + 1;
 /// The window manager itself as an owner: the desktop's own windows and their thread are its, not
-/// any process's (an index no process's pool index takes).
-pub const SYSTEM_OWNER: Owner = crate::process::MAX_PROCESSES as Owner;
+/// any program's. The System process's index ([`crate::ob::SYSTEM_PROCESS_INDEX`]), which no
+/// program's process takes.
+pub const SYSTEM_OWNER: Owner = crate::ob::SYSTEM_PROCESS_INDEX;
 
 /// The class pool's kind of id.
 pub enum ClassTag {}
@@ -781,13 +781,6 @@ enum List {
     Public(Owner),
 }
 
-/// A process's two class lists.
-#[derive(Clone, Copy, Default)]
-struct OwnerLists {
-    private: Option<ClassId>,
-    public: Option<ClassId>,
-}
-
 /// The flags a registration carries.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RegisterFlags {
@@ -846,14 +839,16 @@ pub struct ClassInfo {
 }
 
 /// The window-class registry: the atom table, the cursor/icon handle table, the class pool with
-/// the system list and every process's private and public lists.
+/// the system list. Every process's private and public lists are its window manager record's
+/// ([`W32Processes`]), as Windows 2000 keeps them in its PROCESSINFO.
 pub struct Registry {
     atoms: Atoms,
     /// The cursor and icon records ([`super::icon`]), which classes hold locked.
     pub cursors: CursorTable,
     classes: ClassPool,
     system: Option<ClassId>,
-    owners: [OwnerLists; MAX_OWNERS],
+    /// The per-process records holding the class lists, changed under the window manager's lock.
+    processes: &'static W32Processes,
 }
 
 impl Registry {
@@ -874,10 +869,7 @@ impl Registry {
             addr_of_mut!((*registry).classes).write(ClassPool {
                 slots: Slots::new(),
             });
-            let owners = addr_of_mut!((*registry).owners) as *mut OwnerLists;
-            for index in 0..MAX_OWNERS {
-                owners.add(index).write(OwnerLists::default());
-            }
+            addr_of_mut!((*registry).processes).write(super::process::processes());
         }
     }
 
@@ -887,16 +879,16 @@ impl Registry {
     fn list_head(&self, list: List) -> Option<ClassId> {
         match list {
             List::System => self.system,
-            List::Private(owner) => self.owners[owner as usize].private,
-            List::Public(owner) => self.owners[owner as usize].public,
+            List::Private(owner) => self.processes.classes(owner, ClassList::Private),
+            List::Public(owner) => self.processes.classes(owner, ClassList::Public),
         }
     }
 
     fn set_list_head(&mut self, list: List, head: Option<ClassId>) {
         match list {
             List::System => self.system = head,
-            List::Private(owner) => self.owners[owner as usize].private = head,
-            List::Public(owner) => self.owners[owner as usize].public = head,
+            List::Private(owner) => self.processes.set_classes(owner, ClassList::Private, head),
+            List::Public(owner) => self.processes.set_classes(owner, ClassList::Public, head),
         }
     }
 
@@ -1059,6 +1051,10 @@ impl Registry {
         if wc.cb_cls_extra < 0 || wc.cb_cls_extra as usize > MAX_CLASS_EXTRA {
             return Err(Failure::OutOfMemory);
         }
+        // The owner's record, which holds its lists: made at its first class.
+        self.processes
+            .make(owner, super::pages())
+            .map_err(|_| Failure::OutOfMemory)?;
         let id = self.classes.allocate().ok_or(Failure::OutOfMemory)?;
         {
             let class = self.classes.at_mut(id);
@@ -1308,7 +1304,7 @@ impl Registry {
     /// each is one a process's end missed.
     pub fn process_classes(&self) -> usize {
         let mut count = 0;
-        for owner in 0..MAX_OWNERS as Owner {
+        for owner in self.processes.owners() {
             if owner == SYSTEM_OWNER {
                 continue;
             }
@@ -2585,8 +2581,8 @@ mod tests {
     }
 
     /// The test's process and module handles: module handles match by high word.
-    const OWNER: Owner = 0;
-    const OTHER_OWNER: Owner = 1;
+    const OWNER: Owner = 1;
+    const OTHER_OWNER: Owner = 2;
     const MODULE: u32 = 0x0040_0000;
     const SAME_HIGH_WORD: u32 = 0x0040_9ABC;
     const OTHER_HIGH_WORD: u32 = 0x0050_0000;

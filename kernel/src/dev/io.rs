@@ -833,7 +833,16 @@ mod target {
     use crate::mem::pool::Block;
     use crate::sched::event::{Event, EventKind, EVENT_WAKE_INCREMENT};
     use crate::sched::wait::{WaitMode, WaitReason, WaitableId};
-    use crate::slots::{per_page, Chunk, KernelId, Record, Slots, KERNEL_PAGES};
+    use crate::slots::{
+        entries_per_page,
+        per_page,
+        Chunk,
+        KernelId,
+        Record,
+        SideTable,
+        Slots,
+        KERNEL_PAGES,
+    };
     use crate::sync::{StaticBuf, SyncCell};
 
     /// The arena's size: every driver's, device's, file object's and IRP's block.
@@ -1185,21 +1194,50 @@ mod target {
     /// A stand-in's size: an EPROCESS's (0x290), larger than an ETHREAD's (0x240).
     const STAND_IN: usize = 0x290;
     const THREAD_STAND_INS: usize = crate::sched::database::THREAD_RECORDS;
-    const PROCESS_STAND_INS: usize = crate::process::MAX_PROCESSES + 1;
 
     #[repr(C, align(16))]
     struct StandIns<const N: usize>([[u8; STAND_IN]; N]);
 
+    /// A process's stand-in.
+    #[repr(C, align(16))]
+    struct StandIn([u8; STAND_IN]);
+
+    // SAFETY: writes a whole record.
+    unsafe impl Record for StandIn {
+        unsafe fn write_fresh(at: *mut Self, _: u32) {
+            // SAFETY: the caller's contract.
+            unsafe { at.write_bytes(0, 1) };
+        }
+    }
+
     // The stand-ins: zeroed kernel memory a driver may read (and write: its own business), by
-    // address.
+    // address. The threads' are a fixed array by thread record; the processes' a side table by
+    // process index, from the nonpaged pool (mapped in every address space, as a driver reaches
+    // a stand-in from any), made with the process and kept for the next at its index, as an
+    // EPROCESS is nonpaged memory beside its process. The System process's is at its index, 0.
     static THREADS: SyncCell<StandIns<THREAD_STAND_INS>> =
         SyncCell::new(StandIns([[0; STAND_IN]; THREAD_STAND_INS]));
-    static PROCESSES: SyncCell<StandIns<PROCESS_STAND_INS>> =
-        SyncCell::new(StandIns([[0; STAND_IN]; PROCESS_STAND_INS]));
+    static PROCESSES: SideTable<StandIn, { entries_per_page::<StandIn>() }> = SideTable::new();
 
-    /// The System process's stand-in: PsInitialSystemProcess.
+    /// Make the stand-in of the process at `index`, before the process runs: false when no page
+    /// is left for it.
+    pub fn make_process_stand_in(index: u16) -> bool {
+        PROCESSES.ensure(index.into(), &KERNEL_PAGES).is_ok()
+    }
+
+    /// The stand-in of the process at `index`, made with the process.
+    fn process_stand_in(index: u16) -> u32 {
+        PROCESSES
+            .address(index.into())
+            .expect("a process's stand-in made with the process")
+            .as_ptr() as u32
+    }
+
+    /// The System process's stand-in: PsInitialSystemProcess. Made at the first call, at boot.
     pub fn system_process() -> u32 {
-        PROCESSES.get() as u32 + (PROCESS_STAND_INS - 1) as u32 * STAND_IN as u32
+        let index = crate::ob::SYSTEM_PROCESS_INDEX;
+        assert!(make_process_stand_in(index), "a page at boot");
+        process_stand_in(index)
     }
 
     /// Whether the running thread stands in for the system worker (a load or an unload).
@@ -1218,10 +1256,8 @@ mod target {
     /// thread stands in for the worker, or runs for no process.
     pub fn current_process() -> u32 {
         match crate::pcr::pcr().threads.process() {
-            Some(index) if !in_worker() => {
-                PROCESSES.get() as u32 + u32::from(index) * STAND_IN as u32
-            }
-            _ => system_process(),
+            Some(index) if !in_worker() => process_stand_in(index),
+            _ => process_stand_in(crate::ob::SYSTEM_PROCESS_INDEX),
         }
     }
 

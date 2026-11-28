@@ -69,13 +69,14 @@ use rtl::array_vec::ArrayVec;
 use sdcache::SdRef;
 
 use crate::level::Dispatch;
+use crate::process::ordinals::Ordinals;
 use crate::sched::dispatcher::Dispatcher;
 use crate::sched::event::EventKind;
 use crate::sched::mutex::MutexId;
 use crate::sched::thread::ThreadId;
 use crate::sched::timer::TimerId;
 use crate::sched::wait::{WaitableId, MAXIMUM_WAIT_OBJECTS};
-use crate::slots::{per_page, Id, KernelId, Record, Slots};
+use crate::slots::{entries_per_page, per_page, Id, KernelId, Record, SideTable, Slots};
 use crate::status::NtStatus;
 
 /// Run `f` on the dispatcher database, where the dispatcher objects' bodies live: the kernel's one
@@ -244,9 +245,14 @@ impl ThreadRecordSet {
             .filter(move |&index| self.0[index as usize / 32] & (1 << (index % 32)) != 0)
     }
 }
-/// How many processes can exist at once: the process pool's records ([`crate::process::pool`]),
-/// one process object each.
-pub const PROCESSES: usize = crate::process::MAX_PROCESSES;
+/// The process index of the System process, which no process object takes: the kernel's own
+/// process, as Windows 2000's System process (PsInitialSystemProcess) is a process of its own
+/// beside the programs'. The tables keyed by process index keep the System process's record there
+/// (the window manager's own class lists, the drivers' stand-in for it).
+pub const SYSTEM_PROCESS_INDEX: u16 = 0;
+/// The process pool's records: [`crate::process::MAX_PROCESSES`] processes at once, from index 1,
+/// past the System process's ([`SYSTEM_PROCESS_INDEX`]).
+pub const PROCESSES: usize = crate::process::MAX_PROCESSES + 1;
 /// The longest object name: MAX_PATH.
 pub const MAX_NAME: usize = 260;
 
@@ -1010,9 +1016,9 @@ impl WaitReferences {
 }
 
 /// The kinds' pools, in two tables. The fixed pools' rows (the threads and the processes): the
-/// kind, its pool's field, its body (`()` for a thread: its record is the dispatcher database's,
-/// at the same index; a process keeps its thread ordinals here, since which
-/// of them are free is its thread objects' lives), how a fresh record is made, and the capacity.
+/// kind, its pool's field, its body (`()`: a thread's record and a process object's body are the
+/// dispatcher database's, at the same index, and a process's thread ordinals are the directory's
+/// side table, [`Directory`]'s `ordinals`), how a fresh record is made, and the capacity.
 /// The slot pools' rows: the kind, its pool's field, its body and how a fresh body is made (a
 /// marker for an event, a semaphore, a mutex and a waitable timer, whose bodies are the dispatcher
 /// database's, at the same index); the pool holds a page of records a chunk. The tables make the
@@ -1048,6 +1054,9 @@ macro_rules! pools {
             segments: ObSlots<ImageSegment, { per_page::<ObRecord<ImageSegment>>() }>,
             names: Names,
             key_sds: KeySds,
+            /// Each process's thread ordinals, at its process object's index, made with the
+            /// object: kept here, since which of them are free is its thread objects' lives.
+            ordinals: SideTable<Ordinals, { entries_per_page::<Ordinals>() }>,
             waits: [WaitReferences; THREADS],
             /// The thread records handed to a thread object since the last sweep's end (a bit per
             /// record): the only ones the sweep's end starts over (see [`Directory::sweep_end`]).
@@ -1070,6 +1079,7 @@ macro_rules! pools {
                     addr_of_mut!((*directory).segments).write(Slots::new());
                     addr_of_mut!((*directory).names).write(Slots::new());
                     addr_of_mut!((*directory).key_sds).write(Slots::new());
+                    addr_of_mut!((*directory).ordinals).write(SideTable::new());
                     let waits = addr_of_mut!((*directory).waits) as *mut WaitReferences;
                     for index in 0..THREADS {
                         waits.add(index).write(WaitReferences::none());
@@ -1167,8 +1177,7 @@ macro_rules! pools {
 pools! {
     fixed {
         Thread => threads: () = || (), THREADS;
-        Process => processes: crate::process::ordinals::Ordinals =
-            crate::process::ordinals::Ordinals::empty, PROCESSES;
+        Process => processes: () = || (), PROCESSES;
     }
     slots {
         Event => events: EventObject = EventObject;
@@ -1485,17 +1494,39 @@ impl Directory {
     }
 
     /// A process object for a new process, unsignaled and still active, holding the process's own
-    /// reference, with every thread ordinal free; none when every process record is in use. Its
-    /// index is the process record's.
+    /// reference, with every thread ordinal free; none when every process record is in use, or no
+    /// page is left for its ordinals, its body or its user-APC records (made at its index the
+    /// first time a process takes it, and kept: nothing is made then, the record free again). Its
+    /// index is the process record's, never the System process's.
     pub fn create_process(&mut self) -> Option<ObjectId> {
+        let first = usize::from(SYSTEM_PROCESS_INDEX) + 1;
         let index = self
             .processes
-            .allocate_in(0..PROCESSES, security::default_sd(ObjectType::Process)?)?;
-        self.processes.records[index as usize].reset();
-        with_bodies(|bodies| {
-            bodies.renew_process_object(index);
-        });
+            .allocate_in(first..PROCESSES, security::default_sd(ObjectType::Process)?)?;
+        let made = self.ordinals.ensure(index.into(), pages()).is_ok()
+            && with_bodies(|bodies| {
+                let made = bodies
+                    .ensure_body(WaitableId::Process(index), pages())
+                    .is_ok();
+                if made {
+                    bodies.renew_process_object(index);
+                }
+                made
+            });
+        if !made {
+            // Undone before anyone saw the id: the record goes back as a deletion leaves it.
+            self.processes.kill(index);
+            return None;
+        }
+        self.ordinals_at(index).reset();
         Some(self.id(ObjectType::Process, index))
+    }
+
+    /// The thread ordinals at process `index`, made with its object.
+    fn ordinals_at(&mut self, index: u16) -> &mut Ordinals {
+        self.ordinals
+            .get_mut(index.into())
+            .expect("a process's ordinals made with its object")
     }
 
     /// A section object holding `section` (the mapping).
@@ -1849,7 +1880,7 @@ impl Directory {
     /// The live process object's thread ordinals.
     pub fn ordinals(&mut self, id: ObjectId) -> Option<&mut crate::process::ordinals::Ordinals> {
         let index = self.body_index(id, ObjectType::Process)?;
-        Some(&mut self.processes.records[index as usize])
+        Some(self.ordinals_at(index))
     }
 
     /// The ordinal the next created thread of the process `process` names takes (see
@@ -1859,7 +1890,11 @@ impl Directory {
     pub fn free_ordinal(&mut self, process: ObjectId) -> Option<u16> {
         let index = self.body_index(process, ObjectType::Process)?;
         let threads = &self.threads.headers;
-        self.processes.records[index as usize].free(|thread| {
+        let ordinals = self
+            .ordinals
+            .get(index.into())
+            .expect("a process's ordinals made with its object");
+        ordinals.free(|thread| {
             thread.kind == ObjectType::Thread
                 && threads
                     .get(thread.index as usize)
@@ -3427,17 +3462,24 @@ mod tests {
     #[test]
     fn the_process_table_fills_and_reuses() {
         let directory = directory();
-        let processes: Vec<_> = (0..PROCESSES)
+        let capacity = crate::process::MAX_PROCESSES;
+        let processes: Vec<_> = (0..capacity)
             .map(|_| directory.create_process().unwrap())
             .collect();
+        assert!(
+            processes
+                .iter()
+                .all(|process| process.index != SYSTEM_PROCESS_INDEX),
+            "the System process's index is no program's"
+        );
         assert_eq!(directory.create_process(), None, "the table is full");
         assert_eq!(
             directory.live_objects(),
-            PROCESSES,
+            capacity,
             "the refusal made nothing"
         );
 
-        let undone = processes[PROCESSES - 1];
+        let undone = processes[capacity - 1];
         assert_eq!(directory.dereference(undone), None, "nothing to finish");
         assert!(!directory.is_live(undone));
         let reused = directory.create_process().unwrap();
@@ -4059,7 +4101,7 @@ mod tests {
             None,
             "the record is free"
         );
-        let ids: Vec<_> = (0..PROCESSES)
+        let ids: Vec<_> = (0..crate::process::MAX_PROCESSES)
             .map(|_| directory.create_process().unwrap())
             .collect();
         assert_eq!(ids[0].index, id.index, "the lowest free record is reused");
