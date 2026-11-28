@@ -2823,7 +2823,7 @@ mod tests {
 
     fn thread() -> crate::sched::testkit::Rec<Thread> {
         let process = Box::leak(Box::new(crate::sched::process::SchedProcess::new(
-            0x0090_0000,
+            crate::mem::phys::PhysAddr::new(0x0090_0000),
             8,
         )));
         crate::sched::testkit::thread(process)
@@ -3361,8 +3361,14 @@ mod tests {
     fn thread_lookups_by_client_id_stay_within_their_process() {
         use crate::sched::process::SchedProcess;
         let directory = directory();
-        let a = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8))) as *mut SchedProcess;
-        let b = Box::leak(Box::new(SchedProcess::new(0x00A0_0000, 8))) as *mut SchedProcess;
+        let a = Box::leak(Box::new(SchedProcess::new(
+            crate::mem::phys::PhysAddr::new(0x0090_0000),
+            8,
+        ))) as *mut SchedProcess;
+        let b = Box::leak(Box::new(SchedProcess::new(
+            crate::mem::phys::PhysAddr::new(0x00A0_0000),
+            8,
+        ))) as *mut SchedProcess;
         // A's main thread, B's main thread, then a created thread of A's: records 3, 4, 5 (past
         // the system threads'), client ids 12, 16, 20 from the client-id table.
         let threads = [a, b, a].map(|owner| {
@@ -3935,7 +3941,10 @@ mod tests {
 
     /// A process for the two-process tests: its scheduling record at its final address.
     fn sched_process(dir: u32) -> &'static mut crate::sched::process::SchedProcess {
-        let process = Box::leak(Box::new(crate::sched::process::SchedProcess::new(dir, 8)));
+        let process = Box::leak(Box::new(crate::sched::process::SchedProcess::new(
+            crate::mem::phys::PhysAddr::new(dir),
+            8,
+        )));
         process
     }
 

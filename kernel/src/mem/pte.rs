@@ -16,9 +16,10 @@
 //! payload in bits 12-31 is a frame, a section page's index or a paging-file slot. Bits 3-8 of an
 //! entry without a tag stay clear, and [`classify`] ignores them.
 //!
-//! PAE (64-bit entries, frame bits 12-35) changes this module, [`super::phys`]'s width and the
-//! tables' geometry in [`super::paging`] ([`super::paging::directory_index`] and its neighbors);
-//! nothing else spells an entry's layout out.
+//! PAE (64-bit entries, frame bits 12-35) changes this module ([`EntryWord`], the bit masks),
+//! [`super::phys`]'s width and the tables' geometry in [`super::paging`]
+//! ([`super::paging::directory_index`] and its neighbors); nothing else spells an entry's layout
+//! out.
 //!
 //! The kinds:
 //! - [`PteKind::Present`] — mapped now; the write bit says whether the hardware may write it.
@@ -37,7 +38,7 @@
 // bits and the soft-entry API below are the target's.
 #![cfg_attr(not(test), allow(dead_code))]
 
-use super::phys::PhysAddr;
+use super::phys::{PhysAddr, PhysWord};
 use super::vm::{
     PAGE_EXECUTE,
     PAGE_EXECUTE_READ,
@@ -52,62 +53,79 @@ use super::vm::{
 
 // --- The hardware's bits ---------------------------------------------------------------------
 
+/// The width of a page-table entry, a directory's or a table's: `u32` under 32-bit paging, `u64`
+/// under PAE. Every entry the kernel stores, reads or passes is one; its flag bits below are typed
+/// so, and the frame field converts to and from a [`PhysAddr`] only here ([`frame_field`],
+/// [`frame_of`]).
+pub type EntryWord = u32;
+
 /// Bit 0: the entry maps its frame (or, in a directory, its page table) now.
-pub const PRESENT: u32 = 1 << 0;
+pub const PRESENT: EntryWord = 1 << 0;
 /// Bit 1: the hardware may write through the entry.
-pub const WRITE: u32 = 1 << 1;
+pub const WRITE: EntryWord = 1 << 1;
 /// Bit 2: ring 3 may reach the page (supervisor-only when clear).
-pub const USER: u32 = 1 << 2;
+pub const USER: EntryWord = 1 << 2;
 /// Bit 3, PWT: writes through the page go straight to memory as well as the cache. Set with
 /// [`CACHE_DISABLE`] on device memory, as Windows 2000's `MI_DISABLE_CACHING` sets both.
-pub const WRITE_THROUGH: u32 = 1 << 3;
+pub const WRITE_THROUGH: EntryWord = 1 << 3;
 /// Bit 4, PCD: the processor does not cache the page. Set (with [`WRITE_THROUGH`]) on device
 /// memory, the display's framebuffer and uncached MMIO ranges, so reads and writes reach the
 /// device.
-pub const CACHE_DISABLE: u32 = 1 << 4;
+pub const CACHE_DISABLE: EntryWord = 1 << 4;
 /// Both caching bits, as an uncached mapping carries them ([`Pte::kernel_rw_uncached`]).
-pub const UNCACHED: u32 = WRITE_THROUGH | CACHE_DISABLE;
+pub const UNCACHED: EntryWord = WRITE_THROUGH | CACHE_DISABLE;
 /// Bit 5: the processor has read through the entry.
-pub const ACCESSED: u32 = 1 << 5;
+pub const ACCESSED: EntryWord = 1 << 5;
 /// Bit 6: the processor has written the page (a table entry's; a directory entry's is ignored).
 /// A writable page with it clear is clean: its frame's contents are the page's only copy, so the
 /// frame may go to standby without a page-out.
-pub const DIRTY: u32 = 1 << 6;
+pub const DIRTY: EntryWord = 1 << 6;
 /// Bit 8: the translation survives a CR3 reload. No F2K entry sets it.
-pub const GLOBAL: u32 = 1 << 8;
+pub const GLOBAL: EntryWord = 1 << 8;
 /// Bits 12-31: the frame's physical address (or a soft entry's payload).
-pub const FRAME_MASK: u32 = 0xFFFF_F000;
+pub const FRAME_MASK: EntryWord = 0xFFFF_F000;
 /// The payload field's shift: a soft entry's slot or index sits this far up.
 pub const FRAME_SHIFT: u32 = super::phys::PAGE_SHIFT;
 
 /// The frame field of `entry`, raw: the frame's physical address, or a soft entry's payload.
-pub const fn frame_bits(entry: u32) -> u32 {
+pub const fn frame_bits(entry: EntryWord) -> EntryWord {
     entry & FRAME_MASK
+}
+
+/// The frame field naming `frame`: its address's bits, in the entry's width (a physical address
+/// is never wider than an entry).
+pub const fn frame_field(frame: PhysAddr) -> EntryWord {
+    frame.get() as EntryWord
+}
+
+/// The frame `entry`'s field names (a soft entry's payload read as one).
+pub const fn frame_of(entry: EntryWord) -> PhysAddr {
+    PhysAddr::new((entry & FRAME_MASK) as PhysWord)
 }
 
 /// A page-directory or page-table entry, as the processor reads it: the frame (or page table) it
 /// names and its flag bits.
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Pte(u32);
+pub struct Pte(EntryWord);
 
 impl Pte {
     /// The entry that maps nothing.
     pub const EMPTY: Pte = Pte(0);
 
     /// The entry whose bits are `raw`, as the processor reads them.
-    pub const fn from_raw(raw: u32) -> Pte {
+    pub const fn from_raw(raw: EntryWord) -> Pte {
         Pte(raw)
     }
 
     /// The entry's bits, as the processor reads them.
-    pub const fn raw(self) -> u32 {
+    pub const fn raw(self) -> EntryWord {
         self.0
     }
 
     /// An entry for `frame` with the flag bits `flags`.
-    pub const fn new(frame: PhysAddr, flags: u32) -> Pte {
-        Pte(frame.get() & FRAME_MASK | flags & !FRAME_MASK)
+    pub const fn new(frame: PhysAddr, flags: EntryWord) -> Pte {
+        Pte(frame_field(frame) & FRAME_MASK | flags & !FRAME_MASK)
     }
 
     /// Whether the entry maps anything.
@@ -152,25 +170,25 @@ impl Pte {
 
     /// The frame (or page table) the entry names, present or not.
     pub const fn frame(self) -> PhysAddr {
-        PhysAddr::new(frame_bits(self.0))
+        frame_of(self.0)
     }
 
     /// A present, writable, supervisor-only entry for `frame`: the kernel's own pages and tables,
     /// and the runtime access windows' directory entries.
     pub const fn kernel_rw(frame: PhysAddr) -> Pte {
-        Pte(frame.get() | PRESENT | WRITE)
+        Pte(frame_field(frame) | PRESENT | WRITE)
     }
 
     /// A present, writable, supervisor-only, uncached entry for `frame`: device memory such as the
     /// display's framebuffer ([`UNCACHED`]: both caching bits, as Windows 2000 sets them).
     pub const fn kernel_rw_uncached(frame: PhysAddr) -> Pte {
-        Pte(frame.get() | PRESENT | WRITE | UNCACHED)
+        Pte(frame_field(frame) | PRESENT | WRITE | UNCACHED)
     }
 
     /// A present entry ring 3 can reach for `frame`, with the further `flags` ([`WRITE`] for a
     /// writable one).
-    pub const fn user_page(frame: PhysAddr, flags: u32) -> Pte {
-        Pte(frame.get() | PRESENT | USER | flags)
+    pub const fn user_page(frame: PhysAddr, flags: EntryWord) -> Pte {
+        Pte(frame_field(frame) | PRESENT | USER | flags)
     }
 }
 
@@ -178,32 +196,32 @@ impl Pte {
 
 /// A non-present entry's committed marker: bit 1, the write bit's place (the processor ignores a
 /// non-present entry's bits).
-pub const COMMITTED: u32 = WRITE;
+pub const COMMITTED: EntryWord = WRITE;
 /// A non-present entry's guard flag: bit 2, the user bit's place.
-pub const GUARD: u32 = USER;
+pub const GUARD: EntryWord = USER;
 /// Bit 1: the write bit on a present entry, the committed marker on a non-present one.
-const WRITE_OR_COMMITTED: u32 = WRITE;
+const WRITE_OR_COMMITTED: EntryWord = WRITE;
 /// Bit 2: the user bit on a present entry, the guard flag on a non-present one.
-const USER_OR_GUARD: u32 = USER;
+const USER_OR_GUARD: EntryWord = USER;
 /// Bits 3-8: kept clear by [`encode`] and ignored by [`classify`]; a soft entry's tags sit in 3-5.
-const RESERVED: u32 = 0x1F8;
+const RESERVED: EntryWord = 0x1F8;
 /// Bits 9-11: the protection index's place.
 pub const INDEX_SHIFT: u32 = 9;
 /// The protection index's width, as a mask once shifted down.
-pub const INDEX_MASK: u32 = 7;
+pub const INDEX_MASK: EntryWord = 7;
 
 /// A non-present entry naming a frame on a backing list: the page is in memory still, off its
 /// working set, and making it present again takes no I/O. The frame rides in bits 12-31.
-pub const TRANSITION: u32 = 1 << 3;
+pub const TRANSITION: EntryWord = 1 << 3;
 /// A non-present entry naming a page of a section, its slot in the section's frame table (bits
 /// 12-31): the page comes in from the section — its file, or a copy-on-write sever of a shared
 /// frame — not from private memory.
-pub const PROTOTYPE: u32 = 1 << 4;
+pub const PROTOTYPE: EntryWord = 1 << 4;
 /// A non-present entry naming a private page's slot in the paging file, counted from one (bits
 /// 12-31): the page comes back with a read.
-pub const PAGE_FILE: u32 = 1 << 5;
+pub const PAGE_FILE: EntryWord = 1 << 5;
 /// All the backing tags.
-pub const SOFT_TAGS: u32 = TRANSITION | PROTOTYPE | PAGE_FILE;
+pub const SOFT_TAGS: EntryWord = TRANSITION | PROTOTYPE | PAGE_FILE;
 
 /// The protection index an entry's bits 9-11 record for a base protection (1-7, 0 no-access).
 pub const fn protection_index(base: u32) -> u32 {
@@ -234,15 +252,24 @@ pub const fn protection_of_index(index: u32) -> u32 {
 }
 
 /// The protection index `entry` records in its bits 9-11.
-pub const fn index_bits(entry: u32) -> u32 {
-    (entry >> INDEX_SHIFT) & INDEX_MASK
+#[allow(
+    clippy::unnecessary_cast,
+    reason = "a narrowing once an entry is wider than u32"
+)]
+pub const fn index_bits(entry: EntryWord) -> u32 {
+    ((entry >> INDEX_SHIFT) & INDEX_MASK) as u32
+}
+
+/// The index bits recording a base protection, in place: what an encoder ORs into an entry.
+pub const fn index_field(base: u32) -> EntryWord {
+    (protection_index(base) as EntryWord) << INDEX_SHIFT
 }
 
 /// The entry's backing tag: one of [`TRANSITION`], [`PROTOTYPE`] and [`PAGE_FILE`], or zero for a
 /// hard (present, committed or uncommitted) entry. On a present entry bits 3-5 are the hardware's
 /// cache and accessed bits, not a tag, so the tags read only on a non-present one — a soft entry is
 /// never present.
-pub const fn backing_tag(entry: u32) -> u32 {
+pub const fn backing_tag(entry: EntryWord) -> EntryWord {
     if entry & PRESENT != 0 {
         0
     } else {
@@ -252,21 +279,31 @@ pub const fn backing_tag(entry: u32) -> u32 {
 
 /// A soft entry's payload (bits 12-31): the named frame, or the paging-file slot / section page
 /// index shifted up into the field.
-pub const fn backing_payload(entry: u32) -> u32 {
+pub const fn backing_payload(entry: EntryWord) -> EntryWord {
     frame_bits(entry)
 }
 
+/// The payload field naming slot `slot` (a paging-file slot, a section page's index).
+pub const fn slot_field(slot: u32) -> EntryWord {
+    (slot as EntryWord) << FRAME_SHIFT
+}
+
+/// The slot a soft entry's payload names (see [`slot_field`]).
+pub const fn payload_slot(entry: EntryWord) -> u32 {
+    (backing_payload(entry) >> FRAME_SHIFT) as u32
+}
+
 /// The base protection a soft entry records in its protection index bits.
-pub const fn soft_protect(entry: u32) -> u32 {
+pub const fn soft_protect(entry: EntryWord) -> u32 {
     protection_of_index(index_bits(entry))
 }
 
 /// The soft entry for a page backed by `tag` with `payload` (a frame, or a slot/index shifted up)
 /// and `protect`: the processor ignores a non-present entry's bits, so they carry the page's state.
-pub fn encode_backing(tag: u32, payload: u32, protect: u32) -> u32 {
+pub fn encode_backing(tag: EntryWord, payload: EntryWord, protect: u32) -> EntryWord {
     debug_assert!(tag != 0 && tag & !SOFT_TAGS == 0, "one backing tag");
     debug_assert!(payload & !FRAME_MASK == 0, "the payload is page-aligned");
-    tag | payload | (protection_index(protect & 0xFF) << INDEX_SHIFT)
+    tag | payload | index_field(protect & 0xFF)
 }
 
 /// What a page's entry says about the page.
@@ -287,7 +324,7 @@ pub enum PteKind {
 }
 
 /// The kind of page `entry` describes.
-pub fn classify(entry: u32) -> PteKind {
+pub fn classify(entry: EntryWord) -> PteKind {
     if entry & PRESENT != 0 {
         // A present entry with a copy-on-write protection index is held copy-on-write; the
         // write bit on any other present entry is read through `writable` instead.
@@ -312,9 +349,10 @@ pub fn classify(entry: u32) -> PteKind {
 /// The kind and the protection must agree: a present page takes a readable or writable
 /// protection, a copy-on-write page a copy-on-write one, a demand-zero page no frame at all,
 /// and a transition page a named frame.
-pub fn encode(kind: PteKind, frame: u32, protect: u32) -> u32 {
+pub fn encode(kind: PteKind, frame: PhysAddr, protect: u32) -> EntryWord {
     let base = protect & 0xFF;
-    let index = protection_index(base) << INDEX_SHIFT;
+    let index = index_field(base);
+    let frame = frame_field(frame);
     match kind {
         PteKind::Uncommitted => 0,
         PteKind::Present => {
@@ -374,12 +412,12 @@ pub fn encode(kind: PteKind, frame: u32, protect: u32) -> u32 {
 }
 
 /// A page's kind, frame and protection, from its entry; none for an uncommitted page.
-pub fn decode(entry: u32) -> Option<(PteKind, u32, u32)> {
+pub fn decode(entry: EntryWord) -> Option<(PteKind, PhysAddr, u32)> {
     let kind = classify(entry);
     if kind == PteKind::Uncommitted {
         return None;
     }
-    let frame = entry & FRAME_MASK;
+    let frame = frame_of(entry);
     let index = index_bits(entry);
     let protect = match kind {
         // A present entry written before the protection was recorded carries index 0: it reads
@@ -399,13 +437,13 @@ pub fn decode(entry: u32) -> Option<(PteKind, u32, u32)> {
 
 /// Whether the hardware write bit is set: a present page the CPU may write. Every non-present
 /// entry reads false, whatever its committed marker says.
-pub fn writable(entry: u32) -> bool {
+pub fn writable(entry: EntryWord) -> bool {
     entry & PRESENT != 0 && entry & WRITE_OR_COMMITTED != 0
 }
 
 /// Whether the entry says the page is committed: present, or marked committed while not
 /// present (guard, demand-zero and transition pages all keep their commit charge).
-pub fn committed(entry: u32) -> bool {
+pub fn committed(entry: EntryWord) -> bool {
     entry & (PRESENT | WRITE_OR_COMMITTED) != 0
 }
 
@@ -445,7 +483,7 @@ mod tests {
     #[test]
     fn every_field_of_an_entry_round_trips() {
         type Read = fn(Pte) -> bool;
-        let fields: [(u32, Read); 8] = [
+        let fields: [(EntryWord, Read); 8] = [
             (PRESENT, Pte::present),
             (WRITE, Pte::writable),
             (USER, Pte::user),
@@ -465,7 +503,7 @@ mod tests {
                     .fold(0, |flags, (_, &(bit, _))| flags | bit);
                 let entry = Pte::new(frame, flags);
                 assert_eq!(entry.frame(), frame);
-                assert_eq!(entry.raw(), frame.get() | flags);
+                assert_eq!(entry.raw(), frame_field(frame) | flags);
                 assert_eq!(Pte::from_raw(entry.raw()), entry);
                 for (i, &(_, read)) in fields.iter().enumerate() {
                     assert_eq!(read(entry), set & 1 << i != 0, "field {i} of {flags:#x}");
@@ -522,11 +560,15 @@ mod tests {
         assert_eq!(backing_tag(COMMITTED), 0);
     }
 
-    const FRAME: u32 = 0x0050_0000;
-    const OTHER: u32 = 0x0070_0000;
+    const FRAME: PhysAddr = PhysAddr::new(0x0050_0000);
+    const OTHER: PhysAddr = PhysAddr::new(0x0070_0000);
+    const NONE: PhysAddr = PhysAddr::ZERO;
+    /// The two frames' fields, for entries built bit by bit.
+    const F: EntryWord = frame_field(FRAME);
+    const O: EntryWord = frame_field(OTHER);
 
     /// The (kind, frame, protection) cases every other test reuses.
-    const CASES: &[(PteKind, u32, u32)] = &[
+    const CASES: &[(PteKind, PhysAddr, u32)] = &[
         (PteKind::Present, FRAME, PAGE_READONLY),
         (PteKind::Present, FRAME, PAGE_READWRITE),
         (PteKind::Present, FRAME, PAGE_EXECUTE),
@@ -535,10 +577,10 @@ mod tests {
         (PteKind::CopyOnWrite, FRAME, PAGE_WRITECOPY),
         (PteKind::CopyOnWrite, FRAME, PAGE_EXECUTE_WRITECOPY),
         (PteKind::Guard, OTHER, PAGE_READWRITE | PAGE_GUARD),
-        (PteKind::Guard, 0, PAGE_READONLY | PAGE_GUARD),
-        (PteKind::DemandZero, 0, PAGE_READWRITE),
-        (PteKind::DemandZero, 0, PAGE_READONLY),
-        (PteKind::DemandZero, 0, PAGE_NOACCESS),
+        (PteKind::Guard, NONE, PAGE_READONLY | PAGE_GUARD),
+        (PteKind::DemandZero, NONE, PAGE_READWRITE),
+        (PteKind::DemandZero, NONE, PAGE_READONLY),
+        (PteKind::DemandZero, NONE, PAGE_NOACCESS),
         (PteKind::Transition, OTHER, PAGE_READWRITE),
         (PteKind::Transition, OTHER, PAGE_READONLY),
     ];
@@ -591,7 +633,7 @@ mod tests {
             FRAME,
             PAGE_WRITECOPY
         )));
-        assert!(!writable(encode(PteKind::DemandZero, 0, PAGE_READWRITE)));
+        assert!(!writable(encode(PteKind::DemandZero, NONE, PAGE_READWRITE)));
         assert!(!writable(encode(
             PteKind::Transition,
             OTHER,
@@ -612,11 +654,11 @@ mod tests {
         assert_eq!(cow & PRESENT, PRESENT);
         assert_eq!(classify(cow), PteKind::CopyOnWrite);
         assert_eq!(
-            decode(FRAME | PRESENT | USER_OR_GUARD | (3 << INDEX_SHIFT)),
+            decode(F | PRESENT | USER_OR_GUARD | (3 << INDEX_SHIFT)),
             Some((PteKind::CopyOnWrite, FRAME, PAGE_WRITECOPY))
         );
         assert_eq!(
-            decode(FRAME | PRESENT | USER_OR_GUARD | (7 << INDEX_SHIFT)),
+            decode(F | PRESENT | USER_OR_GUARD | (7 << INDEX_SHIFT)),
             Some((PteKind::CopyOnWrite, FRAME, PAGE_EXECUTE_WRITECOPY))
         );
         // Any other present entry is a plain present page.
@@ -631,25 +673,25 @@ mod tests {
     #[test]
     fn demand_zero_transition_and_guard_tell_apart() {
         assert_eq!(classify(WRITE_OR_COMMITTED), PteKind::DemandZero);
-        assert_eq!(classify(WRITE_OR_COMMITTED | OTHER), PteKind::Transition);
+        assert_eq!(classify(WRITE_OR_COMMITTED | O), PteKind::Transition);
         assert_eq!(classify(WRITE_OR_COMMITTED | USER_OR_GUARD), PteKind::Guard);
         assert_eq!(
-            classify(WRITE_OR_COMMITTED | USER_OR_GUARD | OTHER),
+            classify(WRITE_OR_COMMITTED | USER_OR_GUARD | O),
             PteKind::Guard,
             "the guard flag wins over a named frame"
         );
         assert_eq!(
-            decode(WRITE_OR_COMMITTED | OTHER),
+            decode(WRITE_OR_COMMITTED | O),
             Some((PteKind::Transition, OTHER, PAGE_NOACCESS))
         );
         assert_eq!(
             decode(WRITE_OR_COMMITTED | (2 << INDEX_SHIFT)),
-            Some((PteKind::DemandZero, 0, PAGE_READWRITE))
+            Some((PteKind::DemandZero, NONE, PAGE_READWRITE))
         );
         // All three keep the commit charge.
         for entry in [
             WRITE_OR_COMMITTED,
-            WRITE_OR_COMMITTED | OTHER,
+            WRITE_OR_COMMITTED | O,
             WRITE_OR_COMMITTED | USER_OR_GUARD,
         ] {
             assert!(committed(entry));
@@ -667,7 +709,7 @@ mod tests {
         assert_eq!(classify(0), PteKind::Uncommitted);
         assert_eq!(decode(0), None);
         assert_eq!(
-            classify(FRAME),
+            classify(F),
             PteKind::Uncommitted,
             "a frame alone names nothing"
         );
@@ -675,16 +717,13 @@ mod tests {
         assert_eq!(classify(1 << 8), PteKind::Uncommitted);
         // Reserved bits do not change a kind.
         assert_eq!(classify(WRITE_OR_COMMITTED | (1 << 5)), PteKind::DemandZero);
-        assert_eq!(classify(FRAME | PRESENT | (1 << 6)), PteKind::Present);
+        assert_eq!(classify(F | PRESENT | (1 << 6)), PteKind::Present);
         // The encoder never sets them.
         for &(kind, frame, protect) in CASES {
             assert_eq!(encode(kind, frame, protect) & RESERVED, 0, "{kind:?}");
         }
         // Bit 0 decides: a present entry is present even with bit 1 set too.
-        assert_eq!(
-            classify(FRAME | PRESENT | WRITE_OR_COMMITTED),
-            PteKind::Present
-        );
+        assert_eq!(classify(F | PRESENT | WRITE_OR_COMMITTED), PteKind::Present);
     }
 
     /// Entries written before the protection was recorded: a present entry with protection
@@ -692,11 +731,11 @@ mod tests {
     #[test]
     fn an_unrecorded_protection_reads_from_the_write_bit() {
         assert_eq!(
-            decode(FRAME | PRESENT | USER_OR_GUARD | WRITE_OR_COMMITTED),
+            decode(F | PRESENT | USER_OR_GUARD | WRITE_OR_COMMITTED),
             Some((PteKind::Present, FRAME, PAGE_READWRITE))
         );
         assert_eq!(
-            decode(FRAME | PRESENT | USER_OR_GUARD),
+            decode(F | PRESENT | USER_OR_GUARD),
             Some((PteKind::Present, FRAME, PAGE_READONLY))
         );
     }
@@ -712,7 +751,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn transition_names_a_frame() {
-        encode(PteKind::Transition, 0, PAGE_READWRITE);
+        encode(PteKind::Transition, NONE, PAGE_READWRITE);
     }
 
     /// A present page is not held copy-on-write: the encoder refuses the mix.

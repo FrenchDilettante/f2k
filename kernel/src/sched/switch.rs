@@ -179,7 +179,7 @@ fn debug_assert_on_own_space(dispatch: &mut crate::level::At<crate::level::Dispa
         // SAFETY: a running thread's address-space process outlives its scope on it.
         let dir_phys = unsafe { (*space).dir_phys() };
         assert_eq!(
-            crate::mem::paging::cr3_directory(cr3).get(),
+            crate::mem::paging::cr3_directory(cr3),
             dir_phys,
             "a thread resumes on its address-space directory"
         );
@@ -341,7 +341,7 @@ pub struct SwitchPlan {
     pub same_space: bool,
     /// The directory base to load into CR3 — the new thread's address-space process's, only when
     /// the address space changes; a switch within one loads nothing.
-    pub cr3: Option<u32>,
+    pub cr3: Option<crate::mem::phys::PhysAddr>,
     /// The base written into the TEB segment descriptor: the new thread's own TEB page, on every
     /// switch.
     pub teb_base: u32,
@@ -394,8 +394,14 @@ mod tests {
     /// Two threads of one process and a third of another, with machine state filled in.
     fn threads() -> (Rec<Thread>, Rec<Thread>, Rec<Thread>) {
         crate::sched::testkit::dispatcher();
-        let p1 = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
-        let p2 = Box::leak(Box::new(SchedProcess::new(0x00B0_0000, 8)));
+        let p1 = Box::leak(Box::new(SchedProcess::new(
+            crate::mem::phys::PhysAddr::new(0x0090_0000),
+            8,
+        )));
+        let p2 = Box::leak(Box::new(SchedProcess::new(
+            crate::mem::phys::PhysAddr::new(0x00B0_0000),
+            8,
+        )));
         let of = |process: *mut SchedProcess, teb: u32, slot: u32| {
             let mut t = crate::sched::testkit::thread(process);
             t.teb_va = teb;
@@ -428,7 +434,10 @@ mod tests {
 
         let cross_process = switch_plan(&a, &cross, false);
         assert!(!cross_process.same_space);
-        assert_eq!(cross_process.cr3, Some(0x00B0_0000));
+        assert_eq!(
+            cross_process.cr3,
+            Some(crate::mem::phys::PhysAddr::new(0x00B0_0000))
+        );
         assert_eq!(cross_process.teb_base, TEB_PAGE);
     }
 
@@ -441,23 +450,29 @@ mod tests {
         let (mut attacher, own_sibling, of_target) = threads();
         let target = of_target.process;
         // SAFETY: the target's record is leaked; the thread is attached to its own process.
-        assert_eq!(unsafe { attacher.attach_space(target) }, Some(0x00B0_0000));
+        assert_eq!(
+            unsafe { attacher.attach_space(target) },
+            Some(crate::mem::phys::PhysAddr::new(0x00B0_0000))
+        );
 
         let back_from_sibling = switch_plan(&own_sibling, &attacher, false);
         assert_eq!(
             back_from_sibling.cr3,
-            Some(0x00B0_0000),
+            Some(crate::mem::phys::PhysAddr::new(0x00B0_0000)),
             "resumes on the attached directory"
         );
         let to_sibling = switch_plan(&attacher, &own_sibling, false);
-        assert_eq!(to_sibling.cr3, Some(0x0090_0000));
+        assert_eq!(
+            to_sibling.cr3,
+            Some(crate::mem::phys::PhysAddr::new(0x0090_0000))
+        );
         assert!(switch_plan(&of_target, &attacher, false).same_space);
         assert_eq!(switch_plan(&attacher, &of_target, false).cr3, None);
 
         attacher.detach_space();
         assert_eq!(
             switch_plan(&of_target, &attacher, false).cr3,
-            Some(0x0090_0000)
+            Some(crate::mem::phys::PhysAddr::new(0x0090_0000))
         );
         assert!(switch_plan(&own_sibling, &attacher, false).same_space);
     }

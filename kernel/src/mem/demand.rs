@@ -64,7 +64,7 @@ pub fn map_with(
             vm::map_demand_zero(pages, page, protect)
         }
         Resolution::Transition => {
-            let frame = pte::frame_bits(entry);
+            let frame = pte::frame_of(entry);
             // The frame is on a backing list and held by this entry: take it back into use — off
             // the list, the hold dropped — before mapping it again.
             pages.activate_frame(frame);
@@ -149,7 +149,7 @@ pub fn scan_pages(
     victims: &mut [super::backing::Victim],
     start: u32,
     end: u32,
-    entry: impl Fn(u32) -> u32,
+    entry: impl Fn(u32) -> pte::EntryWord,
     mut chunk_live: impl FnMut(u32) -> bool,
 ) -> (usize, u32) {
     let mut count = 0;
@@ -162,8 +162,8 @@ pub fn scan_pages(
                 return false;
             }
             let e = entry(va);
-            let frame = pte::frame_bits(e);
-            if e & pte::PRESENT != 0 && frame != 0 {
+            let frame = pte::frame_of(e);
+            if e & pte::PRESENT != 0 && frame != super::phys::PhysAddr::ZERO {
                 let protect = vm::decode(e)
                     .map(|(_, protect)| protect)
                     .unwrap_or_else(|| pte::soft_protect(e));
@@ -210,7 +210,7 @@ pub mod target {
     #[derive(Clone, Copy)]
     struct Victim {
         va: u32,
-        frame: u32,
+        frame: PhysAddr,
         protect: u32,
         committed: bool,
     }
@@ -219,7 +219,7 @@ pub mod target {
         /// An unused victim slot.
         const NONE: Victim = Victim {
             va: 0,
-            frame: 0,
+            frame: PhysAddr::ZERO,
             protect: 0,
             committed: false,
         };
@@ -264,7 +264,7 @@ pub mod target {
     impl Relief {
         /// Record a victim the trim's `resolve` decoded: its page, frame and protection, waiting
         /// for its `evict_dirty` to commit it to the write-out.
-        pub fn record_victim(&self, va: u32, frame: u32, protect: u32) {
+        pub fn record_victim(&self, va: u32, frame: PhysAddr, protect: u32) {
             let count = self.0.count.get();
             if count < BATCH {
                 self.0.victims[count].set(Victim {
@@ -284,7 +284,7 @@ pub mod target {
             let _ = slot;
             for cell in &self.0.victims[..self.0.count.get()] {
                 let victim = cell.get();
-                if !victim.committed && PhysAddr::new(victim.frame).pfn() == frame {
+                if !victim.committed && victim.frame.pfn() == frame {
                     cell.set(Victim {
                         committed: true,
                         ..victim
@@ -373,7 +373,7 @@ pub mod target {
                 } = db.parts();
                 for (index, cell) in victims.iter().enumerate() {
                     let victim = cell.get();
-                    let fid = PhysAddr::new(victim.frame).pfn();
+                    let fid = victim.frame.pfn();
                     if frames.entry(fid).state != FrameState::Modified {
                         continue;
                     }
@@ -381,7 +381,7 @@ pub mod target {
                         continue;
                     }
                     let page = &mut batch[total * PAGE_SIZE..(total + 1) * PAGE_SIZE];
-                    scratch.read_frame(PhysAddr::new(victim.frame), 0, page);
+                    scratch.read_frame(victim.frame, 0, page);
                     copied[index] = true;
                     page_of[index] = total as u32;
                     total += 1;
@@ -444,7 +444,7 @@ pub mod target {
                     continue;
                 }
                 let victim = cell.get();
-                let fid = PhysAddr::new(victim.frame).pfn();
+                let fid = victim.frame.pfn();
                 if page_of[index] >= want as u32 {
                     mem::with_database(|db| db.parts().frames.release(fid, FrameState::Modified));
                     continue;
@@ -452,14 +452,12 @@ pub mod target {
                 let slot = first + u64::from(page_of[index]);
                 let current = CurrentPages.entry(victim.va);
                 if pte::backing_tag(current) == pte::TRANSITION
-                    && pte::backing_payload(current) == victim.frame
+                    && pte::frame_of(current) == victim.frame
                 {
                     mem::with_database(|db| db.parts().frames.release(fid, FrameState::Standby));
                     vm::name_page_file(&mut CurrentPages, victim.va, slot as u32, victim.protect);
                     freed += 1;
-                } else if current & pte::PRESENT != 0
-                    && pte::backing_payload(current) == victim.frame
-                {
+                } else if current & pte::PRESENT != 0 && pte::frame_of(current) == victim.frame {
                     // Re-faulted while the write was in flight: the frame is in use again (its
                     // entry is present, naming it); the slot goes back.
                     let _ = with_paging_file(|file| {
@@ -499,7 +497,7 @@ pub mod target {
     /// one naming its frame — is instead written out from there: the frame off the standby list,
     /// its hold dropped (the entry is about to name a paging-file slot), onto the Modified list.
     fn evict(victim: Victim) -> bool {
-        let fid = PhysAddr::new(victim.frame).pfn();
+        let fid = victim.frame.pfn();
         let mut queued = false;
         let mut already_soft = false;
         mem::with_database(|db| {
@@ -507,9 +505,7 @@ pub mod target {
             // The entry as it is now, inside the borrow: one re-faulted meanwhile names another
             // frame, and is left alone.
             let entry = CurrentPages.entry(victim.va);
-            if pte::backing_tag(entry) == pte::TRANSITION
-                && pte::backing_payload(entry) == victim.frame
-            {
+            if pte::backing_tag(entry) == pte::TRANSITION && pte::frame_of(entry) == victim.frame {
                 let held = frames.entry(fid).state == FrameState::Standby
                     && frames.entry(fid).share_count > 0;
                 if held {
@@ -524,7 +520,7 @@ pub mod target {
             if frames.entry(fid).share_count > 0 {
                 return;
             }
-            if entry & pte::PRESENT == 0 || pte::backing_payload(entry) != victim.frame {
+            if entry & pte::PRESENT == 0 || pte::frame_of(entry) != victim.frame {
                 return;
             }
             if frames.entry(fid).state != FrameState::Active {
@@ -548,7 +544,7 @@ pub mod target {
             let Parts { frames, .. } = db.parts();
             for (index, cell) in victims.iter().enumerate() {
                 if copied[index] {
-                    frames.release(PhysAddr::new(cell.get().frame).pfn(), state);
+                    frames.release(cell.get().frame.pfn(), state);
                 }
             }
         });
@@ -604,74 +600,75 @@ mod tests {
         apply(pages, va, write, user)
     }
 
-    use crate::mem::pte::INDEX_SHIFT;
+    use crate::mem::phys::{PhysAddr, PhysWord};
+    use crate::mem::pte::{EntryWord, INDEX_SHIFT};
 
     /// The frame a transition entry names.
-    const FRAME: u32 = 0x0050_0000;
+    const FRAME: PhysAddr = PhysAddr::new(0x0050_0000);
 
     /// Page tables as a map, frames numbered from 1 MiB: their extra holders, their words and
     /// their contents (a frame's first word stands for its contents), the frames given back, and
     /// how many more frames there are to give (none: no end).
     #[derive(Default)]
     struct Fake {
-        entries: HashMap<u32, u32>,
+        entries: HashMap<u32, EntryWord>,
         next: u32,
-        freed: Vec<u32>,
-        activated: Vec<u32>,
-        holders: HashMap<u32, u32>,
-        words: HashMap<(u32, u32), u32>,
+        freed: Vec<PhysAddr>,
+        activated: Vec<PhysAddr>,
+        holders: HashMap<PhysAddr, u32>,
+        words: HashMap<(PhysAddr, u32), PhysWord>,
         budget: Option<u32>,
         grants: std::rc::Rc<std::cell::Cell<u32>>,
     }
 
     impl Pages for Fake {
-        fn entry(&self, va: u32) -> u32 {
+        fn entry(&self, va: u32) -> EntryWord {
             *self.entries.get(&va).unwrap_or(&0)
         }
 
-        fn set_entry(&mut self, va: u32, entry: u32) {
+        fn set_entry(&mut self, va: u32, entry: EntryWord) {
             self.entries.insert(va, entry);
         }
 
-        fn zeroed_frame(&mut self) -> Option<u32> {
+        fn zeroed_frame(&mut self) -> Option<PhysAddr> {
             if self.grants.get() > 0 {
                 self.grants.set(self.grants.get() - 1);
             } else if let Some(budget) = &mut self.budget {
                 *budget = budget.checked_sub(1)?;
             }
             self.next += 1;
-            Some(0x0010_0000 + self.next * PAGE)
+            Some(PhysAddr::new(0x0010_0000 + self.next * PAGE))
         }
 
-        fn free_frame(&mut self, frame: u32) {
+        fn free_frame(&mut self, frame: PhysAddr) {
             match self.holders.get_mut(&frame) {
                 Some(extra) if *extra > 0 => *extra -= 1,
                 _ => self.freed.push(frame),
             }
         }
 
-        fn share_frame(&mut self, frame: u32) {
+        fn share_frame(&mut self, frame: PhysAddr) {
             *self.holders.entry(frame).or_default() += 1;
         }
 
-        fn frame_shared(&self, frame: u32) -> bool {
+        fn frame_shared(&self, frame: PhysAddr) -> bool {
             self.holders.get(&frame).is_some_and(|&extra| extra > 0)
         }
 
-        fn copy_frame(&mut self, from: u32, to: u32) {
+        fn copy_frame(&mut self, from: PhysAddr, to: PhysAddr) {
             let word = self.frame_word(from, 0);
             self.set_frame_word(to, 0, word);
         }
 
-        fn frame_word(&self, frame: u32, index: u32) -> u32 {
+        fn frame_word(&self, frame: PhysAddr, index: u32) -> PhysWord {
             *self.words.get(&(frame, index)).unwrap_or(&0)
         }
 
-        fn set_frame_word(&mut self, frame: u32, index: u32, value: u32) {
+        fn set_frame_word(&mut self, frame: PhysAddr, index: u32, value: PhysWord) {
             self.words.insert((frame, index), value);
         }
 
-        fn activate_frame(&mut self, frame: u32) {
+        fn activate_frame(&mut self, frame: PhysAddr) {
             self.activated.push(frame);
             // The transition entry's hold on the frame drops with the re-fault.
             if let Some(extra) = self.holders.get_mut(&frame) {
@@ -681,18 +678,22 @@ mod tests {
     }
 
     /// Plant an entry in the fake tables.
-    fn plant(pages: &mut Fake, va: u32, entry: u32) {
+    fn plant(pages: &mut Fake, va: u32, entry: EntryWord) {
         pages.entries.insert(va, entry);
     }
 
     /// A committed, never touched page at `page`: a demand-zero entry, as a commit writes it.
     fn demand_zero(pages: &mut Fake, page: u32, protect: u32) {
-        plant(pages, page, pte::encode(PteKind::DemandZero, 0, protect));
+        plant(
+            pages,
+            page,
+            pte::encode(PteKind::DemandZero, PhysAddr::ZERO, protect),
+        );
     }
 
     /// A page evicted to a backing list: the frame named, the transition tag set, the
     /// protection in the index bits — the entry a fault reads as a transition page.
-    fn transition(pages: &mut Fake, page: u32, frame: u32, protect: u32) {
+    fn transition(pages: &mut Fake, page: u32, frame: PhysAddr, protect: u32) {
         let index = match protect {
             vm::PAGE_READONLY => 1,
             vm::PAGE_READWRITE => 2,
@@ -702,7 +703,7 @@ mod tests {
         plant(
             pages,
             page,
-            pte::TRANSITION | frame | (index << INDEX_SHIFT),
+            pte::TRANSITION | pte::frame_field(frame) | (index << INDEX_SHIFT),
         );
     }
 
@@ -718,7 +719,7 @@ mod tests {
         assert_eq!(pte::classify(entry), PteKind::Present);
         assert!(pte::writable(entry));
         let (_, frame, protect) = pte::decode(entry).unwrap();
-        assert_ne!(frame, 0);
+        assert_ne!(frame, PhysAddr::ZERO);
         assert_eq!(protect, PAGE_READWRITE);
         assert_eq!(pages.frame_word(frame, 0), 0, "the frame is zeroed");
         // From the kernel, and on a write, the same.
@@ -743,7 +744,7 @@ mod tests {
             (PteKind::Present, PAGE_READONLY)
         );
         assert!(!pte::writable(pages.entry(page)));
-        assert_ne!(frame, 0);
+        assert_ne!(frame, PhysAddr::ZERO);
         demand_zero(&mut pages, page + PAGE, PAGE_READONLY);
         let before = pages.entry(page + PAGE);
         assert!(!apply4(&mut pages, page + PAGE, true, true));
@@ -949,8 +950,8 @@ mod tests {
     }
 
     /// A present entry's frame and protection: what a scan reads off a page.
-    fn present(va: u32, frame: u32, protect: u32) -> u32 {
-        super::vm::encode(frame, protect) | (1 << 5) | (1 << 6)
+    fn present(va: u32, frame: u32, protect: u32) -> EntryWord {
+        super::vm::encode(PhysAddr::new(frame), protect) | (1 << 5) | (1 << 6)
     }
 
     /// A walk over a range whose chunks all have tables visits every page, in order.
@@ -1004,10 +1005,10 @@ mod tests {
         use crate::mem::backing::Victim;
         let mut victims = [Victim {
             va: 0,
-            frame: 0,
+            frame: PhysAddr::ZERO,
             protect: 0,
         }; 4];
-        let entries = |va: u32| -> u32 {
+        let entries = |va: u32| -> EntryWord {
             match va {
                 0x2000 => present(0x2000, 0x0010_0000, PAGE_READWRITE),
                 0x3000 => present(0x3000, 0x0020_0000, PAGE_READONLY),
@@ -1021,7 +1022,7 @@ mod tests {
             scan_pages(&mut victims, 0, 2 * CHUNK + PAGE, entries, |va| va != CHUNK);
         assert_eq!(count, 4);
         assert_eq!(victims[0].va, 0x2000);
-        assert_eq!(victims[0].frame, 0x0010_0000);
+        assert_eq!(victims[0].frame, PhysAddr::new(0x0010_0000));
         assert_eq!(victims[0].protect, PAGE_READWRITE);
         assert_eq!(victims[1].va, 0x3000);
         assert_eq!(victims[2].va, 0x4000);
@@ -1030,7 +1031,7 @@ mod tests {
         // With room for only two, the scan stops where the victims filled.
         let mut two = [Victim {
             va: 0,
-            frame: 0,
+            frame: PhysAddr::ZERO,
             protect: 0,
         }; 2];
         let (count, stop) = scan_pages(&mut two, 0, 2 * CHUNK + PAGE, entries, |va| va != CHUNK);

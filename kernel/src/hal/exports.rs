@@ -361,7 +361,7 @@ pub fn mm_map_io_space(
     physical_address: u64,
     number_of_bytes: u32,
     cache_enable: bool,
-    map_page: impl FnMut(u32, u32, bool),
+    map_page: impl FnMut(u32, crate::mem::phys::PhysAddr, bool),
 ) -> *mut c_void {
     mmio.map(physical_address, number_of_bytes, cache_enable, map_page)
         .map_or(core::ptr::null_mut(), |va| va as *mut c_void)
@@ -1019,7 +1019,7 @@ mod tests {
         let mut mmio = dma::MmioMappings::new(region);
         let mut pages = Vec::new();
         let va = mm_map_io_space(&mut mmio, 0xE000_0800, 0x1000, false, |va, phys, cache| {
-            pages.push((va, phys, cache))
+            pages.push((va, phys.get(), cache))
         });
         assert_eq!(va as u32, 0xC280_0800);
         assert_eq!(

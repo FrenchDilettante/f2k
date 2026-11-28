@@ -350,7 +350,7 @@ mod tests {
     /// quantum but is boosted in the foreground.
     #[test]
     fn a_process_takes_a_new_tables_quantum_and_boost() {
-        let mut sched = SchedProcess::new(0, 8);
+        let mut sched = SchedProcess::new(crate::mem::phys::PhysAddr::ZERO, 8);
         let normal = crate::process::NORMAL_PRIORITY_CLASS;
         apply(&QuantumTable::new(2, false), &mut sched, true, normal);
         assert_eq!((sched.thread_quantum(), sched.foreground_boost()), (18, 2));

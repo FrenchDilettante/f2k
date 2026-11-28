@@ -125,7 +125,10 @@ mod tests {
     }
 
     fn process() -> *mut SchedProcess {
-        let p = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
+        let p = Box::leak(Box::new(SchedProcess::new(
+            crate::mem::phys::PhysAddr::new(0x0090_0000),
+            8,
+        )));
         p as *mut SchedProcess
     }
 

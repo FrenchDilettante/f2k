@@ -468,17 +468,17 @@ pub fn write_back_pages(
     end: u32,
     view_offset: u32,
     section_size: u32,
-    read_frame: &mut impl FnMut(u32, &mut [u8]) -> bool,
+    read_frame: &mut impl FnMut(crate::mem::phys::PhysAddr, &mut [u8]) -> bool,
     write_file: &mut impl FnMut(u32, &[u8]) -> bool,
 ) -> bool {
-    use crate::mem::pte::{FRAME_MASK, PRESENT};
+    use crate::mem::pte::{frame_of, PRESENT};
     use crate::mem::vm::PAGE;
     let mut buf = [0u8; PAGE as usize];
     let mut va = base;
     while va < end {
         let entry = pages.entry(va);
         if entry & PRESENT != 0 {
-            let frame = entry & FRAME_MASK;
+            let frame = frame_of(entry);
             if !read_frame(frame, &mut buf) {
                 return false;
             }
@@ -1006,11 +1006,7 @@ mod target {
                                 &mut CurrentPages,
                                 0,
                                 |frame| {
-                                    crate::mem::paging::write_frame(
-                                        crate::mem::phys::PhysAddr::new(frame),
-                                        0,
-                                        page,
-                                    );
+                                    crate::mem::paging::write_frame(frame, 0, page);
                                 },
                             );
                         }
@@ -1093,7 +1089,7 @@ mod target {
         let length = (file.size as usize).min(IMAGE_HEADERS);
         let held = ob::locked(|directory| {
             let frame = segment_frames(directory, segment).made(&CurrentPages, 0)?;
-            crate::mem::paging::read_frame(crate::mem::phys::PhysAddr::new(frame), 0, &mut page);
+            crate::mem::paging::read_frame(frame, 0, &mut page);
             Some(())
         });
         if held.is_none() && crate::fs::io::read_file_at(file, 0, &mut page[..length]).is_none() {
@@ -1309,7 +1305,7 @@ mod target {
                 let index = offset / PAGE + page;
                 let entry = crate::mem::pte::encode_backing(
                     crate::mem::pte::PROTOTYPE,
-                    index << 12,
+                    crate::mem::pte::slot_field(index),
                     protect,
                 );
                 let mapped =
@@ -1455,11 +1451,7 @@ mod target {
                 Some(frame) => Ok(frame),
                 None => ob::locked(|directory| {
                     segment_frames(directory, segment).image_frame(table, page, |frame| {
-                        crate::mem::paging::write_frame(
-                            crate::mem::phys::PhysAddr::new(frame),
-                            0,
-                            &buffer,
-                        );
+                        crate::mem::paging::write_frame(frame, 0, &buffer);
                     })
                 }),
             };
@@ -1582,7 +1574,7 @@ mod target {
                 if out.len() != PAGE as usize {
                     return false;
                 }
-                crate::mem::paging::read_frame(crate::mem::phys::PhysAddr::new(frame), 0, out);
+                crate::mem::paging::read_frame(frame, 0, out);
                 true
             },
             &mut |offset, bytes| {
@@ -2315,33 +2307,48 @@ mod tests {
     }
 
     impl crate::mem::vm::Pages for FakePages {
-        fn entry(&self, va: u32) -> u32 {
+        fn entry(&self, va: u32) -> crate::mem::pte::EntryWord {
             *self.entries.get(&va).unwrap_or(&0)
         }
 
-        fn set_entry(&mut self, va: u32, entry: u32) {
+        fn set_entry(&mut self, va: u32, entry: crate::mem::pte::EntryWord) {
             self.entries.insert(va, entry);
         }
 
-        fn zeroed_frame(&mut self) -> Option<u32> {
+        fn zeroed_frame(&mut self) -> Option<crate::mem::phys::PhysAddr> {
             None
         }
 
-        fn free_frame(&mut self, _frame: u32) {}
+        fn free_frame(&mut self, _frame: crate::mem::phys::PhysAddr) {}
 
-        fn share_frame(&mut self, _frame: u32) {}
+        fn share_frame(&mut self, _frame: crate::mem::phys::PhysAddr) {}
 
-        fn frame_shared(&self, _frame: u32) -> bool {
+        fn frame_shared(&self, _frame: crate::mem::phys::PhysAddr) -> bool {
             false
         }
 
-        fn copy_frame(&mut self, _from: u32, _to: u32) {}
+        fn copy_frame(
+            &mut self,
+            _from: crate::mem::phys::PhysAddr,
+            _to: crate::mem::phys::PhysAddr,
+        ) {
+        }
 
-        fn frame_word(&self, _frame: u32, _index: u32) -> u32 {
+        fn frame_word(
+            &self,
+            _frame: crate::mem::phys::PhysAddr,
+            _index: u32,
+        ) -> crate::mem::phys::PhysWord {
             0
         }
 
-        fn set_frame_word(&mut self, _frame: u32, _index: u32, _value: u32) {}
+        fn set_frame_word(
+            &mut self,
+            _frame: crate::mem::phys::PhysAddr,
+            _index: u32,
+            _value: crate::mem::phys::PhysWord,
+        ) {
+        }
     }
 
     /// A section page's file offset, and how many bytes of a section's size its page holds: a
@@ -2442,6 +2449,7 @@ mod tests {
     /// entry are skipped, and a failed read or write fails the pass.
     #[test]
     fn the_write_back_pass_writes_each_present_page_at_its_offset() {
+        use crate::mem::phys::PhysAddr;
         use crate::mem::vm::{encode, PAGE, PAGE_READWRITE};
         let base = 0x40_0000;
         let section_size = 0x2800; // two pages and a half
@@ -2449,10 +2457,11 @@ mod tests {
         // Page 0 present on frame 0x10_0000, page 1 not present, page 2 present on 0x12_0000.
         pages
             .entries
-            .insert(base, encode(0x10_0000, PAGE_READWRITE));
-        pages
-            .entries
-            .insert(base + 2 * PAGE, encode(0x12_0000, PAGE_READWRITE));
+            .insert(base, encode(PhysAddr::new(0x10_0000), PAGE_READWRITE));
+        pages.entries.insert(
+            base + 2 * PAGE,
+            encode(PhysAddr::new(0x12_0000), PAGE_READWRITE),
+        );
 
         // Each frame's page holds its frame number as the first byte; the writes record the
         // offset, the length and the first byte.
@@ -2467,7 +2476,7 @@ mod tests {
             &mut |frame, out| {
                 reads.push(frame);
                 out.fill(0);
-                out[0] = (frame >> 16) as u8;
+                out[0] = (frame.get() >> 16) as u8;
                 true
             },
             &mut |offset, bytes| {
@@ -2478,7 +2487,7 @@ mod tests {
         assert!(ok);
         assert_eq!(
             reads,
-            vec![0x10_0000, 0x12_0000],
+            vec![PhysAddr::new(0x10_0000), PhysAddr::new(0x12_0000)],
             "only the present pages, in order"
         );
         assert_eq!(

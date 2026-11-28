@@ -40,7 +40,6 @@
 //! from the shared tables, not from one process's directory. A process's teardown, run after its
 //! last thread's exit, finds that exit's stack parked or already released.
 
-#[cfg(target_arch = "x86")]
 use super::phys::PhysAddr;
 #[cfg(target_arch = "x86")]
 use super::{frame::FrameDb, with_database, Parts};
@@ -62,14 +61,14 @@ pub const fn stack_range(slot: u16, slots: u8) -> core::ops::Range<u32> {
 
 /// One gate stack: the lowest slot of its run and how many slots the run spans (1, or
 /// [`paging::LARGE_STACK_SLOTS`] for a GUI thread's large stack), how many pages are mapped down
-/// from its top, and their frames by physical address, the top page's first, as raw words (the
-/// thread record keeps them so).
+/// from its top, and their frames by physical address, the top page's first (the thread record
+/// keeps them).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct GateStack {
     pub slot: u16,
     pub slots: u8,
     pub pages: u8,
-    pub frames: [u32; paging::LARGE_STACK_PAGES],
+    pub frames: [PhysAddr; paging::LARGE_STACK_PAGES],
 }
 
 impl GateStack {
@@ -78,7 +77,7 @@ impl GateStack {
         slot: crate::sched::thread::NO_GATE_SLOT,
         slots: 1,
         pages: 0,
-        frames: [0; paging::LARGE_STACK_PAGES],
+        frames: [PhysAddr::ZERO; paging::LARGE_STACK_PAGES],
     };
 
     /// The stack's top: the thread's stack top and `esp0` (the top of its run's highest slot).
@@ -106,7 +105,7 @@ impl GateStack {
     }
 
     /// The frames mapped in it.
-    pub fn mapped(&self) -> &[u32] {
+    pub fn mapped(&self) -> &[PhysAddr] {
         &self.frames[..self.pages as usize]
     }
 }
@@ -315,7 +314,7 @@ fn create_spanning(slots: u8) -> Option<GateStack> {
             slot,
             slots,
             pages: paging::GATE_STACK_PAGES as u8,
-            frames: [0; paging::LARGE_STACK_PAGES],
+            frames: [PhysAddr::ZERO; paging::LARGE_STACK_PAGES],
         };
         let top = stack.top();
         paging::map_gate_pages(
@@ -547,14 +546,14 @@ fn smoke_report(stack: GateStack, made: u32) {
 #[cfg(target_arch = "x86")]
 fn release_in(stacks: &mut KernelStacks, frames: &mut FrameDb, stack: GateStack) {
     use crate::mem::frame::FrameState;
-    let mapped = paging::unmap_gate_pages(stack.top(), stack.pages as usize).map(PhysAddr::get);
+    let mapped = paging::unmap_gate_pages(stack.top(), stack.pages as usize);
     debug_assert_eq!(
         &mapped[..stack.pages as usize],
         stack.mapped(),
         "the stack maps the frames its thread recorded"
     );
     for &frame in stack.mapped() {
-        frames.release(PhysAddr::new(frame).pfn(), FrameState::Free);
+        frames.release(frame.pfn(), FrameState::Free);
     }
     stacks.slots.release_run(stack.slot, stack.slots as u16);
 }
@@ -740,9 +739,9 @@ mod tests {
 
     /// An ordinary stack at `slot`, its frames numbered from `first`.
     fn stack(slot: u16, first: u32) -> GateStack {
-        let mut frames = [0; paging::LARGE_STACK_PAGES];
+        let mut frames = [PhysAddr::ZERO; paging::LARGE_STACK_PAGES];
         for (i, frame) in frames.iter_mut().enumerate().take(paging::GATE_STACK_PAGES) {
-            *frame = first + i as u32;
+            *frame = PhysAddr::new(first + i as u32);
         }
         GateStack {
             slot,
@@ -804,7 +803,7 @@ mod tests {
             grown.limit() > gate_slot_base(6),
             "the run's lowest guard stays unmapped"
         );
-        assert_eq!(GateStack::NONE.mapped(), &[] as &[u32]);
+        assert_eq!(GateStack::NONE.mapped(), &[] as &[PhysAddr]);
     }
 
     // --- The parked stack ----------------------------------------------------

@@ -267,7 +267,8 @@ struct Stagings {
 /// ntdll's pages, made once at boot ([`prepare_system_dlls`]): its frames, page by page — the
 /// kernel's, every process mapping them as one more holder. Read, never changed, after the boot.
 #[cfg(target_arch = "x86")]
-static NTDLL_FRAMES: crate::sync::InitOnce<[u32; DLL_PAGES]> = crate::sync::InitOnce::new();
+static NTDLL_FRAMES: crate::sync::InitOnce<[crate::mem::phys::PhysAddr; DLL_PAGES]> =
+    crate::sync::InitOnce::new();
 
 /// The loader lock and the stagings it holds: one load at a time uses the stagings. A wait lock
 /// (see [`crate::block::lock`]): a load waits on the disk while it holds it.
@@ -499,13 +500,13 @@ pub fn prepare_system_dlls() {
         // The pages are made with interrupts masked throughout: no interrupt's work allocates a
         // frame between two of ntdll's.
         let _masked = crate::pcr::pcr().mask_guard();
-        let mut frames = [0; DLL_PAGES];
+        let mut frames = [crate::mem::phys::PhysAddr::ZERO; DLL_PAGES];
         for page in 0..image.size_of_image().div_ceil(PAGE_SIZE) {
             let offset = (page * PAGE_SIZE) as usize;
             let end = (offset + PAGE_SIZE as usize).min(staging.len());
             let frame = paging::allocate_frame_phys();
             paging::init_frame(frame, 0, &staging[offset..end]);
-            frames[page as usize] = frame.get();
+            frames[page as usize] = frame;
         }
         NTDLL_FRAMES.set(frames);
     });
@@ -570,7 +571,11 @@ fn map_ntdll(space: &mut crate::mem::vm::AddressSpace) {
     let image = crate::exec::modules::NTDLL.image();
     for page in 0..image.size_of_image().div_ceil(PAGE_SIZE) {
         let frame = frames[page as usize];
-        assert_ne!(frame, 0, "ntdll's pages are made at boot");
+        assert_ne!(
+            frame,
+            crate::mem::phys::PhysAddr::ZERO,
+            "ntdll's pages are made at boot"
+        );
         let va = image.image_base() + page * PAGE_SIZE;
         space
             .map_shared(
@@ -907,31 +912,46 @@ mod tests {
     struct NoPages;
 
     impl crate::mem::vm::Pages for NoPages {
-        fn entry(&self, _va: u32) -> u32 {
+        fn entry(&self, _va: u32) -> crate::mem::pte::EntryWord {
             0
         }
 
-        fn set_entry(&mut self, _va: u32, _entry: u32) {}
+        fn set_entry(&mut self, _va: u32, _entry: crate::mem::pte::EntryWord) {}
 
-        fn zeroed_frame(&mut self) -> Option<u32> {
+        fn zeroed_frame(&mut self) -> Option<crate::mem::phys::PhysAddr> {
             None
         }
 
-        fn free_frame(&mut self, _frame: u32) {}
+        fn free_frame(&mut self, _frame: crate::mem::phys::PhysAddr) {}
 
-        fn share_frame(&mut self, _frame: u32) {}
+        fn share_frame(&mut self, _frame: crate::mem::phys::PhysAddr) {}
 
-        fn frame_shared(&self, _frame: u32) -> bool {
+        fn frame_shared(&self, _frame: crate::mem::phys::PhysAddr) -> bool {
             false
         }
 
-        fn copy_frame(&mut self, _from: u32, _to: u32) {}
+        fn copy_frame(
+            &mut self,
+            _from: crate::mem::phys::PhysAddr,
+            _to: crate::mem::phys::PhysAddr,
+        ) {
+        }
 
-        fn frame_word(&self, _frame: u32, _index: u32) -> u32 {
+        fn frame_word(
+            &self,
+            _frame: crate::mem::phys::PhysAddr,
+            _index: u32,
+        ) -> crate::mem::phys::PhysWord {
             0
         }
 
-        fn set_frame_word(&mut self, _frame: u32, _index: u32, _value: u32) {}
+        fn set_frame_word(
+            &mut self,
+            _frame: crate::mem::phys::PhysAddr,
+            _index: u32,
+            _value: crate::mem::phys::PhysWord,
+        ) {
+        }
     }
 
     /// The mapping's protection and the write permission agree on every page of the corpus: a page
@@ -944,8 +964,9 @@ mod tests {
             let image = Image::parse(file).expect("fixture parses");
             for page in 0..image.size_of_image().div_ceil(PAGE_SIZE) {
                 let protect = page_protect(&image, page * PAGE_SIZE);
-                let entry = encode(0x0050_0000, protect);
-                assert_eq!(decode(entry), Some((0x0050_0000, protect)), "{name}");
+                let frame = crate::mem::phys::PhysAddr::new(0x0050_0000);
+                let entry = encode(frame, protect);
+                assert_eq!(decode(entry), Some((frame, protect)), "{name}");
                 assert_eq!(
                     matches!(
                         protect,

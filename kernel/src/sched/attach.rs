@@ -59,7 +59,7 @@ pub fn attach(process: *mut SchedProcess) -> Attached {
         };
         let (process, space) = dispatcher.thread(thread).process_indices();
         crate::pcr::pcr().threads.set_processes(process, space);
-        crate::mem::paging::activate_address_space(crate::mem::phys::PhysAddr::new(dir_phys));
+        crate::mem::paging::activate_address_space(dir_phys);
         true
     });
     // Every thread's kernel stack is mapped in the directory now live: the kernel stack region's
@@ -93,7 +93,7 @@ impl Drop for Attached {
             let (dir_phys, last) = dispatcher.detach_space(self.thread);
             let (process, space) = dispatcher.thread(self.thread).process_indices();
             crate::pcr::pcr().threads.set_processes(process, space);
-            crate::mem::paging::activate_address_space(crate::mem::phys::PhysAddr::new(dir_phys));
+            crate::mem::paging::activate_address_space(dir_phys);
             last
         });
         // An ended process's reap waits for the last attach to it to end.

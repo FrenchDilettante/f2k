@@ -43,7 +43,7 @@ use core::ops::Range;
 use super::layout::{self, Region, DIRECTORY_LINKS};
 use super::paging::{directory_index, KERNEL_HALF_START, PT_ENTRIES};
 use super::phys::{Pfn, PhysAddr, PhysWord};
-use super::pte::Pte;
+use super::pte::{EntryWord, Pte};
 
 /// The regions whose page tables are made on demand: a range [`DirectoryList::ensure`] is asked
 /// for lies in one of them. Their tables are made nowhere else.
@@ -65,15 +65,15 @@ const HALF_ENTRIES: usize = PT_ENTRIES - KERNEL_HALF_START;
 
 /// A link as a directory entry holds it: the frame number shifted past the present bit, so the
 /// entry is never present; zero is the end of the list (frame 0 is never a directory).
-const fn encode(dir: Option<PhysAddr>) -> u32 {
+const fn encode(dir: Option<PhysAddr>) -> EntryWord {
     match dir {
-        Some(dir) => dir.pfn().get() << 1,
+        Some(dir) => (dir.pfn().get() as EntryWord) << 1,
         None => 0,
     }
 }
 
 /// The directory a link entry names.
-fn decode(entry: u32) -> Option<PhysAddr> {
+fn decode(entry: EntryWord) -> Option<PhysAddr> {
     debug_assert!(entry & 1 == 0, "a directory link is never present");
     (entry != 0).then(|| Pfn::new((entry >> 1) as PhysWord).addr())
 }
@@ -86,7 +86,7 @@ pub trait Directories {
     fn with_directory<R>(
         &mut self,
         dir: PhysAddr,
-        step: impl FnOnce(&mut [u32; PT_ENTRIES]) -> R,
+        step: impl FnOnce(&mut [EntryWord; PT_ENTRIES]) -> R,
     ) -> R;
 
     /// A fresh page table, every entry zero; none when no frame is left.
@@ -200,7 +200,7 @@ impl DirectoryList {
     pub fn for_each(
         &self,
         machine: &mut impl Directories,
-        mut step: impl FnMut(PhysAddr, &mut [u32; PT_ENTRIES]),
+        mut step: impl FnMut(PhysAddr, &mut [EntryWord; PT_ENTRIES]),
     ) {
         let mut at = self.head;
         while let Some(dir) = at {
@@ -242,7 +242,7 @@ impl DirectoryList {
         let mut first = windows.start;
         while first < windows.end {
             let end = (first + PASS).min(windows.end);
-            let mut made = [0u32; PASS];
+            let mut made: [EntryWord; PASS] = [0; PASS];
             let mut out = false;
             for window in first..end {
                 if self.is_made(window) {
@@ -274,7 +274,7 @@ impl DirectoryList {
         let mut same = true;
         for region in ON_DEMAND {
             let windows = region.first_entry()..region.end_entry();
-            let mut reference = [0u32; REGION_MAX];
+            let mut reference: [EntryWord; REGION_MAX] = [0; REGION_MAX];
             let reference = &mut reference[..windows.len()];
             machine.with_directory(master, |entries| {
                 reference.copy_from_slice(&entries[windows.clone()]);
@@ -303,12 +303,17 @@ const _: () = {
 
 /// What of a directory entry the processor walks: its frame and its present bit. The accessed bit
 /// differs between copies of the same entry (the processor sets it in the directory it walked).
-const fn walked(entry: u32) -> u32 {
+const fn walked(entry: EntryWord) -> EntryWord {
     super::pte::frame_bits(entry) | (entry & super::pte::PRESENT)
 }
 
 /// Install the made entries (`made[i]` for window `first + i`, zero for none) in the master.
-fn install(machine: &mut impl Directories, master: PhysAddr, first: usize, made: &[u32; PASS]) {
+fn install(
+    machine: &mut impl Directories,
+    master: PhysAddr,
+    first: usize,
+    made: &[EntryWord; PASS],
+) {
     machine.with_directory(master, |entries| {
         for (i, &entry) in made.iter().enumerate() {
             if entry != 0 {
@@ -323,7 +328,7 @@ fn install(machine: &mut impl Directories, master: PhysAddr, first: usize, made:
 }
 
 /// Install the made entries in one linked directory.
-fn install_in(entries: &mut [u32; PT_ENTRIES], first: usize, made: &[u32; PASS]) {
+fn install_in(entries: &mut [EntryWord; PT_ENTRIES], first: usize, made: &[EntryWord; PASS]) {
     for (i, &entry) in made.iter().enumerate() {
         if entry != 0 {
             debug_assert!(!Pte::from_raw(entries[first + i]).present());
@@ -346,8 +351,8 @@ mod tests {
 
     /// Directories and tables as plain arrays, frames numbered from 0x100, with a frame budget.
     struct Fake {
-        frames: HashMap<u32, Box<[u32; PT_ENTRIES]>>,
-        next: u32,
+        frames: HashMap<PhysWord, Box<[EntryWord; PT_ENTRIES]>>,
+        next: PhysWord,
         budget: usize,
         accesses: usize,
     }
@@ -384,7 +389,7 @@ mod tests {
             dir
         }
 
-        fn entry(&self, dir: PhysAddr, index: usize) -> u32 {
+        fn entry(&self, dir: PhysAddr, index: usize) -> EntryWord {
             self.frames[&dir.get()][index]
         }
     }
@@ -393,7 +398,7 @@ mod tests {
         fn with_directory<R>(
             &mut self,
             dir: PhysAddr,
-            step: impl FnOnce(&mut [u32; PT_ENTRIES]) -> R,
+            step: impl FnOnce(&mut [EntryWord; PT_ENTRIES]) -> R,
         ) -> R {
             self.accesses += 1;
             step(self.frames.get_mut(&dir.get()).expect("a known frame"))

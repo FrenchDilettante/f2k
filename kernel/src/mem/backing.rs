@@ -26,12 +26,12 @@
 use super::frame::{FrameDb, FrameHooks, FrameState};
 use super::pageout::{self, FrameMemory, PageWriter, PagingIo, SlotId, PAGE_SIZE};
 use super::phys::PhysAddr;
-use super::pte;
+use super::pte::{self, EntryWord};
 use super::vm::{self, Pages, PAGE};
 
 /// The paging-file slot a [`pte::PAGE_FILE`] entry names (bits 12-31 hold it counted from one).
-pub fn slot_of(entry: u32) -> SlotId {
-    pte::backing_payload(entry) >> 12
+pub fn slot_of(entry: EntryWord) -> SlotId {
+    pte::payload_slot(entry)
 }
 
 /// The most pages one paging-file fault reads: the faulting page and the neighbours whose entries
@@ -55,7 +55,7 @@ pub fn page_file_cluster(pages: &impl Pages, page: u32, max: u32) -> (u32, u32) 
         if va < i64::from(vm::USER_LOW) || va >= i64::from(vm::USER_HIGH) || want < 1 {
             return false;
         }
-        let want = (want as u32) << 12;
+        let want = pte::slot_field(want as u32);
         pages.entry(va as u32) == (entry & !pte::FRAME_MASK) | want
     };
     let mut after = 0;
@@ -70,8 +70,8 @@ pub fn page_file_cluster(pages: &impl Pages, page: u32, max: u32) -> (u32, u32) 
 }
 
 /// The section page index a [`pte::PROTOTYPE`] entry names (bits 12-31 hold it).
-pub fn section_index_of(entry: u32) -> u32 {
-    pte::backing_payload(entry) >> 12
+pub fn section_index_of(entry: EntryWord) -> u32 {
+    pte::payload_slot(entry)
 }
 
 /// Where a section's page comes from on a fault: its bytes, a page at a time.
@@ -93,7 +93,7 @@ pub fn page_file_in<H: FrameHooks, Io: PagingIo, Mem: FrameMemory>(
     buf: &mut [u8; PAGE_SIZE],
     pages: &mut impl Pages,
     page: u32,
-    entry: u32,
+    entry: EntryWord,
     relieve: &mut impl FnMut() -> bool,
 ) -> bool {
     let slot = slot_of(entry);
@@ -102,7 +102,7 @@ pub fn page_file_in<H: FrameHooks, Io: PagingIo, Mem: FrameMemory>(
         Some(frame) => frame,
         None => return false,
     };
-    if pageout::page_in(db, io, mem, buf, PhysAddr::new(frame).pfn(), slot).is_err() {
+    if pageout::page_in(db, io, mem, buf, frame.pfn(), slot).is_err() {
         pages.free_frame(frame);
         return false;
     }
@@ -118,7 +118,7 @@ pub fn section_in<S: SectionPages>(
     pages: &mut impl Pages,
     source: &mut S,
     page: u32,
-    entry: u32,
+    entry: EntryWord,
     relieve: &mut impl FnMut() -> bool,
 ) -> bool {
     let index = section_index_of(entry);
@@ -139,7 +139,7 @@ pub fn section_in<S: SectionPages>(
 
 /// A fresh zeroed frame, or none: when the allocator finds none, `relieve` runs once and the
 /// allocation is retried once.
-fn fresh_frame(pages: &mut impl Pages, relieve: &mut impl FnMut() -> bool) -> Option<u32> {
+fn fresh_frame(pages: &mut impl Pages, relieve: &mut impl FnMut() -> bool) -> Option<PhysAddr> {
     if let Some(frame) = pages.zeroed_frame() {
         return Some(frame);
     }
@@ -155,7 +155,7 @@ pub struct Victim {
     /// The page's base address.
     pub va: u32,
     /// The frame its entry named.
-    pub frame: u32,
+    pub frame: PhysAddr,
     /// The protection its entry recorded.
     pub protect: u32,
 }
@@ -185,8 +185,8 @@ pub fn relieve_pass<H: FrameHooks, Io: PagingIo, Mem: FrameMemory>(
     while va < end && count < victims.len() && db.available() < want {
         let entry = pages.entry(va);
         if entry & pte::PRESENT != 0 {
-            let frame = entry & pte::FRAME_MASK;
-            if frame != 0 && !pages.frame_shared(frame) && private(va) {
+            let frame = pte::frame_of(entry);
+            if frame != PhysAddr::ZERO && !pages.frame_shared(frame) && private(va) {
                 let protect = vm::decode(entry)
                     .map(|(_, protect)| protect)
                     .unwrap_or_else(|| pte::soft_protect(entry));
@@ -200,7 +200,7 @@ pub fn relieve_pass<H: FrameHooks, Io: PagingIo, Mem: FrameMemory>(
     let mut kept = 0;
     for index in 0..count {
         let victim = victims[index];
-        let fid = PhysAddr::new(victim.frame).pfn();
+        let fid = victim.frame.pfn();
         match db.entry(fid).state {
             FrameState::Active => writer.evict_dirty(db, fid),
             FrameState::Modified => writer.requeue(fid),
@@ -216,12 +216,12 @@ pub fn relieve_pass<H: FrameHooks, Io: PagingIo, Mem: FrameMemory>(
         .plan(db.available(), db.list_total(FrameState::Modified));
     let mut freed = 0u32;
     writer.run_planned_report(db, io, mem, buf, plan, &mut |fid, slot| {
-        let frame = fid.addr().get();
+        let frame = fid.addr();
         let Some(victim) = victims[..kept].iter().find(|victim| victim.frame == frame) else {
             return false;
         };
         let current = pages.entry(victim.va);
-        if pte::backing_tag(current) == pte::TRANSITION && pte::backing_payload(current) == frame {
+        if pte::backing_tag(current) == pte::TRANSITION && pte::frame_of(current) == frame {
             vm::name_page_file(pages, victim.va, slot, victim.protect);
             freed += 1;
             true
@@ -271,13 +271,14 @@ pub mod target {
     use crate::mem::fault::{self, Resolution};
     use crate::mem::pageout::PAGE_SIZE;
     use crate::mem::pagingfile::{with_paging_file, PagingFileIo};
-    use crate::mem::pte;
+    use crate::mem::phys::PhysAddr;
+    use crate::mem::pte::{self, EntryWord};
     use crate::mem::vm::{self, Kind, Pages, PAGE, USER_HIGH};
     use crate::sync::ClaimBuf;
 
     /// A fresh zeroed frame, or none: when the allocator finds none, `relieve` runs once and the
     /// allocation is retried once.
-    fn fresh_frame(pages: &mut impl Pages, relieve: &mut impl FnMut() -> bool) -> Option<u32> {
+    fn fresh_frame(pages: &mut impl Pages, relieve: &mut impl FnMut() -> bool) -> Option<PhysAddr> {
         if let Some(frame) = pages.zeroed_frame() {
             return Some(frame);
         }
@@ -314,7 +315,7 @@ pub mod target {
     fn page_file_in(
         pages: &mut impl Pages,
         page: u32,
-        entry: u32,
+        entry: EntryWord,
         relieve: &mut impl FnMut() -> bool,
         resident: &mut impl FnMut(u32),
     ) -> bool {
@@ -342,8 +343,8 @@ pub mod target {
         // own, the neighbours' taken while there are frames (the run shrinks to them).
         let (mut first, mut count) = page_file_cluster(pages, page, max);
         let mut at = ((page - first) / PAGE) as usize;
-        let mut entries = [0u32; MAX];
-        let mut frames = [0u32; MAX];
+        let mut entries: [EntryWord; MAX] = [0; MAX];
+        let mut frames = [PhysAddr::ZERO; MAX];
         for index in 0..count as usize {
             entries[index] = pages.entry(first + index as u32 * PAGE);
             if index == at {
@@ -352,9 +353,9 @@ pub mod target {
                 frames[index] = neighbour;
             }
         }
-        let (start, end) = run_around(count as usize, at, |index| frames[index] != 0);
+        let (start, end) = run_around(count as usize, at, |index| frames[index] != PhysAddr::ZERO);
         for (index, &spare) in frames[..count as usize].iter().enumerate() {
-            if (index < start || index >= end) && spare != 0 {
+            if (index < start || index >= end) && spare != PhysAddr::ZERO {
                 pages.free_frame(spare);
             }
         }
@@ -500,7 +501,7 @@ pub mod target {
     fn section_in(
         pages: &mut impl Pages,
         page: u32,
-        entry: u32,
+        entry: EntryWord,
         relieve: &mut impl FnMut() -> bool,
     ) -> bool {
         let index = section_index_of(entry);
@@ -599,42 +600,52 @@ mod tests {
     }
 
     impl Pages for Fake {
-        fn entry(&self, va: u32) -> u32 {
+        fn entry(&self, va: u32) -> crate::mem::pte::EntryWord {
             *self.entries.get(&va).unwrap_or(&0)
         }
 
-        fn set_entry(&mut self, va: u32, entry: u32) {
+        fn set_entry(&mut self, va: u32, entry: crate::mem::pte::EntryWord) {
             self.entries.insert(va, entry);
         }
 
-        fn zeroed_frame(&mut self) -> Option<u32> {
+        fn zeroed_frame(&mut self) -> Option<crate::mem::phys::PhysAddr> {
             if self.grants.get() > 0 {
                 self.grants.set(self.grants.get() - 1);
             } else if let Some(budget) = &mut self.budget {
                 *budget = budget.checked_sub(1)?;
             }
             self.next += 1;
-            Some(self.next * PAGE)
+            Some(crate::mem::phys::PhysAddr::new(self.next * PAGE))
         }
 
-        fn free_frame(&mut self, frame: u32) {
+        fn free_frame(&mut self, frame: crate::mem::phys::PhysAddr) {
+            let frame = frame.get();
             self.freed.push(frame);
         }
 
-        fn share_frame(&mut self, frame: u32) {
+        fn share_frame(&mut self, frame: crate::mem::phys::PhysAddr) {
+            let frame = frame.get();
             *self.holders.entry(frame).or_default() += 1;
         }
 
-        fn frame_shared(&self, frame: u32) -> bool {
+        fn frame_shared(&self, frame: crate::mem::phys::PhysAddr) -> bool {
+            let frame = frame.get();
             self.holders.get(&frame).is_some_and(|&extra| extra > 0)
         }
 
-        fn copy_frame(&mut self, from: u32, to: u32) {
+        fn copy_frame(&mut self, from: crate::mem::phys::PhysAddr, to: crate::mem::phys::PhysAddr) {
+            let from = from.get();
+            let to = to.get();
             let page = self.filled.get(&from).cloned().unwrap_or_default();
             self.filled.insert(to, page);
         }
 
-        fn frame_word(&self, frame: u32, index: u32) -> u32 {
+        fn frame_word(
+            &self,
+            frame: crate::mem::phys::PhysAddr,
+            index: u32,
+        ) -> crate::mem::phys::PhysWord {
+            let frame = frame.get();
             let Some(page) = self.filled.get(&frame) else {
                 return 0;
             };
@@ -642,7 +653,13 @@ mod tests {
             u32::from_le_bytes(page[at..at + 4].try_into().unwrap())
         }
 
-        fn set_frame_word(&mut self, frame: u32, index: u32, value: u32) {
+        fn set_frame_word(
+            &mut self,
+            frame: crate::mem::phys::PhysAddr,
+            index: u32,
+            value: crate::mem::phys::PhysWord,
+        ) {
+            let frame = frame.get();
             let page = self
                 .filled
                 .entry(frame)
@@ -651,7 +668,8 @@ mod tests {
             page[at..at + 4].copy_from_slice(&value.to_le_bytes());
         }
 
-        fn activate_frame(&mut self, frame: u32) {
+        fn activate_frame(&mut self, frame: crate::mem::phys::PhysAddr) {
+            let frame = frame.get();
             self.activated.push(frame);
         }
     }
@@ -874,7 +892,7 @@ mod tests {
         assert_eq!(protect, PAGE_READWRITE);
         assert!(pte::PRESENT & entry != 0);
         assert_eq!(
-            mem.pages[(frame / PAGE) as usize],
+            mem.pages[frame.pfn().index()],
             [0xAB; PAGE_SIZE],
             "the slot's bytes"
         );
@@ -920,7 +938,7 @@ mod tests {
         ));
         let (frame, protect) = vm::decode(pages.entry(page)).unwrap();
         assert_eq!(protect, PAGE_READONLY);
-        assert_eq!(mem.pages[(frame / PAGE) as usize], [0xCD; PAGE_SIZE]);
+        assert_eq!(mem.pages[frame.pfn().index()], [0xCD; PAGE_SIZE]);
         assert_eq!(grants.get(), 0);
 
         // A failed read gives the frame back and leaves the entry as it was.
@@ -978,7 +996,10 @@ mod tests {
         let entry = pages.entry(page);
         let (frame, protect) = vm::decode(entry).unwrap();
         assert_eq!(protect, PAGE_READONLY);
-        let filled = pages.filled.get(&frame).expect("the frame was filled");
+        let filled = pages
+            .filled
+            .get(&frame.get())
+            .expect("the frame was filled");
         assert_eq!(&filled[..0x800], &source.file[0x2000..0x2800]);
         assert!(
             filled[0x800..].iter().all(|&b| b == 0),
@@ -1067,25 +1088,28 @@ mod tests {
         for page in 0..4u32 {
             let fid = page + 1;
             mem.fill(fid, 0xA0 + page as u8);
-            pages
-                .entries
-                .insert(base + page * PAGE, vm::encode(fid * PAGE, PAGE_READWRITE));
+            pages.entries.insert(
+                base + page * PAGE,
+                vm::encode(PhysAddr::new(fid * PAGE), PAGE_READWRITE),
+            );
         }
         // A shared page (a section's frame) and a non-private page are not evicted.
         mem.fill(6, 0x77);
-        pages
-            .entries
-            .insert(base + 4 * PAGE, vm::encode(6 * PAGE, PAGE_READWRITE));
+        pages.entries.insert(
+            base + 4 * PAGE,
+            vm::encode(PhysAddr::new(6 * PAGE), PAGE_READWRITE),
+        );
         pages.holders.insert(6 * PAGE, 1);
         mem.fill(7, 0x88);
-        pages
-            .entries
-            .insert(base + 5 * PAGE, vm::encode(7 * PAGE, PAGE_READWRITE));
+        pages.entries.insert(
+            base + 5 * PAGE,
+            vm::encode(PhysAddr::new(7 * PAGE), PAGE_READWRITE),
+        );
         let private = |va: u32| va < base + 5 * PAGE; // the last page is not private
 
         let mut victims = [Victim {
             va: 0,
-            frame: 0,
+            frame: PhysAddr::ZERO,
             protect: 0,
         }; 8];
         let freed = relieve_pass(
@@ -1122,11 +1146,11 @@ mod tests {
         // The shared and non-private pages keep their present entries.
         assert_eq!(
             pages.entry(base + 4 * PAGE),
-            vm::encode(6 * PAGE, PAGE_READWRITE)
+            vm::encode(PhysAddr::new(6 * PAGE), PAGE_READWRITE)
         );
         assert_eq!(
             pages.entry(base + 5 * PAGE),
-            vm::encode(7 * PAGE, PAGE_READWRITE)
+            vm::encode(PhysAddr::new(7 * PAGE), PAGE_READWRITE)
         );
         assert_eq!(writer.queued(), 0);
         assert_eq!(db.audit(), Ok(()));
@@ -1149,7 +1173,7 @@ mod tests {
             ));
             let (frame, _) = vm::decode(pages.entry(va)).unwrap();
             assert_eq!(
-                mem.pages[(frame / PAGE) as usize],
+                mem.pages[frame.pfn().index()],
                 [0xA0 + page as u8; PAGE_SIZE]
             );
             assert_eq!(pte::backing_tag(pages.entry(va)), 0, "present again");
@@ -1174,16 +1198,19 @@ mod tests {
         // Frame 1 is in use and mapped; frame 2's page is present but the frame went to Standby
         // behind the entry's back (re-faulted elsewhere).
         mem.fill(1, 0x11);
-        pages.entries.insert(base, vm::encode(PAGE, PAGE_READWRITE));
-        mem.fill(2, 0x22);
         pages
             .entries
-            .insert(base + PAGE, vm::encode(2 * PAGE, PAGE_READWRITE));
+            .insert(base, vm::encode(PhysAddr::new(PAGE), PAGE_READWRITE));
+        mem.fill(2, 0x22);
+        pages.entries.insert(
+            base + PAGE,
+            vm::encode(PhysAddr::new(2 * PAGE), PAGE_READWRITE),
+        );
         db.release(Pfn::new(2), crate::mem::frame::FrameState::Standby);
 
         let mut victims = [Victim {
             va: 0,
-            frame: 0,
+            frame: PhysAddr::ZERO,
             protect: 0,
         }; 8];
         let freed = relieve_pass(
@@ -1203,7 +1230,7 @@ mod tests {
         assert_eq!(pte::backing_tag(pages.entry(base)), pte::PAGE_FILE);
         assert_eq!(
             pages.entry(base + PAGE),
-            vm::encode(2 * PAGE, PAGE_READWRITE),
+            vm::encode(PhysAddr::new(2 * PAGE), PAGE_READWRITE),
             "the standby frame's entry is untouched"
         );
         assert_eq!(

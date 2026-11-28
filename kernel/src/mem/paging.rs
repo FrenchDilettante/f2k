@@ -26,8 +26,8 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use super::frame::{FrameDb, FrameHooks};
 use super::layout;
-use super::phys::{Pfn, PhysAddr};
-use super::pte::{self, Pte};
+use super::phys::{Pfn, PhysAddr, PhysWord};
+use super::pte::{self, EntryWord, Pte};
 #[cfg(target_arch = "x86")]
 use super::{frame::PRIMARY_COLOR, with_database, Parts};
 
@@ -47,14 +47,15 @@ pub const LOADER_PHYS_BASE: PhysAddr = PhysAddr::new(0x0010_0000);
 // and multiplying by 4; PAE (three levels, 512 entries of 8 bytes, 2 MiB per directory entry)
 // changes them here.
 
-/// Page-table entries per table, and directory entries per directory (32-bit paging: 1024).
-pub const PT_ENTRIES: usize = 1024;
-
 /// Page size (32-bit paging: 4 KiB).
 pub const PAGE_SIZE: u32 = 4096;
 
-/// The bytes one entry takes in a directory or a table (32-bit paging: a word).
-pub const ENTRY_BYTES: u32 = core::mem::size_of::<u32>() as u32;
+/// The bytes one entry takes in a directory or a table: an [`EntryWord`] (32-bit paging: 4).
+pub const ENTRY_BYTES: u32 = core::mem::size_of::<EntryWord>() as u32;
+
+/// Page-table entries per table, and directory entries per directory: a page of [`EntryWord`]s
+/// (32-bit paging: 1024).
+pub const PT_ENTRIES: usize = (PAGE_SIZE / ENTRY_BYTES) as usize;
 
 /// The directory entry (the 4 MiB window, [`layout::ENTRY_SPAN`]) mapping `va`.
 pub const fn directory_index(va: u32) -> usize {
@@ -90,13 +91,13 @@ pub const fn self_map_pde(index: usize) -> u32 {
 }
 
 /// The identity entry for page `page`: present, writable, mapping physical page `page`.
-const fn identity_entry(page: usize) -> u32 {
+const fn identity_entry(page: usize) -> EntryWord {
     Pte::kernel_rw(Pfn::new(page as u32).addr()).raw()
 }
 
 /// Fill `table` with the identity mapping of the 1024 pages from `first_page`: page `first_page +
 /// i` to physical page `first_page + i`.
-fn fill_identity_table(table: &mut [u32; PT_ENTRIES], first_page: usize) {
+fn fill_identity_table(table: &mut [EntryWord; PT_ENTRIES], first_page: usize) {
     for (i, entry) in table.iter_mut().enumerate() {
         *entry = identity_entry(first_page + i);
     }
@@ -145,7 +146,11 @@ impl DatabaseTables {
     /// Fill `table` (table `index`'s frame): its entries map the database's storage `storage`
     /// (frame numbers, consecutive) in order, from the region's start, kernel-only and writable;
     /// the entries past the storage's end map nothing.
-    pub fn fill_table(index: u32, storage: core::ops::Range<Pfn>, table: &mut [u32; PT_ENTRIES]) {
+    pub fn fill_table(
+        index: u32,
+        storage: core::ops::Range<Pfn>,
+        table: &mut [EntryWord; PT_ENTRIES],
+    ) {
         let first = storage.start + index * PT_ENTRIES as u32;
         for (i, entry) in table.iter_mut().enumerate() {
             let frame = first + i as u32;
@@ -158,7 +163,7 @@ impl DatabaseTables {
     }
 
     /// Point `directory`'s entries for the region's first `count` windows at the tables.
-    fn install(self, directory: &mut [u32; PT_ENTRIES]) {
+    fn install(self, directory: &mut [EntryWord; PT_ENTRIES]) {
         for index in 0..self.count {
             directory[layout::FRAME_DATABASE.first_entry() + index as usize] =
                 Pte::kernel_rw(self.table(index)).raw();
@@ -192,7 +197,7 @@ impl BootTables {
     /// itself, so the directory is reached through the self-map from its first load on, like every
     /// other. Every other entry is empty, the scratch window's included ([`init_table_access`]
     /// installs it).
-    pub fn fill_directory(&self, directory: &mut [u32; PT_ENTRIES]) {
+    pub fn fill_directory(&self, directory: &mut [EntryWord; PT_ENTRIES]) {
         directory.fill(0);
         let image = layout::KERNEL_IMAGE.first_entry();
         for (i, &table) in self.identity.iter().enumerate() {
@@ -205,7 +210,7 @@ impl BootTables {
 
     /// Fill `table` (identity table `index`'s frame): pages `[index * 1024, (index + 1) * 1024)`
     /// mapped to themselves, as the boot loader's table `index` maps them.
-    pub fn fill_identity(index: usize, table: &mut [u32; PT_ENTRIES]) {
+    pub fn fill_identity(index: usize, table: &mut [EntryWord; PT_ENTRIES]) {
         fill_identity_table(table, index * PT_ENTRIES);
     }
 }
@@ -314,7 +319,7 @@ pub fn map_frame_database(tables: core::ops::Range<Pfn>, storage: core::ops::Ran
         "the boot loader's directory lies outside the kernel image window"
     );
     for index in 0..count {
-        let slot = (KERNEL_BASE + directory.get()) as *mut u32;
+        let slot = (KERNEL_BASE + directory.get()) as *mut EntryWord;
         let entry = layout::FRAME_DATABASE.first_entry() + index as usize;
         // SAFETY: the loader's directory lies in the kernel image window (checked above), which
         // maps physical `[0, 16 MiB)` at `KERNEL_BASE + phys`; the entry is the directory's own
@@ -336,7 +341,7 @@ pub fn map_frame_database(tables: core::ops::Range<Pfn>, storage: core::ops::Ran
 ///
 /// The frame is not page-aligned or lies outside the kernel image window.
 #[cfg(target_arch = "x86")]
-fn fill_new_table(frame_phys: PhysAddr, fill: impl FnOnce(&mut [u32; PT_ENTRIES])) {
+fn fill_new_table(frame_phys: PhysAddr, fill: impl FnOnce(&mut [EntryWord; PT_ENTRIES])) {
     assert!(
         frame_phys.is_page_aligned() && frame_phys.pfn() < IMAGE_WINDOW_FRAMES,
         "a boot table outside the kernel image window"
@@ -347,7 +352,7 @@ fn fill_new_table(frame_phys: PhysAddr, fill: impl FnOnce(&mut [u32; PT_ENTRIES]
     // table, out of the free lists or out of the boot's memory plan, so no other owner holds it,
     // and no directory names it yet, so the processor does not walk it: the reference, which
     // `fill` cannot keep, is the only access to it.
-    fill(unsafe { &mut *((KERNEL_BASE + frame_phys.get()) as *mut [u32; PT_ENTRIES]) });
+    fill(unsafe { &mut *((KERNEL_BASE + frame_phys.get()) as *mut [EntryWord; PT_ENTRIES]) });
 }
 
 /// Remove the boot directory's low identity window (called once the Multiboot info is consumed),
@@ -488,17 +493,17 @@ pub fn init_table_access() {
 /// window), the kernel half's.
 #[cfg(target_arch = "x86")]
 mod self_map {
-    use super::{directory_index, self_map_pde, self_map_pte, Pte, PT_ENTRIES};
+    use super::{directory_index, self_map_pde, self_map_pte, EntryWord, Pte, PT_ENTRIES};
 
     /// Where directory entry `window` sits, on the directory's view of itself.
-    fn directory_slot(window: usize) -> *mut u32 {
+    fn directory_slot(window: usize) -> *mut EntryWord {
         assert!(window < PT_ENTRIES, "directory index past the directory");
-        self_map_pde(window) as *mut u32
+        self_map_pde(window) as *mut EntryWord
     }
 
     /// Where the page-table entry for `va` sits, in its window's table through the self-map window.
-    fn table_slot(va: u32) -> *mut u32 {
-        self_map_pte(va) as *mut u32
+    fn table_slot(va: u32) -> *mut EntryWord {
+        self_map_pte(va) as *mut EntryWord
     }
 
     /// The current directory's entry `window`.
@@ -704,12 +709,12 @@ impl ScratchWindow {
         unsafe { &mut *(SCRATCH_VA as *mut [u8; PAGE_BYTES]) }
     }
 
-    /// The frame at `frame_phys`, as words (a directory or a page table), until the window is next
-    /// used.
-    pub fn map_words(&mut self, frame_phys: PhysAddr) -> &mut [u32; PT_ENTRIES] {
+    /// The frame at `frame_phys`, as entries (a directory or a page table), until the window is
+    /// next used.
+    pub fn map_words(&mut self, frame_phys: PhysAddr) -> &mut [EntryWord; PT_ENTRIES] {
         self.point_at(frame_phys);
         // SAFETY: as in `map`; the window's address is page-aligned, so aligned for words.
-        unsafe { &mut *(SCRATCH_VA as *mut [u32; PT_ENTRIES]) }
+        unsafe { &mut *(SCRATCH_VA as *mut [EntryWord; PT_ENTRIES]) }
     }
 
     /// Zero the frame at `frame_phys`, then copy `bytes` in at `offset` (tables: empty slice; image
@@ -745,22 +750,29 @@ impl ScratchWindow {
         out.copy_from_slice(&self.map(frame_phys)[offset..][..out.len()]);
     }
 
-    /// Word `index` of the frame at `frame_phys`.
+    /// Physical word `index` of the frame at `frame_phys`: a frame holding frames' addresses (a
+    /// section's frame table), [`PhysWord`]s.
     ///
     /// # Panics
     ///
     /// `index` past the frame's end.
-    pub fn read_word(&mut self, frame_phys: PhysAddr, index: usize) -> u32 {
-        assert!(index < PT_ENTRIES, "word index past the end of the frame");
-        self.map_words(frame_phys)[index]
+    pub fn read_word(&mut self, frame_phys: PhysAddr, index: usize) -> PhysWord {
+        const WORD: usize = core::mem::size_of::<PhysWord>();
+        assert!(
+            index < PAGE_BYTES / WORD,
+            "word index past the end of the frame"
+        );
+        let bytes = &self.map(frame_phys)[index * WORD..][..WORD];
+        PhysWord::from_le_bytes(bytes.try_into().expect("one word"))
     }
 
-    /// The words of the frame at `frame_phys` from `first` on, as many as `out` holds.
+    /// The entries of the frame at `frame_phys` (a directory or a page table) from `first` on, as
+    /// many as `out` holds.
     ///
     /// # Panics
     ///
-    /// The words run past the frame's end.
-    pub fn read_words(&mut self, frame_phys: PhysAddr, first: usize, out: &mut [u32]) {
+    /// The entries run past the frame's end.
+    pub fn read_words(&mut self, frame_phys: PhysAddr, first: usize, out: &mut [EntryWord]) {
         assert!(
             first + out.len() <= PT_ENTRIES,
             "words past the end of the frame"
@@ -842,7 +854,7 @@ fn new_table_in(frames: &mut FrameDb, scratch: &mut ScratchWindow) -> PhysAddr {
 /// The current directory's page-table entry for user address `vaddr`, raw (present or not); 0 when
 /// its window has no table. The entry is the active process's (see [`self_map`]).
 #[cfg(target_arch = "x86")]
-pub fn user_pte(vaddr: u32) -> u32 {
+pub fn user_pte(vaddr: u32) -> EntryWord {
     assert!(
         vaddr < KERNEL_BASE,
         "user entries live below the kernel window"
@@ -859,7 +871,7 @@ pub fn user_pte(vaddr: u32) -> u32 {
 ///
 /// Unaligned or kernel-window `vaddr`.
 #[cfg(target_arch = "x86")]
-pub fn set_user_pte(vaddr: u32, entry: u32) {
+pub fn set_user_pte(vaddr: u32, entry: EntryWord) {
     assert!(vaddr % PAGE_SIZE == 0, "user address not page-aligned");
     assert!(
         vaddr < KERNEL_BASE,
@@ -905,10 +917,10 @@ pub fn set_user_pte(vaddr: u32, entry: u32) {
 /// Pure over the entries: the caller supplies how base entries are read (a volatile self-map read
 /// on target, a plain array read in tests).
 pub fn assemble_process_directory(
-    dir: &mut [u32; PT_ENTRIES],
+    dir: &mut [EntryWord; PT_ENTRIES],
     own_phys: PhysAddr,
     scratch_phys: PhysAddr,
-    mut read_base_entry: impl FnMut(usize) -> u32,
+    mut read_base_entry: impl FnMut(usize) -> EntryWord,
 ) {
     for entry in dir.iter_mut() {
         *entry = 0;
@@ -926,14 +938,16 @@ pub fn assemble_process_directory(
 }
 
 /// The value CR3 takes for a directory at `dir_phys`: the address bits only, so a sloppy caller's
-/// low flag bits cannot leak into the load.
+/// low flag bits cannot leak into the load. CR3 is a 32-bit register whatever an entry's width (a
+/// PAE mode's holds its directory-pointer table's address, below 4 GiB): a wider physical address
+/// stops compiling here, the place to choose the table.
 pub const fn directory_cr3(dir_phys: PhysAddr) -> u32 {
-    pte::frame_bits(dir_phys.get())
+    dir_phys.pfn().addr().get()
 }
 
 /// The directory a CR3 value `cr3` loads: its address bits, the flag bits dropped.
 pub const fn cr3_directory(cr3: u32) -> PhysAddr {
-    Pte::from_raw(cr3).frame()
+    PhysAddr::new(cr3 as PhysWord).pfn().addr()
 }
 
 /// The shared scratch table's physical address (one of the boot's tables, never released).
@@ -1098,7 +1112,7 @@ impl super::ktables::Directories for Live<'_> {
     fn with_directory<R>(
         &mut self,
         dir: PhysAddr,
-        step: impl FnOnce(&mut [u32; PT_ENTRIES]) -> R,
+        step: impl FnOnce(&mut [EntryWord; PT_ENTRIES]) -> R,
     ) -> R {
         // A directory entry going from not present to present needs no flush: the processor
         // caches no entry that is not present.
@@ -1360,7 +1374,7 @@ pub fn map_gate_pages(
     top: u32,
     from: usize,
     to: usize,
-    into: &mut [u32; LARGE_STACK_PAGES],
+    into: &mut [PhysAddr; LARGE_STACK_PAGES],
 ) {
     assert!(
         to <= LARGE_STACK_PAGES
@@ -1376,7 +1390,7 @@ pub fn map_gate_pages(
         let frame = allocate_in(frames);
         scratch.init_frame(frame, 0, &[]);
         map_kernel_page_in(frames, scratch, top - ((i + 1) as u32) * PAGE_SIZE, frame);
-        *slot = frame.get();
+        *slot = frame;
     }
 }
 
@@ -1514,15 +1528,14 @@ pub fn gate_stack_mapped(top: u32, count: usize) -> bool {
     (1..=count as u32).all(|page| present(top - page * PAGE_SIZE))
 }
 
-/// Read word `index` of `frame_phys` through the scratch window: the one-page alias of any frame,
-/// used by the teardown walk to read a dead process's directory and tables without mapping them.
-/// The bridge to [`ScratchWindow::read_word`].
+/// Read physical word `index` of `frame_phys` through the scratch window, the one-page alias of any
+/// frame: a section's frame table, mapped nowhere. The bridge to [`ScratchWindow::read_word`].
 ///
 /// # Panics
 ///
 /// `index` past the frame's end.
 #[cfg(target_arch = "x86")]
-pub fn read_frame_word(frame_phys: PhysAddr, index: usize) -> u32 {
+pub fn read_frame_word(frame_phys: PhysAddr, index: usize) -> PhysWord {
     with_database(|database| database.scratch.read_word(frame_phys, index))
 }
 
@@ -1534,7 +1547,7 @@ pub fn read_frame_word(frame_phys: PhysAddr, index: usize) -> u32 {
 ///
 /// The entries run past the table's end.
 #[cfg(target_arch = "x86")]
-pub fn read_table_entries(table: PhysAddr, first: usize, out: &mut [u32]) {
+pub fn read_table_entries(table: PhysAddr, first: usize, out: &mut [EntryWord]) {
     with_database(|database| database.scratch.read_words(table, first, out))
 }
 
@@ -1550,8 +1563,8 @@ mod tests {
     };
 
     /// Identity table `index` as the boot builds it, over a frame holding garbage.
-    fn identity(index: usize) -> Box<[u32; PT_ENTRIES]> {
-        let mut table = Box::new([0xDEAD_BEEFu32; PT_ENTRIES]);
+    fn identity(index: usize) -> Box<[EntryWord; PT_ENTRIES]> {
+        let mut table = Box::new([0xDEAD_BEEF; PT_ENTRIES]);
         BootTables::fill_identity(index, &mut table);
         table
     }
@@ -1627,7 +1640,7 @@ mod tests {
     #[test]
     fn the_frame_database_tables_map_its_storage() {
         let storage = 0x3_0000..0x3_0000 + 1500;
-        let mut table = Box::new([0xDEAD_BEEFu32; PT_ENTRIES]);
+        let mut table = Box::new([0xDEAD_BEEF; PT_ENTRIES]);
         DatabaseTables::fill_table(0, frame_run(storage.clone()), &mut table);
         assert_eq!(table[0], Pte::kernel_rw(PhysAddr::new(0x3000_0000)).raw());
         assert_eq!(
@@ -1652,7 +1665,7 @@ mod tests {
             first: PhysAddr::new(0xF0_0000),
             count: 2,
         };
-        let mut directory = Box::new([0u32; PT_ENTRIES]);
+        let mut directory = Box::new([0 as EntryWord; PT_ENTRIES]);
         tables.fill_directory(&mut directory);
         let first = layout::FRAME_DATABASE.first_entry();
         assert_eq!(
@@ -1677,12 +1690,12 @@ mod tests {
         let tables = allocated(&[
             0xFF_F000, 0xFF_E000, 0xFF_D000, 0xFF_C000, 0xFF_B000, 0xFF_A000,
         ]);
-        let mut directory = Box::new([0xDEAD_BEEFu32; PT_ENTRIES]);
+        let mut directory = Box::new([0xDEAD_BEEF; PT_ENTRIES]);
         tables.fill_directory(&mut directory);
 
         let image = layout::KERNEL_IMAGE.first_entry();
         assert_eq!(image, 512);
-        let mut expected = [0u32; PT_ENTRIES];
+        let mut expected = [0 as EntryWord; PT_ENTRIES];
         for (i, table) in [0xFF_E000, 0xFF_D000, 0xFF_C000, 0xFF_B000]
             .into_iter()
             .enumerate()
@@ -1705,7 +1718,7 @@ mod tests {
         let tables = allocated(&[
             0x50_0000, 0x51_0000, 0x52_0000, 0x53_0000, 0x54_0000, 0x55_0000,
         ]);
-        let mut boot = Box::new([0u32; PT_ENTRIES]);
+        let mut boot = Box::new([0 as EntryWord; PT_ENTRIES]);
         tables.fill_directory(&mut boot);
         let process = assembled(&boot, 0x60_0000, tables.scratch.get());
         let image = layout::KERNEL_IMAGE.first_entry();
@@ -1889,7 +1902,11 @@ mod tests {
 
     /// Assemble a directory from `base` into a buffer pre-filled with garbage: creation must not
     /// depend on the target frame's prior contents.
-    fn assembled(base: &[u32; PT_ENTRIES], own: u32, scratch: u32) -> [u32; PT_ENTRIES] {
+    fn assembled(
+        base: &[EntryWord; PT_ENTRIES],
+        own: u32,
+        scratch: u32,
+    ) -> [EntryWord; PT_ENTRIES] {
         let mut dir = [0xDEAD_BEEF; PT_ENTRIES];
         let (own, scratch) = (PhysAddr::new(own), PhysAddr::new(scratch));
         assemble_process_directory(&mut dir, own, scratch, |i| base[i]);
@@ -1902,7 +1919,7 @@ mod tests {
     #[test]
     fn process_directory_inherits_the_kernel_half_and_zeroes_the_user_half() {
         let stacks = layout::KERNEL_STACKS;
-        let mut base = [0u32; PT_ENTRIES];
+        let mut base = [0 as EntryWord; PT_ENTRIES];
         base[512] = 0x0010_1000 | PAGE_PRESENT | PAGE_WRITE;
         base[513] = 0x0050_1000 | PAGE_PRESENT | PAGE_WRITE;
         base[700] = 0x0090_0000 | PAGE_PRESENT | PAGE_WRITE | PAGE_USER;
@@ -1956,7 +1973,7 @@ mod tests {
     /// two processes linking at the same image base.
     #[test]
     fn sibling_directories_share_the_kernel_half_but_not_their_self_maps() {
-        let mut base = [0u32; PT_ENTRIES];
+        let mut base = [0 as EntryWord; PT_ENTRIES];
         base[512] = 0x0010_1000 | PAGE_PRESENT | PAGE_WRITE;
         base[513] = 0x0050_1000 | PAGE_PRESENT | PAGE_WRITE;
         let first = assembled(&base, 0x0090_0000, 0x00B0_0000);
@@ -1983,7 +2000,7 @@ mod tests {
     #[test]
     fn every_directory_inherits_the_kernel_stack_tables() {
         let stacks = layout::KERNEL_STACKS;
-        let mut base = [0u32; PT_ENTRIES];
+        let mut base = [0 as EntryWord; PT_ENTRIES];
         base[512] = 0x0010_1000 | PAGE_PRESENT | PAGE_WRITE;
         let tables: Vec<u32> = (0..stacks.entries as u32)
             .map(|i| 0x00C0_0000 + i * PAGE_SIZE)

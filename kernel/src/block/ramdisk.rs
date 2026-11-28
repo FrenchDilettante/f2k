@@ -18,6 +18,7 @@
 use core::ops::Range;
 
 use super::{check_request, BlockDevice, BusType, CacheFlush, DeviceInfo, DeviceKind};
+use crate::mem::phys::{PhysAddr, PhysWord};
 use crate::status::NtStatus;
 
 /// Bytes per sector.
@@ -29,24 +30,25 @@ const PAGE_SIZE: u64 = 4096;
 /// window on the target, a byte buffer in the host tests.
 pub trait PhysicalMemory: Sync {
     /// Copy the `out.len()` bytes at physical `address` into `out`.
-    fn read(&self, address: u32, out: &mut [u8]);
+    fn read(&self, address: PhysAddr, out: &mut [u8]);
     /// Copy `bytes` to physical `address`.
-    fn write(&self, address: u32, bytes: &[u8]);
+    fn write(&self, address: PhysAddr, bytes: &[u8]);
 }
 
 /// A disk over the physical bytes of a boot module.
 pub struct RamDisk<M> {
     memory: M,
     /// The image's first byte's physical address.
-    base: u32,
+    base: PhysAddr,
     sectors: u64,
 }
 
 impl<M: PhysicalMemory> RamDisk<M> {
     /// A disk over the module bytes `bytes`, through `memory`: its whole sectors (a trailing
     /// partial sector is not the disk's). None when the module holds no whole sector.
-    pub fn over(memory: M, bytes: Range<u32>) -> Option<Self> {
-        let sectors = u64::from(bytes.end.checked_sub(bytes.start)? / SECTOR_SIZE);
+    pub fn over(memory: M, bytes: Range<PhysAddr>) -> Option<Self> {
+        let sectors =
+            bytes.end.as_u64().checked_sub(bytes.start.as_u64())? / u64::from(SECTOR_SIZE);
         (sectors != 0).then_some(RamDisk {
             memory,
             base: bytes.start,
@@ -56,9 +58,9 @@ impl<M: PhysicalMemory> RamDisk<M> {
 
     /// The pieces of the run of `len` bytes from sector `lba`, each inside one page: its physical
     /// address and its offset in the caller's buffer, with its length. The run is on the disk
-    /// ([`check_request`] has passed), so every address fits in 32 bits.
-    fn pieces(&self, lba: u64, len: usize) -> impl Iterator<Item = (u32, Range<usize>)> {
-        let start = u64::from(self.base) + lba * u64::from(SECTOR_SIZE);
+    /// ([`check_request`] has passed), so every address is a physical one.
+    fn pieces(&self, lba: u64, len: usize) -> impl Iterator<Item = (PhysAddr, Range<usize>)> {
+        let start = self.base.as_u64() + lba * u64::from(SECTOR_SIZE);
         let mut offset = 0;
         core::iter::from_fn(move || {
             if offset == len {
@@ -68,7 +70,7 @@ impl<M: PhysicalMemory> RamDisk<M> {
             let room = (PAGE_SIZE - address % PAGE_SIZE) as usize;
             let piece = offset..offset + room.min(len - offset);
             offset = piece.end;
-            Some((address as u32, piece))
+            Some((PhysAddr::new(address as PhysWord), piece))
         })
     }
 }
@@ -118,7 +120,6 @@ impl<M: PhysicalMemory> BlockDevice for RamDisk<M> {
 #[cfg(target_arch = "x86")]
 mod target {
     use super::*;
-    use crate::mem::phys::PhysAddr;
     use crate::sync::InitOnce;
 
     /// Physical memory through the scratch window: each piece copied under the memory manager's
@@ -126,14 +127,12 @@ mod target {
     pub struct ScratchMemory;
 
     impl PhysicalMemory for ScratchMemory {
-        fn read(&self, address: u32, out: &mut [u8]) {
-            let address = PhysAddr::new(address);
+        fn read(&self, address: PhysAddr, out: &mut [u8]) {
             let offset = address.page_offset() as usize;
             crate::mem::paging::read_frame(address.pfn().addr(), offset, out);
         }
 
-        fn write(&self, address: u32, bytes: &[u8]) {
-            let address = PhysAddr::new(address);
+        fn write(&self, address: PhysAddr, bytes: &[u8]) {
             let offset = address.page_offset() as usize;
             crate::mem::paging::write_frame(address.pfn().addr(), offset, bytes);
         }
@@ -148,8 +147,7 @@ mod target {
     pub fn init() {
         let disk = crate::mem::bootmem::disk_module().and_then(|bytes| {
             let start = bytes.start;
-            // A Multiboot 1 module lies below 4 GiB: its record's fields are 32-bit.
-            let disk = RamDisk::over(ScratchMemory, bytes.start.get()..bytes.end.get())?;
+            let disk = RamDisk::over(ScratchMemory, bytes)?;
             crate::serial_println!(
                 "F2K: ram disk: {} sectors from the boot module at {:#010x}",
                 disk.sectors,
@@ -216,12 +214,14 @@ mod tests {
     }
 
     impl PhysicalMemory for &'static Frames {
-        fn read(&self, address: u32, out: &mut [u8]) {
+        fn read(&self, address: PhysAddr, out: &mut [u8]) {
+            let address = address.get();
             let range = self.access(address, out.len());
             out.copy_from_slice(&self.bytes.lock().unwrap()[range]);
         }
 
-        fn write(&self, address: u32, bytes: &[u8]) {
+        fn write(&self, address: PhysAddr, bytes: &[u8]) {
+            let address = address.get();
             let range = self.access(address, bytes.len());
             self.bytes.lock().unwrap()[range].copy_from_slice(bytes);
         }
@@ -241,7 +241,8 @@ mod tests {
     #[test]
     fn the_disk_is_the_modules_whole_sectors() {
         let memory = frames(0x40_0000, 0x3000);
-        let disk = RamDisk::over(memory, 0x40_0000..0x40_2A00).unwrap();
+        let disk =
+            RamDisk::over(memory, PhysAddr::new(0x40_0000)..PhysAddr::new(0x40_2A00)).unwrap();
         assert_eq!(
             disk.info(),
             DeviceInfo {
@@ -253,8 +254,12 @@ mod tests {
                 read_only: false,
             }
         );
-        assert!(RamDisk::over(memory, 0x40_0000..0x40_01FF).is_none());
-        assert!(RamDisk::over(memory, 0x40_0200..0x40_0000).is_none());
+        assert!(
+            RamDisk::over(memory, PhysAddr::new(0x40_0000)..PhysAddr::new(0x40_01FF)).is_none()
+        );
+        assert!(
+            RamDisk::over(memory, PhysAddr::new(0x40_0200)..PhysAddr::new(0x40_0000)).is_none()
+        );
         assert_eq!(disk.flush_cache(), Ok(CacheFlush::Flushed));
     }
 
@@ -264,7 +269,8 @@ mod tests {
     fn a_read_copies_the_run_a_page_at_a_time() {
         let base = 0x80_0000;
         let memory = frames(base, 0x4000);
-        let disk = RamDisk::over(memory, base..base + 0x4000).unwrap();
+        let disk =
+            RamDisk::over(memory, PhysAddr::new(base)..PhysAddr::new(base + 0x4000)).unwrap();
         let mut sector = [0u8; 512];
         assert_eq!(disk.read(9, &mut sector), Ok(()));
         let expected: Vec<u8> = (0..512).map(|i| pattern(base + 9 * 512 + i)).collect();
@@ -287,7 +293,8 @@ mod tests {
     fn an_unaligned_module_is_split_at_page_boundaries() {
         let base = 0x80_0100;
         let memory = frames(base, 0x3000);
-        let disk = RamDisk::over(memory, base..base + 0x3000).unwrap();
+        let disk =
+            RamDisk::over(memory, PhysAddr::new(base)..PhysAddr::new(base + 0x3000)).unwrap();
         let mut run = vec![0u8; 16 * 512];
         assert_eq!(disk.read(3, &mut run), Ok(()));
         let expected: Vec<u8> = (0..16 * 512).map(|i| pattern(base + 3 * 512 + i)).collect();
@@ -304,7 +311,8 @@ mod tests {
     fn a_write_lands_in_the_frames() {
         let base = 0x100_0000;
         let memory = frames(base, 0x2000);
-        let disk = RamDisk::over(memory, base..base + 0x2000).unwrap();
+        let disk =
+            RamDisk::over(memory, PhysAddr::new(base)..PhysAddr::new(base + 0x2000)).unwrap();
         let data: Vec<u8> = (0..3 * 512).map(|i| (i * 7) as u8).collect();
         assert_eq!(disk.write(6, &data), Ok(()));
         assert_eq!(
@@ -330,7 +338,8 @@ mod tests {
     fn a_run_off_the_disk_is_refused_untouched() {
         let base = 0x40_0000;
         let memory = frames(base, 0x2000);
-        let disk = RamDisk::over(memory, base..base + 0x2000).unwrap();
+        let disk =
+            RamDisk::over(memory, PhysAddr::new(base)..PhysAddr::new(base + 0x2000)).unwrap();
         let mut buffer = vec![0xAAu8; 2 * 512];
         assert_eq!(disk.read(15, &mut buffer), Err(STATUS_INVALID_PARAMETER));
         assert!(buffer.iter().all(|&byte| byte == 0xAA));
@@ -349,7 +358,7 @@ mod tests {
         let base = 0x200_0000;
         let memory = frames(base, 64 * 512);
         let disk: &'static RamDisk<&'static Frames> = Box::leak(Box::new(
-            RamDisk::over(memory, base..base + 64 * 512).unwrap(),
+            RamDisk::over(memory, PhysAddr::new(base)..PhysAddr::new(base + 64 * 512)).unwrap(),
         ));
         assert_eq!(disk.write(0, &mbr(&[(0, 0x80, 0x0C, 8, 40)])), Ok(()));
         let mut registry = Registry::new();

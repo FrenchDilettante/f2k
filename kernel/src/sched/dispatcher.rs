@@ -204,7 +204,7 @@ impl Dispatcher {
         &mut self,
         thread: ThreadId,
         target: *mut SchedProcess,
-    ) -> Option<u32> {
+    ) -> Option<crate::mem::phys::PhysAddr> {
         let process = ProcessRef::of(target);
         // SAFETY: the target outlives the scope (the attach's contract: its caller holds it), and
         // this exclusive borrow of the dispatcher serializes every use of it; the thread record is
@@ -225,7 +225,7 @@ impl Dispatcher {
     /// # Panics
     ///
     /// The thread is not attached.
-    pub(crate) fn detach_space(&mut self, thread: ThreadId) -> (u32, bool) {
+    pub(crate) fn detach_space(&mut self, thread: ThreadId) -> (crate::mem::phys::PhysAddr, bool) {
         let space = ProcessRef::of(self.thread(thread).space.cast_mut());
         let record = self.thread_mut(thread);
         let dir_phys = record.detach_space();
@@ -1103,7 +1103,10 @@ mod tests {
     }
 
     fn process(base: i8) -> *mut SchedProcess {
-        let p = Box::leak(Box::new(SchedProcess::new(0x0090_0000, base)));
+        let p = Box::leak(Box::new(SchedProcess::new(
+            crate::mem::phys::PhysAddr::new(0x0090_0000),
+            base,
+        )));
         p as *mut SchedProcess
     }
 

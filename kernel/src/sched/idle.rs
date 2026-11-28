@@ -87,12 +87,12 @@ mod target {
 
     /// The kernel's own process record: the idle thread's owner, and the directory base a
     /// cross-process switch to the idle thread loads.
-    static IDLE_PROCESS: PinnedProcess = PinnedProcess::new(0, 0);
+    static IDLE_PROCESS: PinnedProcess = PinnedProcess::new(crate::mem::phys::PhysAddr::ZERO, 0);
 
     /// The System process's record: the system threads' owner, as Windows 2000's System process
     /// owns its kernel's worker threads, at its base priority 8. It runs in the boot directory, as
     /// the idle process does: a system thread runs under no process of its own.
-    static SYSTEM_PROCESS: PinnedProcess = PinnedProcess::new(0, 8);
+    static SYSTEM_PROCESS: PinnedProcess = PinnedProcess::new(crate::mem::phys::PhysAddr::ZERO, 8);
 
     // The boot stack's top, exported by the image's entry point's assembly (boot/mod.rs).
     unsafe extern "C" {
@@ -111,10 +111,10 @@ mod target {
             // process boundary loads it.
             IDLE_PROCESS
                 .get_mut(dispatcher)
-                .set_dir_phys(crate::mem::paging::boot_directory_phys().get());
+                .set_dir_phys(crate::mem::paging::boot_directory_phys());
             SYSTEM_PROCESS
                 .get_mut(dispatcher)
-                .set_dir_phys(crate::mem::paging::boot_directory_phys().get());
+                .set_dir_phys(crate::mem::paging::boot_directory_phys());
             // The system threads' records: the table's first, made here from the nonpaged pool,
             // where every thread object's are made with the object.
             for thread in 0..super::super::database::SYSTEM_THREADS {
@@ -264,8 +264,10 @@ mod tests {
         &'static PinnedProcess,
         crate::sched::testkit::Disp,
     ) {
-        let process: &'static PinnedProcess =
-            Box::leak(Box::new(PinnedProcess::new(0x0090_0000, 0)));
+        let process: &'static PinnedProcess = Box::leak(Box::new(PinnedProcess::new(
+            crate::mem::phys::PhysAddr::new(0x0090_0000),
+            0,
+        )));
         let mut dispatcher = crate::sched::testkit::dispatcher();
         install(IDLE_THREAD, process, &mut dispatcher, stack_top);
         (record(IDLE_THREAD), process, dispatcher)

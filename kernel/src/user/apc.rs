@@ -309,7 +309,10 @@ mod tests {
     fn a_user_apc_calls_its_routine_with_the_context_and_both_arguments() {
         use crate::sched::process::SchedProcess;
         let mut d = crate::sched::testkit::dispatcher();
-        let p = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
+        let p = Box::leak(Box::new(SchedProcess::new(
+            crate::mem::phys::PhysAddr::new(0x0090_0000),
+            8,
+        )));
         let t = crate::sched::testkit::thread(p);
         let mut apc = crate::sched::testkit::apc();
         init(&mut apc, t.id(), 0x0040_5000, 7);

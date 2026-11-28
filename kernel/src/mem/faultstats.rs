@@ -34,7 +34,7 @@ static GUARD: AtomicU32 = AtomicU32::new(0);
 
 /// Note one user page fault: the total, plus the kind its entry resolves to. Entries that
 /// resolve to nothing (a raised access violation) count toward the total only.
-pub fn note_fault(entry: u32, write: bool, user: bool) {
+pub fn note_fault(entry: crate::mem::pte::EntryWord, write: bool, user: bool) {
     PAGE_FAULTS.fetch_add(1, Ordering::Relaxed);
     let bump = |slot: &AtomicU32| {
         slot.fetch_add(1, Ordering::Relaxed);
@@ -70,8 +70,12 @@ mod tests {
     use crate::mem::vm::PAGE_READWRITE;
 
     /// A demand-zero entry: committed, protected, no frame, no backing tag.
-    fn demand_zero_entry() -> u32 {
-        pte::encode(PteKind::DemandZero, 0, PAGE_READWRITE)
+    fn demand_zero_entry() -> pte::EntryWord {
+        pte::encode(
+            PteKind::DemandZero,
+            crate::mem::phys::PhysAddr::ZERO,
+            PAGE_READWRITE,
+        )
     }
 
     #[test]
@@ -100,7 +104,7 @@ mod tests {
     fn a_transition_entry_counts_the_transition_kind() {
         let entry = crate::mem::pte::encode_backing(
             crate::mem::pte::TRANSITION,
-            0x0050_0000,
+            crate::mem::pte::frame_field(crate::mem::phys::PhysAddr::new(0x0050_0000)),
             PAGE_READWRITE,
         );
         let before = counts();

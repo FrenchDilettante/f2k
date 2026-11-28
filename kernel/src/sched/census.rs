@@ -30,7 +30,10 @@ mod tests {
     #[test]
     fn a_process_lists_its_threads_in_creation_order() {
         let dispatcher = crate::sched::testkit::dispatcher();
-        let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
+        let process = Box::leak(Box::new(SchedProcess::new(
+            crate::mem::phys::PhysAddr::new(0x0090_0000),
+            8,
+        )));
         let address = process as *mut SchedProcess;
         assert_eq!(threads_of(&dispatcher, address).count(), 0);
         let first = crate::sched::testkit::thread(process).id();

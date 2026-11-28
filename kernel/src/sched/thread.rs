@@ -747,7 +747,10 @@ impl Thread {
     /// `target` is a live process record, not borrowed meanwhile, that outlives the scope. The
     /// thread keeps the pointer itself, not one derived from a borrow, so the detach may change
     /// the record through it.
-    pub(crate) unsafe fn attach_space(&mut self, target: *const SchedProcess) -> Option<u32> {
+    pub(crate) unsafe fn attach_space(
+        &mut self,
+        target: *const SchedProcess,
+    ) -> Option<crate::mem::phys::PhysAddr> {
         if core::ptr::eq(self.space, target) {
             return None;
         }
@@ -768,7 +771,7 @@ impl Thread {
     /// # Panics
     ///
     /// The thread is not attached.
-    pub(crate) fn detach_space(&mut self) -> u32 {
+    pub(crate) fn detach_space(&mut self) -> crate::mem::phys::PhysAddr {
         assert!(self.attached(), "a thread detaches once, after it attached");
         self.space = self.process;
         self.space_index = self.process().index;
@@ -934,7 +937,10 @@ mod tests {
     #[test]
     fn attach_takes_process_data() {
         let d = crate::sched::testkit::dispatcher();
-        let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
+        let process = Box::leak(Box::new(SchedProcess::new(
+            crate::mem::phys::PhysAddr::new(0x0090_0000),
+            8,
+        )));
 
         let t1 = crate::sched::testkit::thread(process);
         assert_eq!(t1.base_priority(), 8);
@@ -991,7 +997,10 @@ mod tests {
 
     /// A process record leaked at its final address, on directory `dir`.
     fn process_on(dir: u32) -> &'static mut SchedProcess {
-        Box::leak(Box::new(SchedProcess::new(dir, 8)))
+        Box::leak(Box::new(SchedProcess::new(
+            crate::mem::phys::PhysAddr::new(dir),
+            8,
+        )))
     }
 
     /// A thread runs on its owner's address space from its attach to its process; attached to
@@ -1006,12 +1015,18 @@ mod tests {
         assert!(!thread.attached());
 
         // SAFETY: the process records are leaked at their final addresses.
-        assert_eq!(unsafe { thread.attach_space(other) }, Some(0x00B0_0000));
+        assert_eq!(
+            unsafe { thread.attach_space(other) },
+            Some(crate::mem::phys::PhysAddr::new(0x00B0_0000))
+        );
         assert!(thread.attached());
         assert!(core::ptr::eq(thread.space(), other));
         assert!(core::ptr::eq(thread.process, own), "the owner stays");
 
-        assert_eq!(thread.detach_space(), 0x0090_0000);
+        assert_eq!(
+            thread.detach_space(),
+            crate::mem::phys::PhysAddr::new(0x0090_0000)
+        );
         assert!(!thread.attached());
         assert!(core::ptr::eq(thread.space(), own));
     }
@@ -1027,7 +1042,10 @@ mod tests {
         assert_eq!(unsafe { thread.attach_space(own) }, None);
         assert!(!thread.attached());
         // SAFETY: as above.
-        assert_eq!(unsafe { thread.attach_space(other) }, Some(0x00B0_0000));
+        assert_eq!(
+            unsafe { thread.attach_space(other) },
+            Some(crate::mem::phys::PhysAddr::new(0x00B0_0000))
+        );
         // SAFETY: as above.
         assert_eq!(unsafe { thread.attach_space(other) }, None);
         assert!(core::ptr::eq(thread.space(), other));

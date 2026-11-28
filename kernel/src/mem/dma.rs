@@ -34,6 +34,7 @@
 
 use super::layout::Region;
 use super::paging::PAGE_SIZE;
+use super::phys::{PhysAddr, PhysWord};
 use super::pool::pages_for;
 
 // --- The public contract's types -------------------------------------------------------------
@@ -284,7 +285,7 @@ pub struct MmioReservation {
     pub va: u32,
     pub first_page: usize,
     pub pages: usize,
-    pub phys: u32,
+    pub phys: PhysAddr,
     pub bytes: u32,
     pub cache_enable: bool,
 }
@@ -386,13 +387,14 @@ impl MmioMappings {
         bytes: u32,
         cache_enable: bool,
     ) -> Option<MmioReservation> {
-        if bytes == 0 || physical >= 1 << 32 {
+        if bytes == 0 {
             return None;
         }
+        // Past what a physical address holds (the 32-bit bus without PAE), nothing is taken.
+        let phys = PhysAddr::new(PhysWord::try_from(physical).ok()?);
         // The record's slot first: a full table must not leave the run marked taken.
         let slot = self.slots.iter().position(|slot| slot.is_none())?;
-        let phys = physical as u32;
-        let offset = phys % PAGE_SIZE;
+        let offset = phys.page_offset();
         let pages = ((offset as u64 + bytes as u64).div_ceil(PAGE_SIZE as u64)) as usize;
         // `reserve_pages` marks the run taken.
         let first = self.reserve_pages(pages)?;
@@ -423,13 +425,13 @@ impl MmioMappings {
         physical: u64,
         bytes: u32,
         cache_enable: bool,
-        mut map_page: impl FnMut(u32, u32, bool),
+        mut map_page: impl FnMut(u32, PhysAddr, bool),
     ) -> Option<u32> {
         let reservation = self.reserve(physical, bytes, cache_enable)?;
         for i in 0..reservation.pages as u32 {
             map_page(
                 self.region.start + (reservation.first_page as u32 + i) * PAGE_SIZE,
-                (reservation.phys & !(PAGE_SIZE - 1)) + i * PAGE_SIZE,
+                reservation.phys.pfn().plus(i).addr(),
                 cache_enable,
             );
         }
@@ -468,7 +470,6 @@ pub use target::*;
 mod target {
     use super::*;
     use crate::level::{self, High, LevelCell};
-    use crate::mem::phys::PhysAddr;
     use crate::mem::{layout, paging, pool};
 
     /// The platform's bus: identity translation through the current directory's page tables (the
@@ -552,7 +553,7 @@ mod target {
         for i in 0..reservation.pages as u32 {
             paging::map_mmio_page(
                 layout::MMIO.start + (reservation.first_page as u32 + i) * PAGE_SIZE,
-                PhysAddr::new(reservation.phys).pfn().plus(i).addr(),
+                reservation.phys.pfn().plus(i).addr(),
                 cache_enable,
             );
         }
@@ -899,7 +900,7 @@ mod tests {
         // 0xE000_0800 + 0x1000 spans pages 0xE000_0000 and 0xE000_1000: two pages, va at +0x800.
         let va = mmio
             .map(0xE000_0800, 0x1000, false, |va, phys, cache| {
-                mapped.push((va, phys, cache));
+                mapped.push((va, phys.get(), cache));
             })
             .unwrap();
         assert_eq!(va, 0xC280_0800);
@@ -915,7 +916,7 @@ mod tests {
         // A cached mapping records the flag.
         let va2 = mmio
             .map(0xF000_0000, 0x2000, true, |va, phys, cache| {
-                mapped.push((va, phys, cache));
+                mapped.push((va, phys.get(), cache));
             })
             .unwrap();
         assert_eq!(va2, 0xC280_2000, "the next free run");

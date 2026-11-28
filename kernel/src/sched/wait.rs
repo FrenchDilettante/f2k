@@ -1279,7 +1279,10 @@ mod tests {
     }
 
     fn process(base: i8) -> *mut SchedProcess {
-        let p = Box::leak(Box::new(SchedProcess::new(0x0090_0000, base)));
+        let p = Box::leak(Box::new(SchedProcess::new(
+            crate::mem::phys::PhysAddr::new(0x0090_0000),
+            base,
+        )));
         p as *mut SchedProcess
     }
 

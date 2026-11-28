@@ -22,6 +22,7 @@ use super::list::{IndexList, ListKind};
 use super::thread::ThreadId;
 use super::wait::{WaitKind, Waitable, WaitableId};
 use super::QUANTUM_RESET;
+use crate::mem::phys::PhysAddr;
 
 /// The stack-count value meaning "no thread has been created yet".
 pub const NO_THREADS: u16 = 0x7FFF;
@@ -35,7 +36,7 @@ pub const NOT_POOLED: u16 = u16::MAX;
 #[repr(C)]
 pub struct SchedProcess {
     /// The process's page-directory frame (physical address).
-    pub(super) dir_phys: u32,
+    pub(super) dir_phys: PhysAddr,
     /// The priority every attached thread starts from.
     pub(super) base_priority: i8,
     /// The quantum every thread of this process resets to (KPROCESS's ThreadQuantum): the two-tick
@@ -119,13 +120,13 @@ impl ListKind for ProcessThreads {
 impl SchedProcess {
     /// A scheduling record with the given directory base and base priority, the base thread
     /// quantum, no threads, nothing attached, and both policies off, outside the process pool.
-    pub const fn new(dir_phys: u32, base_priority: i8) -> Self {
+    pub const fn new(dir_phys: PhysAddr, base_priority: i8) -> Self {
         Self::pooled(dir_phys, base_priority, NOT_POOLED)
     }
 
     /// A scheduling record as [`SchedProcess::new`] makes one, of the process record at `index`
     /// in the process pool.
-    pub const fn pooled(dir_phys: u32, base_priority: i8, index: u16) -> Self {
+    pub const fn pooled(dir_phys: PhysAddr, base_priority: i8, index: u16) -> Self {
         SchedProcess {
             dir_phys,
             base_priority,
@@ -153,13 +154,13 @@ impl SchedProcess {
     }
 
     /// The process's page-directory frame.
-    pub fn dir_phys(&self) -> u32 {
+    pub fn dir_phys(&self) -> PhysAddr {
         self.dir_phys
     }
 
     /// Bind the directory base. The boot install's one late binding: the kernel's own process
     /// record takes the directory that is active at boot.
-    pub fn set_dir_phys(&mut self, dir_phys: u32) {
+    pub fn set_dir_phys(&mut self, dir_phys: PhysAddr) {
         self.dir_phys = dir_phys;
     }
 
@@ -234,13 +235,13 @@ unsafe impl Sync for PinnedProcess {}
 impl PinnedProcess {
     /// A pinned record with the given directory base and base priority (see
     /// [`SchedProcess::new`]).
-    pub const fn new(dir_phys: u32, base_priority: i8) -> Self {
+    pub const fn new(dir_phys: PhysAddr, base_priority: i8) -> Self {
         PinnedProcess(UnsafeCell::new(SchedProcess::new(dir_phys, base_priority)))
     }
 
     /// A pinned record of the process record at `index` in the process pool (see
     /// [`SchedProcess::pooled`]).
-    pub const fn pooled(dir_phys: u32, base_priority: i8, index: u16) -> Self {
+    pub const fn pooled(dir_phys: PhysAddr, base_priority: i8, index: u16) -> Self {
         PinnedProcess(UnsafeCell::new(SchedProcess::pooled(
             dir_phys,
             base_priority,
@@ -314,8 +315,8 @@ mod tests {
     /// no-threads sentinel, no threads, both policies off.
     #[test]
     fn process_defaults() {
-        let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
-        assert_eq!(process.dir_phys(), 0x0090_0000);
+        let process = Box::leak(Box::new(SchedProcess::new(PhysAddr::new(0x0090_0000), 8)));
+        assert_eq!(process.dir_phys(), PhysAddr::new(0x0090_0000));
         assert_eq!(process.base_priority(), 8);
         assert_eq!(process.thread_quantum(), 6);
         assert_eq!(process.stack_count(), NO_THREADS);
@@ -336,7 +337,7 @@ mod tests {
 
     /// A process record on directory `dir`, leaked at its final address.
     fn leaked(dir: u32) -> *mut SchedProcess {
-        Box::into_raw(Box::new(SchedProcess::new(dir, 8)))
+        Box::into_raw(Box::new(SchedProcess::new(PhysAddr::new(dir), 8)))
     }
 
     /// Attach a fresh thread to `process`.
@@ -388,8 +389,8 @@ mod tests {
         let (first, second) = (attach(home), attach(home));
         assert!(d.attach_space(first, target).is_some());
         assert!(d.attach_space(second, target).is_some());
-        assert_eq!(d.detach_space(first), (0x00B0_0000, false));
-        assert_eq!(d.detach_space(second), (0x00B0_0000, true));
+        assert_eq!(d.detach_space(first), (PhysAddr::new(0x00B0_0000), false));
+        assert_eq!(d.detach_space(second), (PhysAddr::new(0x00B0_0000), true));
         // SAFETY: the record is leaked, and no borrow of it is live.
         assert_eq!(unsafe { &*target }.attach_count(), 0);
     }
@@ -397,7 +398,7 @@ mod tests {
     /// The quantum-end exemption flag is a plain store returning the previous value.
     #[test]
     fn disable_quantum_flag() {
-        let mut process = SchedProcess::new(0x0090_0000, 8);
+        let mut process = SchedProcess::new(PhysAddr::new(0x0090_0000), 8);
         assert!(!process.set_disable_quantum(true));
         assert!(process.disable_quantum());
         assert!(process.set_disable_quantum(false));

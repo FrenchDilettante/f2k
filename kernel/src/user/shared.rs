@@ -120,7 +120,7 @@ pub fn map_into(space: &mut crate::mem::vm::AddressSpace) {
         .map_shared(
             &mut crate::mem::vm::CurrentPages,
             USER_ADDRESS,
-            FRAME.get().get(),
+            *FRAME.get(),
             crate::mem::vm::PAGE_READONLY,
         )
         .expect("the shared data page maps once, inside its region");

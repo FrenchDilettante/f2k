@@ -436,7 +436,7 @@ mod target {
                             let protect = vm::decode(entry)
                                 .map(|(_, protect)| protect)
                                 .unwrap_or_else(|| crate::mem::pte::soft_protect(entry));
-                            relief.record_victim(va, victim.frame.addr().get(), protect);
+                            relief.record_victim(va, victim.frame.addr(), protect);
                         }
                         victim
                     },
@@ -448,12 +448,7 @@ mod target {
                         let protect = vm::decode(entry)
                             .map(|(_, protect)| protect)
                             .unwrap_or_else(|| crate::mem::pte::soft_protect(entry));
-                        vm::soften_to_transition(
-                            &mut vm::CurrentPages,
-                            va,
-                            frame.addr().get(),
-                            protect,
-                        );
+                        vm::soften_to_transition(&mut vm::CurrentPages, va, frame.addr(), protect);
                     },
                     |frame, slot| relief.queue_dirty(frame, slot),
                 )

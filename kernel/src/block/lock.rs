@@ -300,7 +300,10 @@ mod tests {
 
     /// A running thread outside any critical region.
     fn bare_thread() -> crate::sched::testkit::Rec<Thread> {
-        let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
+        let process = Box::leak(Box::new(SchedProcess::new(
+            crate::mem::phys::PhysAddr::new(0x0090_0000),
+            8,
+        )));
         let mut thread = crate::sched::testkit::thread(process);
         thread.state = ThreadState::Running;
         thread

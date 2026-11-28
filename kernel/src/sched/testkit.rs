@@ -265,7 +265,10 @@ pub fn process(base: i8) -> *mut SchedProcess {
 
 /// A process record, leaked at its final address, on directory `dir` with base priority `base`.
 pub fn process_on(dir: u32, base: i8) -> *mut SchedProcess {
-    Box::leak(Box::new(SchedProcess::new(dir, base)))
+    Box::leak(Box::new(SchedProcess::new(
+        crate::mem::phys::PhysAddr::new(dir),
+        base,
+    )))
 }
 
 /// The installed dispatcher's record `thread`, made first if it is not.

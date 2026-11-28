@@ -478,31 +478,41 @@ pub struct NoPages;
 
 #[cfg(not(target_arch = "x86"))]
 impl Pages for NoPages {
-    fn entry(&self, _va: u32) -> u32 {
+    fn entry(&self, _va: u32) -> crate::mem::pte::EntryWord {
         0
     }
 
-    fn set_entry(&mut self, _va: u32, _entry: u32) {}
+    fn set_entry(&mut self, _va: u32, _entry: crate::mem::pte::EntryWord) {}
 
-    fn zeroed_frame(&mut self) -> Option<u32> {
+    fn zeroed_frame(&mut self) -> Option<crate::mem::phys::PhysAddr> {
         None
     }
 
-    fn free_frame(&mut self, _frame: u32) {}
+    fn free_frame(&mut self, _frame: crate::mem::phys::PhysAddr) {}
 
-    fn share_frame(&mut self, _frame: u32) {}
+    fn share_frame(&mut self, _frame: crate::mem::phys::PhysAddr) {}
 
-    fn frame_shared(&self, _frame: u32) -> bool {
+    fn frame_shared(&self, _frame: crate::mem::phys::PhysAddr) -> bool {
         false
     }
 
-    fn copy_frame(&mut self, _from: u32, _to: u32) {}
+    fn copy_frame(&mut self, _from: crate::mem::phys::PhysAddr, _to: crate::mem::phys::PhysAddr) {}
 
-    fn frame_word(&self, _frame: u32, _index: u32) -> u32 {
+    fn frame_word(
+        &self,
+        _frame: crate::mem::phys::PhysAddr,
+        _index: u32,
+    ) -> crate::mem::phys::PhysWord {
         0
     }
 
-    fn set_frame_word(&mut self, _frame: u32, _index: u32, _value: u32) {}
+    fn set_frame_word(
+        &mut self,
+        _frame: crate::mem::phys::PhysAddr,
+        _index: u32,
+        _value: crate::mem::phys::PhysWord,
+    ) {
+    }
 }
 
 // --- Copies between address spaces --------------------------------------------------------------
@@ -897,23 +907,26 @@ mod tests {
     }
 
     impl Pages for Fake {
-        fn entry(&self, va: u32) -> u32 {
+        fn entry(&self, va: u32) -> crate::mem::pte::EntryWord {
             self.entries.get(&va).copied().unwrap_or(0)
         }
 
-        fn set_entry(&mut self, va: u32, entry: u32) {
+        fn set_entry(&mut self, va: u32, entry: crate::mem::pte::EntryWord) {
             self.entries.insert(va, entry);
         }
 
-        fn zeroed_frame(&mut self) -> Option<u32> {
+        fn zeroed_frame(&mut self) -> Option<crate::mem::phys::PhysAddr> {
             if let Some(budget) = &mut self.budget {
                 *budget = budget.checked_sub(1)?;
             }
             self.next += 1;
-            Some(0x10_0000 + self.next * PAGE)
+            Some(crate::mem::phys::PhysAddr::new(
+                0x10_0000 + self.next * PAGE,
+            ))
         }
 
-        fn free_frame(&mut self, frame: u32) {
+        fn free_frame(&mut self, frame: crate::mem::phys::PhysAddr) {
+            let frame = frame.get();
             if let Some(budget) = self
                 .budget
                 .as_mut()
@@ -926,20 +939,27 @@ mod tests {
             }
         }
 
-        fn share_frame(&mut self, frame: u32) {
+        fn share_frame(&mut self, frame: crate::mem::phys::PhysAddr) {
+            let frame = frame.get();
             *self.holders.entry(frame).or_default() += 1;
         }
 
-        fn frame_shared(&self, frame: u32) -> bool {
+        fn frame_shared(&self, frame: crate::mem::phys::PhysAddr) -> bool {
+            let frame = frame.get();
             self.holders.get(&frame).is_some_and(|&extra| extra > 0)
         }
 
-        fn copy_frame(&mut self, from: u32, to: u32) {
+        fn copy_frame(&mut self, from: crate::mem::phys::PhysAddr, to: crate::mem::phys::PhysAddr) {
             let word = self.frame_word(from, 0);
             self.set_frame_word(to, 0, word);
         }
 
-        fn frame_word(&self, frame: u32, index: u32) -> u32 {
+        fn frame_word(
+            &self,
+            frame: crate::mem::phys::PhysAddr,
+            index: u32,
+        ) -> crate::mem::phys::PhysWord {
+            let frame = frame.get();
             if index == 0 {
                 self.words.get(&frame).copied().unwrap_or(0)
             } else {
@@ -947,7 +967,13 @@ mod tests {
             }
         }
 
-        fn set_frame_word(&mut self, frame: u32, index: u32, value: u32) {
+        fn set_frame_word(
+            &mut self,
+            frame: crate::mem::phys::PhysAddr,
+            index: u32,
+            value: crate::mem::phys::PhysWord,
+        ) {
+            let frame = frame.get();
             if index == 0 {
                 self.words.insert(frame, value);
             }
@@ -1425,7 +1451,15 @@ mod tests {
             assert_eq!(space.query(&pages, address).mem_type, vm::MEM_PRIVATE);
         }
         assert_eq!(space.frame_at(&pages, teb), None);
-        assert_eq!(space.map_frame(&mut pages, teb, 0x0050_0000, rw), Ok(()));
+        assert_eq!(
+            space.map_frame(
+                &mut pages,
+                teb,
+                crate::mem::phys::PhysAddr::new(0x0050_0000),
+                rw
+            ),
+            Ok(())
+        );
     }
 
     /// Protections (memory/protect): each change reports the old one; past the commit fails with
@@ -1615,7 +1649,12 @@ mod tests {
 
     /// A section's frame, held by its section, mapped at the page `va` of a view with `protect`
     /// (as `nt::section` maps a view), its contents 0x5EC7.
-    fn map_section_frame(space: &mut AddressSpace, pages: &mut Fake, va: u32, protect: u32) -> u32 {
+    fn map_section_frame(
+        space: &mut AddressSpace,
+        pages: &mut Fake,
+        va: u32,
+        protect: u32,
+    ) -> crate::mem::phys::PhysAddr {
         let frame = pages.zeroed_frame().unwrap();
         pages.set_frame_word(frame, 0, 0x5EC7);
         space.map_shared(pages, va, frame, protect).unwrap();

@@ -349,7 +349,10 @@ mod tests {
         use crate::sched::wait::{WaitDisposition, WaitMode};
 
         let mut d = crate::sched::testkit::dispatcher();
-        let p = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
+        let p = Box::leak(Box::new(SchedProcess::new(
+            crate::mem::phys::PhysAddr::new(0x0090_0000),
+            8,
+        )));
         let t = crate::sched::testkit::thread(p);
 
         let mut clock = Clock::new();
@@ -529,7 +532,10 @@ mod tests {
         use crate::sched::thread::ThreadState;
 
         let mut d = crate::sched::testkit::dispatcher();
-        let p = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
+        let p = Box::leak(Box::new(SchedProcess::new(
+            crate::mem::phys::PhysAddr::new(0x0090_0000),
+            8,
+        )));
         let mut t = crate::sched::testkit::thread(p);
         t.state = ThreadState::Running;
         d.enter(t.id());

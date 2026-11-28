@@ -1040,7 +1040,10 @@ mod lock_tests {
 
     /// A running thread of the installed dispatcher, and its name.
     fn thread() -> (Rec<Thread>, ThreadId) {
-        let process = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8)));
+        let process = Box::leak(Box::new(SchedProcess::new(
+            crate::mem::phys::PhysAddr::new(0x0090_0000),
+            8,
+        )));
         let mut thread = crate::sched::testkit::thread(process);
         thread.state = ThreadState::Running;
         let id = ThreadId::from(&*thread);

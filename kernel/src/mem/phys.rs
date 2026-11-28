@@ -7,6 +7,32 @@
 //! place that says how wide a physical address is, and the compiler then names every caller that
 //! narrows one. Code that hands an address to a device keeps its own explicit width check (the DMA
 //! layer's below-4 GiB constraint, [`crate::mem::dma`]), whatever this width is.
+//!
+//! **Where PAE stands.** Every physical address the kernel keeps is a [`PhysAddr`] or a [`Pfn`]:
+//! process directories (the scheduler's `dir_phys`), gate-stack frames, the address-space
+//! manager's frames ([`crate::mem::vm::Pages`]) and a section's frame tables (a page of
+//! [`PhysWord`]s, [`crate::mem::vm::TABLE_SLOTS`] of them), MMIO reservations, the RAM disk's
+//! module, the framebuffer. Every page-table entry is a [`crate::mem::pte::EntryWord`], and the
+//! frame field converts to and from an address only in [`crate::mem::pte`]. Widening the two words
+//! to `u64` is then a type change; what stops compiling is what needs a decision.
+//!
+//! u32 by design, whatever the mode: virtual addresses (a 32-bit address space either way); CR3
+//! ([`crate::mem::paging::directory_cr3`]: a 32-bit register, which under PAE holds the
+//! directory-pointer table's address below 4 GiB); bus addresses a device takes in 32 bits (the
+//! DMA layer checks them, its own width being `u64`); the boot hand-off — the Multiboot 1
+//! structure and its module and memory records (`crate::mem::multiboot`, `boot::cmdline`), the VBE
+//! mode block's framebuffer field, the real-mode trampoline below 1 MiB — whose formats are 32-bit
+//! (the HAL plan's Multiboot 2 / UEFI hand-off replaces them, and a framebuffer above 4 GiB arrives
+//! that way).
+//!
+//! What a PAE mode still needs: the page-directory-pointer table (four entries, 32-byte aligned,
+//! below 4 GiB, what CR3 names) and CR4.PAE; three-level walks with 512 entries per table and 2 MiB
+//! per directory entry ([`crate::mem::paging`]'s geometry derives its entry count from
+//! `EntryWord`, but the window span, `directory_index` and the walks are 32-bit paging's); the
+//! self-map grown to 8 MiB (four directory entries, one per directory page) and the windows laid
+//! out around it ([`crate::mem::layout`]); a frame database sized for frames past 4 GiB; and the
+//! context switch's directory load (it reads `dir_phys` as one 32-bit word,
+//! `crate::sched::switch`).
 
 use core::fmt;
 use core::ops::{Add, Range, Sub};

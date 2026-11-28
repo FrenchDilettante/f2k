@@ -104,6 +104,7 @@ use core::cell::UnsafeCell;
 #[cfg(target_arch = "x86")]
 use crate::mem::paging;
 use crate::mem::phys::PhysAddr;
+use crate::mem::pte::EntryWord;
 use crate::mem::quota::CommitQuota;
 use crate::mem::vm::AddressSpace;
 use crate::mem::ws::WorkingSet;
@@ -406,7 +407,7 @@ impl Process {
     /// A record no process holds: every pool record's at the kernel's build.
     pub const fn empty() -> Self {
         Process {
-            sched: PinnedProcess::new(0, crate::sched::NORMAL_BASE),
+            sched: PinnedProcess::new(PhysAddr::ZERO, crate::sched::NORMAL_BASE),
             identity: IdentityCell::new(Identity::NONE),
             handles: ShortLock::new(HandleTable::new()),
             space: ShortLock::new(AddressSpace::new()),
@@ -449,7 +450,7 @@ impl Process {
                 sched.has_no_threads() && sched.attach_count() == 0,
                 "a free process record has no thread"
             );
-            *sched = SchedProcess::pooled(dir_phys.get(), crate::sched::NORMAL_BASE, object.index);
+            *sched = SchedProcess::pooled(dir_phys, crate::sched::NORMAL_BASE, object.index);
             // A new process starts in the background (PspForegroundQuantum[0]); the next settle
             // point moves it to the foreground when it belongs there.
             sched.set_thread_quantum(foreground::thread_quantum(false, NORMAL_PRIORITY_CLASS));
@@ -987,7 +988,10 @@ unsafe impl crate::slots::Record for Process {
         use core::ptr::addr_of_mut;
         // SAFETY: the caller's contract; every field is written, the two large ones in place.
         unsafe {
-            addr_of_mut!((*record).sched).write(PinnedProcess::new(0, crate::sched::NORMAL_BASE));
+            addr_of_mut!((*record).sched).write(PinnedProcess::new(
+                PhysAddr::ZERO,
+                crate::sched::NORMAL_BASE,
+            ));
             addr_of_mut!((*record).identity).write(IdentityCell::new(Identity::NONE));
             addr_of_mut!((*record).state).write(ShortLock::new(ProcessState::fresh()));
             addr_of_mut!((*record).handles).write(ShortLock::new(HandleTable::new()));
@@ -1295,13 +1299,13 @@ fn free_directory(dir_phys: PhysAddr) {
 /// more than five thousand for the smallest process.
 pub fn release_address_space(
     dir_phys: PhysAddr,
-    read_entries: impl Fn(PhysAddr, usize, &mut [u32]),
+    read_entries: impl Fn(PhysAddr, usize, &mut [EntryWord]),
     mut release: impl FnMut(PhysAddr),
 ) {
     use crate::mem::paging::{KERNEL_HALF_START, PT_ENTRIES};
     use crate::mem::pte::Pte;
-    let mut pdes = [0u32; WALK_CHUNK];
-    let mut ptes = [0u32; WALK_CHUNK];
+    let mut pdes: [EntryWord; WALK_CHUNK] = [0; WALK_CHUNK];
+    let mut ptes: [EntryWord; WALK_CHUNK] = [0; WALK_CHUNK];
     for first_window in (0..KERNEL_HALF_START).step_by(WALK_CHUNK) {
         let windows = &mut pdes[..WALK_CHUNK.min(KERNEL_HALF_START - first_window)];
         read_entries(dir_phys, first_window, windows);
@@ -1341,7 +1345,7 @@ const _: () = assert!(crate::mem::paging::PT_ENTRIES % WALK_CHUNK == 0);
 /// A thread is still attached: teardown follows the last thread's end, never precedes it.
 pub fn release_process(
     process: &Process,
-    read_entries: impl Fn(PhysAddr, usize, &mut [u32]),
+    read_entries: impl Fn(PhysAddr, usize, &mut [EntryWord]),
     mut release: impl FnMut(PhysAddr),
 ) {
     assert_eq!(
@@ -1622,7 +1626,7 @@ mod tests {
     /// object.
     fn record_at(dir: u32) -> Process {
         let mut process = Process::empty();
-        process.sched = PinnedProcess::new(dir, 8);
+        process.sched = PinnedProcess::new(PhysAddr::new(dir), 8);
         *process.identity.0.get_mut() = Identity {
             name: ProcessName::new(b"fixture"),
             id: FIRST_CLIENT_ID,
@@ -1898,7 +1902,8 @@ mod tests {
         /// back).
         fn reap(&mut self, stacks: &mut KernelStacks) {
             if let Some(parked) = stacks.take_parked() {
-                self.released.extend_from_slice(parked.mapped());
+                self.released
+                    .extend(parked.mapped().iter().map(|frame| frame.get()));
             }
         }
 
@@ -1944,8 +1949,10 @@ mod tests {
 
     /// An ordinary gate stack at `slot` with `frames`.
     fn gate(slot: u16, frames: [u32; crate::mem::paging::GATE_STACK_PAGES]) -> GateStack {
-        let mut all = [0; crate::mem::paging::LARGE_STACK_PAGES];
-        all[..frames.len()].copy_from_slice(&frames);
+        let mut all = [PhysAddr::ZERO; crate::mem::paging::LARGE_STACK_PAGES];
+        for (slot, &frame) in all.iter_mut().zip(frames.iter()) {
+            *slot = PhysAddr::new(frame);
+        }
         GateStack {
             slot,
             slots: 1,
@@ -1990,8 +1997,11 @@ mod tests {
             user_table,
             &[
                 (0, 0x00E0_0000 | PAGE_PRESENT),
-                (1, encode(0x00E1_0000, PAGE_NOACCESS)),
-                (2, encode(0x00E2_0000, PAGE_READWRITE | PAGE_GUARD)),
+                (1, encode(PhysAddr::new(0x00E1_0000), PAGE_NOACCESS)),
+                (
+                    2,
+                    encode(PhysAddr::new(0x00E2_0000), PAGE_READWRITE | PAGE_GUARD),
+                ),
             ],
         );
         mem.plant(SHARED_STACK_TABLE, &[]);
@@ -2145,7 +2155,7 @@ mod tests {
             &[
                 (
                     PT_ENTRIES - 2,
-                    encode(0x00E5_0000, PAGE_READWRITE | PAGE_GUARD),
+                    encode(PhysAddr::new(0x00E5_0000), PAGE_READWRITE | PAGE_GUARD),
                 ),
                 (PT_ENTRIES - 1, 0x00E6_0000 | PAGE_PRESENT),
             ],

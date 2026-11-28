@@ -14,10 +14,12 @@
 //! the frame database and the thread's stack are the caller's, and every resolution but
 //! [`Resolution::Raise`] names the state the entry already records.
 
+use super::phys::PhysAddr;
 use super::pte::{
     frame_bits,
     index_bits,
     protection_of_index,
+    EntryWord,
     COMMITTED,
     GUARD,
     PAGE_FILE,
@@ -53,12 +55,12 @@ pub enum Resolution {
 
 /// The decision for a faulting access to the page whose entry is `entry`: `write` when the access
 /// is a store, `user` when it came from user mode.
-pub fn resolve(entry: u32, write: bool, user: bool) -> Resolution {
+pub fn resolve(entry: EntryWord, write: bool, user: bool) -> Resolution {
     if entry & PRESENT != 0 {
         // A present page: `vm::decode` resolves its frame and protection (an unrecorded
         // protection reads as read-write when the write bit is set, read-only otherwise).
-        let (frame, protect) = vm::decode(entry).unwrap_or((0, vm::PAGE_NOACCESS));
-        if frame == 0 || (user && entry & USER == 0) {
+        let (frame, protect) = vm::decode(entry).unwrap_or((PhysAddr::ZERO, vm::PAGE_NOACCESS));
+        if frame == PhysAddr::ZERO || (user && entry & USER == 0) {
             // The null frame is never mapped, and a user-mode access to a supervisor page is the
             // violation.
             return Resolution::Raise;
@@ -126,10 +128,11 @@ fn copy_on_write(base: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mem::pte::INDEX_SHIFT;
+    use crate::mem::pte::{frame_of, INDEX_SHIFT};
 
     /// A frame the entries below name.
-    const FRAME: u32 = 0x0050_0000;
+    /// A frame's field in an entry.
+    const FRAME: EntryWord = 0x0050_0000;
 
     /// The protection index of a base protection, in an entry's bits 9-11.
     fn index(base: u32) -> u32 {
@@ -147,13 +150,13 @@ mod tests {
 
     /// A present entry, as `vm::encode` writes it.
     fn present(protect: u32) -> u32 {
-        vm::encode(FRAME, protect)
+        vm::encode(frame_of(FRAME), protect)
     }
 
     /// A committed, non-present entry with a frame, as `vm::encode` writes it (a no-access or a
     /// guard page).
     fn committed(protect: u32) -> u32 {
-        vm::encode(FRAME, protect)
+        vm::encode(frame_of(FRAME), protect)
     }
 
     /// A soft entry: a backing tag, its payload in bits 12-31, the protection in bits 9-11.

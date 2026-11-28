@@ -93,17 +93,17 @@ impl TrimPolicy {
 /// clean frame goes to standby with no page-out, its contents intact. None for an entry that is
 /// not present — the page is already off its mapping, a soft entry or none at all — or that names
 /// no frame.
-pub fn victim_of(entry: u32) -> Option<Victim> {
+pub fn victim_of(entry: pte::EntryWord) -> Option<Victim> {
     if entry & pte::PRESENT == 0 {
         return None;
     }
-    let frame = pte::backing_payload(entry);
-    if frame == 0 {
+    let frame = pte::frame_of(entry);
+    if frame == PhysAddr::ZERO {
         return None;
     }
     let dirty = entry & pte::WRITE != 0 && entry & pte::DIRTY != 0;
     Some(Victim {
-        frame: PhysAddr::new(frame).pfn(),
+        frame: frame.pfn(),
         dirty,
         slot: pageout::INVALID_SLOT,
     })
@@ -728,13 +728,13 @@ mod tests {
     /// the hardware cannot have written it. All hold no slot: a resident page has none.
     #[test]
     fn victim_of_classifies_a_present_entry_clean_or_dirty_from_its_bits() {
-        let frame = 0x0050_0000u32;
+        let frame = PhysAddr::new(0x0050_0000);
         // A written page: writable, the dirty bit set.
         let written = vm::encode(frame, vm::PAGE_READWRITE) | pte::DIRTY;
         assert_eq!(
             victim_of(written),
             Some(Victim {
-                frame: PhysAddr::new(frame).pfn(),
+                frame: frame.pfn(),
                 dirty: true,
                 slot: pageout::INVALID_SLOT,
             })
@@ -751,21 +751,18 @@ mod tests {
         let cow = vm::encode(frame, vm::PAGE_WRITECOPY);
         assert_eq!(victim_of(cow).map(|v| v.dirty), Some(false));
         // A copy-on-write page's frame is named the same way.
-        assert_eq!(
-            victim_of(cow).map(|v| v.frame),
-            Some(PhysAddr::new(frame).pfn())
-        );
+        assert_eq!(victim_of(cow).map(|v| v.frame), Some(frame.pfn()));
     }
 
     /// An entry that is not present names no victim: a transition one, a paging-file one, a
     /// demand-zero one, no entry at all — the page is already off its mapping or never on it.
     #[test]
     fn victim_of_reads_no_victim_off_a_non_present_entry() {
-        let frame = 0x0050_0000u32;
+        let frame = PhysAddr::new(0x0050_0000);
         assert_eq!(
             victim_of(pte::encode_backing(
                 pte::TRANSITION,
-                frame,
+                pte::frame_field(frame),
                 vm::PAGE_READWRITE
             )),
             None
@@ -781,7 +778,7 @@ mod tests {
         assert_eq!(
             victim_of(crate::mem::pte::encode(
                 crate::mem::pte::PteKind::DemandZero,
-                0,
+                PhysAddr::ZERO,
                 vm::PAGE_READWRITE
             )),
             None
