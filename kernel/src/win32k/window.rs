@@ -1,92 +1,54 @@
-//! Windows: the window records behind HWNDs, and the create/destroy, show and position decision
-//! logic that runs over them.
+//! Windows: the window records behind HWNDs, and the create/destroy, show and position decisions.
 //!
 //! A window is a record in the window pool ([`Windows`]), named by a generation-tagged id
-//! ([`WindowId`]), the object manager's pattern, with a handle into the user handle table
-//! every user object shares ([`super::handle`], its handles carrying a uniqueness count in their
-//! high word). Its parent/child/next/owner links are the z-order and ownership lists the create
-//! and destroy logic splices. Threads ([`Thread`]), desktops ([`Desktop`]) and monitors
-//! ([`Monitor`]) are the calling context the decisions read: the thread's desktop and its access
-//! mask, its window count and its queue's active/focus windows, the desktop's own window and
-//! message window, the monitor's work area and cascade counter.
+//! ([`WindowId`]), with a handle in the user handle table ([`super::handle`]). Its
+//! parent/child/next/owner links are the z-order and ownership lists. Threads ([`Thread`]),
+//! desktops ([`Desktop`]) and monitors ([`Monitor`]) are the calling context the decisions read.
 //!
-//! The create path ([`Windows::create_window_ex`]) is the decision sequence: validation gates
-//! (parent's desktop, desktop access, child-without-parent, nesting limits), class resolution
-//! through [`super::class`] (atom, visibility, reference), style normalization (the private
-//! ANSI-creator bit, the edge bit, WS_VISIBLE and the layered bit stripped from the stored
-//! values), positioning (CW_USEDEFAULT handling, child offsets, the tiled cascade, monitor
-//! clamping, min/max track), owner/parent/desktop wiring, and the message order WM_GETMINMAXINFO
-//! (a tiled or thick-framed window's), WM_NCCREATE,
-//! link, WM_NCCALCSIZE, WM_CREATE, WM_SIZE/WM_MOVE, WM_PARENTNOTIFY, show — with the rollback
-//! path for a refused WM_NCCREATE (WM_NCDESTROY only, no WM_DESTROY) and the full destroy for a
-//! refused WM_CREATE. The destroy path ([`Windows::destroy_window`]) is the cascade: ownership
-//! checks, parent notify, hide, owned windows first, activation fixups, WM_DESTROY depth-first
-//! parent before children, unlink, and the free — where a still-referenced window becomes a
-//! zombie re-classed to the icon-title class instead of being freed.
+//! - Create ([`Windows::create_window_ex`]): validation gates, class resolution ([`super::class`]),
+//!   style normalization (the ANSI-creator bit, the edge bit, WS_VISIBLE and the layered bit kept
+//!   off the stored values), positioning (CW_USEDEFAULT, child offsets, the tiled cascade, monitor
+//!   clamping, min/max track), owner/parent wiring, then WM_GETMINMAXINFO (tiled or thick-framed
+//!   windows), WM_NCCREATE, link, WM_NCCALCSIZE, WM_CREATE, WM_SIZE/WM_MOVE, WM_PARENTNOTIFY, show.
+//!   A refused WM_NCCREATE rolls back (WM_NCDESTROY only); a refused WM_CREATE destroys in full.
+//! - Destroy ([`Windows::destroy_window`]): ownership checks, parent notify, hide, owned windows
+//!   first, activation fixups, WM_DESTROY parent before children, unlink, free; a still-referenced
+//!   window becomes a zombie of the icon-title class.
+//! - Show ([`Windows::show_window`]) and position ([`Windows::set_window_pos`]): WM_SHOWWINDOW,
+//!   WM_WINDOWPOSCHANGING (the handler may change the WINDOWPOS), the new rectangles
+//!   (WM_NCCALCSIZE, children moved with the client area), the z-order (topmost pile first), the
+//!   visibility, the activation, WM_WINDOWPOSCHANGED, and a tiled window's deferred
+//!   WM_SIZE/WM_MOVE.
 //!
-//! The show path ([`Windows::show_window`]) decides a show command: WM_SHOWWINDOW, the visibility
-//! change through the position path, the activation, and a tiled window's deferred WM_SIZE and
-//! WM_MOVE. The position path ([`Windows::set_window_pos`]) is SetWindowPos's: WM_WINDOWPOSCHANGING
-//! (whose WINDOWPOS the handler may change), the new rectangles (WM_NCCALCSIZE for a new size, the
-//! children moved with the client area), the place among the siblings (the topmost pile first),
-//! the visibility, the activation, and WM_WINDOWPOSCHANGED. The create path's show and the destroy
-//! path's hide run through them.
+//! The window and class registries sit behind one lock ([`WindowManager`]). The decisions reach
+//! them through a [`Session`], which may let the lock go around a send: nothing borrowed from the
+//! registries lives across a send, only ids and values, read again after it. The boot makes each
+//! desktop's window and message window ([`WindowManager::boot_desktop`]); a process thread gets
+//! its record at its first win32k service ([`Windows::connect_thread`]).
 //!
-//! Both registries, this one and the class registry ([`super::class`]), sit behind one lock, the
-//! window manager's ([`WindowManager`]). The decisions reach both through a session ([`Session`]),
-//! which holds the lock and may let it go around a send: nothing borrowed from the registries
-//! lives across a send, only ids and values, read again after it.
-//! The boot makes each desktop's own windows, the desktop window and the message window, on a
-//! thread record of the window manager's own ([`WindowManager::boot_desktop`]); a process thread
-//! gets its record at its first win32k service ([`Windows::connect_thread`], through
-//! [`super::winsta`]).
+//! Services (F2K's argument lists, see [`crate::win32k`]; Windows 2000's numbers):
 //!
-//! The services, user32's calls (F2K's argument lists, see [`crate::win32k`]; Windows 2000's
-//! numbers):
-//!
-//! - NtUserCreateWindowEx (0x114D): CreateWindowExW's arguments, the expected-version word, and the
-//!   new window's handle through the last pointer;
-//! - NtUserDestroyWindow (0x1159): destroy a window of the calling thread's;
-//! - NtUserSetWindowPos (0x120F) and NtUserMoveWindow (0x11C1): SetWindowPos's and MoveWindow's
-//!   arguments;
-//! - NtUserShowWindow (0x1218): ShowWindow's arguments, its answer through the last pointer;
-//! - NtUserShowWindowAsync (0x1219): ShowWindowAsync's arguments, the show carried out at once;
+//! - NtUserCreateWindowEx (0x114D), NtUserDestroyWindow (0x1159);
+//! - NtUserSetWindowPos (0x120F), NtUserMoveWindow (0x11C1);
+//! - NtUserShowWindow (0x1218), NtUserShowWindowAsync (0x1219, carried out at once);
 //! - NtUserQueryWindow (0x11D2): what Windows 2000's user32 reads from the window records mapped
-//!   into its process — the window's WINDOWINFO (GetWindowRect's rectangle), IsWindowVisible's
-//!   answer, its own fields as GetWindowLong reads them, its extra bytes and its class's, its
-//!   class's fields as GetClassLong reads them, its text — by an index of F2K's own
-//!   ([`rtl::window`]);
-//! - NtUserSetWindowLong (0x120D) and NtUserSetWindowWord (0x1214): SetWindowLong's and
-//!   SetWindowWord's changes ([`Windows::set_window_long`]), the previous value through a pointer;
+//!   into its process (WINDOWINFO, IsWindowVisible, GetWindowLong's fields, extra bytes, class
+//!   fields, text), by an index of F2K's own ([`rtl::window`]);
+//! - NtUserSetWindowLong (0x120D), NtUserSetWindowWord (0x1214) ([`Windows::set_window_long`]);
 //! - NtUserDefSetText (0x1153): DefWindowProc's change of the window's text.
 //!
-//! A window's data: its styles, id, user data, module and procedure (with the form of the messages
-//! it takes, narrow or wide) are the record's fields; its text, as long as its caller made it, is a
-//! block of the registry's store of texts ([`super::text`]), as Windows 2000 allocates it from its
-//! desktop's heap, the record naming the block; its extra bytes
-//! (cbWndExtra) are a block of an arena of the registry's own ([`ExtraBytes`]), the record naming
-//! the block, as Windows 2000 allocates them with the window from its desktop's heap.
+//! A window's text is a block of the registry's text store ([`super::text`]) and its extra bytes
+//! a block of [`ExtraBytes`], as Windows 2000 allocates both from the desktop's heap.
 //!
-//! Seams recorded: every send and window-manager call the decisions make goes through the
-//! [`Session`] trait; the services run them in the queue's session
-//! ([`super::queue::QueueSession`]), which calls a window of the deciding thread's own back and
-//! queues a message for another thread's window, answering as the default procedure does, and the
-//! boot in [`DefaultSession`]; monitors come from the display slice (the boot sets the primary
-//! monitor's work area). The client rectangle is WM_NCCALCSIZE's answer ([`Session::calc_client`]):
-//! the procedure's, or, where the window manager answers as the default procedure, the window's
-//! less the frame, caption and menu bar its styles and its menu give ([`Windows::default_client`],
-//! rtl::nonclient's rules, which user32's default procedure computes and draws by); the handlers of
-//! WM_WINDOWPOSCHANGING and WM_STYLECHANGING may change the new place and the new style. The
-//! sizes a window may take are WM_GETMINMAXINFO's answer ([`Session::min_max_info`], the window
-//! manager's defaults sent for the procedure to change): the creation clamps into its tracking
-//! sizes, a maximized window takes its maximized size and place, and the default procedure's
-//! WM_WINDOWPOSCHANGING clamps a resize ([`Windows::window_pos_changing`], reached from user32's
-//! DefWindowProc through NtUserCallHwndParamLock, or answered by [`default_send`]). A framed
-//! window's frame shows anew (shown, sized, SWP_FRAMECHANGED) with WM_NCPAINT, and a window hidden
-//! uncovers the windows under it: invalid there, their frames painted. A thread's end takes its
-//! windows and its queue, on its way out ([`WindowManager::end_thread`]); its record, empty,
-//! outlives it until its process's end, which takes the process's classes and its threads' records
-//! at its teardown ([`WindowManager::end_process`]).
+//! Every send and window-manager call goes through [`Session`]: the services use
+//! [`super::queue::QueueSession`], the boot [`DefaultSession`]. The client rectangle is
+//! WM_NCCALCSIZE's answer ([`Session::calc_client`]; the default procedure's is
+//! [`Windows::default_client`]). The track sizes are WM_GETMINMAXINFO's answer
+//! ([`Session::min_max_info`]); the default WM_WINDOWPOSCHANGING clamps a resize into them
+//! ([`Windows::window_pos_changing`]). A framed window's frame shows anew with WM_NCPAINT; a
+//! hidden window uncovers the windows under it. A thread's end takes its windows and queue
+//! ([`WindowManager::end_thread`]); its record outlives it until the process's end
+//! ([`WindowManager::end_process`]).
 
 // Parts of the decision logic have no caller until the message slice lands (the activation and
 // hook state, the zombie's references).
@@ -590,13 +552,10 @@ pub struct Resize {
     pub pos: WindowPos,
 }
 
-/// The default window procedure's answer to `message` for `target`, as the window manager gives it
-/// when no client procedure answers (a window whose procedure is the window manager's, a message
-/// queued for another thread, a session that cannot call back): WM_NCCREATE, WM_QUERYENDSESSION
-/// and WM_NCACTIVATE answer 1 (the last: the activation goes on), the rest 0; WM_NCCALCSIZE's
-/// rectangle (either form's first) is made the client rectangle the window's frame leaves inside it
-/// ([`Windows::default_client`]), as user32's DefWindowProc makes it. A window gone leaves the
-/// payload as it is.
+/// The default window procedure's answer where no client procedure answers: WM_NCCREATE,
+/// WM_QUERYENDSESSION and WM_NCACTIVATE answer 1, the rest 0; WM_NCCALCSIZE's rectangle (either
+/// form's first) becomes the client rectangle ([`Windows::default_client`]), as user32's
+/// DefWindowProc makes it. A window gone leaves the payload as it is.
 pub fn default_procedure(windows: &Windows, target: WindowId, message: &mut Message) -> LResult {
     if message.message == WM_NCCALCSIZE && windows.pool.is_live(target) {
         match &mut message.payload {
@@ -613,11 +572,9 @@ pub fn default_procedure(windows: &Windows, target: WindowId, message: &mut Mess
     }
 }
 
-/// The default window procedure's answer to `message` for `target` in the session `s`, where no
-/// client procedure answers: [`default_procedure`]'s, and WM_WINDOWPOSCHANGING's WINDOWPOS clamped
-/// as Windows 2000's DefWindowProc clamps it ([`Windows::window_pos_changing`]: WM_GETMINMAXINFO
-/// sent through `s`). user32's DefWindowProc reaches the same clamp through a service
-/// (rtl::user's HWND_PARAM_LOCK_WINDOW_POS_CHANGING).
+/// [`default_procedure`]'s answer in the session `s`, with WM_WINDOWPOSCHANGING's WINDOWPOS
+/// clamped as Windows 2000's DefWindowProc clamps it ([`Windows::window_pos_changing`]). user32's
+/// DefWindowProc reaches the same clamp through HWND_PARAM_LOCK_WINDOW_POS_CHANGING.
 pub fn default_send<S: Session + ?Sized>(
     s: &mut S,
     target: WindowId,
@@ -669,18 +626,15 @@ pub enum InsertAfter {
     After(WindowId),
 }
 
-/// A decision's session with the window manager: the registries, reached through it, and every
-/// message and window-manager call the decisions make. The decisions take `&mut dyn Session`
-/// rather than `&mut Windows`, so nothing borrowed from the registries lives across a send: a send
-/// takes the session whole, and each decision reads the registries again after it
-/// ([`Session::windows`], [`Session::parts`]), with only generation-tagged ids and values carried
-/// across. That is what lets a send let go of the window manager's lock while a window procedure
+/// A decision's session with the window manager: the registries and every message and
+/// window-manager call the decisions make. Decisions take `&mut dyn Session`, not `&mut Windows`,
+/// so nothing borrowed from the registries lives across a send: each decision reads them again
+/// after it, carrying only ids and values. That lets a send release the lock while a procedure
 /// runs, as Windows 2000's `xxx` routines leave the USER critical section around a callback; a
-/// window named by an id may then be gone when the send returns ([`Windows::is_live`]).
+/// window may then be gone when the send returns ([`Windows::is_live`]).
 ///
-/// The defaults answer as the default window procedure and the no-op window-manager calls do; the
-/// services' session is [`super::queue::QueueSession`], the boot's [`DefaultSession`], and the
-/// tests supply a recording one.
+/// The defaults answer as the default procedure and no-op calls do. Implementations:
+/// [`super::queue::QueueSession`] (services), [`DefaultSession`] (boot), the tests' recorder.
 pub trait Session {
     /// Both registries, borrowed until the next send.
     fn parts(&mut self) -> (&mut Windows, &mut class::Registry);
@@ -701,11 +655,10 @@ pub trait Session {
         default_send(self, target, message)
     }
 
-    /// From now on, the messages to the windows of `thread` (none: no thread) are queued for it
-    /// and not waited for, unless they go to the deciding thread's own windows: what the
-    /// activation of another thread's windows sends, which Windows 2000 hands that thread as an
-    /// event to carry out itself rather than sending it from the deciding thread. The thread this
-    /// replaces, for the caller to put back. The default keeps none.
+    /// From now on, messages to `thread`'s windows (none: no thread) are queued, not waited for,
+    /// unless they go to the deciding thread's own: Windows 2000 hands another thread's activation
+    /// to that thread as an event. Answers the thread this replaces, for the caller to put back.
+    /// The default keeps none.
     fn queue_for(&mut self, _thread: Option<ThreadId>) -> Option<ThreadId> {
         None
     }
@@ -730,14 +683,12 @@ pub trait Session {
     }
 
     /// WM_NCCALCSIZE to `target` for the window rectangle `rect` (screen coordinates): the client
-    /// rectangle the handler hands back, in screen coordinates. A creation's (`resize` none) sends
-    /// the rectangle alone, wParam FALSE; a resize's sends an NCCALCSIZE_PARAMS, wParam TRUE: the
-    /// new rectangle, the old one and the old client rectangle, and the WINDOWPOS (as Windows
-    /// 2000's SetWindowPos does). The rectangles go in the parent's client coordinates for a child
-    /// window and come back from them. A procedure's answer is its own (user32's DefWindowProc
-    /// takes the frame off); one the default procedure answers has the frame taken off by the
-    /// window manager ([`default_procedure`]). The WVR_* answer is not used: F2K keeps no valid
-    /// bits to copy. A window the procedure destroyed meanwhile answers `rect`.
+    /// rectangle the handler hands back. A creation (`resize` none) sends the rectangle alone,
+    /// wParam FALSE; a resize sends NCCALCSIZE_PARAMS, wParam TRUE (new rectangle, old one, old
+    /// client rectangle, WINDOWPOS), as Windows 2000's SetWindowPos does. A child's rectangles go
+    /// in its parent's client coordinates. The default procedure's answer takes the frame off
+    /// ([`default_procedure`]). The WVR_* answer is unused: F2K keeps no valid bits to copy. A
+    /// window destroyed meanwhile answers `rect`.
     fn calc_client(&mut self, target: WindowId, rect: Rect, resize: Option<Resize>) -> Rect {
         let (dx, dy) = self.windows().parent_origin(target);
         let local = |r: Rect| r.saturating_offset_back(dx, dy);
@@ -1082,11 +1033,10 @@ struct Window {
     system_menu: Option<super::menu::MenuId>,
 }
 
-/// What the destroy cascade keeps in a window's record while it visits the window. The cascade
-/// walks the window trees without recursing — a level of recursion costs more than a kilobyte of
-/// the gate stack at opt-level 0, and both the parent chain and the owner chain may be 100 deep —
-/// so the state a recursive walk would keep in its frames lives here: each window is on one walk
-/// at a time, and a handler that destroys another window starts a walk of that window's own.
+/// The destroy cascade's state in a window's record. The cascade walks the trees without
+/// recursing (a level costs over a kilobyte of gate stack at opt-level 0, and parent and owner
+/// chains may be 100 deep), so what a recursive walk keeps in frames lives here: each window is
+/// on one walk at a time; a handler that destroys another window starts that window's own walk.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct Walk {
     /// The sibling the WM_DESTROY walk visits after this window, read before this window's
@@ -1227,12 +1177,11 @@ const WINDOWS_PER_CHUNK: usize = 4 * PAGE / (core::mem::size_of::<Window>() + 8)
 // The records hold no pointer, so the target's size and the host's agree.
 const _: () = assert!(Slots::<Window, LowestFirst<WindowTag>, WINDOWS_PER_CHUNK>::CHUNK_PAGES == 4);
 
-/// The window pool: the records in slots of the slot pool ([`crate::slots`]), grown a chunk at a
-/// time from the nonpaged pool under the window manager's lock and kept at their peak. A record is
-/// taken lowest free first, as the fixed array it was took it (the exposed area's walk goes in
-/// that order). Every lookup is checked: a destroyed window's id names nothing, whatever took its
-/// slot since, which matters now that a window procedure runs nested under a send and may destroy
-/// the window its caller still holds the id of.
+/// The window pool: records in slots of [`crate::slots`], grown a chunk at a time from the
+/// nonpaged pool under the window manager's lock and kept at their peak. Records are taken lowest
+/// free first (the exposed-area walk goes in that order). Every lookup is checked: a destroyed
+/// window's id names nothing, whatever took its slot since, as a procedure running under a send
+/// may destroy the window its caller holds the id of.
 struct WindowPool {
     slots: Slots<Window, LowestFirst<WindowTag>, WINDOWS_PER_CHUNK>,
 }
@@ -1317,10 +1266,8 @@ struct ExtraBlock {
     granules: u16,
 }
 
-/// The windows' extra bytes (their classes' cbWndExtra), an arena of granules the window records
-/// name. Windows 2000 allocates a window's extra bytes with the window, from its desktop's heap;
-/// this is that heap's stand-in, kept apart from the records so that the records, which the
-/// decisions copy, stay small.
+/// The windows' extra bytes (cbWndExtra), an arena of granules the records name: the stand-in for
+/// the desktop heap Windows 2000 allocates them from, kept apart so the records stay small.
 struct ExtraBytes {
     bytes: [u8; EXTRA_BYTES],
     /// Which granules blocks hold, a bit each.
@@ -1643,10 +1590,9 @@ impl Windows {
     }
 
     /// The record of the process thread `key`, made at its first win32k service: the one it has,
-    /// or a fresh one for the process `process` on the desktop `desktop`, through the desktop
-    /// handle `desktop_handle` with the access `desktop_access`. A record an ended thread of the
-    /// same slot left is reused when it holds no windows (a thread's record outlives it until its
-    /// process's end). None when every record is taken.
+    /// or a fresh one. A record an ended thread of the same slot left is reused when it holds no
+    /// windows (a thread's record outlives it until its process's end). None when every record is
+    /// taken.
     pub fn connect_thread(
         &mut self,
         key: ThreadKey,
@@ -1785,15 +1731,12 @@ impl Windows {
     }
 
     /// The window `handle` names, as the icon-change notification visits it. The records carry no
-    /// drag-icon query flag and no small-icon property yet (the property list and the painting
-    /// land later), so neither is set.
+    /// drag-icon query flag and no small-icon property yet, so neither is set.
     pub fn class_view(&self, handle: Hwnd) -> Option<class::WindowView> {
         Some(view_of(self.class_window(handle)?.class))
     }
 
-    /// Every live window with a class, as the icon-change notification visits them, read from
-    /// the records as it goes (no buffer: a window's view is its record's). The notification picks
-    /// the changed class's own out of them.
+    /// Every live window with a class, as the icon-change notification visits them (no buffer).
     pub fn class_views(&self) -> impl Iterator<Item = class::WindowView> + '_ {
         Self::views_of(&self.pool)
     }
@@ -1891,10 +1834,9 @@ impl Windows {
         }
     }
 
-    /// The default window procedure's WM_SETREDRAW: the window's WS_VISIBLE set (`redraw`) or
-    /// cleared, and nothing else, as Windows 2000's does it (guimsg `redraw`): no WM_SHOWWINDOW, no
-    /// position change, nothing painted or uncovered. While it is clear the window is not shown,
-    /// so an invalidation finds nothing to paint; setting it again invalidates nothing.
+    /// The default window procedure's WM_SETREDRAW: WS_VISIBLE set (`redraw`) or cleared, nothing
+    /// else, as Windows 2000's does it (guimsg `redraw`): no WM_SHOWWINDOW, no position change,
+    /// nothing painted or uncovered; setting it again invalidates nothing.
     pub fn set_redraw(&mut self, id: WindowId, redraw: bool) {
         let w = self.at_mut(id);
         if redraw {
@@ -1955,11 +1897,10 @@ impl Windows {
         }
     }
 
-    /// The client rectangle the default window procedure gives the window `id` at the window
-    /// rectangle `rect`: the frame its styles and its menu give taken off
-    /// ([`rtl::nonclient::Frame`]). The frame is taken off the rectangle moved to the origin, then
-    /// moved back, saturated: a rectangle at i32's ends (SetWindowPos stores one) cannot overflow
-    /// the frame's sums.
+    /// The client rectangle the default window procedure gives `id` at the window rectangle
+    /// `rect`: the frame its styles and menu give taken off ([`rtl::nonclient::Frame`]). The frame
+    /// is taken off at the origin, then moved back saturated: a rectangle at i32's ends cannot
+    /// overflow the frame's sums.
     pub fn default_client(&self, id: WindowId, rect: Rect) -> Rect {
         let w = self.at(id);
         let menu = matches!(w.menu, Menu::Handle(_));
@@ -2204,10 +2145,8 @@ impl Windows {
     }
 
     /// The min/max-track clamp (Windows 2000's xxxAdjustSize): a tiled or thick-framed window's
-    /// size is clamped into the min/max track (the reserved/max size while minimized), as
-    /// WM_GETMINMAXINFO answers them ([`Session::min_max_info`]); another window's is left alone,
-    /// and nothing is sent to it. A window the procedure destroyed meanwhile is clamped by what it
-    /// answered.
+    /// size is clamped into WM_GETMINMAXINFO's track sizes ([`Session::min_max_info`]; the
+    /// reserved/max size while minimized); another window's is left alone, nothing sent.
     pub fn adjust_size<S: Session + ?Sized>(s: &mut S, id: WindowId, cx: &mut i32, cy: &mut i32) {
         let windows = s.windows();
         let (tiled, sizebox, minimized) = {
@@ -2881,12 +2820,11 @@ impl Windows {
         }
         let windows = s.windows();
 
-        // Min/max setup: a window created with WS_MINIMIZE or WS_MAXIMIZE is minimized or
-        // maximized now, hidden or not, its normal place the one it was created at (guigeo
-        // `createmax`). The style bit is off by now (WS_MINIMIZE's since WM_NCCALCSIZE), so the
-        // window leaves the normal state; the WM_SIZE this sends leaves a tiled window's deferred
-        // WM_SIZE and WM_MOVE to its first show still (the capture: a window created with
-        // WS_VISIBLE and either bit gets two WM_SIZEs of its new state, a hidden one one).
+        // A window created with WS_MINIMIZE or WS_MAXIMIZE is minimized or maximized now, hidden
+        // or not, its normal place the one it was created at (guigeo `createmax`: a visible one
+        // gets two WM_SIZEs of its new state, a hidden one one). The style bit is off by now, so
+        // the window leaves the normal state; a tiled window's deferred WM_SIZE and WM_MOVE still
+        // wait for its first show.
         let min_max = if created_minimized {
             Some(SW_SHOWMINNOACTIVE)
         } else if windows.at(id).style & WS_MAXIMIZE != 0 {
@@ -2991,27 +2929,22 @@ impl Windows {
     // --- Destroy
     // -------------------------------------------------------------------------------------
 
-    /// The destroy decision logic for the window `window`. Only the owning thread may destroy
-    /// a window (unless it is already marked for destruction: then the current thread adopts it
-    /// and the destroy proceeds). The answer says whether the destroy ran; a hook's veto answers
-    /// false with the window untouched.
+    /// The destroy of `window`. Only the owning thread may destroy it, unless it is marked for
+    /// destruction already (the current thread adopts it). Answers whether the destroy ran; a
+    /// hook's veto answers false, the window untouched.
     ///
-    /// A window's destroy is its prologue ([`Windows::destroy_prologue`]: the input sharing's
-    /// end, the parent notify, the hide), then the destroy of every window it owns, each in full,
-    /// then its epilogue ([`Windows::destroy_epilogue`]: the activation fixups, WM_DESTROY to it
-    /// and its children, the unlink and the free). The owned windows' destroys nest — each
-    /// destroys its own owned windows first — and the cascade descends the owner chain through
-    /// the records rather than by recursing (see [`Walk`]).
+    /// The prologue ([`Windows::destroy_prologue`]), then every owned window's destroy in full
+    /// (nested, each owning window's owned ones first), then the epilogue
+    /// ([`Windows::destroy_epilogue`]). The cascade descends the owner chain through the records,
+    /// not by recursing (see [`Walk`]).
     pub fn destroy_window(
         s: &mut dyn Session,
         caller: ThreadId,
         window: WindowId,
     ) -> Result<bool, Failure> {
-        // A window on its way already (destroyed again from one of its own handlers, its
-        // creation's included) is left to the destroy under way — except from the WM_DESTROY its
-        // own destroy sends it: Windows 2000 destroys it again there, in full (its WM_DESTROY
-        // and WM_NCDESTROY inside the outer WM_DESTROY, guiwin `dienest`), and the outer
-        // destroy finds it gone.
+        // A window on its way already is left to the destroy under way, except from its own
+        // WM_DESTROY: Windows 2000 destroys it again there, in full, and the outer destroy finds
+        // it gone (guiwin `dienest`).
         if s.windows().on_its_way(window) {
             return Ok(true);
         }
@@ -3068,9 +3001,8 @@ impl Windows {
     }
 
     /// The entry checks of `window`'s destroy: its handle must still name it, and only its thread
-    /// may destroy it — unless it is marked for destruction already, when the calling thread
-    /// adopts it (a re-entry, which runs with the thread's hooks disabled until its end). A hook
-    /// can veto a first destroy: false, the window untouched. The re-entry state goes into the
+    /// may destroy it, unless it is marked for destruction (a re-entry: the caller adopts it, hooks
+    /// disabled until its end). A hook can veto a first destroy. The re-entry state goes into the
     /// window's walk, for the epilogue.
     fn begin_destroy(
         s: &mut dyn Session,
@@ -3317,11 +3249,10 @@ impl Windows {
         Windows::free_window(s, caller, window);
     }
 
-    /// The WM_DESTROY cascade: the window itself first, then its children depth-first (parents
-    /// assume their children still exist during WM_DESTROY), each window's focus check after its
-    /// subtree's; a handler that destroys the sibling the walk visits next ends the walk of their
-    /// parent's children. The walk follows the child and parent links, the next sibling kept in
-    /// the record ([`Walk::next`]).
+    /// The WM_DESTROY cascade: the window first, then its children depth-first (parents assume
+    /// their children exist during WM_DESTROY), each window's focus check after its subtree's. A
+    /// handler that destroys the next sibling ends the walk of their parent's children
+    /// ([`Walk::next`]).
     fn send_destroy_messages(s: &mut dyn Session, window: WindowId) {
         s.windows().at_mut(window).flags.in_wm_destroy = true;
         Windows::send_destroy(s, window);
@@ -3401,11 +3332,10 @@ impl Windows {
         );
     }
 
-    /// The free of `window` and its children: every child is unlinked and marked destroyed; a
-    /// same-thread child is freed — its own children first, so each child's WM_NCDESTROY precedes
-    /// its parent's — and a cross-thread child gets a destroy event posted to its own queue
-    /// instead. The walk descends through the child links and climbs back through the parent
-    /// links, which the unlink leaves in place; each record's free is [`Windows::free_record`].
+    /// The free of `window` and its children: each child is unlinked and marked destroyed; a
+    /// same-thread child is freed, its children first (each WM_NCDESTROY precedes its parent's); a
+    /// cross-thread child gets a destroy event on its own queue. The walk climbs back through the
+    /// parent links, which the unlink leaves in place.
     fn free_window(s: &mut dyn Session, caller: ThreadId, window: WindowId) {
         let windows = s.windows();
         windows.adopt_marked(caller, window);
@@ -3645,11 +3575,10 @@ impl Windows {
     // --- A process's end
     // ---------------------------------------------------------------------------
 
-    /// The thread record `thread`'s thread ended, as Windows 2000's thread cleanup has it: the
-    /// record goes into cleanup (no hook vetoes its destroys), each of its windows is destroyed,
-    /// top of each tree first, and its queue ends ([`super::queue::detach`]: what was sent to it
-    /// and not answered fails its sender). The record itself stays, empty of windows, until its
-    /// process's end or until another thread takes it over ([`Windows::connect_thread`]).
+    /// The thread `thread` ended, as Windows 2000's thread cleanup has it: no hook vetoes its
+    /// destroys, each of its windows goes (top of each tree first), and its queue ends
+    /// ([`super::queue::detach`]: unanswered sends fail). The record stays, empty, until its
+    /// process's end or another thread takes it over ([`Windows::connect_thread`]).
     pub fn end_thread(s: &mut dyn Session, thread: ThreadId) {
         let windows = s.windows();
         let Some(t) = windows
@@ -3681,12 +3610,10 @@ impl Windows {
         }
     }
 
-    /// The process `owner`'s end: its threads' records go into cleanup (no hook vetoes their
-    /// destroys), each of its windows is destroyed as its own thread, top of each tree first,
-    /// and its threads' records go, their queues ended. A window whose destroy left a zombie
-    /// (another reference holds it) is left to that reference; a window left without its parent —
-    /// a child of another thread's window, whose destroy event found no queue — is destroyed as a
-    /// top-level one.
+    /// The process `owner`'s end: no hook vetoes its destroys, each of its windows is destroyed
+    /// as its own thread's (top of each tree first), and its threads' records go, their queues
+    /// ended. A zombie is left to its other reference; a child left without its parent (its
+    /// destroy event found no queue) is destroyed as a top-level one.
     pub fn end_process(s: &mut dyn Session, owner: class::Owner) {
         let windows = s.windows();
         for t in windows.threads.iter_mut() {
@@ -3767,10 +3694,9 @@ impl Windows {
 // ---------------------------------------------------------------------------
 
 impl Windows {
-    /// The windows of the process `owner` the session's end sends its messages to (see
-    /// `crate::session`): its top-level windows — the children of a desktop's window, hidden ones
-    /// included, message-only ones not (they are the message window's) — with a client-side
-    /// procedure and not being destroyed, each desktop's in z-order, the top first.
+    /// The windows of the process `owner` the session's end messages (`crate::session`): its
+    /// top-level windows (hidden included, message-only not) with a client-side procedure and not
+    /// being destroyed, each desktop's in z-order, the top first.
     fn session_windows(&self, owner: class::Owner) -> impl Iterator<Item = WindowId> + '_ {
         self.desktops
             .iter()
@@ -3846,21 +3772,17 @@ fn min_max_command(command: i32, style: u32) -> bool {
 }
 
 impl Windows {
-    /// ShowWindow's decision for `window` and the show command `command`: the answer is whether
-    /// the window was visible before. ERROR_INVALID_PARAMETER for a command past SW_MAX.
+    /// ShowWindow's decision for `window`: answers whether it was visible before;
+    /// ERROR_INVALID_PARAMETER for a command past SW_MAX.
     ///
-    /// A command that changes the window's visibility sends WM_SHOWWINDOW (SW_SHOWNORMAL's aside,
-    /// as the WM_SHOWWINDOW documentation lists) and then shows or hides it through
-    /// [`Windows::set_window_pos`], without moving, sizing or reordering it; the commands that do
-    /// not activate (SW_SHOWNA, SW_SHOWNOACTIVATE, the minimizing ones) and every child window's
-    /// show leave the activation alone. A top-level window being shown comes to the top of the
-    /// z-order, activated or not (the focus capture: a window shown with SW_SHOWNOACTIVATE is above
-    /// the active window, which activation skips past when it is destroyed); a child keeps its
-    /// place. A visible window shown again is only activated. Hiding
-    /// the thread's active top-level window activates the next one. The minimizing and maximizing
-    /// commands, and the restoring ones of a minimized or maximized window, minimize, maximize or
-    /// restore it first ([`Windows::min_maximize`]). A tiled window's first show sends the WM_SIZE
-    /// and WM_MOVE its creation deferred, unless a change of its client area sent them since.
+    /// A visibility change sends WM_SHOWWINDOW (not for SW_SHOWNORMAL) and goes through
+    /// [`Windows::set_window_pos`] without moving, sizing or reordering. SW_SHOWNA,
+    /// SW_SHOWNOACTIVATE, the minimizing commands and any child's show leave activation alone. A
+    /// top-level window shown comes to the top of the z-order, activated or not (the focus
+    /// capture); a child keeps its place. A visible window shown again is only activated. Hiding
+    /// the active top-level window activates the next one. Min/max/restore commands go through
+    /// [`Windows::min_maximize`] first. A tiled window's first show sends its deferred WM_SIZE and
+    /// WM_MOVE, unless a client-area change sent them since.
     pub fn show_window(
         s: &mut dyn Session,
         window: WindowId,
@@ -3964,21 +3886,18 @@ impl Windows {
         Ok(was_visible)
     }
 
-    /// The minimizing, maximizing or restoring part of the show command `command` for `window`, as
-    /// the guigeo capture's minmax and placement show Windows 2000's: the window takes its new
-    /// state's style (WS_MINIMIZE, WS_MAXIMIZE, neither) and its new place through
-    /// [`Windows::set_window_pos`] (WM_SIZE follows with SIZE_MINIMIZED, SIZE_MAXIMIZED or
-    /// SIZE_RESTORED), its visibility and activation left to the show.
+    /// The minimize/maximize/restore part of `command` for `window` (guigeo minmax and placement):
+    /// the new state's style and place through [`Windows::set_window_pos`] (WM_SIZE follows with
+    /// the matching SIZE_*), visibility and activation left to the show.
     ///
-    /// - Leaving the normal state keeps the window's place as its normal one; leaving the minimized
-    ///   state keeps its corner as its minimized position.
-    /// - Minimized, the window goes to its minimized position, (-32000, -32000) without one (where
-    ///   Windows 2000's desktop with its taskbar hides minimized windows), at [`MINIMIZED_SIZE`];
-    ///   it restores to maximized when it was maximized.
-    /// - Maximized, it takes WM_GETMINMAXINFO's ptMaxSize at its ptMaxPosition, by default its
-    ///   monitor's work area (a child its parent's client area) with its sizing border outside it
-    ///   ([`Windows::default_min_max_info`]); WM_WINDOWPOSCHANGING's default clamp follows.
-    /// - Restored, it goes back to its normal place.
+    /// - Leaving the normal state keeps the place as the normal one; leaving the minimized state
+    ///   keeps the corner as the minimized position.
+    /// - Minimized: the minimized position, else [`MINIMIZED_POSITION`], at [`MINIMIZED_SIZE`]; it
+    ///   restores to maximized when it was maximized.
+    /// - Maximized: WM_GETMINMAXINFO's ptMaxSize at ptMaxPosition, by default the work area (a
+    ///   child's parent's client area) with the sizing border outside it; the default clamp
+    ///   follows.
+    /// - Restored: the normal place.
     ///
     /// A command that would leave the window as it is does nothing.
     fn min_maximize(s: &mut dyn Session, window: WindowId, command: i32) -> Result<(), Failure> {
@@ -4090,19 +4009,16 @@ impl Windows {
         }
     }
 
-    /// The MINMAXINFO the window manager fills in for `window` before WM_GETMINMAXINFO goes
-    /// (Windows 2000's xxxInitSendValidateMinMaxInfo; the procedure may change any of it):
+    /// The MINMAXINFO filled in for `window` before WM_GETMINMAXINFO goes (Windows 2000's
+    /// xxxInitSendValidateMinMaxInfo):
     ///
-    /// - the maximized size and place: the monitor's size (a child's parent's client area's) with
-    ///   the sizing border on both sides, placed the border's width outside the work area's corner
-    ///   (the guigeo capture's `mmdefault`), or where SetWindowPlacement put it
-    ///   ([`Windows::maximized_rect`]);
-    /// - the minimum tracking size: SM_CXMINTRACK by SM_CYMINTRACK (the guigeo capture's `defer`
-    ///   sizes a window 90 wide to 112);
-    /// - the maximum tracking size: SM_CXMAXTRACK by SM_CYMAXTRACK, the screens' extent with a
-    ///   sizing border and an edge on each side (an assumption: no capture has it yet);
-    /// - ptReserved: a minimized window's size, SM_CXMINIMIZED by SM_CYMINIMIZED (the guigeo
-    ///   capture's `mmdefault`: 160,24).
+    /// - maximized: the monitor (a child's parent's client area) with the sizing border on both
+    ///   sides, the border's width outside the work area's corner (guigeo `mmdefault`), or where
+    ///   SetWindowPlacement put it ([`Windows::maximized_rect`]);
+    /// - min track: SM_CXMINTRACK by SM_CYMINTRACK (guigeo `defer` sizes 90 wide to 112);
+    /// - max track: the screens' extent with a sizing border and an edge on each side (assumed: no
+    ///   capture has it yet);
+    /// - ptReserved: SM_CXMINIMIZED by SM_CYMINIMIZED (guigeo `mmdefault`: 160,24).
     pub fn default_min_max_info(&self, window: WindowId) -> MinMaxInfo {
         let max = self.maximized_rect(window, true);
         let screens = self.screens();
@@ -4143,13 +4059,11 @@ impl Windows {
         all.unwrap_or_default()
     }
 
-    /// Where `window` goes maximized, in its parent's client coordinates: its maximized position
-    /// (SetWindowPlacement's) or, without one, its sizing border's width outside the monitor's
-    /// work area (a child's outside its parent's client area); as large as that area and the
-    /// border on both sides. With `monitor`, as large as the whole monitor and the border instead
-    /// (a top-level window's): WM_GETMINMAXINFO's default ptMaxSize, which Windows 2000's
-    /// xxxInitSendValidateMinMaxInfo takes from the monitor and its maximize brings back to the
-    /// work area ([`Windows::max_size_on_maximize`]).
+    /// Where `window` goes maximized, in its parent's client coordinates: SetWindowPlacement's
+    /// maximized position or the sizing border's width outside the work area (a child's parent's
+    /// client area), as large as that area plus the border on both sides. With `monitor`, the
+    /// whole monitor's size instead: the default ptMaxSize, which Windows 2000 takes from the
+    /// monitor and its maximize brings back to the work area ([`Windows::max_size_on_maximize`]).
     fn maximized_rect(&self, window: WindowId, monitor: bool) -> Rect {
         let w = self.at(window);
         let (area, size) = match w.parent {
@@ -4244,12 +4158,10 @@ impl Windows {
         }
     }
 
-    /// SetWindowPlacement's decision for `window`: its normal place, its minimized position (with
-    /// WPF_SETMINPOSITION; none without it, the next minimize choosing it), its maximized position
-    /// (none for (-1, -1)) and whether it restores to maximized (WPF_RESTORETOMAXIMIZED) set; a
-    /// window neither minimized nor maximized moved to its normal place; then the show command
-    /// carried out ([`Windows::show_window`]). ERROR_INVALID_PARAMETER for a length that is not the
-    /// structure's.
+    /// SetWindowPlacement's decision for `window`: the normal place, the minimized position (only
+    /// with WPF_SETMINPOSITION), the maximized position (none for (-1, -1)) and
+    /// WPF_RESTORETOMAXIMIZED set; a normal window moved to its normal place; then the show command
+    /// ([`Windows::show_window`]). ERROR_INVALID_PARAMETER for a length not the structure's.
     pub fn set_window_placement(
         s: &mut dyn Session,
         window: WindowId,
@@ -4294,13 +4206,11 @@ impl Windows {
         Windows::show_window(s, window, placement.show_cmd as i32).map(|_| ())
     }
 
-    /// EndDeferWindowPos's decision over the positions a BeginDeferWindowPos batch gathered, in
-    /// order: each carried out as SetWindowPos ([`Windows::set_window_pos_handle`]), a window
-    /// gone since skipped. As the guigeo capture's defer shows Windows 2000's, a window the batch
-    /// names twice takes each of its positions in turn, the last one winning, and its children
-    /// are moved by each one's change from where the window was when the batch began (Windows
-    /// 2000 works out every change first, then makes them): before a window's second position its
-    /// children are moved again by what its first moved them, quietly.
+    /// EndDeferWindowPos over a batch's positions, in order, each as SetWindowPos
+    /// ([`Windows::set_window_pos_handle`]), a window gone since skipped. A window named twice
+    /// takes each position in turn, and its children move by each one's change from where the
+    /// window began (Windows 2000 works out every change first, guigeo `defer`): before its second
+    /// position the children are moved again, quietly, by what the first moved them.
     pub fn end_defer_window_pos(
         s: &mut dyn Session,
         positions: &[WindowPos],
@@ -4346,21 +4256,17 @@ impl Windows {
         Ok(())
     }
 
-    /// SetWindowPos's decision for `window`: its new position (`x`, `y`, in its parent's client
-    /// coordinates for a child), size (`cx`, `cy`, a negative one taken as zero) and place in the
-    /// z-order (`after`), each unless the SWP_ `flags` leave it alone, and its visibility.
+    /// SetWindowPos's decision for `window`: position (`x`, `y`, parent-client coordinates for a
+    /// child), size (`cx`, `cy`, negative taken as zero), z-order place (`after`), each unless the
+    /// SWP_ `flags` leave it alone, and visibility.
     ///
-    /// WM_WINDOWPOSCHANGING goes first (unless SWP_NOSENDCHANGING), its WINDOWPOS the handler may
-    /// change; then the window's rectangles change — WM_NCCALCSIZE answers the client rectangle
-    /// when the size changes or the frame does (SWP_FRAMECHANGED), the client rectangle moves with
-    /// the window otherwise, and the children move with the client area — the window takes its
-    /// place among its siblings, is shown or hidden, and is activated (a top-level window, unless
-    /// SWP_NOACTIVATE); then WM_WINDOWPOSCHANGED reports what happened (SWP_NOMOVE and SWP_NOSIZE
-    /// added for what did not change). A window being shown or hidden is moved and sized as well,
-    /// unless the flags say not to (guigeo `swpshow`: Windows 2000's does both, where the
-    /// SetWindowPos documentation says neither); a window without a parent (the desktop's own
-    /// windows) keeps its place. The WM_SIZE and WM_MOVE that follow are the default window
-    /// procedure's answer to WM_WINDOWPOSCHANGED, not this decision's.
+    /// WM_WINDOWPOSCHANGING first (unless SWP_NOSENDCHANGING; the handler may change it); then the
+    /// rectangles (WM_NCCALCSIZE for a new size or SWP_FRAMECHANGED, the children moved with the
+    /// client area), the z-order, the visibility, the activation (top-level, unless
+    /// SWP_NOACTIVATE); then WM_WINDOWPOSCHANGED, SWP_NOMOVE/SWP_NOSIZE added for what did not
+    /// change. A window shown or hidden is moved and sized too unless the flags say not (guigeo
+    /// `swpshow`, against the documentation); a parentless window keeps its place. WM_SIZE and
+    /// WM_MOVE are the default procedure's answer to WM_WINDOWPOSCHANGED.
     #[allow(clippy::too_many_arguments)]
     pub fn set_window_pos(
         s: &mut dyn Session,
@@ -4497,9 +4403,7 @@ impl Windows {
         let was_shown = super::paint::is_shown(windows, window);
         if flags & SWP_SHOWWINDOW != 0 && !visible {
             windows.at_mut(window).style |= WS_VISIBLE;
-            // A window shown for the first time is invalid over its whole area, to be erased:
-            // the newly exposed client has nothing valid in it yet, so the next read of the
-            // queue makes a WM_PAINT and UpdateWindow sends one at once.
+            // A window shown for the first time is invalid over its whole area, to be erased.
             super::paint::invalidate(windows, window, None, true);
         } else if flags & SWP_HIDEWINDOW != 0 && visible {
             windows.at_mut(window).style &= !WS_VISIBLE;
@@ -4524,9 +4428,8 @@ impl Windows {
         }
         let windows = s.windows();
 
-        // A resize of a shown window leaves the whole client in the update region, without the
-        // erase flag, unless SWP_NOREDRAW says not to redraw (Windows 2000 repaints the whole
-        // client on a size change).
+        // A resize of a shown window invalidates the whole client, without the erase flag, unless
+        // SWP_NOREDRAW (Windows 2000 repaints the whole client on a size change).
         if sized
             && flags & SWP_NOREDRAW == 0
             && windows.pool.is_live(window)
@@ -4575,9 +4478,8 @@ impl Windows {
             return Ok(());
         }
 
-        // The WM_SIZE and WM_MOVE the default procedure sends for a changed client area are the
-        // ones a tiled window's creation deferred to its first show: it sends them no more (the
-        // guigeo capture's minmax: a window moved before its first show gets one WM_SIZE from it).
+        // A changed client area's WM_SIZE and WM_MOVE replace the ones a tiled window's creation
+        // deferred (guigeo minmax: a window moved before its first show gets one WM_SIZE).
         if flags & (SWP_NOCLIENTSIZE | SWP_NOCLIENTMOVE) != SWP_NOCLIENTSIZE | SWP_NOCLIENTMOVE {
             windows.at_mut(window).flags.sendsizemove = false;
         }
@@ -4602,13 +4504,11 @@ impl Windows {
         Ok(())
     }
 
-    /// The screen area `area` uncovered (the window `gone` was hidden there): every other shown
-    /// window it overlaps is invalid there, to be erased, and its frame is painted. Windows
-    /// 2000 repaints what was under a window hidden or destroyed; F2K's windows do not clip one
-    /// another, so every window under the area is repainted, not just what shows.
+    /// The screen area `area` uncovered (`gone` was hidden there): every other shown window it
+    /// overlaps is invalid there, to be erased, and its frame painted. F2K's windows do not clip
+    /// one another, so every window under the area is repainted, not just what shows.
     fn expose(s: &mut dyn Session, area: Rect, gone: WindowId) {
-        // By slot, the bound read again each turn: a frame's painting may make or destroy windows
-        // meanwhile, as it could while the pool was a fixed array walked to its end.
+        // By slot, the bound read again each turn: a frame's painting may make or destroy windows.
         let mut index = 0;
         while index < s.windows().pool.high_water() {
             let windows = s.windows();
@@ -4748,14 +4648,12 @@ impl Windows {
         }
     }
 
-    /// Put `window` at its new place among its siblings. A top-level window's topmost status
-    /// decides the pile it goes in: the topmost windows head the list, the others follow them.
-    /// HWND_TOPMOST makes it topmost, at the top; HWND_NOTOPMOST makes a topmost window an
-    /// ordinary one, at the top of the others (and leaves any other window alone); HWND_BOTTOM
-    /// makes it an ordinary one at the bottom; HWND_TOP puts it at the top of its pile; a window to
-    /// go after must be a sibling, and a window that would land in the other pile goes to the
-    /// boundary between the piles instead. Child windows have no topmost status: HWND_TOPMOST is
-    /// HWND_TOP for them, and HWND_NOTOPMOST nothing.
+    /// Put `window` at its new place among its siblings; topmost windows head the list.
+    /// HWND_TOPMOST: topmost, at the top. HWND_NOTOPMOST: a topmost window becomes ordinary, at the
+    /// top of the others (no effect on another). HWND_BOTTOM: ordinary, at the bottom. HWND_TOP:
+    /// the top of its pile. A window to go after must be a sibling; one landing in the other pile
+    /// goes to the boundary. Children have no topmost status: HWND_TOPMOST is HWND_TOP,
+    /// HWND_NOTOPMOST nothing.
     /// Where `window` is among its siblings: its index from the top and whether it is topmost.
     fn z_place(&self, window: WindowId) -> (usize, bool) {
         let topmost = self.at(window).ex_style & WS_EX_TOPMOST != 0;
@@ -4852,11 +4750,9 @@ impl Windows {
         true
     }
 
-    /// `window`'s state as GetWindowInfo describes it (WINDOWINFO): its rectangles in screen
-    /// coordinates, its styles, whether it is its thread's active window, its borders (the client
-    /// area's inset from the window's left and bottom edges), its class atom and the Windows
-    /// version its creator expects (4.0 for a 4.0-or-later creator, 3.1 otherwise: the records
-    /// keep no finer version).
+    /// `window`'s WINDOWINFO: rectangles in screen coordinates, styles, active or not, borders (the
+    /// client's inset from the left and bottom edges), class atom and the creator's expected
+    /// version (4.0 or 3.1: the records keep no finer one).
     pub fn window_info(&self, classes: &class::Registry, window: WindowId) -> WindowInfo {
         let w = self.at(window);
         let active = self.thread(w.thread).active == Some(window);
@@ -5046,18 +4942,15 @@ impl Windows {
         Ok(previous)
     }
 
-    /// SetWindowLong's change of the window `handle` names, for a caller of the process `caller`
-    /// through the narrow (`ansi`) or wide entry point: the field at `index` (rtl::window's GWL_*,
-    /// or an offset into the extra bytes) set to `value`. The answer is the value it held, and
-    /// for GWL_WNDPROC whether the procedure it held took the narrow forms of the messages (the
-    /// caller maps a procedure of the other form to a handle of its own, as Windows 2000's
-    /// user32 does).
+    /// SetWindowLong's change of the window `handle` names, through the narrow (`ansi`) or wide
+    /// entry point: the field at `index` (GWL_* or an extra-bytes offset) set to `value`. Answers
+    /// the old value and, for GWL_WNDPROC, whether the old procedure was narrow (user32 maps a
+    /// procedure of the other form to a handle of its own, as Windows 2000's does).
     ///
-    /// GWL_STYLE and GWL_EXSTYLE send WM_STYLECHANGING (whose handler may change the new style)
-    /// and WM_STYLECHANGED around the change, their wParam the index and their lParam the
-    /// STYLESTRUCT. GWL_WNDPROC subclasses the window: the procedure and its form (`ansi`) are
-    /// replaced; another process's window is refused it. GWL_HWNDPARENT changes a top-level
-    /// window's owner; a child's parent is SetParent's change, refused here. GWL_ID sets a child's
+    /// GWL_STYLE/GWL_EXSTYLE send WM_STYLECHANGING (the handler may change the new style) and
+    /// WM_STYLECHANGED, wParam the index, lParam the STYLESTRUCT. GWL_WNDPROC replaces the
+    /// procedure and its form; refused for another process's window. GWL_HWNDPARENT changes a
+    /// top-level window's owner (a child's parent is SetParent's: refused). GWL_ID sets a child's
     /// id, another window's menu handle. Another index is InvalidIndex.
     pub fn set_window_long(
         s: &mut dyn Session,
@@ -5237,14 +5130,11 @@ const MESSAGE_CLASS: [u16; 7] = [
     b'e' as u16,
 ];
 
-/// The window manager's state behind its one lock: the window registry, the class registry, the
-/// window station's clipboard, the accelerator tables, the properties and the scroll bars.
-///
-/// One lock guards both registries, as one lock guards all of Windows 2000's window-manager state:
-/// the create and destroy decisions hold both at once, letting go of them only around a callback
-/// to user mode ([`Hold::unlocked`]), after which they read both again; and a short lock's
-/// guard keeps its taker's passive token borrowed, so no second short lock can be taken under it,
-/// in any order.
+/// The window manager's state behind its one lock (as one lock guards all of Windows 2000's): the
+/// window and class registries, the clipboard, the accelerator tables, the properties and the
+/// scroll bars. The decisions let go of it only around a callback to user mode
+/// ([`Hold::unlocked`]), reading both registries again after. A short lock's guard keeps its
+/// taker's passive token borrowed, so no second short lock can be taken under it.
 pub struct WindowManager {
     pub windows: Windows,
     pub classes: class::Registry,
@@ -5277,11 +5167,10 @@ impl WindowManager {
     }
 
     /// The boot's step for the desktop `desktop` (its packed object id): the primary monitor's
-    /// work area, the desktop's two system classes ("#32769" and "Message"), the desktop's own
-    /// thread — the window manager's, with no desktop handle, which lets it create the desktop's
-    /// root windows — and those windows: the message window, the parent of message-only windows,
-    /// and the desktop window, covering the work area, the parent of every top-level window, and
-    /// visible. Both are made before the desktop names either, so neither has a parent.
+    /// work area, the system classes "#32769" and "Message", the window manager's own thread (no
+    /// desktop handle, so it may create the root windows), the message window and the visible
+    /// desktop window over the work area. Both are made before the desktop names either, so
+    /// neither has a parent.
     pub fn boot_desktop(&mut self, desktop: u32, work_area: Rect) -> Result<(), Failure> {
         self.windows.set_monitor(PRIMARY_MONITOR, work_area);
         self.windows.set_desktop(desktop, None, None);
@@ -5414,10 +5303,8 @@ impl WindowManager {
         Ok(windows.handle_of(id))
     }
 
-    /// The display's mode is now `width` by `height` (the display side's call, at a mode change):
-    /// the primary monitor's work area is the whole screen — no taskbar takes any of it — and every
-    /// desktop window covers the screen. (The WM_DISPLAYCHANGE every top-level window would be
-    /// sent comes with the message queue.)
+    /// The display's mode is now `width` by `height`: the primary work area is the whole screen
+    /// (no taskbar) and every desktop window covers it. WM_DISPLAYCHANGE is not sent yet.
     pub fn display_changed(&mut self, width: i32, height: i32) {
         let screen = Rect {
             left: 0,
@@ -5429,10 +5316,9 @@ impl WindowManager {
         self.windows.cover_screen(screen);
     }
 
-    /// The process `owner`'s end, at its teardown: the clipboard closed if one of its threads had
-    /// it open, the windows its threads' ends left go ([`Windows::end_process`]) with its threads'
-    /// records and queues, then its classes. Windows 2000 destroys a thread's windows at the
-    /// thread's end ([`WindowManager::end_thread`]) and a process's classes at the process's.
+    /// The process `owner`'s end, at its teardown: the clipboard closed if its thread had it open,
+    /// the windows its threads' ends left ([`Windows::end_process`]), its threads' records and
+    /// queues, then its classes (Windows 2000 destroys classes at the process's end).
     pub fn end_process(&mut self, owner: class::Owner) {
         let WindowManager {
             windows,
@@ -5455,10 +5341,8 @@ impl WindowManager {
         windows.handles.end_process(owner);
     }
 
-    /// The thread `key`'s end, on its way out: its windows go and its queue ends
-    /// ([`Windows::end_thread`]), as Windows 2000 destroys a thread's windows at its exit; nothing
-    /// for a thread that never connected. Its process's classes and objects wait for the process's
-    /// end.
+    /// The thread `key`'s end: its windows go and its queue ends ([`Windows::end_thread`]), as
+    /// Windows 2000 does at thread exit; nothing for a thread that never connected.
     pub fn end_thread(&mut self, key: ThreadKey) {
         let WindowManager {
             windows, classes, ..
@@ -5498,9 +5382,8 @@ impl WindowManager {
         Ok(if was_visible { WS_VISIBLE >> 24 } else { 0 })
     }
 
-    /// NtUserShowWindowAsync's decision over a handle: the show carried out at once (the
-    /// message queue that would carry it to the window's thread comes with the message slice).
-    /// The command is checked first; nothing is answered but the call's success.
+    /// NtUserShowWindowAsync's decision over a handle: the command checked, the show carried out
+    /// at once; only success is answered.
     pub fn show_window_async(
         s: &mut dyn Session,
         handle: Hwnd,
@@ -5599,11 +5482,9 @@ impl WindowManager {
         })
     }
 
-    /// NtUserChildWindowFromPointEx's decision: the child of the window `handle` names that holds
-    /// the point (`x`, `y`) of its client area, the first in the z-order that does, passing over
-    /// the hidden ones, the disabled ones and the transparent ones as the CWP_ flags ask; the
-    /// window itself when no child holds it, and none when the point lies outside the window.
-    /// The children are its own, not their children's.
+    /// NtUserChildWindowFromPointEx's decision: the first direct child of `handle`'s window, in
+    /// z-order, holding the client point (`x`, `y`), skipping hidden, disabled and transparent
+    /// ones as the CWP_ flags ask; the window itself when none does, none outside the window.
     pub fn child_window_from_point(
         &self,
         handle: Hwnd,
@@ -5636,11 +5517,9 @@ impl WindowManager {
 }
 
 impl WindowManager {
-    /// NtUserFindWindowEx's decision, FindWindow's and FindWindowEx's search: the first child of
-    /// `parent` (none: the desktop window of the caller's desktop, whose children are the
-    /// top-level windows) after `after` (none: from the top of the z-order) whose class is
-    /// `class` (none: any class) and whose title is `title` (none: any title), the titles
-    /// compared without regard to case. A class name that names no class finds no window.
+    /// NtUserFindWindowEx's search: the first child of `parent` (none: the caller's desktop
+    /// window) after `after` (none: from the top) of class `class` and title `title` (none: any),
+    /// titles compared case-insensitively. A class name naming no class finds nothing.
     pub fn find_window(
         &self,
         caller: ThreadId,
@@ -6024,12 +5903,10 @@ pub fn end_defer_window_pos(call: &mut NtCall, positions: UserAddr, count: u32) 
     Ok(STATUS_SUCCESS)
 }
 
-/// NtUserQueryWindow(Window, Index, Information, Length): what `index` asks about the window
-/// (rtl::window's QUERY_ indexes) into `information`, whose `length` must be the answer's own:
-/// STATUS_INVALID_INFO_CLASS for an index there is none for, STATUS_INFO_LENGTH_MISMATCH for
-/// another length (both checked before the window, as the NT query services check them), then
-/// STATUS_INVALID_HANDLE for a handle naming no window. The answer is copied out once the window
-/// manager's lock is let go.
+/// NtUserQueryWindow(Window, Index, Information, Length): `index`'s answer (rtl::window's QUERY_*)
+/// into `information`, whose `length` must be the answer's own. STATUS_INVALID_INFO_CLASS for an
+/// unknown index, STATUS_INFO_LENGTH_MISMATCH for another length (both before the window, as NT's
+/// query services check), then STATUS_INVALID_HANDLE. Copied out once the lock is let go.
 #[cfg(target_arch = "x86")]
 pub fn query_window(
     call: &mut NtCall,
@@ -6084,11 +5961,10 @@ fn query_window_text(
     Ok(STATUS_SUCCESS)
 }
 
-/// QUERY_WINDOW_THREAD: the client ids of the window's thread and of its process
-/// (GetWindowThreadProcessId): a process thread's as its queue keeps it, and its process's. The
-/// window manager's own windows (the desktop's) answer the raw input thread, win32k's own thread
-/// in the System process: Windows 2000 answers its desktop thread, in CSRSS, another process's
-/// thread either way (the wintree capture's ids block).
+/// QUERY_WINDOW_THREAD: the client ids of the window's thread and process
+/// (GetWindowThreadProcessId). The desktop's own windows answer the raw input thread in the
+/// System process; Windows 2000 answers its desktop thread in CSRSS, another process's thread
+/// either way (the wintree capture's ids block).
 #[cfg(target_arch = "x86")]
 fn query_window_thread(call: &mut NtCall, window: Handle, information: UserAddr) -> NtResult {
     use crate::level::Dispatch;
@@ -6126,12 +6002,9 @@ fn query_window_thread(call: &mut NtCall, window: Handle, information: UserAddr)
 }
 
 /// NtUserSetWindowLong(Window, Index, NewLong, Ansi, Previous, PreviousAnsi): SetWindowLong's
-/// change through the narrow (`ansi` nonzero) or wide entry point
-/// ([`Windows::set_window_long`]): the value the field held into `previous`, and for
-/// GWL_WNDPROC whether the procedure it held took the narrow forms of the messages into
-/// `previous_ansi` (0 for another index). The messages the change sends go through the session
-/// ([`super::queue::QueueSession`]); both answers are written once the window manager's lock is
-/// let go.
+/// change ([`Windows::set_window_long`]): the old value into `previous`, and for GWL_WNDPROC
+/// whether the old procedure was narrow into `previous_ansi` (0 otherwise). Both are written once
+/// the lock is let go.
 #[cfg(target_arch = "x86")]
 pub fn set_window_long(
     call: &mut NtCall,
@@ -9004,12 +8877,10 @@ mod tests {
             .is_some());
     }
 
-    /// user32's own classes and its dialogs: a narrow caller's window takes the narrow form of
-    /// the class's procedure (and is no Unicode window), a wide caller's the wide form; a class
-    /// name matches without regard to case, and "#32770" names the integer atom 0x8002; FindWindow
-    /// finds a top-level window by class and title (the title without regard to case); the
-    /// dialog mark is set once, by the window's own process; a child's links name its parent and
-    /// its siblings.
+    /// user32's classes and dialogs: a narrow caller's window takes the class's narrow procedure
+    /// (no Unicode window), a wide caller's the wide one; class names match case-insensitively,
+    /// "#32770" is atom 0x8002; FindWindow matches class and title (case-insensitive); the dialog
+    /// mark is set once, by the owning process; a child's links name its parent and siblings.
     #[test]
     fn user32s_classes_and_dialogs() {
         use rtl::window::{FNID_DIALOG, WINDOW_ANSI_PROC, WINDOW_DIALOG};
@@ -10726,14 +10597,10 @@ mod tests {
         );
     }
 
-    /// The minimizing and maximizing commands go through the min/max seam first, and so do the
-    /// restoring ones of a minimized window; then the window is minimized, maximized or restored,
-    /// as the guigeo capture's minmax shows Windows 2000's: its style and its place change through
-    /// SetWindowPos (WM_WINDOWPOSCHANGED, whose client change brings the default procedure's
-    /// WM_SIZE, so the WM_SIZE and WM_MOVE its creation deferred are sent no more). Maximized, it
-    /// fills the work area, its sizing border outside; minimized, it goes to (-32000, -32000), its
-    /// client area empty; minimized from maximized, it restores to maximized, then to its normal
-    /// place.
+    /// guigeo minmax: min/max commands (and restoring a minimized window) go through the min/max
+    /// seam, then change style and place through SetWindowPos (its WM_SIZE replaces the deferred
+    /// WM_SIZE and WM_MOVE). Maximized fills the work area, border outside; minimized goes to
+    /// (-32000, -32000), client empty; minimized from maximized restores to maximized, then normal.
     #[test]
     fn min_max_and_restore() {
         let (w, c, t, atom, _, _) = setup();
