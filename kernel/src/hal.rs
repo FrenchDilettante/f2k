@@ -558,6 +558,8 @@ mod tests {
     /// hand, the first half is `grep -rnE 'hw::(pic|pit|rtc|portio|vbe)' kernel/src`, less comments
     /// and the files behind the seam.
     #[test]
+    // A text scan of every kernel source, no unsafe code in it: hours under Miri.
+    #[cfg_attr(miri, ignore)]
     fn only_the_hal_reaches_the_system_hardware() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut files = Vec::new();

@@ -176,9 +176,14 @@ impl Pcr {
         self.change(|ledger| ledger.lower(to));
     }
 
-    /// End a hardware interrupt's claim (see [`IrqlState::end_claim`]).
+    /// End a hardware interrupt's claim, in [`IrqlState::end_claim`]'s order: mask, acknowledge,
+    /// lower. Three ledger operations rather than that one: the acknowledgment is the platform's
+    /// code, which may read the ledger itself (the level, say), so no reference to it may be live
+    /// across the call. Interrupts stay masked from the first step to the lower.
     pub fn end_claim(&self, to: OldIrql, acknowledge: impl FnOnce()) {
-        self.change(|ledger| ledger.end_claim(to, |_| acknowledge()));
+        self.change(IrqlState::mask_interrupts);
+        acknowledge();
+        self.change(|ledger| ledger.lower(to));
     }
 
     /// Mask interrupts, the ledger recording it.

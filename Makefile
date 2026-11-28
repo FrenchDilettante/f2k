@@ -342,9 +342,7 @@ test:
 # The default set is the code with the most unsafe aliasing to check (the dispatcher and its
 # records, the level cells and locks, the processor's slots, the heap and the pool, the frame and
 # page tables, the I/O manager, the object directory, the wait discipline and its objects) and
-# takes minutes. Left out: hal::tests (its fake platform reads the level from inside
-# the ledger's own change) and interrupt::tests (a test compares function addresses, which Miri
-# does not keep equal); and the modules too slow to interpret (whole DLL images, file systems: an
+# takes minutes. Left out: the modules too slow to interpret (whole DLL images, file systems: an
 # hour and more). `make miri MIRI_TESTS=::` runs every test.
 MIRI_TOOLCHAIN = $(shell sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain)
 MIRI_DIR ?= $(patsubst %/,%,$(or $(TMPDIR),/tmp))/f2k-miri
@@ -356,7 +354,8 @@ MIRI_TESTS ?= sched::dispatcher sched::thread sched::switch sched::semaphore sch
 	sched::idle sched::object sched::tests sched::census sched::database sched::list \
 	sched::startup \
 	level:: sync:: pcr:: slots:: mem::heap mem::dma mem::pool mem::frame mem::paging:: mem::pte \
-	dev::io hal::exports csr:: win32k::text ob:: process:: fs::file interrupt::clock user::apc \
+	dev::io hal::exports hal::tests csr:: win32k::text ob:: process:: fs::file interrupt::clock \
+	interrupt::tests user::apc \
 	sched::wait:: sched::apc sched::timer sched::waitable_timer sched::mutex sched::event \
 	block::lock nt::signal nt::wait nt::tests
 MIRI_ENV = cd $(MIRI_DIR) && CARGO_TARGET_DIR=$(MIRI_TARGET_DIR) MIRIFLAGS="$(MIRIFLAGS)"
