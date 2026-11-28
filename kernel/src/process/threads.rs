@@ -128,11 +128,12 @@ fn release_thread_pages(process: &Process, leftover: crate::process::ordinals::L
 /// caller's handle exists, so a thread never runs before its creator holds a way to wait on it.
 /// The first thread of a process with none is its main thread (see [`free_thread`]). Returns the
 /// thread's object (holding the thread's own reference), its record, and its identifier (its
-/// client id, never reused within the boot). The program-visible failures: a process that takes
-/// no new thread (STATUS_PROCESS_IS_TERMINATING), no free ordinal in the process, no free record in
-/// the pool, no free slot in the kernel stack region, or no frame left for the TEB page
-/// (STATUS_NO_MEMORY). `process`'s address space is the live one: the caller's own, or one it
-/// attached to.
+/// client id, from the client-id table: see [`crate::process::cid`]). The program-visible
+/// failures: a process that takes no new thread (STATUS_PROCESS_IS_TERMINATING), no free ordinal
+/// in the process, no free record in the pool, no free slot in the kernel stack region, or no
+/// frame left for the TEB page (STATUS_NO_MEMORY); no page for the client-id table's next chunk
+/// (STATUS_INSUFFICIENT_RESOURCES). `process`'s address space is the live one: the caller's own,
+/// or one it attached to.
 pub fn create(
     process: &Process,
     user: crate::sched::startup::UserStart,
@@ -149,9 +150,17 @@ pub fn create(
         paging::release_frame_phys(teb_frame);
         return Err(crate::status::STATUS_NO_MEMORY);
     };
+    // Its client id, reserved with them: it names the thread once the record is the thread's, and
+    // goes back with the thread's object (see `crate::process::cid`).
+    let Some(thread_id) = crate::process::cid::reserve() else {
+        crate::mem::kstacks::release(gate);
+        paging::release_frame_phys(teb_frame);
+        return Err(crate::status::STATUS_INSUFFICIENT_RESOURCES);
+    };
     let (object, thread, ordinal) = match free_thread(process, stack.allocation_base) {
         Ok(made) => made,
         Err(status) => {
+            crate::process::cid::unreserve(thread_id);
             crate::mem::kstacks::release(gate);
             paging::release_frame_phys(teb_frame);
             return Err(status);
@@ -161,7 +170,6 @@ pub fn create(
     // The TEB page: the per-thread region, one page, carrying the thread's identity and the stack
     // its creator made.
     let teb_va = crate::user::thread_teb_va(ordinal as u32);
-    let thread_id = crate::process::new_client_id();
     let created = crate::time::system_filetime();
     // The startup ladder: the stub calls the system routine (the startup's deliveries), then
     // enters ring 3 in the creator's context.
@@ -185,6 +193,7 @@ pub fn create(
         // SAFETY: the thread's `initial_stack` names its freshly mapped, empty kernel-stack slot.
         unsafe { crate::sched::startup::plant(record, &params) };
     });
+    crate::process::cid::fill(thread_id, crate::process::cid::Named::Object(object));
 
     // Its TLS is user memory: ntdll's thread initialization makes the implicit-TLS block, and
     // TlsSetValue the expansion slots on first use (both on the process heap).

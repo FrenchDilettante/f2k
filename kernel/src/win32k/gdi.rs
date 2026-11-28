@@ -303,6 +303,11 @@ impl GdiTable {
         self.slots.live()
     }
 
+    /// Whether the process whose client id is `owner` owns an entry.
+    pub fn owns_any(&self, owner: u32) -> bool {
+        self.slots.iter().any(|(_, entry)| entry.owned_by(owner))
+    }
+
     /// The entries the process whose client id is `owner` owns.
     #[cfg(test)]
     pub fn owned(&self, owner: u32) -> usize {
@@ -428,6 +433,12 @@ mod target {
                 break;
             }
         }
+    }
+
+    /// Whether the process whose client id is `id` owns a GDI object: none once its teardown has
+    /// freed them, before its id goes back (see `crate::process::cid`).
+    pub fn owns_any(id: u32) -> bool {
+        with_table(|table| table.owns_any(id))
     }
 
     /// The table's live entries: every process's GDI objects (the quiescent audit's count, 0 with
@@ -688,6 +699,74 @@ mod tests {
         for (handle, other) in others {
             assert_eq!(table.find(OTHER.id, handle), Some(other));
         }
+    }
+
+    /// The race a reused process id opens: the GDI entries name their owner by its id, so a
+    /// process given an ended one's id before the ended one's sweep would own its objects. The
+    /// kernel gives the id back only after the sweep (`crate::process::teardown`), when the table
+    /// owns nothing of it: the next process to take the id (the client-id table hands the one
+    /// freed last out first) finds none of the old handles, and makes its own. Given back
+    /// before, the same handles would have named the ended process's objects to it.
+    #[test]
+    fn a_reused_process_id_owns_nothing_of_the_ended_process() {
+        use crate::process::cid::{ClientIds, Named};
+        let pages = HostPages::new();
+        let mut ids = ClientIds::new();
+        let mut table = table();
+        let named = |index| {
+            Named::Object(ObjectId {
+                kind: ObjectType::Process,
+                index,
+                generation: 1,
+            })
+        };
+        let make = |ids: &mut ClientIds, index| {
+            let id = ids.reserve().unwrap();
+            ids.fill(id, named(index));
+            Owner { process: index, id }
+        };
+        let ended = make(&mut ids, 3);
+        let handles: std::vec::Vec<u32> = (0..3)
+            .map(|index| {
+                table
+                    .insert(ended, object(ObjectType::Brush, index), &pages)
+                    .unwrap()
+            })
+            .collect();
+
+        // Given back too early, before the sweep: the next process takes the id, and the ended
+        // process's handles name its objects to it.
+        let mut early = ClientIds::new();
+        assert_eq!(
+            make(&mut early, 3),
+            ended,
+            "the same table, another history"
+        );
+        assert!(early.destroy(ended.id, named(3)));
+        let thief = make(&mut early, 4);
+        assert_eq!(thief.id, ended.id);
+        assert!(table.owns_any(thief.id));
+        assert_eq!(
+            table.find(thief.id, handles[0]),
+            Some(object(ObjectType::Brush, 0)),
+            "the hazard: another process's brush"
+        );
+
+        // The kernel's order: the sweep, then the id.
+        let mut step = [None; TAKE_STEP];
+        assert_eq!(table.take_owned(ended, &mut step), 3);
+        assert!(!table.owns_any(ended.id));
+        assert!(ids.destroy(ended.id, named(3)));
+        let next = make(&mut ids, 4);
+        assert_eq!(next.id, ended.id, "the id freed last comes back first");
+        for handle in &handles {
+            assert_eq!(table.find(next.id, *handle), None);
+        }
+        let own = table
+            .insert(next, object(ObjectType::Brush, 9), &pages)
+            .unwrap();
+        assert_eq!(table.find(next.id, own), Some(object(ObjectType::Brush, 9)));
+        assert_eq!(table.owned(next.id), 1);
     }
 
     /// Each process's entries are counted from the insert to the delete; at its quota's worth

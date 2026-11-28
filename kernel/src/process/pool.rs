@@ -97,11 +97,13 @@ pub fn listed() -> impl Iterator<Item = &'static Process> {
 
 /// Create a process: its object and its record at the same index, the record taken in place over
 /// the address space at `dir_phys`, named `name`, created by the process whose client id is
-/// `parent_id` (zero: none), running as leg `leg` (none for a child).
+/// `parent_id` (zero: none), running as leg `leg` (none for a child), its own client id fresh
+/// from the client-id table ([`super::cid`]).
 /// STATUS_INSUFFICIENT_RESOURCES when the object, or a record not yet made (or the drivers'
-/// stand-in for the process, [`crate::dev::io`]'s), finds no room in the nonpaged pool (Windows
-/// 2000's answer to an exhausted pool), or every u16 index is in use; nothing is taken then — the
-/// object made goes again — and the address space stays the caller's.
+/// stand-in for the process, [`crate::dev::io`]'s), or the client-id table's next page, finds no
+/// room in the nonpaged pool (Windows 2000's answer to an exhausted pool), or every u16 index is in
+/// use; nothing is taken then — the object made goes again, the id reserved too — and the address
+/// space stays the caller's.
 #[cfg(target_arch = "x86")]
 pub(super) fn create(
     dir_phys: crate::mem::phys::PhysAddr,
@@ -109,17 +111,23 @@ pub(super) fn create(
     leg: Option<u32>,
     parent_id: u32,
 ) -> Result<&'static Process, crate::status::NtStatus> {
-    let object = crate::ob::locked(|directory| directory.create_process())
-        .ok_or(crate::status::STATUS_INSUFFICIENT_RESOURCES)?;
+    let id = super::cid::reserve().ok_or(crate::status::STATUS_INSUFFICIENT_RESOURCES)?;
+    let Some(object) = crate::ob::locked(|directory| directory.create_process()) else {
+        super::cid::unreserve(id);
+        return Err(crate::status::STATUS_INSUFFICIENT_RESOURCES);
+    };
     let made = make(object.index).filter(|_| crate::dev::io::make_process_stand_in(object.index));
     let Some(process) = made else {
         // Nothing names the object yet, and nothing ran on it: its creator's reference was its
         // only one, and a process object's deletion leaves nothing to finish.
         let left = crate::ob::locked(|directory| directory.dereference(object));
         debug_assert!(left.is_none(), "a process object's deletion leaves nothing");
+        super::cid::unreserve(id);
         return Err(crate::status::STATUS_INSUFFICIENT_RESOURCES);
     };
-    process.renew(object, dir_phys, name, leg, parent_id);
+    process.renew(object, id, dir_phys, name, leg, parent_id);
+    // The id names the process once its record is the process's.
+    super::cid::fill(id, super::cid::Named::Object(object));
     Ok(process)
 }
 
@@ -273,14 +281,16 @@ pub fn of_object(id: crate::ob::ObjectId) -> Option<&'static Process> {
 }
 
 /// The process object whose process has client id `id`, among the processes that have not ended:
-/// as on Windows 2000, a process leaves the client id table when its last thread ends, while its
-/// object lives on for the handles that hold it (they still query it and wait on it), so its id
-/// names nothing any more. A process that never had a thread leaves it when its deletion begins.
+/// one look-up in the client-id table ([`super::cid`]), then the process's state. As on Windows
+/// 2000, an ended process's id names nothing any more, while its object lives on for the handles
+/// that hold it (they still query it and wait on it): from its last thread's end — the id goes
+/// back to the table at its teardown, just after — or, for a process that never had a thread,
+/// from the start of its deletion.
 #[cfg(target_arch = "x86")]
 pub fn by_client_id(id: u32) -> Option<crate::ob::ObjectId> {
-    live().find_map(|(process, object)| {
-        (process.id() == id && process.end().is_none() && !process.deleting()).then_some(object)
-    })
+    let object = super::cid::lookup(id)?.process()?;
+    let process = of_object(object)?;
+    (process.id() == id && process.end().is_none() && !process.deleting()).then_some(object)
 }
 
 #[cfg(test)]

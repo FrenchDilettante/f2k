@@ -203,7 +203,7 @@ mod target {
         priority: i8,
     ) {
         let stack = crate::mem::kstacks::create().expect("a system thread's stack is the boot's");
-        let thread_id = crate::process::new_client_id();
+        let thread_id = crate::process::cid::create(crate::process::cid::Named::SystemThread);
         let params = crate::sched::startup::StartParams {
             system_routine: routine as usize as u32,
             start_routine: 0,

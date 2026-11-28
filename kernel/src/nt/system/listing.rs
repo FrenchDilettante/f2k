@@ -299,9 +299,11 @@ mod target {
     }
 
     /// The listing as the system stands, into `buffer`, for the caller's buffer at `user_base`:
-    /// the idle and System processes, then every listed process in client-id order (found one at a
-    /// time, the next id up, so nothing holds the processes between). The length it takes, all of
-    /// it counted whether or not it fits `buffer`.
+    /// the idle and System processes, then every listed process in the order of their creation
+    /// (Windows 2000 walks its list of active processes, each new one added at its tail; client
+    /// ids, reused, are no order), found one at a time, the next created after the last listed,
+    /// so nothing holds the processes between. The length it takes, all of it counted whether or
+    /// not it fits `buffer`.
     fn build(buffer: &mut [u8], user_base: u32) -> usize {
         let mut listing = Listing::new(buffer, user_base);
         let (idle, system) = crate::sched::idle::kernel_processes();
@@ -309,11 +311,11 @@ mod target {
         list_kernel_process(&mut listing, &SYSTEM_PROCESS, system);
         let mut last = None;
         while let Some(process) = crate::process::pool::listed()
-            .filter(|process| last.is_none_or(|last| process.id() > last))
-            .min_by_key(|process| process.id())
+            .filter(|process| last.is_none_or(|last| process.serial() > last))
+            .min_by_key(|process| process.serial())
         {
             list_process(&mut listing, process);
-            last = Some(process.id());
+            last = Some(process.serial());
         }
         listing.length()
     }

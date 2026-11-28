@@ -1992,16 +1992,7 @@ impl Directory {
         owner: *const crate::sched::process::SchedProcess,
         thread_id: u32,
     ) -> Option<ObjectId> {
-        with_bodies(|bodies| {
-            (0..THREADS as u16).find_map(|index| {
-                let id = self.id(ObjectType::Thread, index);
-                let thread = bodies.thread(self.thread(id)?);
-                let found = core::ptr::eq(thread.process, owner)
-                    && thread.thread_id() == thread_id
-                    && thread.state() != crate::sched::thread::ThreadState::Terminated;
-                found.then_some(id)
-            })
-        })
+        self.running_thread_by_id(thread_id, |thread| core::ptr::eq(thread.process, owner))
     }
 
     /// The thread object whose client id is `thread_id`, among the threads that have not ended of
@@ -2009,14 +2000,24 @@ impl Directory {
     /// thread has it — as on Windows 2000, an ended thread's id names nothing any more, even while
     /// a handle holds its object.
     pub fn thread_by_id(&mut self, thread_id: u32) -> Option<ObjectId> {
+        self.running_thread_by_id(thread_id, |_| true)
+    }
+
+    /// The thread object the client-id table ([`crate::process::cid`]) names by `thread_id`, when
+    /// it lives, has not ended, and passes `filter`: one look-up, then the thread's state.
+    fn running_thread_by_id(
+        &mut self,
+        thread_id: u32,
+        filter: impl FnOnce(&crate::sched::thread::Thread) -> bool,
+    ) -> Option<ObjectId> {
+        let id = crate::process::cid::lookup(thread_id)?.thread()?;
+        let record = self.thread(id)?;
         with_bodies(|bodies| {
-            (0..THREADS as u16).find_map(|index| {
-                let id = self.id(ObjectType::Thread, index);
-                let thread = bodies.thread(self.thread(id)?);
-                let found = thread.thread_id() == thread_id
-                    && thread.state() != crate::sched::thread::ThreadState::Terminated;
-                found.then_some(id)
-            })
+            let thread = bodies.thread(record);
+            let found = thread.thread_id() == thread_id
+                && thread.state() != crate::sched::thread::ThreadState::Terminated
+                && filter(thread);
+            found.then_some(id)
         })
     }
 
@@ -2161,9 +2162,17 @@ impl Directory {
                 }
                 None
             }
+            ObjectType::Thread => {
+                // Its client id goes back with it (PspThreadDelete): an ended thread's id names
+                // nothing to a look-up already, and goes back to the table only now (see
+                // `crate::process::cid`). A record whose creation failed before its id was filled
+                // names an id that is not its object's, which the destroy leaves alone.
+                let thread_id = with_bodies(|bodies| bodies.thread(ThreadId(id.index)).thread_id());
+                crate::process::cid::destroy(thread_id, crate::process::cid::Named::Object(id));
+                None
+            }
             ObjectType::Event
             | ObjectType::Semaphore
-            | ObjectType::Thread
             | ObjectType::Process
             | ObjectType::Directory
             | ObjectType::WindowStation
@@ -3412,22 +3421,34 @@ mod tests {
         let directory = directory();
         let a = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8))) as *mut SchedProcess;
         let b = Box::leak(Box::new(SchedProcess::new(0x00A0_0000, 8))) as *mut SchedProcess;
-        // A's main thread, B's main thread, then a created thread of A's: records 0, 1, 2.
-        let threads = [(a, 8), (b, 16), (a, 20)].map(|(owner, client_id)| {
+        // A's main thread, B's main thread, then a created thread of A's: records 0, 1, 2, client
+        // ids 12, 16, 20 from the client-id table.
+        let threads = [a, b, a].map(|owner| {
             let id = directory.create_thread().unwrap();
             let thread = directory.renew_thread(id);
+            let client_id = crate::process::cid::reserve().unwrap();
             let mut dispatcher = dispatcher();
             let record = dispatcher.thread_mut(thread);
             record.process = owner;
             record.thread_id = client_id;
+            drop(dispatcher);
+            crate::process::cid::fill(client_id, crate::process::cid::Named::Object(id));
             id
         });
         assert_eq!(threads.map(|id| id.index), [0, 1, 2]);
         assert_eq!(directory.thread_by_client_id(a, 20), Some(threads[2]));
-        assert_eq!(directory.thread_by_client_id(a, 8), Some(threads[0]));
+        assert_eq!(directory.thread_by_client_id(a, 12), Some(threads[0]));
         assert_eq!(directory.thread_by_client_id(b, 16), Some(threads[1]));
         assert_eq!(directory.thread_by_client_id(b, 20), None, "A's thread");
         assert_eq!(directory.thread_by_client_id(a, 16), None, "B's thread");
+        assert_eq!(directory.thread_by_id(16), Some(threads[1]));
+        assert_eq!(directory.thread_by_id(24), None, "no one's");
+
+        // The thread object's deletion gives its id back, the last freed first out again.
+        assert_eq!(directory.dereference(threads[1]), None);
+        assert_eq!(directory.thread_by_id(16), None);
+        assert_eq!(crate::process::cid::lookup(16), None);
+        assert_eq!(crate::process::cid::reserve(), Some(16));
     }
 
     /// The dispatcher kinds grow past the caps they once had (64 semaphores and mutexes, 256 events

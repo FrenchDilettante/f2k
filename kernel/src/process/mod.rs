@@ -78,6 +78,9 @@ pub mod runner;
 /// The process pool and the current process.
 pub mod pool;
 
+/// The client-id table: the process and thread ids (PspCidTable).
+pub mod cid;
+
 /// The reap step's signal, and the wait for the ended processes' teardowns.
 #[cfg(target_arch = "x86")]
 pub mod teardowns;
@@ -145,8 +148,13 @@ pub struct Process {
 struct Identity {
     /// The image's name, as its end reports it on COM1.
     name: ProcessName,
-    /// The process's client id (what GetCurrentProcessId reports, through the TEB).
+    /// The process's client id (what GetCurrentProcessId reports, through the TEB): its entry in
+    /// the client-id table ([`cid`]) until its teardown, the value kept here after.
     id: u32,
+    /// The process's place in the order of creation: the process listing's order (Windows 2000's
+    /// list of active processes, each created process added at its tail), which ids, reused, no
+    /// longer give.
+    serial: u32,
     /// The client id of the process that created it (ProcessBasicInformation's
     /// InheritedFromUniqueProcessId): zero for a boot's program, which no process created.
     parent_id: u32,
@@ -166,6 +174,7 @@ impl Identity {
     const NONE: Identity = Identity {
         name: ProcessName::EMPTY,
         id: 0,
+        serial: 0,
         parent_id: 0,
         leg: None,
         object: crate::ob::ObjectId {
@@ -416,7 +425,8 @@ impl Process {
     }
 
     /// Take this record, whose process object `object` the directory has just made (so nothing
-    /// names it yet), for a new process: named `name`, its client id fresh, created by the process
+    /// names it yet), for a new process: named `name`, its client id `id` (reserved for it, see
+    /// [`cid`]), created by the process
     /// whose client id is `parent_id` (zero: none), running as leg `leg` (none for a child), over
     /// the address space at `dir_phys`. Every part starts over in place: its previous process (if
     /// any) was torn down before its object went, so the parts hold nothing.
@@ -424,6 +434,7 @@ impl Process {
     fn renew(
         &self,
         object: crate::ob::ObjectId,
+        id: u32,
         dir_phys: PhysAddr,
         name: ProcessName,
         leg: Option<u32>,
@@ -431,7 +442,8 @@ impl Process {
     ) {
         let identity = Identity {
             name,
-            id: new_client_id(),
+            id,
+            serial: NEXT_SERIAL.fetch_add(1, core::sync::atomic::Ordering::Relaxed),
             parent_id,
             leg,
             object,
@@ -473,6 +485,11 @@ impl Process {
     /// The process's client id.
     pub fn id(&self) -> u32 {
         self.identity.get().id
+    }
+
+    /// The process's place in the order of creation (see [`Identity`]'s `serial`).
+    pub fn serial(&self) -> u32 {
+        self.identity.get().serial
     }
 
     /// The client id of the process that created this one; zero for a boot's program.
@@ -1037,6 +1054,12 @@ impl Process {
             process.abandon();
             return Err(STATUS_INSUFFICIENT_RESOURCES);
         };
+        // Its client id, reserved before its record too: it names the thread once the record is.
+        let Some(thread_id) = cid::reserve() else {
+            crate::mem::kstacks::release(stack);
+            process.abandon();
+            return Err(STATUS_INSUFFICIENT_RESOURCES);
+        };
 
         // The main thread: its object holds the thread's own reference while it runs (released at
         // its end), on any free record of the pool; it holds the process's ordinal 0 (the fixed
@@ -1048,14 +1071,14 @@ impl Process {
                 .ordinals(process.object())
                 .expect("a process being started has its object")
                 .hold_main(id, 0);
-            Some(directory.renew_thread(id))
+            Some((id, directory.renew_thread(id)))
         });
-        let Some(thread) = made else {
+        let Some((object, thread)) = made else {
+            cid::unreserve(thread_id);
             crate::mem::kstacks::release(stack);
             process.abandon();
             return Err(STATUS_INSUFFICIENT_RESOURCES);
         };
-        let thread_id = new_client_id();
         let created = crate::time::system_filetime();
         crate::level::raised::<crate::level::Dispatch, _>(|dispatch| {
             let dispatcher = crate::sched::DISPATCHER.get(dispatch);
@@ -1071,6 +1094,7 @@ impl Process {
             // teardown follows the last one's end).
             unsafe { dispatcher.attach(thread, process.sched_ptr()) };
         });
+        cid::fill(thread_id, cid::Named::Object(object));
         // The TSS `esp0` is the switch's to install: the first switch into the main thread loads
         // its stack top.
         Ok(process)
@@ -1081,6 +1105,7 @@ impl Process {
     /// fresh address space's directory, which maps nothing yet.
     fn abandon(&self) {
         let dir_phys = self.dir_phys();
+        self.give_back_id();
         release_record(self);
         free_directory(dir_phys);
     }
@@ -1124,6 +1149,9 @@ impl Process {
         }) {
             return false;
         }
+        // A process never reaped (it never had a thread) gives its id back here; a reaped one gave
+        // it back at its teardown.
+        self.give_back_id();
         self.release_handles();
         // A token opened after the process's end (or on one that never had a thread) goes with
         // the deletion; an ended process let go of its own at its end.
@@ -1147,6 +1175,15 @@ impl Process {
         release_address_space_of(self);
         locked(&self.state, |state| state.torn_down = true);
         true
+    }
+
+    /// The process's client id goes back to the table ([`cid`]), if it still names the process: at
+    /// its teardown, once its GDI objects and windows are gone (see [`teardown`]), or at the
+    /// deletion of a process never reaped — one that never had a thread, so never made a GDI
+    /// object its id would stand for — or abandoned. A second call finds the id free, or another
+    /// process's, and does nothing.
+    fn give_back_id(&self) {
+        cid::destroy(self.id(), cid::Named::Object(self.object()));
     }
 
     /// Whether the deletion of the process has begun: its client id names nothing from then on.
@@ -1218,10 +1255,10 @@ impl Process {
     }
 }
 
-/// The next client id to hand out (see [`new_client_id`]).
+/// The next process's place in the order of creation (see [`Identity`]'s `serial`). A u32 wraps
+/// only after four billion creations, far past what a boot runs.
 #[cfg(target_arch = "x86")]
-static NEXT_CLIENT_ID: core::sync::atomic::AtomicU32 =
-    core::sync::atomic::AtomicU32::new(FIRST_CLIENT_ID);
+static NEXT_SERIAL: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
 /// The System process's client id: Windows 2000's (the toolhelp fixture's capture lists it as the
 /// lowest id after the idle process's 0, and Windows 2000's is 8). The process listing shows it
@@ -1229,20 +1266,11 @@ static NEXT_CLIENT_ID: core::sync::atomic::AtomicU32 =
 pub const SYSTEM_PROCESS_ID: u32 = 8;
 
 /// The first client id handed out: NT never hands out 0 (no object) or 4, and 8 is the System
-/// process's.
+/// process's (see [`cid`]).
 pub const FIRST_CLIENT_ID: u32 = SYSTEM_PROCESS_ID + CLIENT_ID_STEP;
 
 /// How far apart client ids are: four, as the platform's are (handle-table indices there).
 pub const CLIENT_ID_STEP: u32 = 4;
-
-/// A fresh client id for a process or a thread: processes and threads share one id space, as on
-/// NT, and an id is never reused within a boot (system state, not per-process state).
-#[cfg(target_arch = "x86")]
-pub fn new_client_id() -> u32 {
-    // The id is the counter's value before the step, taken in one read-modify-write, so no two
-    // callers are handed the same id. Nothing else is published with it, hence relaxed.
-    NEXT_CLIENT_ID.fetch_add(CLIENT_ID_STEP, core::sync::atomic::Ordering::Relaxed)
-}
 
 /// Give back the directory frame of an address space that maps nothing of its own (a start
 /// refused before its first mapping): its kernel half is shared, so the frame is all it holds.
@@ -1357,7 +1385,7 @@ pub fn reap() {
 /// Tear the ended `process` down, step 4 of its end (see the module notes): the parked gate stack
 /// goes, then its GDI objects (`crate::win32k::gdi`), its windows and window classes (see
 /// `crate::win32k::window`) and the fonts it loaded for itself alone (`crate::win32k::fonts`),
-/// then the object audit — its threads' records start
+/// then its client id ([`cid`]), then the object audit — its threads' records start
 /// over, and at a `quiescent` reap the leak sweep runs — then, step 5,
 /// the process is deleted if nothing beside its own reference holds its object (see
 /// [`delete_if_unreferenced`]); otherwise the last handle or reference to go deletes it. Nothing
@@ -1403,6 +1431,16 @@ fn teardown(process: &'static Process, quiescent: bool) {
         crate::win32k::queue::locked(|manager| manager.end_process(owner));
         crate::win32k::fonts::end_process(owner);
     }
+    // Then its client id goes back (see `cid`), as Windows 2000 frees it after win32k's process
+    // callout: the GDI table names an object's owner by the id, and none names this one any more,
+    // so a process that takes the id next owns nothing of this one's. Its threads' ids go with
+    // their objects' deletions: the main thread's, when a handle holds it past this point, comes
+    // back after the process's (`manyproc`'s `reuse`).
+    assert!(
+        !crate::win32k::gdi::owns_any(process.id()),
+        "a process's id goes back with no GDI object of its left"
+    );
+    process.give_back_id();
     audit_objects(process, quiescent);
     locked(&process.state, |state| state.torn_down = true);
     delete_if_unreferenced(process.object());
@@ -1499,6 +1537,9 @@ fn audit_objects(process: &Process, quiescent: bool) {
     leaked += crate::win32k::window::locked(|manager| manager.process_records());
     // So is a GDI table entry: every process's were freed at its end.
     leaked += crate::win32k::gdi::live() as usize;
+    // And a client id naming an object: every process gave its own back at its teardown, and
+    // every thread its own with its object.
+    leaked += cid::objects();
     if leaked != 0 {
         crate::serial_println!(
             "F2K: object audit FAILED: {} objects or file records outlived their process",
@@ -1591,6 +1632,7 @@ mod tests {
         *process.identity.0.get_mut() = Identity {
             name: ProcessName::new(b"fixture"),
             id: FIRST_CLIENT_ID,
+            serial: 0,
             parent_id: 0,
             leg: None,
             object: crate::ob::ObjectId {

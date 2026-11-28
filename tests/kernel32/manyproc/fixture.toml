@@ -5,7 +5,12 @@
 # 2026-11-27 VM trip. The alive block starts 600 processes, hence the longer timeout.
 description = "manyproc - many processes alive at once (manyproc.c, with its companion program mpkid.c): 600 detached children each waiting on one event, their process and thread ids as relations (multiples of 4, distinct), their ends and exit codes (alive); an ended child's id by OpenProcess while its handles are open, and the ids of the next child once they are closed against the ended one's, Windows 2000's client-id reuse (reuse)."
 kind = "sectioned"
+# reuse served since the client-id table (slot-pool slice 20).
+gate = true
 timeout = 180
+
+[pending]
+alive = "the thread cap (ob::THREADS, 128 threads): F2K stops at child 128 with err=8 (slot-pool slice 21); the capture's child 551 err=1450 is the VM running out of memory, which will then need a prediction or a mask"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
