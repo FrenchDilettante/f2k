@@ -91,9 +91,10 @@ fn change(
             .map_err(disp_change);
     }
     let geometry = vbe::enter_graphics_mode(&change.request).map_err(disp_change)?;
-    #[cfg(target_arch = "x86")]
-    crate::serial_println!(
-        "F2K: vbe: {}x{}x32, LFB at {:#010x}, mapped at {:#010x}",
+    crate::klog!(
+        File,
+        "vbe",
+        "vbe: {}x{}x32, LFB at {:#010x}, mapped at {:#010x}",
         geometry.width,
         geometry.height,
         geometry.lfb_phys,
@@ -105,8 +106,6 @@ fn change(
     super::window::locked(|manager| {
         manager.display_changed(geometry.width as i32, geometry.height as i32)
     });
-    #[cfg(not(target_arch = "x86"))]
-    let _ = geometry;
     Ok(DISP_CHANGE_SUCCESSFUL)
 }
 

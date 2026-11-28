@@ -35,6 +35,7 @@ use rtl::nt::ShutdownAction;
 use super::call::{NtCall, NtResult};
 use crate::block::CacheFlush;
 use crate::fs::fat32::volume::Flushed;
+use crate::log::Class;
 use crate::status::*;
 
 /// What a halted shutdown leaves on the screen and on COM1.
@@ -104,8 +105,8 @@ pub trait Machine {
     fn flush_disk_cache(&mut self) -> Option<Result<CacheFlush, NtStatus>>;
     /// Flush the registry's hives.
     fn flush_registry(&mut self);
-    /// A line on COM1.
-    fn report(&mut self, line: fmt::Arguments);
+    /// A line of the kernel's log, of the class `class`, as it shows on the debug port.
+    fn report(&mut self, class: Class, line: fmt::Arguments);
     /// A line on the screen, alone on it (nothing when the screen is in graphics mode).
     fn show(&mut self, text: &str);
 }
@@ -121,58 +122,83 @@ pub enum Ending {
 
 /// The shutdown's steps, in order (see the module's documentation): how it ends.
 pub fn run(action: ShutdownAction, machine: &mut impl Machine) -> Ending {
-    machine.report(format_args!("F2K: shutdown: {}", action.name()));
+    machine.report(
+        Class::File,
+        format_args!("F2K: shutdown: {}", action.name()),
+    );
     machine.close_volume();
     match machine.flush_volume() {
-        None => machine.report(format_args!("F2K: shutdown: no volume to flush")),
+        None => machine.report(
+            Class::Debug,
+            format_args!("F2K: shutdown: no volume to flush"),
+        ),
         Some(Ok(Flushed::Clean(free))) => match free.next_free {
-            Some(next) => machine.report(format_args!(
-                "F2K: shutdown: volume flushed ({} clusters free, next free {}), marked clean",
-                free.count, next
-            )),
-            None => machine.report(format_args!(
-                "F2K: shutdown: volume flushed ({} clusters free, none next), marked clean",
-                free.count
-            )),
+            Some(next) => machine.report(
+                Class::Debug,
+                format_args!(
+                    "F2K: shutdown: volume flushed ({} clusters free, next free {}), marked clean",
+                    free.count, next
+                ),
+            ),
+            None => machine.report(
+                Class::Debug,
+                format_args!(
+                    "F2K: shutdown: volume flushed ({} clusters free, none next), marked clean",
+                    free.count
+                ),
+            ),
         },
-        Some(Ok(Flushed::Unchanged)) => machine.report(format_args!(
-            "F2K: shutdown: volume unchanged since its mount"
-        )),
+        Some(Ok(Flushed::Unchanged)) => machine.report(
+            Class::Debug,
+            format_args!("F2K: shutdown: volume unchanged since its mount"),
+        ),
         // The shutdown goes on: the volume stays marked dirty, for the check its next mount owes
         // it.
-        Some(Err(status)) => machine.report(format_args!(
-            "F2K: shutdown: volume flush failed (status {:#010x}), left dirty",
-            status.0
-        )),
+        Some(Err(status)) => machine.report(
+            Class::Screen,
+            format_args!(
+                "F2K: shutdown: volume flush failed (status {:#010x}), left dirty",
+                status.0
+            ),
+        ),
     }
     match machine.flush_disk_cache() {
-        None => machine.report(format_args!("F2K: shutdown: no disk cache to flush")),
-        Some(Ok(CacheFlush::Flushed)) => {
-            machine.report(format_args!("F2K: shutdown: disk cache flushed"))
-        }
-        Some(Ok(CacheFlush::Unsupported)) => {
-            machine.report(format_args!("F2K: shutdown: the disk takes no cache flush"))
-        }
+        None => machine.report(
+            Class::Debug,
+            format_args!("F2K: shutdown: no disk cache to flush"),
+        ),
+        Some(Ok(CacheFlush::Flushed)) => machine.report(
+            Class::Debug,
+            format_args!("F2K: shutdown: disk cache flushed"),
+        ),
+        Some(Ok(CacheFlush::Unsupported)) => machine.report(
+            Class::Debug,
+            format_args!("F2K: shutdown: the disk takes no cache flush"),
+        ),
         // The shutdown goes on: what the drive still holds may be lost, as it would be with no
         // flush at all.
-        Some(Err(status)) => machine.report(format_args!(
-            "F2K: shutdown: disk cache flush failed (status {:#010x})",
-            status.0
-        )),
+        Some(Err(status)) => machine.report(
+            Class::Screen,
+            format_args!(
+                "F2K: shutdown: disk cache flush failed (status {:#010x})",
+                status.0
+            ),
+        ),
     }
     machine.flush_registry();
-    machine.report(format_args!(
-        "F2K: shutdown: registry flushed (no hive on disk)"
-    ));
-    machine.report(format_args!("F2K: shutdown complete"));
+    machine.report(
+        Class::Debug,
+        format_args!("F2K: shutdown: registry flushed (no hive on disk)"),
+    );
+    machine.report(Class::Debug, format_args!("F2K: shutdown complete"));
     match action {
         ShutdownAction::Reboot => {
-            machine.report(format_args!("{}", RESTARTING));
+            machine.report(Class::Debug, format_args!("{}", RESTARTING));
             Ending::Reset
         }
         ShutdownAction::NoReboot | ShutdownAction::PowerOff => {
             machine.show(SAFE_TO_TURN_OFF);
-            machine.report(format_args!("{}", SAFE_TO_TURN_OFF));
+            machine.report(Class::Screen, format_args!("{}", SAFE_TO_TURN_OFF));
             Ending::Halt
         }
     }
@@ -256,8 +282,13 @@ mod target {
             crate::cm::flush_hives();
         }
 
-        fn report(&mut self, line: fmt::Arguments) {
-            crate::serial_println!("{}", line);
+        /// The line carries its own `F2K: ` (or none: the screen's text), so it goes out raw.
+        fn report(&mut self, class: Class, line: fmt::Arguments) {
+            match class {
+                Class::Debug => crate::klog!(Debug, "shutdown", raw, "{line}"),
+                Class::Screen => crate::klog!(Screen, "shutdown", raw, "{line}"),
+                Class::File => crate::klog!(File, "shutdown", raw, "{line}"),
+            }
         }
 
         /// The line centered on a cleared text screen. Interrupts are masked from here to the
@@ -328,7 +359,7 @@ mod tests {
             self.steps.push("flush registry".into());
         }
 
-        fn report(&mut self, line: fmt::Arguments) {
+        fn report(&mut self, _class: Class, line: fmt::Arguments) {
             self.steps.push(std::format!("COM1: {line}"));
         }
 

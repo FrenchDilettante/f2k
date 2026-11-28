@@ -1130,15 +1130,14 @@ mod target {
                 Ok(_) => {
                     let frames = pool::pages_for(file.size as usize) as u32;
                     BOOT_FRAMES.fetch_add(frames, Ordering::Relaxed);
-                    crate::serial_println!("F2K: win32k: font loaded: \\{}", path);
+                    crate::klog!(Debug, "win32k", "win32k: font loaded: \\{}", path);
                 }
-                Err(status) => {
-                    crate::serial_println!(
-                        "F2K: win32k: font not loaded: \\{} ({:#010x})",
-                        path,
-                        status.0
-                    );
-                }
+                Err(status) => crate::klog!(
+                    File,
+                    "win32k",
+                    "win32k: font not loaded: \\{path} ({:#010x})",
+                    status.0
+                ),
             }
         }
     }

@@ -287,8 +287,10 @@ pub fn end(request: crate::csr::ctrl::SessionRequest) {
 fn await_teardowns() {
     let interval = i64::from(WAIT_TO_KILL_APP_TIMEOUT_MS) * 10_000;
     if let Err(pending) = crate::process::teardowns::await_all(interval) {
-        crate::serial_println!(
-            "F2K: session: {} ended process(es) not torn down after {} ms: shutting down",
+        crate::klog!(
+            File,
+            "session",
+            "session: {} ended process(es) not torn down after {} ms: shutting down",
             pending,
             WAIT_TO_KILL_APP_TIMEOUT_MS
         );
@@ -354,8 +356,10 @@ fn end_process(id: crate::ob::ObjectId, routine: Option<u32>, ending: &Ending) -
 #[cfg(target_arch = "x86")]
 fn report(id: crate::ob::ObjectId, what: core::fmt::Arguments) {
     if let Some((process_id, name)) = with_process(id, |process| (process.id(), process.name())) {
-        crate::serial_println!(
-            "F2K: session: process {} ({}) {}",
+        crate::klog!(
+            File,
+            "session",
+            "session: process {} ({}) {}",
             process_id,
             name.as_str(),
             what

@@ -412,8 +412,10 @@ fn allocate_console(_api: u32, data: &mut [u8]) -> NtStatus {
             };
             *handles = Handles::standard().unlogged();
             if !server.ctrl.connect(process, group, request.routine, index) {
-                crate::serial_println!(
-                    "F2K: csr: no room for a console's process's control events"
+                crate::klog!(
+                    File,
+                    "csr",
+                    "csr: no room for a console's process's control events"
                 );
             }
             server.present();
@@ -650,6 +652,7 @@ pub fn key_byte(
     byte: u8,
     lights: &mut impl rtl::console::input::Lights,
 ) {
+    #[cfg(feature = "kbd-smoke")]
     use rtl::console::input::Append;
     let server = SERVER.get(dispatch);
     let foreground = server.consoles.foreground();
@@ -659,32 +662,35 @@ pub fn key_byte(
             .slot(foreground)
             .console
             .key_byte(byte, lights, &mut |outcome, record| {
-                if outcome == Append::Dropped {
-                    crate::serial_println!("F2K: kbd: input buffer full: a key event dropped");
-                }
                 #[cfg(feature = "kbd-smoke")]
-                crate::serial_println!(
-            "F2K: kbd: record {} vk={:#04x} scan={:#04x} char={:#06x} state={:#06x} repeat={}{}",
-            if record.key_down != 0 { "down" } else { "up" },
-            record.virtual_key_code,
-            record.virtual_scan_code,
-            record.char,
-            record.control_key_state,
-            record.repeat_count,
-            match outcome {
-                Append::Stored => "",
-                Append::Coalesced => " (coalesced)",
-                Append::Filtered => " (filtered)",
-                Append::Dropped => " (dropped)",
-            }
-        );
+                crate::klog!(
+                    Debug,
+                    "kbd",
+                    "kbd: record {} vk={:#04x} scan={:#04x} char={:#06x} state={:#06x} repeat={}{}",
+                    if record.key_down != 0 { "down" } else { "up" },
+                    record.virtual_key_code,
+                    record.virtual_scan_code,
+                    record.char,
+                    record.control_key_state,
+                    record.repeat_count,
+                    match outcome {
+                        Append::Stored => "",
+                        Append::Coalesced => " (coalesced)",
+                        Append::Filtered => " (filtered)",
+                        Append::Dropped => " (dropped)",
+                    }
+                );
                 #[cfg(not(feature = "kbd-smoke"))]
-                let _ = record;
+                let _ = (outcome, record);
             });
     // A control key's event goes to every process of the console, group 0.
     if let Some(event) = raised {
         if !server.ctrl.raise(event, 0, foreground) {
-            crate::serial_println!("F2K: kbd: control events queue full: an event dropped");
+            crate::klog!(
+                File,
+                "kbd",
+                "kbd: control events queue full: an event dropped"
+            );
         }
     }
     let input = server.input_state(foreground);
@@ -732,14 +738,15 @@ pub fn submit_key_event(
 pub fn key_event(dispatch: &mut At<Dispatch>, record: rtl::console::input::KeyEventRecord) {
     let server = SERVER.get(dispatch);
     let foreground = server.consoles.foreground();
-    let (outcome, raised) = submit_key_event(&mut server.consoles.slot(foreground).console, record);
-    if outcome == rtl::console::input::Append::Dropped {
-        crate::serial_println!("F2K: kbd: input buffer full: a key event dropped");
-    }
+    let (_, raised) = submit_key_event(&mut server.consoles.slot(foreground).console, record);
     // A control key's event goes to every process of the console, group 0.
     if let Some(event) = raised {
         if !server.ctrl.raise(event, 0, foreground) {
-            crate::serial_println!("F2K: kbd: control events queue full: an event dropped");
+            crate::klog!(
+                File,
+                "kbd",
+                "kbd: control events queue full: an event dropped"
+            );
         }
     }
     let input = server.input_state(foreground);
@@ -1148,9 +1155,7 @@ impl Client for Dual<'_> {
                 .read(&mut chunk[..take])
                 .map_err(|_| STATUS_INVALID_USER_BUFFER.0)?;
             if logged {
-                for &byte in &chunk[..take] {
-                    serial_byte(byte);
-                }
+                crate::log::debug_bytes(&chunk[..take]);
             }
             if let Some(screen) = screen.as_deref_mut() {
                 screen.render(&chunk[..take]);
@@ -1163,9 +1168,7 @@ impl Client for Dual<'_> {
     /// The server's bytes (a Unicode write's), to the serial line, then to the screen buffer.
     fn print(&mut self, screen: Option<&mut ScreenBuffer>, bytes: &[u8], logged: bool) {
         if logged {
-            for &byte in bytes {
-                serial_byte(byte);
-            }
+            crate::log::debug_bytes(bytes);
         }
         if let Some(screen) = screen {
             screen.render(bytes);
@@ -1237,16 +1240,6 @@ impl Client for Dual<'_> {
         self.program.as_str().as_bytes()
     }
 }
-
-/// One byte to the debug port: COM1, in a build with one (`debugport`).
-#[cfg(all(target_arch = "x86", feature = "debugport"))]
-fn serial_byte(byte: u8) {
-    crate::hw::serial::write_byte_blocking(byte);
-}
-
-/// Host builds, and builds without the debug port, have no serial line.
-#[cfg(not(all(target_arch = "x86", feature = "debugport")))]
-fn serial_byte(_byte: u8) {}
 
 #[cfg(test)]
 mod tests {

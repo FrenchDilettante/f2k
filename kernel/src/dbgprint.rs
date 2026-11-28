@@ -18,8 +18,8 @@ use crate::user::syscall::ServiceFn;
 /// The most text one print carries: DbgPrint's buffer, 512 bytes.
 pub const MAX_TEXT: usize = 512;
 
-/// The prefix each line carries on COM1.
-const PREFIX: &str = "F2K: debug: ";
+/// What each line carries after the log's `F2K: ` on COM1.
+const PREFIX: &str = "debug: ";
 
 /// The service the dispatcher raises SYS_DEBUG_PRINT into: its two dword arguments, the text and
 /// its length in bytes, and its body.
@@ -33,7 +33,7 @@ fn service(
 ) {
     let call = crate::nt::call::NtCall::new(frame, passive);
     let result = print(UserAddr(args[0]), args[1], &mut |line| {
-        crate::serial_println!("{PREFIX}{line}");
+        crate::klog!(Debug, "debug", "{PREFIX}{line}");
     });
     call.finish(result);
 }
@@ -69,14 +69,17 @@ pub fn unhandled(
     args: core::fmt::Arguments<'_>,
     reason: core::fmt::Arguments<'_>,
 ) {
-    #[cfg(all(target_arch = "x86", feature = "debugport"))]
-    {
-        let mut com1 = crate::hw::serial::com1();
-        let _ = write_unhandled(&mut com1, module, service, args, reason);
-        crate::hw::serial::write_byte_blocking(b'\n');
-    }
-    #[cfg(not(all(target_arch = "x86", feature = "debugport")))]
-    let _ = (module, service, args, reason);
+    crate::klog!(
+        Debug,
+        "debug",
+        "{}",
+        Stub {
+            module,
+            service,
+            args,
+            reason
+        }
+    );
 }
 
 /// [`unhandled`] once per process for a site's case: `logged` is the site's set, `process` the
@@ -96,16 +99,24 @@ pub fn unhandled_once<const N: usize>(
     }
 }
 
-/// [`unhandled`]'s line, without its line end.
-#[cfg_attr(not(all(target_arch = "x86", feature = "debugport")), allow(dead_code))]
-fn write_unhandled(
-    out: &mut impl Write,
-    module: &str,
-    service: &str,
-    args: core::fmt::Arguments<'_>,
-    reason: core::fmt::Arguments<'_>,
-) -> core::fmt::Result {
-    write!(out, "{PREFIX}stub {module}.{service}({args}): {reason}")
+/// [`unhandled`]'s line, after the log's `F2K: `.
+struct Stub<'a> {
+    module: &'a str,
+    service: &'a str,
+    args: core::fmt::Arguments<'a>,
+    reason: core::fmt::Arguments<'a>,
+}
+
+impl core::fmt::Display for Stub<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let Stub {
+            module,
+            service,
+            args,
+            reason,
+        } = self;
+        write!(f, "{PREFIX}stub {module}.{service}({args}): {reason}")
+    }
 }
 
 /// One line of the text, as COM1 shows it: a byte outside printable ASCII as `\xNN`.
@@ -155,18 +166,16 @@ mod tests {
     /// A service's unhandled case is a stub line, as the DLLs' are.
     #[test]
     fn an_unhandled_case_is_a_stub_line() {
-        let mut line = std::string::String::new();
-        write_unhandled(
-            &mut line,
-            "win32k",
-            "NtUserShowWindow",
-            format_args!("hWnd=0x{:X}, nCmdShow={}", 0x24, 6),
-            format_args!("{} is not yet implemented", "SW_MINIMIZE"),
-        )
-        .unwrap();
+        let line = Stub {
+            module: "win32k",
+            service: "NtUserShowWindow",
+            args: format_args!("hWnd=0x{:X}, nCmdShow={}", 0x24, 6),
+            reason: format_args!("{} is not yet implemented", "SW_MINIMIZE"),
+        }
+        .to_string();
         assert_eq!(
             line,
-            "F2K: debug: stub win32k.NtUserShowWindow(hWnd=0x24, nCmdShow=6): SW_MINIMIZE is not \
+            "debug: stub win32k.NtUserShowWindow(hWnd=0x24, nCmdShow=6): SW_MINIMIZE is not \
              yet implemented"
         );
     }

@@ -594,7 +594,7 @@ mod target {
             "the keyboard's hand-over to win32k's raw input thread",
         );
         if !RAW.push(byte) {
-            crate::serial_println!("F2K: kbd: raw input ring full: a byte dropped");
+            crate::klog!(Debug, "kbd", "kbd: raw input ring full: a byte dropped");
         }
         crate::sched::DISPATCHER
             .get(dispatch)

@@ -67,28 +67,6 @@ macro_rules! __klog {
     }};
 }
 
-/// The old direct writer, formatted text to the debug port, kept for the call sites not yet moved
-/// to [`klog!`]. Behind the same feature: without the debug port it compiles to nothing.
-#[macro_export]
-macro_rules! serial_print {
-    ($($arg:tt)*) => {{
-        #[cfg(feature = "debugport")]
-        $crate::log::debug_port(format_args!($($arg)*));
-        #[cfg(not(feature = "debugport"))]
-        if false {
-            $crate::log::discard($crate::log::Class::Debug, "", "", format_args!($($arg)*));
-        };
-    }};
-}
-
-/// [`serial_print!`] and a line end.
-#[macro_export]
-macro_rules! serial_println {
-    ($($arg:tt)*) => {
-        $crate::serial_print!("{}\n", format_args!($($arg)*))
-    };
-}
-
 /// Program the debug port (boot, before the first line). Nothing without one.
 pub fn init() {
     #[cfg(all(target_arch = "x86", feature = "debugport"))]
@@ -108,15 +86,15 @@ pub fn line(class: Class, tag: &'static str, prefix: &str, text: fmt::Arguments<
     let _ = (prefix, text);
 }
 
-/// Formatted text to the debug port as it is: no prefix, no line end.
-#[cfg(feature = "debugport")]
-pub fn debug_port(text: fmt::Arguments<'_>) {
-    #[cfg(target_arch = "x86")]
-    {
-        let _ = fmt::write(&mut crate::hw::serial::com1(), text);
+/// A stream's bytes to the debug port as they are, not a line: the consoles' output, which the
+/// suite compares as the program's. Nothing without a debug port.
+pub fn debug_bytes(bytes: &[u8]) {
+    #[cfg(all(target_arch = "x86", feature = "debugport"))]
+    for &byte in bytes {
+        crate::hw::serial::write_byte_blocking(byte);
     }
-    #[cfg(not(target_arch = "x86"))]
-    let _ = text;
+    #[cfg(not(all(target_arch = "x86", feature = "debugport")))]
+    let _ = bytes;
 }
 
 /// What a line compiles to without a debug port: a call in a branch never taken, which keeps the

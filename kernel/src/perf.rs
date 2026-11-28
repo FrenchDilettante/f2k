@@ -314,8 +314,10 @@ pub fn report() {
         let trace = TRACE.get(at_clock);
         (trace.taken(), trace.kept_len())
     });
-    crate::serial_println!(
-        "F2K: perf trace: {} samples taken, {} kept (the sample interval is {} 100ns units)",
+    crate::klog!(
+        Debug,
+        "perf",
+        "perf trace: {} samples taken, {} kept (the sample interval is {} 100ns units)",
         taken,
         kept,
         SAMPLE_INTERVAL
@@ -325,23 +327,38 @@ pub fn report() {
     for sample in copied {
         if sample.depth > 1 {
             // The callers follow on the same line, nearest first.
-            crate::serial_print!(
-                "F2K: perf sample: t={} cs={:#04x} eip={:#010x} stack=",
+            crate::klog!(
+                Debug,
+                "perf",
+                "perf sample: t={} cs={:#04x} eip={:#010x} stack={}",
                 sample.interrupt_time,
                 sample.cs,
-                sample.frames[0]
+                sample.frames[0],
+                Callers(&sample.frames[1..sample.depth])
             );
-            for (at, frame) in sample.frames[1..sample.depth].iter().enumerate() {
-                crate::serial_print!("{}{:#010x}", if at == 0 { "" } else { "," }, frame);
-            }
-            crate::hw::serial::write_byte_blocking(b'\n');
         } else {
-            crate::serial_println!(
-                "F2K: perf sample: t={} cs={:#04x} eip={:#010x}",
+            crate::klog!(
+                Debug,
+                "perf",
+                "perf sample: t={} cs={:#04x} eip={:#010x}",
                 sample.interrupt_time,
                 sample.cs,
                 sample.frames[0]
             );
         }
+    }
+}
+
+/// A sample's callers as its line shows them: each `0x` and eight digits, comma-separated.
+#[cfg(target_arch = "x86")]
+struct Callers<'a>(&'a [u32]);
+
+#[cfg(target_arch = "x86")]
+impl core::fmt::Display for Callers<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        for (at, frame) in self.0.iter().enumerate() {
+            write!(f, "{}{:#010x}", if at == 0 { "" } else { "," }, frame)?;
+        }
+        Ok(())
     }
 }
