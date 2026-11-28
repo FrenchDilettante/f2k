@@ -115,6 +115,16 @@ mod target {
             SYSTEM_PROCESS
                 .get_mut(dispatcher)
                 .set_dir_phys(crate::mem::paging::boot_directory_phys().get());
+            // The system threads' records: the table's first, made here from the nonpaged pool,
+            // where every thread object's are made with the object.
+            for thread in 0..super::super::database::SYSTEM_THREADS {
+                dispatcher
+                    .ensure_thread(
+                        super::super::thread::ThreadId(thread),
+                        &crate::slots::KERNEL_PAGES,
+                    )
+                    .expect("a page for the system threads' records at boot");
+            }
             install(IDLE_THREAD, &IDLE_PROCESS, dispatcher, stack_top);
         });
     }

@@ -940,8 +940,8 @@ impl Hold for Locked<'_> {
 // --- The window pool
 // ---------------------------------------------------------------------------------
 
-/// How many threads the create/destroy context holds.
-pub const THREADS: usize = crate::ob::THREADS;
+/// The thread records to a chunk of their table: a page's worth.
+const THREADS_PER_CHUNK: usize = crate::slots::entries_per_page::<Thread>();
 /// How many desktops the registry tracks.
 pub const DESKTOPS: usize = 8;
 /// How many monitors the registry tracks.
@@ -1443,6 +1443,14 @@ pub struct Thread {
     pub hooks_disabled: bool,
 }
 
+// SAFETY: writes a whole record.
+unsafe impl crate::slots::Record for Thread {
+    unsafe fn write_fresh(at: *mut Self, _: u32) {
+        // SAFETY: the caller's contract.
+        unsafe { at.write(Thread::EMPTY) };
+    }
+}
+
 impl Thread {
     const EMPTY: Self = Thread {
         live: false,
@@ -1535,7 +1543,10 @@ pub struct Windows {
     /// handles, one table as Windows 2000's ([`super::handle`]). It sits in the window registry,
     /// the kind looked up most, behind the window manager's lock as every kind's records are.
     pub handles: UserHandles,
-    threads: [Thread; THREADS],
+    /// The threads' create/destroy contexts (Windows 2000's THREADINFO), each with its queue at
+    /// its index in [`Windows::queues`]: made as a thread first needs one, and kept at their peak;
+    /// a free one (not `live`) is taken first, lowest first.
+    threads: crate::slots::Records<Thread, THREADS_PER_CHUNK>,
     desktops: [Desktop; DESKTOPS],
     monitors: [Monitor; MONITORS],
     /// The clipboard owner, if a window has it.
@@ -1570,10 +1581,7 @@ impl Windows {
         unsafe {
             addr_of_mut!((*windows).pool).write(WindowPool::new());
             UserHandles::write_empty(addr_of_mut!((*windows).handles));
-            let threads = addr_of_mut!((*windows).threads) as *mut Thread;
-            for index in 0..THREADS {
-                threads.add(index).write(Thread::EMPTY);
-            }
+            addr_of_mut!((*windows).threads).write(crate::slots::Records::new());
             let desktops = addr_of_mut!((*windows).desktops) as *mut Desktop;
             for index in 0..DESKTOPS {
                 desktops.add(index).write(Desktop::EMPTY);
@@ -1606,7 +1614,22 @@ impl Windows {
         desktop_handle: Option<Hwnd>,
         monitor: Option<u16>,
     ) -> Option<ThreadId> {
-        let index = self.threads.iter().position(|t| !t.live)?;
+        let free = self.threads.iter().position(|t| !t.live);
+        let index = match free {
+            Some(index) => index,
+            None => {
+                // Every record made is taken: the next one, with its queue. None, and nothing
+                // taken, when no page is left (or the u16 index is spent).
+                let index = u16::try_from(self.threads.len())
+                    .ok()
+                    .filter(|&i| i != u16::MAX)?;
+                self.threads.ensure(index.into(), super::pages()).ok()?;
+                index.into()
+            }
+        };
+        if !self.queues.make(index as u16) {
+            return None;
+        }
         self.threads[index] = Thread {
             live: true,
             process,
@@ -1714,6 +1737,11 @@ impl Windows {
 
     pub(super) fn thread_mut(&mut self, id: ThreadId) -> &mut Thread {
         &mut self.threads[id.0 as usize]
+    }
+
+    /// How many thread records are made: every index below it names one.
+    pub(super) fn thread_records(&self) -> usize {
+        self.threads.len()
     }
 
     fn desktop_by_id(&self, id: u32) -> Option<&Desktop> {
@@ -3682,7 +3710,7 @@ impl Windows {
             }
         }
         let windows = s.windows();
-        for index in 0..THREADS {
+        for index in 0..windows.threads.len() {
             let t = &windows.threads[index];
             if t.live && t.process == owner {
                 let thread = ThreadId(index as u16);

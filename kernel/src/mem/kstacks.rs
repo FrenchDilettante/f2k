@@ -611,13 +611,11 @@ mod tests {
         assert_eq!(ledger.allocate(), None);
     }
 
-    /// The region holds 12,743 slots (448 MiB at the 36 KiB stride) in a ledger of 200 words, far
-    /// more than every thread record of the object manager, each a GUI thread's large stack, needs;
-    /// backing them all would take more frames than the 256 MiB machine's memory, so frames run
-    /// out first there.
+    /// The region holds 12,743 slots (448 MiB at the 36 KiB stride) in a ledger of 200 words: the
+    /// threads' only bound but memory (the object manager has no thread cap); backing them all
+    /// would take more frames than the 256 MiB machine's memory, so frames run out first there.
     #[test]
     fn the_ledger_is_sized_to_the_region() {
-        assert!(SLOTS > crate::ob::THREADS * paging::LARGE_STACK_SLOTS as usize);
         assert_eq!(SLOTS, 12_743);
         assert_eq!(SLOT_WORDS, 200);
         assert_eq!(

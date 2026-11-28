@@ -168,7 +168,6 @@ use super::window::{
     WindowManager,
     WindowPos,
     Windows,
-    THREADS,
 };
 use crate::sched::thread::ThreadId;
 use crate::slots::{self, Codec, Match, Record, Reuse, Slots};
@@ -186,8 +185,81 @@ static PAGES: slots::NonpagedPages = slots::NonpagedPages;
 #[cfg(not(target_arch = "x86"))]
 static PAGES: slots::HostPages = slots::HostPages::new();
 
-/// The words of the wake set: a bit a queue.
-const WAKE_WORDS: usize = THREADS.div_ceil(32);
+/// How many queues a wake set names one by one before it names them all ([`Wakes`]).
+const WAKE_LIST: usize = 32;
+
+/// The queues given something since the wakes were last taken, whose events are set once the
+/// window manager's lock is let go: each named once, the first [`WAKE_LIST`] of them; past that
+/// (a broadcast's many), every queue's event is set, a spurious wake costing a waiter one more
+/// look at its queue and nothing else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Wakes {
+    queues: [u16; WAKE_LIST],
+    count: u8,
+    every: bool,
+}
+
+impl Wakes {
+    const NONE: Wakes = Wakes {
+        queues: [0; WAKE_LIST],
+        count: 0,
+        every: false,
+    };
+
+    /// Add the queue of the thread record `index`.
+    fn add(&mut self, index: u16) {
+        if self.every || self.listed().contains(&index) {
+            return;
+        }
+        match self.queues.get_mut(self.count as usize) {
+            Some(slot) => {
+                *slot = index;
+                self.count += 1;
+            }
+            None => self.every = true,
+        }
+    }
+
+    /// The queues named one by one.
+    fn listed(&self) -> &[u16] {
+        &self.queues[..self.count as usize]
+    }
+
+    /// Whether no queue is to be woken.
+    pub fn is_empty(&self) -> bool {
+        self.count == 0 && !self.every
+    }
+
+    /// Whether the queue of the thread record `thread` is to be woken.
+    #[cfg(test)]
+    pub fn contains(&self, thread: ThreadId) -> bool {
+        self.every || self.listed().contains(&thread.0)
+    }
+
+    /// Whether the queue of the thread record `thread` is the only one to be woken.
+    #[cfg(test)]
+    pub fn is_only(&self, thread: ThreadId) -> bool {
+        !self.every && self.listed() == [thread.0]
+    }
+
+    /// The queues to wake, by thread record index: those named, or every one of `queues` ones
+    /// made when the set overflowed.
+    #[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+    fn each(&self, made: usize) -> impl Iterator<Item = u16> + '_ {
+        let every = self.every.then_some(0..made as u16).into_iter().flatten();
+        let listed = (!self.every).then(|| self.listed().iter().copied());
+        every.chain(listed.into_iter().flatten())
+    }
+}
+
+/// The host builds have no queue events: the host tests wait on nothing.
+#[cfg(not(target_arch = "x86"))]
+fn make_event(_: u16) -> bool {
+    true
+}
+
+/// The queues to a chunk of their table: a page's worth.
+const QUEUES_PER_CHUNK: usize = slots::entries_per_page::<Queue>();
 
 /// Every kind of message a read takes when its caller names none.
 const ALL_KINDS: u32 = QS_INPUT | QS_POSTMESSAGE | QS_TIMER | QS_PAINT | QS_SENDMESSAGE | QS_HOTKEY;
@@ -369,6 +441,14 @@ struct Queue {
     click: Option<super::mouse::Click>,
     /// ShowCursor's display count ([`show_cursor`]).
     cursor_level: i32,
+}
+
+// SAFETY: writes a whole record.
+unsafe impl Record for Queue {
+    unsafe fn write_fresh(at: *mut Self, _: u32) {
+        // SAFETY: the caller's contract.
+        unsafe { at.write(Queue::EMPTY) };
+    }
 }
 
 impl Queue {
@@ -564,7 +644,9 @@ unsafe impl Record for Sent {
 /// update regions ([`super::paint`]): the message layer's state, in the window registry, behind the
 /// window manager's lock.
 pub struct Queues {
-    queues: [Queue; THREADS],
+    /// The thread records' queues, at the records' indices: made with the record
+    /// ([`Queues::make`]) and kept at their peak.
+    queues: slots::Records<Queue, QUEUES_PER_CHUNK>,
     posted: super::posted::Pool<Posted>,
     sent: SentPool,
     /// The texts the sent messages carry: a text to another process's window.
@@ -573,7 +655,7 @@ pub struct Queues {
     pub updates: super::paint::Updates,
     /// The queues something was given since the last [`Queues::take_wakes`]: their events are set
     /// once the lock is let go.
-    wakes: [u32; WAKE_WORDS],
+    wakes: Wakes,
     /// A send the server waits on was answered or dropped since the last
     /// [`Queues::take_server_wake`]: the server's event is set once the lock is let go.
     server_wake: bool,
@@ -591,18 +673,30 @@ impl Queues {
         use core::ptr::addr_of_mut;
         // SAFETY: the caller's contract; every field is written, the arrays element by element.
         unsafe {
-            let records = addr_of_mut!((*queues).queues) as *mut Queue;
-            for index in 0..THREADS {
-                records.add(index).write(Queue::EMPTY);
-            }
+            addr_of_mut!((*queues).queues).write(slots::Records::new());
             addr_of_mut!((*queues).posted).write(super::posted::Pool::EMPTY);
             addr_of_mut!((*queues).sent).write(SentPool::EMPTY);
             addr_of_mut!((*queues).store).write(Texts::EMPTY);
             super::timer::Timers::write_empty(addr_of_mut!((*queues).timers));
             super::paint::Updates::write_empty(addr_of_mut!((*queues).updates));
-            addr_of_mut!((*queues).wakes).write([0; WAKE_WORDS]);
+            addr_of_mut!((*queues).wakes).write(Wakes::NONE);
             addr_of_mut!((*queues).server_wake).write(false);
         }
+    }
+
+    /// Make the queue of the thread record `index` (and its event), with the record: false when
+    /// no page is left for it. What is made stays, for the next record at the index.
+    pub fn make(&mut self, index: u16) -> bool {
+        self.queues.ensure(index.into(), super::pages()).is_ok() && make_event(index)
+    }
+
+    /// The live queues, by their thread records.
+    fn live_queues(&self) -> impl Iterator<Item = (ThreadId, &Queue)> + '_ {
+        self.queues
+            .iter()
+            .enumerate()
+            .filter(|(_, queue)| queue.live)
+            .map(|(index, queue)| (ThreadId(index as u16), queue))
     }
 
     /// The queue of the thread record `thread`, when it has one.
@@ -624,7 +718,7 @@ impl Queues {
     }
 
     fn wake(&mut self, id: QueueId) {
-        self.wakes[id.index as usize / 32] |= 1 << (id.index % 32);
+        self.wakes.add(id.index);
     }
 
     /// The queue was given something of the kinds `changed`: marked for WaitMessage, and woken.
@@ -633,9 +727,9 @@ impl Queues {
         self.wake(id);
     }
 
-    /// The queues to wake, as a bit a thread record, the set emptied.
-    pub fn take_wakes(&mut self) -> [u32; WAKE_WORDS] {
-        core::mem::replace(&mut self.wakes, [0; WAKE_WORDS])
+    /// The queues to wake, the set emptied.
+    pub fn take_wakes(&mut self) -> Wakes {
+        core::mem::replace(&mut self.wakes, Wakes::NONE)
     }
 
     /// Whether the server's event is to be set (a send it waits on was answered or dropped), the
@@ -985,15 +1079,49 @@ pub fn detach(windows: &mut Windows, thread: ThreadId) {
 }
 
 /// The queue of the thread whose client id is `client_id`, as PostThreadMessage names it, and the
-/// thread it serves.
+/// thread it serves: the queue of the thread the client-id table names by it now. A queue whose
+/// thread ended and whose object went keeps the id it had until its record goes (a GUI thread
+/// that ended above the passive level leaves its queue to its process's reap), and the id may be
+/// another thread's by then (client ids are reused, LIFO): that queue is not the id's.
 pub fn queue_by_client_id(windows: &Windows, client_id: u32) -> Option<(ThreadId, ThreadKey)> {
+    queue_by_client_id_in(windows, client_id, thread_named_by)
+}
+
+/// The thread the client-id table names by `client_id` now, as the window manager keys threads;
+/// none for an id that names no thread object.
+#[cfg(not(test))]
+fn thread_named_by(client_id: u32) -> Option<Option<ThreadKey>> {
+    let thread = crate::process::cid::lookup(client_id).and_then(|named| named.thread());
+    Some(thread.map(|id| ThreadKey {
+        index: id.index,
+        generation: id.generation,
+    }))
+}
+
+/// The host tests' queues carry client ids no table hands out: no check (see
+/// [`queue_by_client_id_in`]'s own test for the check).
+#[cfg(test)]
+fn thread_named_by(_: u32) -> Option<Option<ThreadKey>> {
+    None
+}
+
+/// [`queue_by_client_id`], the id's thread found by `named` (none: no check; some none: the id
+/// names no thread).
+fn queue_by_client_id_in(
+    windows: &Windows,
+    client_id: u32,
+    named: impl FnOnce(u32) -> Option<Option<ThreadKey>>,
+) -> Option<(ThreadId, ThreadKey)> {
+    if client_id == 0 {
+        return None;
+    }
+    let current = named(client_id);
     windows
         .queues
-        .queues
-        .iter()
-        .enumerate()
-        .find(|(_, q)| q.live && q.client_id == client_id && client_id != 0)
-        .and_then(|(index, q)| Some((ThreadId(index as u16), q.key?)))
+        .live_queues()
+        .filter(|(_, q)| q.client_id == client_id)
+        .filter_map(|(thread, q)| Some((thread, q.key?)))
+        .find(|&(_, key)| current.is_none_or(|current| current == Some(key)))
 }
 
 /// The client id of the thread the thread record `thread` serves, as its queue keeps it; none for
@@ -2796,7 +2924,7 @@ pub fn window_gone(windows: &mut Windows, window: WindowId) {
     super::caret::window_gone(windows, window);
     let hwnd = windows.handle_of(window);
     let queues = &mut windows.queues;
-    for index in 0..THREADS as u16 {
+    for index in 0..queues.queues.len() as u16 {
         if queues.queues[index as usize].live {
             queues.purge_posted(index, |msg| msg.hwnd == hwnd);
         }
@@ -3151,7 +3279,10 @@ fn send_and_wait<H: Hold>(
 /// something to and whether the server's send was answered, whose events are set once the lock is
 /// let go ([`Signals::raise`]).
 pub struct Signals {
-    wakes: [u32; WAKE_WORDS],
+    wakes: Wakes,
+    /// How many queues are made: every one's event is set when the wakes overflowed.
+    #[cfg_attr(not(target_arch = "x86"), allow(dead_code))]
+    made: usize,
     server: bool,
 }
 
@@ -3163,6 +3294,7 @@ impl Signals {
         let queues = &mut manager.windows.queues;
         Signals {
             wakes: queues.take_wakes(),
+            made: queues.queues.len(),
             server: queues.take_server_wake(),
         }
     }
@@ -3180,31 +3312,56 @@ mod target {
     use crate::sched::event::{Event, EventKind, EVENT_WAKE_INCREMENT};
     use crate::sched::wait::{self, WaitMode, WaitReason, WaitableId};
 
-    /// Each queue's event: a synchronization event, set whenever its queue is given something
-    /// (see [`Queues::take_wakes`]), waited on by the queue's thread alone. They are named by their
-    /// addresses in the dispatcher database ([`WaitableId::Embedded`]), and reached only through
-    /// the dispatcher once named. They live outside the window manager, whose state its lock's
-    /// holder borrows whole.
-    struct QueueEvents([UnsafeCell<Event>; THREADS]);
+    /// A queue's event: a synchronization event, set whenever its queue is given something (see
+    /// [`Queues::take_wakes`]), waited on by the queue's thread alone. Named by its address in the
+    /// dispatcher database ([`WaitableId::Embedded`]) when its chunk is made, and reached only
+    /// through the dispatcher from then on.
+    struct QueueEvent(UnsafeCell<Event>);
 
-    // SAFETY: one processor. The events are touched directly once, by `init` at boot, before any
-    // thread can wait on one or set one; from then on only the dispatcher reaches their headers,
-    // by their addresses, serialized at the dispatch level.
-    unsafe impl Sync for QueueEvents {}
+    // SAFETY: one processor. An event is touched directly once, by `write_fresh` as its chunk is
+    // made, before its chunk is published: no thread can wait on it or set it yet. From then on
+    // only the dispatcher reaches its header, by its address, serialized at the dispatch level.
+    unsafe impl Sync for QueueEvent {}
 
-    static EVENTS: QueueEvents = QueueEvents(
-        [const { UnsafeCell::new(Event::new(EventKind::Synchronization, false)) }; THREADS],
-    );
-
-    impl QueueEvents {
-        /// The event of the queue at `index`: its header's address. No reference to the event is
-        /// formed.
-        fn id(&self, index: usize) -> WaitableId {
-            // SAFETY: a projection inside the static's own cell: it computes the header's address
-            // and reads nothing.
-            let header = unsafe { core::ptr::addr_of_mut!((*self.0[index].get()).waitable) };
-            WaitableId::Embedded(NonNull::new(header).expect("a static is not null"))
+    // SAFETY: writes a whole record, named at its final address.
+    unsafe impl Record for QueueEvent {
+        unsafe fn write_fresh(at: *mut Self, _: u32) {
+            // SAFETY: the caller's contract: `at` is the record's final address, unpublished.
+            unsafe {
+                at.write(QueueEvent(UnsafeCell::new(Event::new(
+                    EventKind::Synchronization,
+                    false,
+                ))));
+                (*(*at).0.get()).init();
+            }
         }
+    }
+
+    /// The queues' events, at their thread records' indices: made with the queue, from the
+    /// nonpaged pool, outside the window manager (whose state its lock's holder borrows whole),
+    /// and kept at their peak, so an event never moves.
+    static EVENTS: crate::slots::SideTable<
+        QueueEvent,
+        { crate::slots::entries_per_page::<QueueEvent>() },
+    > = crate::slots::SideTable::new();
+
+    /// Make the event of the queue at `index`: false when no page is left for it.
+    pub fn make_event(index: u16) -> bool {
+        EVENTS
+            .ensure(index.into(), &crate::slots::KERNEL_PAGES)
+            .is_ok()
+    }
+
+    /// The event of the queue at `index`, made with the queue: its header's address. No
+    /// reference to the event is formed.
+    fn event_id(index: usize) -> WaitableId {
+        let event = EVENTS
+            .address(index as u32)
+            .expect("a queue's event made with the queue");
+        // SAFETY: a projection inside the record's own cell: it computes the header's address and
+        // reads nothing.
+        let header = unsafe { core::ptr::addr_of_mut!((*(*event.as_ptr()).0.get()).waitable) };
+        WaitableId::Embedded(NonNull::new(header).expect("a made record is not null"))
     }
 
     /// The server's event: a synchronization event, set whenever a send the server waits on is
@@ -3231,15 +3388,12 @@ mod target {
         }
     }
 
-    /// Name the queues' events and the server's. Once, at boot, before the first process.
+    /// Name the server's event. Once, at boot, before the first process (the queues' are named
+    /// as they are made).
     pub fn init() {
         let _masked = crate::pcr::pcr().mask_guard();
-        for event in &EVENTS.0 {
-            // SAFETY: the one direct reach into each event (see the `Sync` impl): nothing waits
-            // on it or sets it yet, and interrupts are masked for the reference's life.
-            unsafe { (*event.get()).init() };
-        }
-        // SAFETY: as above, for the server's event.
+        // SAFETY: the one direct reach into the event (see the `Sync` impl): nothing waits on it
+        // or sets it yet, and interrupts are masked for the reference's life.
         unsafe { (*SERVER.0.get()).init() };
     }
 
@@ -3274,18 +3428,18 @@ mod target {
         /// Set the events of the queues given something, and the server's when its send was
         /// answered: outside the window manager's lock.
         pub fn raise(self, passive: &mut At<Passive>) {
-            let Signals { wakes, server } = self;
-            if !server && wakes.iter().all(|&word| word == 0) {
+            let Signals {
+                wakes,
+                made,
+                server,
+            } = self;
+            if !server && wakes.is_empty() {
                 return;
             }
             let mut dispatch = passive.raise::<Dispatch>();
             let dispatcher = crate::sched::DISPATCHER.get(&mut dispatch);
-            for (word, bits) in wakes.iter().enumerate() {
-                for bit in 0..32 {
-                    if bits & (1 << bit) != 0 {
-                        dispatcher.set_event(EVENTS.id(word * 32 + bit), EVENT_WAKE_INCREMENT);
-                    }
-                }
+            for index in wakes.each(made) {
+                dispatcher.set_event(event_id(index.into()), EVENT_WAKE_INCREMENT);
             }
             if server {
                 dispatcher.set_event(SERVER.id(), EVENT_WAKE_INCREMENT);
@@ -3340,7 +3494,7 @@ mod target {
     /// `timeout` (100 ns units, relative). A program's wait: a thread terminated meanwhile ends
     /// inside it.
     pub fn wait_on_queue(thread: ThreadId, timeout: Option<i64>) {
-        let event = EVENTS.id(thread.0 as usize);
+        let event = event_id(thread.0 as usize);
         let _ = wait::wait_current_with(|dispatcher, me, stamp, replay| {
             let timeout =
                 wait::replay_timeout(dispatcher.thread(me), replay, timeout, stamp.interrupt_time);
@@ -3367,7 +3521,7 @@ mod target {
         alertable: bool,
         timeout: Option<i64>,
     ) -> NtStatus {
-        let mut ids = [EVENTS.id(thread.0 as usize); wait::MAXIMUM_WAIT_OBJECTS];
+        let mut ids = [event_id(thread.0 as usize); wait::MAXIMUM_WAIT_OBJECTS];
         ids[..objects.len()].copy_from_slice(objects);
         wait_on_objects(&ids[..=objects.len()], false, alertable, timeout)
     }
@@ -3403,6 +3557,8 @@ mod target {
     }
 }
 
+#[cfg(target_arch = "x86")]
+use target::make_event;
 #[cfg(target_arch = "x86")]
 pub use target::{
     init,
@@ -4873,6 +5029,35 @@ mod tests {
         assert_eq!(read(m, t, &all(), 0), Taken::Nothing { due: None });
     }
 
+    /// A GUI thread that ended above the passive level leaves its queue, with its client id, to
+    /// its process's reap; client ids are reused LIFO, so the id may name another thread first.
+    /// PostThreadMessage's look-up takes the queue of the thread the client-id table names by
+    /// the id now, never the ended one's, and none when the id names no thread.
+    #[test]
+    fn a_reused_client_id_finds_the_new_threads_queue() {
+        let (m, _) = manager();
+        let ended = thread(m, 1, 0x100);
+        let new = thread(m, 2, 0x100);
+        let key = |index| ThreadKey {
+            index,
+            generation: 0,
+        };
+        let found = |named: Option<Option<ThreadKey>>| {
+            queue_by_client_id_in(&m.windows, 0x100, |id| {
+                assert_eq!(id, 0x100);
+                named
+            })
+        };
+        assert_eq!(found(Some(Some(key(2)))), Some((new, key(2))));
+        assert_eq!(found(Some(Some(key(1)))), Some((ended, key(1))));
+        assert_eq!(found(Some(None)), None, "the id names no thread");
+        assert_eq!(found(Some(Some(key(3)))), None, "another thread, no queue");
+        assert_eq!(
+            queue_by_client_id_in(&m.windows, 0, |_| panic!("no look-up for 0")),
+            None
+        );
+    }
+
     /// The threadmsg capture: PostThreadMessage to the thread's own client id posts a message with
     /// no window; an id no queue has names none.
     #[test]
@@ -5124,9 +5309,8 @@ mod tests {
         let Ok(Sending::Waiting(id)) = send(&mut m.windows, a, hb, WM_USER + 6, 55, 66) else {
             panic!("queued for the other thread");
         };
-        assert_eq!(
-            m.windows.queues.take_wakes()[0],
-            1 << b.0,
+        assert!(
+            m.windows.queues.take_wakes().is_only(b),
             "the receiver woken"
         );
         assert_eq!(collect_reply(&mut m.windows, a, id), None);
@@ -5144,11 +5328,7 @@ mod tests {
             (hb, WM_USER + 6, 55, 66)
         );
         assert!(end_sent(&mut m.windows, b, 42));
-        assert_eq!(
-            m.windows.queues.take_wakes()[0],
-            1 << a.0,
-            "the sender woken"
-        );
+        assert!(m.windows.queues.take_wakes().is_only(a), "the sender woken");
         assert_eq!(collect_reply(&mut m.windows, a, id), Some(42));
         assert_eq!(collect_reply(&mut m.windows, a, id), None, "collected once");
 
@@ -5379,9 +5559,8 @@ mod tests {
         else {
             panic!("queued for the window's thread");
         };
-        assert_eq!(
-            m.windows.queues.take_wakes()[0],
-            1 << a.0,
+        assert!(
+            m.windows.queues.take_wakes().is_only(a),
             "the receiver woken"
         );
         assert!(!m.windows.queues.take_server_wake());
@@ -5403,11 +5582,7 @@ mod tests {
         assert_eq!(server_reply(&mut m.windows, id), None, "being delivered");
         assert!(end_sent(&mut m.windows, a, 1));
         assert!(m.windows.queues.take_server_wake());
-        assert_eq!(
-            m.windows.queues.take_wakes(),
-            [0; WAKE_WORDS],
-            "no thread woken"
-        );
+        assert!(m.windows.queues.take_wakes().is_empty(), "no thread woken");
         assert_eq!(
             server_reply(&mut m.windows, id),
             Some(ServerReply::Answered(1))
@@ -5612,8 +5787,8 @@ mod tests {
         let b = thread(m, 2, 0x200);
         m.windows.queues.take_wakes();
         post_thread(&mut m.windows, b, WM_USER, 0, 0, 0).unwrap();
-        assert_eq!(m.windows.queues.take_wakes()[0], 1 << b.0);
-        assert_eq!(m.windows.queues.take_wakes()[0], 0);
+        assert!(m.windows.queues.take_wakes().is_only(b));
+        assert!(m.windows.queues.take_wakes().is_empty());
         let desktop = m.windows.thread_desktop_window(b).unwrap();
         let system = m.windows.window_thread(desktop);
         assert_eq!(
@@ -6102,9 +6277,8 @@ mod tests {
         assert!(m.windows.window_from_handle(child).is_none());
         assert!(m.windows.window_from_handle(ha).is_some());
         assert_eq!(m.windows.queues.queue_of(b), None);
-        assert_ne!(
-            m.windows.queues.take_wakes()[0] & (1 << a.0),
-            0,
+        assert!(
+            m.windows.queues.take_wakes().contains(a),
             "the sender is woken"
         );
         assert_eq!(await_reply(&mut m.windows, a, handed), Awaited::Failed);

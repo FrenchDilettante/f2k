@@ -2043,8 +2043,7 @@ mod tests {
         assert_eq!(GATE_STACK_PAGES, 8);
         assert_eq!(GATE_STACK_TOP, GATE_STACK_WINDOW + 9 * PAGE_SIZE);
         assert_eq!(GATE_STACK_TOP, 0xA400_9000);
-        // Every thread record of the system fits, and the region's whole span is slots.
-        assert!(GATE_SLOT_CAPACITY > crate::ob::THREADS);
+        // The region's whole span is slots: the threads' only bound but memory.
         assert_eq!(GATE_SLOT_CAPACITY, 12_743);
         assert!(GATE_SLOT_CAPACITY < crate::sched::thread::NO_GATE_SLOT as usize);
         // Everything (guard + stack) stays inside the region.

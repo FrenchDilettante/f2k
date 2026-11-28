@@ -22,14 +22,14 @@ use super::wait::{
 use crate::interrupt::irql;
 use crate::status::{NtStatus, STATUS_SUCCESS, STATUS_TIMEOUT};
 
-/// A thread record's name: its index in the dispatcher database's thread pool. The object
-/// directory's thread objects use the same index for their headers; the idle thread's record is the
-/// one past them, which no object names.
+/// A thread record's name: its index in the dispatcher database's thread records. The object
+/// directory's thread objects use the same index for their headers; the system threads' records
+/// (the idle thread's first) are the indices below them, which no object names.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct ThreadId(pub u16);
 
 impl ThreadId {
-    /// The record's index in the pool.
+    /// The record's index among the dispatcher's thread records.
     pub const fn index(self) -> u16 {
         self.0
     }

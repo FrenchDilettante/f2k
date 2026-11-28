@@ -8,7 +8,10 @@
 //! ([`Dispatcher::ensure_body`]) and kept at their peak, so a body never moves. A process object's
 //! body and its process's user-APC records are side tables' too, keyed by the process object's
 //! index, made with the object: Windows 2000 keeps a process's KPROCESS and its APCs with its
-//! EPROCESS, in the nonpaged pool. The thread records are a fixed pool still. The object
+//! EPROCESS, in the nonpaged pool. The thread records (KTHREAD) are a side table too, keyed by the
+//! thread object's index, made before the object directory hands the index out
+//! ([`Dispatcher::ensure_thread`]): no cap but memory, as Windows 2000's threads have none. The
+//! system threads, which no object names, hold its first indices ([`SYSTEM_THREADS`]). The object
 //! directory keeps the objects' headers (liveness, generation, counts) and names a body by its
 //! index, which is the same in both.
 //!
@@ -18,35 +21,110 @@
 //! which a thread names as its owner, and a waitable header embedded in a structure of its own
 //! (see [`WaitableId::Embedded`]).
 
+use core::ptr::NonNull;
+
 use super::apc::{Apc, ApcId, ApcQueue};
 use super::dispatcher::{Dispatcher, ReadyQueue};
 use super::event::{Event, EventKind};
 use super::list::{Arena, IndexList, Link};
 use super::mutex::{Mutex, MutexId, OwnedMutexes};
-use super::pool::Pool;
 use super::process::{ProcessObject, ProcessThreads};
 use super::semaphore::Semaphore;
 use super::thread::{Thread, ThreadId};
 use super::timer::{TimerId, TimerList};
 use super::wait::{BlockId, Header, Timer, WaitBlock, Waitable, WaitableId, Waiters, WaitingList};
 use super::waitable_timer::WaitableTimer;
-use crate::ob::THREADS;
 use crate::slots::{entries_per_page, Exhausted, Pages, Record, SideTable};
 
-/// How many thread records the pool holds: one per thread object, the idle thread's, and the
-/// system threads'.
-pub const THREAD_RECORDS: usize = THREADS + 3;
+/// The idle thread's record, which no object names: the first of the system threads'.
+pub const IDLE_THREAD: ThreadId = ThreadId(0);
 
-/// The idle thread's record: the one past the thread objects', which no object names.
-pub const IDLE_THREAD: ThreadId = ThreadId(THREADS as u16);
+/// The console's control thread's record (see `crate::csr::ctrl`): a system thread's, which no
+/// object names either.
+pub const CONSOLE_CONTROL_THREAD: ThreadId = ThreadId(1);
 
-/// The console's control thread's record (see `crate::csr::ctrl`): a system thread's, past the
-/// idle thread's, which no object names either.
-pub const CONSOLE_CONTROL_THREAD: ThreadId = ThreadId(THREADS as u16 + 1);
+/// win32k's raw input thread's record (see `crate::win32k::input`): a system thread's.
+pub const RAW_INPUT_THREAD: ThreadId = ThreadId(2);
 
-/// win32k's raw input thread's record (see `crate::win32k::input`): a system thread's, past the
-/// console's control thread's.
-pub const RAW_INPUT_THREAD: ThreadId = ThreadId(THREADS as u16 + 2);
+/// How many thread records the system threads hold, from index 0: the thread objects' indices
+/// start past them (the object directory never hands these out), so no object names one.
+pub const SYSTEM_THREADS: u16 = 3;
+
+/// The thread records to a chunk: a page-aligned run of 16 (15 pages).
+const THREADS_PER_CHUNK: usize = 16;
+
+/// The thread records the directory names: one for every u16 index, the object directory's
+/// representation limit, so the directory is no cap.
+const THREAD_INDICES: usize = u16::MAX as usize + 1;
+
+/// The thread records (Windows 2000's KTHREADs): chunks of [`THREADS_PER_CHUNK`] records from the
+/// nonpaged pool, made as thread objects first take their indices ([`Dispatcher::ensure_thread`])
+/// and kept at their peak, so a record never moves (the context switch is handed records by
+/// address). No cap but the u16 index (the object directory's representation limit) and memory.
+///
+/// Every switch and wait resolves records by index, many times, so the directory is an array of
+/// every index's record address, in the dispatcher: a resolution is one load (and the made
+/// check), as the fixed pool's array was a bound check and a multiply. It is 256 KiB, a record's
+/// address an index, where the fixed pool held 128 records in 480 KiB; written only through the
+/// dispatcher's exclusive borrow. Measured against the fixed pool (slot-pool slice 21), the
+/// alternatives cost every wait more: a tree, a fifth more instructions; a directory of chunks, a
+/// tenth; a directory grown in the pool, a tenth; the first 4,096 indices' array and a chunk
+/// directory past them, a twentieth. This one costs none.
+pub struct ThreadRecords {
+    records: [Option<NonNull<Thread>>; THREAD_INDICES],
+}
+
+impl ThreadRecords {
+    /// The pages one chunk takes.
+    const CHUNK_PAGES: usize =
+        (THREADS_PER_CHUNK * core::mem::size_of::<Thread>()).div_ceil(crate::slots::PAGE);
+
+    /// Write an empty table at `records`: no record made, no page held.
+    ///
+    /// # Safety
+    ///
+    /// `records` is valid for writes and aligned.
+    unsafe fn write_empty(records: *mut ThreadRecords) {
+        let _ = Self::CHUNK_PAGES;
+        // SAFETY: the caller's contract; `None` is all zeroes in an `Option<NonNull>`.
+        unsafe { records.write_bytes(0, 1) };
+    }
+
+    /// Record `index`'s address; none if it is not made.
+    #[inline(always)]
+    fn address(&self, index: u16) -> Option<NonNull<Thread>> {
+        self.records[index as usize]
+    }
+
+    /// Make the chunk holding record `index` if it is not made, every record fresh, named by its
+    /// index, with its pages from `pages`. On failure the table is as it was.
+    fn ensure(&mut self, index: u16, pages: &impl Pages) -> Result<(), Exhausted> {
+        if self.address(index).is_some() {
+            return Ok(());
+        }
+        let first = index as usize / THREADS_PER_CHUNK * THREADS_PER_CHUNK;
+        let at = pages
+            .take(Self::CHUNK_PAGES)
+            .ok_or(Exhausted::NoPages)?
+            .cast::<Thread>();
+        let chunk = &mut self.records[first..first + THREADS_PER_CHUNK];
+        for (offset, slot) in chunk.iter_mut().enumerate() {
+            // SAFETY: the pages hold the chunk's records, page-aligned (a thread record's
+            // alignment divides a page's), ours alone until published here.
+            unsafe {
+                let record = at.add(offset);
+                <Thread as Record>::write_fresh(record.as_ptr(), (first + offset) as u32);
+                *slot = Some(record);
+            }
+        }
+        Ok(())
+    }
+}
+
+const _: () = assert!(
+    core::mem::align_of::<Thread>() <= crate::slots::PAGE,
+    "a chunk's pages align its records"
+);
 
 /// How many user-APC records each process has (QueueUserAPC's, across its threads).
 pub const USER_APCS: usize = 64;
@@ -60,7 +138,7 @@ const PROCESS_BODIES: usize = entries_per_page::<ProcessObject>();
 
 /// The records the dispatcher owns.
 pub struct Database {
-    pub(crate) threads: Pool<Thread, THREAD_RECORDS>,
+    pub(crate) threads: ThreadRecords,
     pub(crate) events: SideTable<Event, { entries_per_page::<Event>() }>,
     pub(crate) semaphores: SideTable<Semaphore, { entries_per_page::<Semaphore>() }>,
     pub(crate) mutexes: SideTable<Mutex, { entries_per_page::<Mutex>() }>,
@@ -70,8 +148,7 @@ pub struct Database {
 }
 
 impl Database {
-    /// Write an empty database at `database`: the fixed pools record by record, every record
-    /// fresh and named by its index; the side tables empty, no page held.
+    /// Write an empty database at `database`: the side tables empty, no page held.
     ///
     /// # Safety
     ///
@@ -81,9 +158,7 @@ impl Database {
         use core::ptr::addr_of_mut;
         // SAFETY: the caller's contract; every field is written.
         unsafe {
-            Pool::write_empty(addr_of_mut!((*database).threads), |index| {
-                Thread::new(ThreadId(index))
-            });
+            ThreadRecords::write_empty(addr_of_mut!((*database).threads));
             addr_of_mut!((*database).events).write(SideTable::new());
             addr_of_mut!((*database).semaphores).write(SideTable::new());
             addr_of_mut!((*database).mutexes).write(SideTable::new());
@@ -96,6 +171,14 @@ impl Database {
 
 // The side tables' records: a body is written fresh, named by its index, when its chunk is made,
 // and renewed by its object's create.
+
+// SAFETY: writes a whole record.
+unsafe impl Record for Thread {
+    unsafe fn write_fresh(at: *mut Self, index: u32) {
+        // SAFETY: the caller's contract.
+        unsafe { at.write(Thread::new(ThreadId(index as u16))) };
+    }
+}
 
 // SAFETY: writes a whole record.
 unsafe impl Record for Event {
@@ -153,6 +236,21 @@ unsafe impl Record for WaitableTimer {
     }
 }
 
+/// A thread record, made before any thread was handed its index.
+#[inline(always)]
+fn made_thread<T>(record: Option<T>) -> T {
+    match record {
+        Some(record) => record,
+        None => unmade_thread(),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn unmade_thread() -> ! {
+    panic!("a thread record made before its id")
+}
+
 /// A side table's record at `index`, which its object's create made first.
 ///
 /// # Panics
@@ -166,32 +264,43 @@ fn made<T>(record: Option<T>) -> T {
 
 impl Dispatcher {
     /// The thread record `thread`.
+    ///
+    /// # Panics
+    ///
+    /// The record was never made: no thread was ever handed `thread`.
+    #[inline]
     pub fn thread(&self, thread: ThreadId) -> &Thread {
-        self.db.threads.get(thread.0)
+        // SAFETY: a made record, written whole at its chunk's making; changed only through the
+        // dispatcher's exclusive borrow (or by the context switch and the running thread's own
+        // code through its address, with the dispatcher unborrowed), so this borrow's.
+        unsafe { made_thread(self.db.threads.address(thread.0)).as_ref() }
     }
 
     /// The thread record `thread`, to change.
+    #[inline]
     pub fn thread_mut(&mut self, thread: ThreadId) -> &mut Thread {
-        self.db.threads.get_mut(thread.0)
+        // SAFETY: as in `thread`, the borrow being exclusive.
+        unsafe { made_thread(self.db.threads.address(thread.0)).as_mut() }
     }
 
-    /// The address of the thread record `thread`: what the context switch is handed.
+    /// The address of the thread record `thread`: what the context switch is handed. Records are
+    /// never given back, so it stays the record's for the kernel's life.
     pub fn thread_address(&self, thread: ThreadId) -> *mut Thread {
-        self.db.threads.address(thread.0)
+        made_thread(self.db.threads.address(thread.0)).as_ptr()
     }
 
-    /// The id of the thread record at `record`, for the callers that still name a record by its
-    /// address; none for an address that is no thread record of the pool.
-    pub fn thread_at(&self, record: *const Thread) -> Option<ThreadId> {
-        self.db.threads.index_of(record).map(ThreadId)
+    /// Whether the thread record `thread` is made: every thread object's and system thread's is.
+    pub fn has_thread(&self, thread: ThreadId) -> bool {
+        self.db.threads.address(thread.0).is_some()
     }
 
-    /// Every thread record, by id.
-    pub fn threads(&self) -> impl Iterator<Item = (ThreadId, &Thread)> {
-        self.db
-            .threads
-            .iter()
-            .map(|(index, thread)| (ThreadId(index), thread))
+    /// Make the thread record `thread` (fresh, and its chunk's with it) if it is not made, with
+    /// any page its table needs from `pages`: before a thread object is handed the index, and for
+    /// the system threads at the boot. Takes no page once made; no record is ever given back, so
+    /// the context switch's addresses stay good. Fails with the table as it was when no page is
+    /// left.
+    pub fn ensure_thread(&mut self, thread: ThreadId, pages: &impl Pages) -> Result<(), Exhausted> {
+        self.db.threads.ensure(thread.0, pages)
     }
 
     /// Start the thread record `thread` over, as fresh as the pool made it.
@@ -334,11 +443,12 @@ impl Dispatcher {
 
     /// Make the body record `object` names, with any page its side table needs from `pages`,
     /// before an object is handed its index: an event's, a semaphore's, a mutex's, a waitable
-    /// timer's, or a process object's with its process's user-APC records (a thread's record is a
-    /// fixed pool's, always there).
+    /// timer's, or a process object's with its process's user-APC records; a thread's (all three
+    /// of its names: its object, its timer, its suspend semaphore) through
+    /// [`Dispatcher::ensure_thread`].
     /// Takes no page once the record is made; no record is ever given back. Fails with the table as
     /// it was when no page is left (or, never before memory, the index is past the table's reach).
-    pub fn ensure_body(&self, object: WaitableId, pages: &impl Pages) -> Result<(), Exhausted> {
+    pub fn ensure_body(&mut self, object: WaitableId, pages: &impl Pages) -> Result<(), Exhausted> {
         match object {
             WaitableId::Event(index) => self.db.events.ensure(index.into(), pages),
             WaitableId::Semaphore(index) => self.db.semaphores.ensure(index.into(), pages),
@@ -350,10 +460,10 @@ impl Dispatcher {
                 self.db.processes.ensure(index.into(), pages)?;
                 self.db.user_apcs.ensure(index.into(), pages)
             }
-            WaitableId::Thread(_)
-            | WaitableId::ThreadTimer(_)
-            | WaitableId::Suspend(_)
-            | WaitableId::Embedded(_) => Ok(()),
+            WaitableId::Thread(thread)
+            | WaitableId::ThreadTimer(thread)
+            | WaitableId::Suspend(thread) => self.ensure_thread(thread, pages),
+            WaitableId::Embedded(_) => Ok(()),
         }
     }
 
@@ -535,7 +645,7 @@ mod tests {
     /// by it, from the pages given, and making it again takes nothing.
     #[test]
     fn bodies_are_made_at_their_index_on_demand() {
-        let d = testkit::dispatcher();
+        let mut d = testkit::dispatcher();
         let pages = HostPages::new();
         for body in [
             WaitableId::Event(3),
@@ -561,7 +671,11 @@ mod tests {
         for body in fixed {
             d.ensure_body(body, &pages).unwrap();
         }
-        assert_eq!(pages.held(), 4, "the fixed pools' records take no page");
+        assert_eq!(
+            pages.held(),
+            4,
+            "the rig made the first threads' records with the dispatcher"
+        );
     }
 
     /// A process object's body is made with its process's user-APC records, at its index, past
@@ -626,7 +740,7 @@ mod tests {
     /// still resolves, and the index is made once a page is there.
     #[test]
     fn a_body_without_a_page_leaves_the_table_as_it_was() {
-        let d = testkit::dispatcher();
+        let mut d = testkit::dispatcher();
         let pages = HostPages::new();
         d.ensure_body(WaitableId::Timer(0), &pages).unwrap();
         let per = entries_per_page::<WaitableTimer>() as u16;

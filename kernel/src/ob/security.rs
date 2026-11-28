@@ -266,39 +266,60 @@ pub fn take_pending() -> Option<SdRef> {
     pending::take()
 }
 
-/// The pending slot a service's thread uses: the thread record's own index, or the reserved
-/// slot past every record when no thread runs (the boot's object creations, before the
-/// scheduler installs the idle thread). The slot array holds one slot per thread record plus
-/// that reserved one.
-#[cfg(any(target_arch = "x86", test))]
-fn slot_index(thread: Option<u16>) -> usize {
-    thread.map_or(crate::sched::database::THREAD_RECORDS, |index| {
-        index as usize
-    })
+/// Make the pending slot of the thread at object `index`, with its object (a page for its chunk
+/// when the first thread takes it): false when no page is left.
+#[cfg(target_arch = "x86")]
+pub fn make_pending_slot(index: u16) -> bool {
+    pending::make(index)
 }
 
 #[cfg(target_arch = "x86")]
 mod pending {
-    use super::{slot_index, SdRef};
-    use crate::sched::database::THREAD_RECORDS;
+    use super::SdRef;
+    use crate::slots::{entries_per_page, Record, SideTable, KERNEL_PAGES};
 
-    /// One slot per thread record, plus the reserved slot for a service reached with no
-    /// current thread (the boot's object creations): the services read the attributes and
-    /// allocate the object on the same thread, so each slot is reached only by its own thread.
-    struct Slots([core::cell::UnsafeCell<Option<SdRef>>; THREAD_RECORDS + 1]);
+    /// One thread's pending slot: the services read the attributes and allocate the object on the
+    /// same thread, so each slot is reached only by its own thread.
+    struct Slot(core::cell::UnsafeCell<Option<SdRef>>);
 
-    // SAFETY: slot `i` is reached only through the thread whose record is `i` — the idle,
-    // console-control and raw-input threads never run user services, but each has its own
-    // slot anyway — and the reserved slot is reached only during boot, before the scheduler
-    // runs; one thread runs one service at a time. A slot's handle is moved out or replaced
-    // only by its own thread, so no handle is shared across threads.
-    unsafe impl Sync for Slots {}
+    // SAFETY: slot `i` is reached only through the thread whose record is `i` (the system threads
+    // run no user services, but each has its slot anyway), and the boot's only during boot,
+    // before the scheduler runs; one thread runs one service at a time. A slot's handle is moved
+    // out or replaced only by its own thread, so no handle is shared across threads.
+    unsafe impl Sync for Slot {}
 
-    static SLOTS: Slots = Slots([const { core::cell::UnsafeCell::new(None) }; THREAD_RECORDS + 1]);
+    // SAFETY: writes a whole record.
+    unsafe impl Record for Slot {
+        unsafe fn write_fresh(at: *mut Self, _: u32) {
+            // SAFETY: the caller's contract.
+            unsafe { at.write(Slot(core::cell::UnsafeCell::new(None))) };
+        }
+    }
+
+    /// The threads' slots, by thread object index (a system thread's at its own), made with the
+    /// thread from the nonpaged pool and kept for the next at its index, as a field of the thread.
+    static SLOTS: SideTable<Slot, { entries_per_page::<Slot>() }> = SideTable::new();
+
+    /// The slot for a service reached with no current thread: the boot's object creations.
+    static BOOT: Slot = Slot(core::cell::UnsafeCell::new(None));
+
+    pub fn make(index: u16) -> bool {
+        SLOTS.ensure(index.into(), &KERNEL_PAGES).is_ok()
+    }
 
     fn slot() -> &'static core::cell::UnsafeCell<Option<SdRef>> {
-        let thread = crate::sched::try_current_thread().map(|thread| thread.index());
-        &SLOTS.0[slot_index(thread)]
+        let Some(thread) = crate::sched::try_current_thread() else {
+            return &BOOT.0;
+        };
+        if SLOTS.address(thread.index().into()).is_none() {
+            // A system thread's, made at its first service (each system thread's chunk is the
+            // first's, made once).
+            assert!(make(thread.index()), "a page for a system thread's slot");
+        }
+        &SLOTS
+            .get(thread.index().into())
+            .expect("a thread's pending slot made with it")
+            .0
     }
 
     pub fn set(sd: Option<SdRef>) {
@@ -766,38 +787,5 @@ mod tests {
         assert_eq!(take_pending(), None, "taken");
         set_pending(None);
         assert_eq!(take_pending(), None);
-    }
-
-    /// The pending slot's index: every thread record — the last thread object's, the idle, the
-    /// console-control and the raw-input threads' — maps to its own in-bounds slot, and no
-    /// current thread (the boot, before the scheduler runs) maps to the reserved slot past
-    /// them all.
-    #[test]
-    fn the_pending_slot_index_covers_every_thread_record() {
-        use crate::sched::database::{
-            CONSOLE_CONTROL_THREAD,
-            IDLE_THREAD,
-            RAW_INPUT_THREAD,
-            THREAD_RECORDS,
-        };
-        let last_thread = crate::ob::THREADS as u16 - 1;
-        for index in [
-            0,
-            last_thread,
-            IDLE_THREAD.index(),
-            CONSOLE_CONTROL_THREAD.index(),
-            RAW_INPUT_THREAD.index(),
-        ] {
-            assert_eq!(slot_index(Some(index)), index as usize);
-            assert!(slot_index(Some(index)) < THREAD_RECORDS + 1, "in bounds");
-        }
-        // The highest real record, the raw-input thread's, takes the last slot a thread can
-        // reach; the reserved slot sits one past it.
-        assert_eq!(RAW_INPUT_THREAD.index() as usize, THREAD_RECORDS - 1);
-        assert_eq!(
-            slot_index(None),
-            THREAD_RECORDS,
-            "the reserved no-thread slot"
-        );
     }
 }

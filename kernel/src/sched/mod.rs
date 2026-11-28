@@ -36,9 +36,6 @@ use crate::level::{Dispatch, LevelCell};
 /// Index-linked lists: the dispatcher database's queues.
 pub mod list;
 
-/// Fixed pools of records, reached by index.
-pub mod pool;
-
 /// The dispatcher database: the records the dispatcher owns, and how its lists reach them.
 pub mod database;
 

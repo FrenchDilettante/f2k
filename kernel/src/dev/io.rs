@@ -1193,12 +1193,8 @@ mod target {
 
     /// A stand-in's size: an EPROCESS's (0x290), larger than an ETHREAD's (0x240).
     const STAND_IN: usize = 0x290;
-    const THREAD_STAND_INS: usize = crate::sched::database::THREAD_RECORDS;
 
-    #[repr(C, align(16))]
-    struct StandIns<const N: usize>([[u8; STAND_IN]; N]);
-
-    /// A process's stand-in.
+    /// A process's or a thread's stand-in.
     #[repr(C, align(16))]
     struct StandIn([u8; STAND_IN]);
 
@@ -1211,13 +1207,19 @@ mod target {
     }
 
     // The stand-ins: zeroed kernel memory a driver may read (and write: its own business), by
-    // address. The threads' are a fixed array by thread record; the processes' a side table by
-    // process index, from the nonpaged pool (mapped in every address space, as a driver reaches
-    // a stand-in from any), made with the process and kept for the next at its index, as an
-    // EPROCESS is nonpaged memory beside its process. The System process's is at its index, 0.
-    static THREADS: SyncCell<StandIns<THREAD_STAND_INS>> =
-        SyncCell::new(StandIns([[0; STAND_IN]; THREAD_STAND_INS]));
+    // address. Side tables by thread object index and by process index, from the nonpaged pool
+    // (mapped in every address space, as a driver reaches a stand-in from any), each made with its
+    // thread or process and kept for the next at its index, as an ETHREAD and an EPROCESS are
+    // nonpaged memory beside their thread and process. The System process's is at its index, 0;
+    // the system threads' at theirs, the first thread indices, made at boot.
+    static THREADS: SideTable<StandIn, { entries_per_page::<StandIn>() }> = SideTable::new();
     static PROCESSES: SideTable<StandIn, { entries_per_page::<StandIn>() }> = SideTable::new();
+
+    /// Make the stand-in of the thread at object `index`, before the thread runs: false when no
+    /// page is left for it.
+    pub fn make_thread_stand_in(index: u16) -> bool {
+        THREADS.ensure(index.into(), &KERNEL_PAGES).is_ok()
+    }
 
     /// Make the stand-in of the process at `index`, before the process runs: false when no page
     /// is left for it.
@@ -1233,10 +1235,14 @@ mod target {
             .as_ptr() as u32
     }
 
-    /// The System process's stand-in: PsInitialSystemProcess. Made at the first call, at boot.
+    /// The System process's stand-in: PsInitialSystemProcess. Made at the first call, at boot,
+    /// with the system threads' (KeGetCurrentThread on one of them).
     pub fn system_process() -> u32 {
         let index = crate::ob::SYSTEM_PROCESS_INDEX;
         assert!(make_process_stand_in(index), "a page at boot");
+        for thread in 0..crate::sched::database::SYSTEM_THREADS {
+            assert!(make_thread_stand_in(thread), "a page at boot");
+        }
         process_stand_in(index)
     }
 
@@ -1246,10 +1252,15 @@ mod target {
             .is_some_and(|thread| WORKER.load(Ordering::Acquire) == u32::from(thread.index()) + 1)
     }
 
-    /// The running thread's stand-in: KeGetCurrentThread.
+    /// The running thread's stand-in: KeGetCurrentThread. Before the scheduler runs, the boot's
+    /// own thread is the idle thread's.
     pub fn current_thread() -> u32 {
-        let index = crate::sched::try_current_thread().map_or(0, |thread| thread.index());
-        THREADS.get() as u32 + u32::from(index) * STAND_IN as u32
+        let thread =
+            crate::sched::try_current_thread().unwrap_or(crate::sched::database::IDLE_THREAD);
+        THREADS
+            .address(thread.index().into())
+            .expect("a thread's stand-in made with the thread")
+            .as_ptr() as u32
     }
 
     /// The current process's stand-in: IoGetCurrentProcess. The System process's while the

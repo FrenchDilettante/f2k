@@ -382,8 +382,9 @@ pub const DEFAULT_HARD_ERROR_MODE: u32 = 1;
 /// object, so this bounds the live threads, not the threads created. The threads fixture's scale
 /// block creates 100 fire-and-forget threads in a row, and its creator, in the foreground, runs on
 /// a stretched quantum (see [`foreground`]): all 100 may be alive at once, as on Windows 2000,
-/// which has no such bound. The object manager's thread pool ([`crate::ob::THREADS`]) bounds the
-/// system's threads above this.
+/// which has no such bound (F2K's created threads' TEB pages are a fixed region below the main
+/// thread's, [`crate::user::THREAD_TEB_REGION`]). The system's threads have no bound but memory
+/// and the kernel-stack region's 12,743 stacks.
 pub const CHILD_THREADS: usize = 100;
 
 /// How many handle-table slots one hold of a table reaches where a walk of the whole table

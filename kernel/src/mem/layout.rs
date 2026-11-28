@@ -342,15 +342,14 @@ mod tests {
     }
 
     /// The stack region spans Windows 2000's additional system PTEs up to the page tables: 448 MiB,
-    /// 12,743 slots at today's stride, a slot for every thread record many times over, its frames
-    /// more than the machine's memory; it stays clear of the image window above which the image
-    /// grows.
+    /// 12,743 slots at today's stride, the bound on threads (the object manager has none), its
+    /// frames more than the machine's memory; it stays clear of the image window above which the
+    /// image grows.
     #[test]
     fn the_stack_region_spans_up_to_the_page_tables() {
         let stride = crate::mem::paging::GATE_SLOT_STRIDE;
         assert_eq!(KERNEL_STACKS.size(), 448 * 0x10_0000);
         assert_eq!(KERNEL_STACKS.size() / stride, 12_743);
-        assert!(KERNEL_STACKS.size() / stride >= 2 * crate::ob::THREADS as u32);
         // Every slot's stack pages backed: more frames than 256 MiB of memory holds.
         let frames = (KERNEL_STACKS.size() / stride) as u64
             * crate::mem::paging::GATE_STACK_PAGES as u64

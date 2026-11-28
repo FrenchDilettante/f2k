@@ -558,9 +558,13 @@ impl Dispatcher {
         planted.object = object;
         planted.key = STATUS_SUCCESS;
         planted.wait_all = false;
+        if timeout.is_none() {
+            // No timeout: the one-block chain closes on itself.
+            planted.next_block = block;
+        }
 
         // An alertable wait with user APCs queued completes at once, for their delivery.
-        if let Some(status) = test_alert(self.thread_mut(thread), mode, alertable) {
+        if let Some(status) = test_alert(record, mode, alertable) {
             return WaitDisposition::Complete(status);
         }
 
@@ -570,17 +574,13 @@ impl Dispatcher {
             return WaitDisposition::Complete(STATUS_TIMEOUT);
         }
 
-        match timeout {
-            Some(interval) => {
-                // The wait chain: object block, timer block, circularly.
-                if !self.arm_timeout(thread, block, block, interval, stamp) {
-                    // Already past: the wait reports a timeout.
-                    self.charge_nowait(thread);
-                    return WaitDisposition::Complete(STATUS_TIMEOUT);
-                }
+        if let Some(interval) = timeout {
+            // The wait chain: object block, timer block, circularly.
+            if !self.arm_timeout(thread, block, block, interval, stamp) {
+                // Already past: the wait reports a timeout.
+                self.charge_nowait(thread);
+                return WaitDisposition::Complete(STATUS_TIMEOUT);
             }
-            // No timeout: the one-block chain closes on itself.
-            None => self.block_mut(block).next_block = block,
         }
 
         // Join the object's waiters at the tail: waits satisfy first-blocked-first-woken.
@@ -816,10 +816,11 @@ impl Dispatcher {
         );
         // The status is OR'd in, not assigned: a wait may carry a status its wake must preserve.
         record.wait_status = NtStatus(record.wait_status.0 | status.0);
+        let disable_boost = record.disable_boost;
 
         self.unwind_wait(thread);
 
-        if !self.thread(thread).disable_boost {
+        if !disable_boost {
             self.boost(thread, increment);
         }
         self.charge_wait(thread);
@@ -830,9 +831,9 @@ impl Dispatcher {
     /// leave the waiting list, and cancel the wait's timer if it is still live. The wait exit's
     /// first half.
     pub(super) fn unwind_wait(&mut self, thread: ThreadId) {
-        debug_assert!(self.thread(thread).state == ThreadState::Waiting);
-        let head = self
-            .thread(thread)
+        let record = self.thread(thread);
+        debug_assert!(record.state == ThreadState::Waiting);
+        let head = record
             .wait_block_head
             .expect("a waiting thread has a wait chain");
         let mut block = head;
@@ -846,10 +847,11 @@ impl Dispatcher {
         }
         list::remove(self, WaitingList, thread);
         // The wait is unwound: no chain to walk until the next one, and the ready path may check.
-        self.thread_mut(thread).wait_block_head = None;
+        let record = self.thread_mut(thread);
+        record.wait_block_head = None;
 
         // A wake beats its timeout: cancel the wait's timer if it is still live.
-        if self.thread(thread).timer.inserted {
+        if record.timer.inserted {
             self.remove_timer(TimerId::Thread(thread));
         }
     }

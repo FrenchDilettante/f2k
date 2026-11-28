@@ -49,14 +49,14 @@
 //! accessor from the bodies' table; what the deletion leaves outside the directory is a
 //! [`Followup`] variant.
 //!
-//! Most kinds live in slot pools ([`crate::slots`]) that grow a page at a time from the nonpaged
-//! pool and keep their peak, so a record never moves; their only bound is the u16 index, and a
-//! create that finds no page fails as the platform's out-of-memory would. An event's, a
-//! semaphore's, a mutex's, a waitable timer's or a process's body is made in the dispatcher
-//! database's side table at its record's index before the id is handed out, from the same pages.
-//! The processes' pool hands out its lowest free index first and never the System process's
-//! ([`ProcessIndex`]); no cap holds processes back but memory, as on Windows 2000. The threads
-//! keep a fixed pool until they move too (a create past it fails the same way).
+//! Every kind lives in a slot pool ([`crate::slots`]) that grows a page at a time from the nonpaged
+//! pool and keeps its peak, so a record never moves; its only bound is the u16 index, and a create
+//! that finds no page fails as the platform's out-of-memory would. An event's, a semaphore's, a
+//! mutex's, a waitable timer's, a thread's or a process's body is made in the dispatcher database
+//! at its record's index before the id is handed out, from the same pages. The processes' pool
+//! hands out its lowest free index first and never the System process's ([`ProcessIndex`]), the
+//! threads' never the system threads' ([`ThreadIndex`]); no cap holds processes or threads back but
+//! memory, as on Windows 2000.
 //! A slot pool's first generation is 1 and moves on at the delete, so no live object's id carries
 //! generation 0.
 
@@ -97,6 +97,20 @@ use crate::status::NtStatus;
 /// dispatch level for the length of `f` (the level bridge), so it is never reached from there.
 fn with_bodies<R>(f: impl FnOnce(&mut Dispatcher) -> R) -> R {
     crate::level::raised::<Dispatch, _>(|dispatch| f(crate::sched::DISPATCHER.get(dispatch)))
+}
+
+/// Make the kernel's other records of the thread at object `index`, beside the directory's and the
+/// dispatcher's: its stand-in for drivers (an ETHREAD's place) and its pending-descriptor slot.
+/// False when no page is left for one; what was made stays, for the next thread at the index.
+#[cfg(target_arch = "x86")]
+fn make_thread_extras(index: u16) -> bool {
+    crate::dev::io::make_thread_stand_in(index) && security::make_pending_slot(index)
+}
+
+/// The host builds have neither (the descriptor's pending slot is per test thread there).
+#[cfg(not(target_arch = "x86"))]
+fn make_thread_extras(_: u16) -> bool {
+    true
 }
 
 /// The kinds of objects a handle can name.
@@ -233,31 +247,6 @@ pub const STILL_ACTIVE: u32 = 259;
 /// cached ([`Directory::make_room_for_segment`]): the bound on the image cache. Not a cap: while
 /// every segment is active, a new one is made all the same.
 pub const SEGMENTS: usize = 128;
-/// How many thread records exist, across every process: any process's thread takes any free
-/// record, main thread or created. A record's index is not its thread's ordinal (the process's own
-/// numbering, which places its TEB: see [`crate::process::ordinals`]). Room for two processes at
-/// nearly their full thread counts.
-pub const THREADS: usize = 128;
-
-/// A set of thread records, by index: a bit each.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-struct ThreadRecordSet([u32; THREADS.div_ceil(32)]);
-
-impl ThreadRecordSet {
-    /// No record.
-    const EMPTY: ThreadRecordSet = ThreadRecordSet([0; THREADS.div_ceil(32)]);
-
-    /// Add record `index`.
-    fn insert(&mut self, index: u16) {
-        self.0[index as usize / 32] |= 1 << (index % 32);
-    }
-
-    /// The records in the set, lowest first.
-    fn iter(self) -> impl Iterator<Item = u16> {
-        (0..THREADS as u16)
-            .filter(move |&index| self.0[index as usize / 32] & (1 << (index % 32)) != 0)
-    }
-}
 /// The process index of the System process, which no process object takes: the kernel's own
 /// process, as Windows 2000's System process (PsInitialSystemProcess) is a process of its own
 /// beside the programs'. The tables keyed by process index keep the System process's record there
@@ -423,124 +412,6 @@ impl Counts {
     }
 }
 
-/// One record's header in a fixed pool (the threads'): whether it holds a
-/// live object, its generation, the object's counts, and its security descriptor.
-#[derive(Debug)]
-pub struct Header {
-    live: bool,
-    generation: u16,
-    counts: Counts,
-    /// The object's security descriptor, as a shared cache handle (see [`sdcache`]); none on a
-    /// dead record.
-    sd: SdRef,
-}
-
-impl Header {
-    const fn dead() -> Self {
-        Header {
-            live: false,
-            generation: 0,
-            counts: Counts::none(),
-            sd: SdRef::NONE,
-        }
-    }
-
-    /// Whether the header holds the live object of `generation`.
-    fn names(&self, generation: u16) -> bool {
-        self.live && self.generation == generation
-    }
-}
-
-/// Take a free record among `headers` in `range` for a new object: the lowest one holding no live
-/// object. The object starts with one reference (its creator's) and no handle, and carries the
-/// security descriptor the current create captured (the default when it captured none), as a
-/// shared cache handle. None when the range is exhausted. The record itself is the caller's to
-/// renew.
-fn allocate(
-    headers: &mut [Header],
-    range: core::ops::Range<usize>,
-    fallback: SdRef,
-) -> Option<u16> {
-    let end = range.end.min(headers.len());
-    let index = (range.start..end).find(|&index| !headers[index].live)?;
-    let header = &mut headers[index];
-    header.live = true;
-    header.counts = Counts::created();
-    header.sd = security::take_pending().unwrap_or(fallback);
-    Some(index as u16)
-}
-
-/// A fixed pool of records of one kind, each behind its header: the threads' (headers alone, `T`
-/// is `()`: their records are the dispatcher database's), until they move onto a slot pool as the
-/// other kinds have ([`ObSlots`]).
-pub struct Pool<T, const N: usize> {
-    headers: [Header; N],
-    records: [T; N],
-}
-
-impl<T, const N: usize> Pool<T, N> {
-    /// Write an empty pool at `pool`, every record `fresh()`, element by element (by value it would
-    /// pass through the caller's stack).
-    ///
-    /// # Safety
-    ///
-    /// `pool` is valid for writes and aligned; its previous contents are overwritten, not dropped.
-    unsafe fn write_empty(pool: *mut Self, fresh: impl Fn() -> T) {
-        use core::ptr::addr_of_mut;
-        // SAFETY: the caller's contract; every field is written.
-        unsafe {
-            let headers = addr_of_mut!((*pool).headers) as *mut Header;
-            let records = addr_of_mut!((*pool).records) as *mut T;
-            for index in 0..N {
-                headers.add(index).write(Header::dead());
-                records.add(index).write(fresh());
-            }
-        }
-    }
-
-    /// Take a free record in `range` for a new object (see [`allocate`]).
-    fn allocate_in(&mut self, range: core::ops::Range<usize>, fallback: SdRef) -> Option<u16> {
-        allocate(&mut self.headers, range, fallback)
-    }
-
-    /// Whether the record at `index` holds a live object.
-    fn is_live_at(&self, index: u16) -> bool {
-        self.headers[index as usize].live
-    }
-
-    // The untyped paths' view of the pool: the counts of the live object `index` and
-    // `generation` name, the lowest live record, a record's generation, and a record's death.
-
-    fn counts(&self, index: u16, generation: u16) -> Option<&Counts> {
-        let header = self.headers.get(index as usize)?;
-        header.names(generation).then_some(&header.counts)
-    }
-
-    fn lowest_live(&self) -> Option<u16> {
-        let index = self.headers.iter().position(|header| header.live)?;
-        Some(index as u16)
-    }
-
-    fn generation_at(&self, index: u16) -> u16 {
-        self.headers[index as usize].generation
-    }
-
-    fn kill(&mut self, index: u16) {
-        let header = &mut self.headers[index as usize];
-        header.live = false;
-        header.counts = Counts::none();
-        header.generation = header.generation.wrapping_add(1);
-        // The descriptor's reference goes with the object.
-        header.sd = SdRef::NONE;
-    }
-
-    /// How many records hold a live object.
-    #[cfg(test)]
-    fn live(&self) -> usize {
-        self.headers.iter().filter(|header| header.live).count()
-    }
-}
-
 /// An object's record in its kind's slot pool: its counts, its security descriptor, and its body.
 /// The pool's slot holds the liveness and the generation (the slot's uniqueness count: 1 first,
 /// moved on at the delete, never 0), and its chunk keeps the record at its address for the
@@ -662,6 +533,37 @@ pub struct TimerObject;
 /// database's, its thread ordinals the directory's own side table, its process record
 /// [`crate::process::pool`]'s, each at the object's index.
 pub struct ProcessRecord;
+
+/// A thread's record in the directory (see [`EventObject`]): its record (KTHREAD) is the
+/// dispatcher database's, its wait's references the directory's own side table, each at the
+/// object's index.
+pub struct ThreadRecord;
+
+/// How the thread objects' pool hands out its indices: never the system threads' (the first
+/// [`crate::sched::database::SYSTEM_THREADS`], which no object takes), and the lowest free one
+/// first, as the fixed pool it was did, so the dispatcher's records stay packed in the chunks
+/// already made. No cap but the u16 index's 65,532 threads: a representation limit, as Windows
+/// 2000 has none but memory; the pages for the records and their kernel stacks (12,743 at most,
+/// [`crate::mem::kstacks`]) run out long before it, and either is a refused create.
+pub struct ThreadIndex;
+
+impl Codec for ThreadIndex {
+    type Id = Id<ThreadRecord>;
+
+    const LANES: usize = 1;
+    const MAX_INDEX: u32 = 0xFFFE;
+    const MAX_UNIQ: u16 = 0xFFFE;
+    const RESERVED_LOW: u32 = crate::sched::database::SYSTEM_THREADS as u32;
+    const REUSE: Reuse = Reuse::Lowest;
+
+    fn encode(index: u32, uniq: u16) -> Id<ThreadRecord> {
+        Id::new(index as u16, uniq)
+    }
+
+    fn decode(id: Id<ThreadRecord>) -> Option<(u32, Match)> {
+        Some((id.index as u32, Match::Exact(id.uniq)))
+    }
+}
 
 /// How the process objects' pool hands out its indices: never the System process's
 /// ([`SYSTEM_PROCESS_INDEX`], which no object takes), and the lowest free one first, as the fixed
@@ -1051,13 +953,32 @@ impl WaitReferences {
     }
 }
 
-/// The kinds' pools, in two tables. The fixed pool's row (the threads'): the kind, its pool's
-/// field, its body (`()`: a thread's record is the dispatcher database's, at the same index), how
-/// a fresh record is made, and the capacity. The slot pools' rows: the kind, its pool's field, its
-/// body and how a fresh body is made (a marker for an event, a semaphore, a mutex, a waitable
-/// timer and a process, whose bodies are the dispatcher database's, at the same index), and its
-/// codec when it is not the kernel ids' ([`ProcessIndex`]); the pool holds a page of records a
-/// chunk. The tables make the
+/// The directory's own record of a thread, at its object's index: its wait's references, and
+/// whether a thread object was handed the index since the last sweep's end (only those records
+/// the sweep's end starts over, see [`Directory::sweep_end`]).
+struct ThreadSide {
+    waits: WaitReferences,
+    used: bool,
+}
+
+// SAFETY: writes a whole record.
+unsafe impl Record for ThreadSide {
+    unsafe fn write_fresh(at: *mut Self, _: u32) {
+        // SAFETY: the caller's contract.
+        unsafe {
+            at.write(ThreadSide {
+                waits: WaitReferences::none(),
+                used: false,
+            })
+        };
+    }
+}
+
+/// The kinds' pools: each row the kind, its pool's field, its body and how a fresh body is made (a
+/// marker for an event, a semaphore, a mutex, a waitable timer, a thread and a process, whose
+/// bodies are the dispatcher database's, at the same index), and its codec when it is not the
+/// kernel ids' ([`ThreadIndex`], [`ProcessIndex`]); the pool holds a page of records a chunk. The
+/// table makes the
 /// [`Directory`]'s pools, its in-place builder, and the matches the untyped paths (an object's
 /// counts by id, its deletion, the sweep) reach a kind's pool through.
 macro_rules! pools {
@@ -1065,8 +986,7 @@ macro_rules! pools {
     (@codec $sbody:ty) => { KernelId<$sbody> };
     (@codec $sbody:ty, $codec:ty) => { $codec };
     (
-        fixed { $($kind:ident => $pool:ident: $body:ty = $fresh:expr, $capacity:expr;)* }
-        slots { $($skind:ident => $spool:ident: $sbody:ty = $sfresh:expr $(, in $codec:ty)?;)* }
+        $($skind:ident => $spool:ident: $sbody:ty = $sfresh:expr $(, in $codec:ty)?;)*
     ) => {
         $(
             // SAFETY: writes a whole record.
@@ -1088,7 +1008,6 @@ macro_rules! pools {
         /// references. The dispatcher objects' pools hold their counts alone: the bodies are the
         /// dispatcher database's, at the same index.
         pub struct Directory {
-            $($pool: Pool<$body, $capacity>,)*
             $($spool: Slots<
                 ObRecord<$sbody>,
                 pools!(@codec $sbody $(, $codec)?),
@@ -1100,10 +1019,8 @@ macro_rules! pools {
             /// Each process's thread ordinals, at its process object's index, made with the
             /// object: kept here, since which of them are free is its thread objects' lives.
             ordinals: SideTable<Ordinals, { entries_per_page::<Ordinals>() }>,
-            waits: [WaitReferences; THREADS],
-            /// The thread records handed to a thread object since the last sweep's end (a bit per
-            /// record): the only ones the sweep's end starts over (see [`Directory::sweep_end`]).
-            used_threads: ThreadRecordSet,
+            /// Each thread's wait references, at its thread object's index, made with the object.
+            thread_sides: SideTable<ThreadSide, { entries_per_page::<ThreadSide>() }>,
         }
 
         impl Directory {
@@ -1117,17 +1034,12 @@ macro_rules! pools {
                 use core::ptr::addr_of_mut;
                 // SAFETY: the caller's contract; every field is written.
                 unsafe {
-                    $(Pool::write_empty(addr_of_mut!((*directory).$pool), $fresh);)*
                     $(addr_of_mut!((*directory).$spool).write(Slots::new());)*
                     addr_of_mut!((*directory).segments).write(Slots::new());
                     addr_of_mut!((*directory).names).write(Slots::new());
                     addr_of_mut!((*directory).key_sds).write(Slots::new());
                     addr_of_mut!((*directory).ordinals).write(SideTable::new());
-                    let waits = addr_of_mut!((*directory).waits) as *mut WaitReferences;
-                    for index in 0..THREADS {
-                        waits.add(index).write(WaitReferences::none());
-                    }
-                    addr_of_mut!((*directory).used_threads).write(ThreadRecordSet::EMPTY);
+                    addr_of_mut!((*directory).thread_sides).write(SideTable::new());
                 }
             }
 
@@ -1135,7 +1047,6 @@ macro_rules! pools {
             /// id that names nothing.
             fn header(&self, id: ObjectId) -> Option<&Counts> {
                 match id.kind {
-                    $(ObjectType::$kind => self.$pool.counts(id.index, id.generation),)*
                     $(ObjectType::$skind => self
                         .$spool
                         .get(slot_id(id))
@@ -1147,12 +1058,6 @@ macro_rules! pools {
             /// names nothing.
             fn sd_cell(&mut self, id: ObjectId) -> Option<&mut SdRef> {
                 match id.kind {
-                    $(ObjectType::$kind => self
-                        .$pool
-                        .headers
-                        .get_mut(id.index as usize)
-                        .filter(|header| header.names(id.generation))
-                        .map(|header| &mut header.sd),)*
                     $(ObjectType::$skind => self
                         .$spool
                         .get_mut(slot_id(id))
@@ -1160,30 +1065,9 @@ macro_rules! pools {
                 }
             }
 
-            /// The id of the record at `index` of a fixed pool's `kind`, live or not.
-            ///
-            /// # Panics
-            ///
-            /// `kind`'s pool is a slot pool (its dead records have no id).
-            fn id(&mut self, kind: ObjectType, index: u16) -> ObjectId {
-                let generation = match kind {
-                    $(ObjectType::$kind => self.$pool.generation_at(index),)*
-                    _ => unreachable!("a fixed pool's kind"),
-                };
-                ObjectId {
-                    kind,
-                    index,
-                    generation,
-                }
-            }
-
             /// The lowest live object of `kind`.
             fn lowest_live(&mut self, kind: ObjectType) -> Option<ObjectId> {
                 match kind {
-                    $(ObjectType::$kind => {
-                        let index = self.$pool.lowest_live()?;
-                        Some(self.id(kind, index))
-                    })*
                     $(ObjectType::$skind => self
                         .$spool
                         .iter()
@@ -1197,7 +1081,6 @@ macro_rules! pools {
             /// dropped, so its handle is let go here).
             fn kill(&mut self, id: ObjectId) {
                 match id.kind {
-                    $(ObjectType::$kind => self.$pool.kill(id.index),)*
                     $(ObjectType::$skind => {
                         if let Some(record) = self.$spool.get_mut(slot_id(id)) {
                             record.sd = SdRef::NONE;
@@ -1211,37 +1094,33 @@ macro_rules! pools {
             /// How many objects are live, of every kind.
             #[cfg(test)]
             pub fn live_objects(&self) -> usize {
-                0 $(+ self.$pool.live())* $(+ self.$spool.live() as usize)*
+                0 $(+ self.$spool.live() as usize)*
             }
         }
     };
 }
 
 pools! {
-    fixed {
-        Thread => threads: () = || (), THREADS;
-    }
-    slots {
-        Process => processes: ProcessRecord = ProcessRecord, in ProcessIndex;
-        Event => events: EventObject = EventObject;
-        Semaphore => semaphores: SemaphoreObject = SemaphoreObject;
-        Mutex => mutexes: MutexObject = MutexObject;
-        Timer => timers: TimerObject = TimerObject;
-        Section => sections: SectionObject = SectionObject::none();
-        File => files: crate::fs::file::FileObject = crate::fs::file::FileObject::none();
-        Directory => directories: DirectoryObject = DirectoryObject;
-        WindowStation => window_stations: WindowStationObject = WindowStationObject::none();
-        Desktop => desktops: DesktopObject = DesktopObject::none();
-        Key => keys: crate::cm::KeyBody = crate::cm::KeyBody::none();
-        Dc => dcs: crate::win32k::dc::Dc = crate::win32k::dc::Dc::none();
-        Brush => brushes: crate::win32k::brush::Brush = crate::win32k::brush::Brush::none();
-        Pen => pens: crate::win32k::pen::Pen = crate::win32k::pen::Pen::none();
-        Bitmap => bitmaps: crate::win32k::bitmap::Bitmap = crate::win32k::bitmap::Bitmap::none();
-        Font => fonts: crate::win32k::fonts::FontObject =
-            crate::win32k::fonts::FontObject::none();
-        Region => regions: crate::win32k::region::Region = crate::win32k::region::Region::none();
-        Token => tokens: crate::se::TokenBody = crate::se::TokenBody::none();
-    }
+    Thread => threads: ThreadRecord = ThreadRecord, in ThreadIndex;
+    Process => processes: ProcessRecord = ProcessRecord, in ProcessIndex;
+    Event => events: EventObject = EventObject;
+    Semaphore => semaphores: SemaphoreObject = SemaphoreObject;
+    Mutex => mutexes: MutexObject = MutexObject;
+    Timer => timers: TimerObject = TimerObject;
+    Section => sections: SectionObject = SectionObject::none();
+    File => files: crate::fs::file::FileObject = crate::fs::file::FileObject::none();
+    Directory => directories: DirectoryObject = DirectoryObject;
+    WindowStation => window_stations: WindowStationObject = WindowStationObject::none();
+    Desktop => desktops: DesktopObject = DesktopObject::none();
+    Key => keys: crate::cm::KeyBody = crate::cm::KeyBody::none();
+    Dc => dcs: crate::win32k::dc::Dc = crate::win32k::dc::Dc::none();
+    Brush => brushes: crate::win32k::brush::Brush = crate::win32k::brush::Brush::none();
+    Pen => pens: crate::win32k::pen::Pen = crate::win32k::pen::Pen::none();
+    Bitmap => bitmaps: crate::win32k::bitmap::Bitmap = crate::win32k::bitmap::Bitmap::none();
+    Font => fonts: crate::win32k::fonts::FontObject =
+        crate::win32k::fonts::FontObject::none();
+    Region => regions: crate::win32k::region::Region = crate::win32k::region::Region::none();
+    Token => tokens: crate::se::TokenBody = crate::se::TokenBody::none();
 }
 
 // SAFETY: writes a whole record.
@@ -1502,13 +1381,37 @@ impl Directory {
         })
     }
 
-    /// A thread record for a new thread object, in `range`. The record is returned as it was left;
-    /// the caller renews it ([`Directory::renew_thread`]). Holds the thread's own reference,
-    /// released when the thread ends.
-    pub fn create_thread_in(&mut self, range: core::ops::Range<usize>) -> Option<ObjectId> {
-        let index = self.threads.allocate_in(range, security::null_dacl()?)?;
-        self.used_threads.insert(index);
-        Some(self.id(ObjectType::Thread, index))
+    /// A thread object for a new thread of any process, main thread or created, at the lowest
+    /// free index past the system threads' ([`ThreadIndex`]), holding the thread's own reference,
+    /// released when the thread ends. Its records at the index are made first (each the first
+    /// time a thread takes the index, and kept): the dispatcher's thread record, returned as it
+    /// was left for the caller to renew ([`Directory::renew_thread`]), the directory's own, and
+    /// on the target the thread's stand-in for drivers and its pending-descriptor slot. None,
+    /// with nothing made, when no page is left for any of them, or every u16 index is in use.
+    pub fn create_thread(&mut self) -> Option<ObjectId> {
+        let (id, _) = allocate_record(
+            &mut self.threads,
+            ObjectType::Thread,
+            Some(security::null_dacl()?),
+        )?;
+        let index = id.index;
+        let made = self.thread_sides.ensure(index.into(), pages()).is_ok()
+            && with_bodies(|bodies| bodies.ensure_thread(ThreadId(index), pages()).is_ok())
+            && make_thread_extras(index);
+        if !made {
+            // Undone before anyone saw the id: the record goes back as a deletion leaves it.
+            self.kill(id);
+            return None;
+        }
+        self.thread_side(index).used = true;
+        Some(id)
+    }
+
+    /// The directory's record of the thread at `index`, made with its object.
+    fn thread_side(&mut self, index: u16) -> &mut ThreadSide {
+        self.thread_sides
+            .get_mut(index.into())
+            .expect("a thread's record made with its object")
     }
 
     /// The record of the thread object `id`, started over as fresh as the pool made it: a created
@@ -1527,13 +1430,6 @@ impl Directory {
             bodies.renew_thread(thread);
         });
         thread
-    }
-
-    /// A thread record for a new thread object of any process, main thread or created: the lowest
-    /// free record of the whole pool (see [`Directory::create_thread_in`]). None when every record
-    /// holds a live thread object.
-    pub fn create_thread(&mut self) -> Option<ObjectId> {
-        self.create_thread_in(0..THREADS)
     }
 
     /// A process object for a new process, unsignaled and still active, holding the process's own
@@ -1932,16 +1828,13 @@ impl Directory {
     /// references, or `process` names no live process.
     pub fn free_ordinal(&mut self, process: ObjectId) -> Option<u16> {
         let index = self.body_index(process, ObjectType::Process)?;
-        let threads = &self.threads.headers;
+        let threads = &self.threads;
         let ordinals = self
             .ordinals
             .get(index.into())
             .expect("a process's ordinals made with its object");
         ordinals.free(|thread| {
-            thread.kind == ObjectType::Thread
-                && threads
-                    .get(thread.index as usize)
-                    .is_some_and(|header| header.names(thread.generation))
+            thread.kind == ObjectType::Thread && threads.get(slot_id(thread)).is_some()
         })
     }
 
@@ -1974,13 +1867,11 @@ impl Directory {
         id.waitable()
     }
 
-    /// The thread object whose record is `thread`; none for the idle thread's record (no object
-    /// names it) or one holding no live object.
+    /// The thread object whose record is `thread`; none for a system thread's record (no object
+    /// names one) or one holding no live object.
     pub fn thread_object(&mut self, thread: ThreadId) -> Option<ObjectId> {
-        if thread.index() as usize >= THREADS {
-            return None;
-        }
-        let id = self.id(ObjectType::Thread, thread.index());
+        let id = self.threads.id_at(thread.index().into())?;
+        let id = object_id(ObjectType::Thread, id);
         self.is_live(id).then_some(id)
     }
 
@@ -2254,7 +2145,9 @@ impl Directory {
     /// returning. False, and nothing held, when one of them is gone already (a handle another
     /// thread closed meanwhile).
     pub fn hold_wait(&mut self, thread: u16, objects: &[ObjectId]) -> bool {
-        debug_assert!(self.waits[thread as usize]
+        debug_assert!(self
+            .thread_side(thread)
+            .waits
             .objects
             .iter()
             .all(Option::is_none));
@@ -2267,7 +2160,8 @@ impl Directory {
         if !objects.iter().all(|&id| self.is_live(id)) {
             return false;
         }
-        for (slot, &id) in self.waits[thread as usize].objects.iter_mut().zip(objects) {
+        let held = &mut self.thread_side(thread).waits.objects;
+        for (slot, &id) in held.iter_mut().zip(objects) {
             *slot = Some(id);
         }
         for &id in objects {
@@ -2279,7 +2173,7 @@ impl Directory {
     /// Release the references thread record `thread`'s wait holds. The objects that go with them
     /// are dispatcher objects, whose deletion leaves nothing to finish.
     pub fn release_wait(&mut self, thread: u16) {
-        let held = core::mem::replace(&mut self.waits[thread as usize], WaitReferences::none());
+        let held = core::mem::replace(&mut self.thread_side(thread).waits, WaitReferences::none());
         for id in held.objects.iter().flatten() {
             let left = self.dereference(*id);
             assert!(
@@ -2323,10 +2217,14 @@ impl Directory {
     /// object still lives (another process holds a handle to the thread) stays as it ended: its
     /// object is still waitable and its exit code still readable.
     pub fn process_ended(&mut self, owner: *const crate::sched::process::SchedProcess) {
+        // The records a thread object ever took: the system threads' never end, and no index
+        // past the pool's high-water mark was handed out.
+        let end = self.threads.high_water();
         with_bodies(|bodies| {
-            for index in 0..THREADS as u16 {
-                let thread = ThreadId(index);
-                let left = !self.threads.is_live_at(index)
+            for index in u32::from(crate::sched::database::SYSTEM_THREADS)..end {
+                let thread = ThreadId(index as u16);
+                let left = self.threads.id_at(index).is_none()
+                    && bodies.has_thread(thread)
                     && core::ptr::eq(bodies.thread(thread).process, owner);
                 if left {
                     bodies.renew_thread(thread);
@@ -2404,11 +2302,16 @@ impl Directory {
     /// (its wait blocks, its floating-point state), so renewing all of them took about 4 ms under
     /// QEMU at every quiescent reap, most of a small process's teardown.
     pub fn sweep_end(&mut self) {
-        let used = core::mem::replace(&mut self.used_threads, ThreadRecordSet::EMPTY);
+        let end = self.threads.high_water();
         with_bodies(|bodies| {
-            for index in used.iter() {
-                bodies.renew_thread(ThreadId(index));
-                self.waits[index as usize] = WaitReferences::none();
+            for index in u32::from(crate::sched::database::SYSTEM_THREADS)..end {
+                let Some(side) = self.thread_sides.get_mut(index) else {
+                    continue;
+                };
+                if core::mem::replace(&mut side.used, false) {
+                    side.waits = WaitReferences::none();
+                    bodies.renew_thread(ThreadId(index as u16));
+                }
             }
         });
         self.names.drain(|_, _| ());
@@ -3195,7 +3098,7 @@ mod tests {
     #[test]
     fn a_wait_holds_its_object_through_its_last_handle() {
         let directory = directory();
-        let waiter = directory.create_thread_in(1..THREADS).unwrap();
+        let waiter = directory.create_thread().unwrap();
         let event = directory
             .create_event(EventKind::Notification, false)
             .unwrap();
@@ -3227,7 +3130,7 @@ mod tests {
     fn a_wait_holds_a_timer_through_its_last_handle() {
         let directory = directory();
         let mut dispatcher = dispatcher();
-        let waiter = directory.create_thread_in(1..THREADS).unwrap();
+        let waiter = directory.create_thread().unwrap();
         let timer = directory.create_timer(true).unwrap();
         published(directory, timer);
         let record = directory.timer(timer).unwrap();
@@ -3277,7 +3180,7 @@ mod tests {
     #[test]
     fn a_waits_references_keep_records_from_reuse() {
         let directory = directory();
-        let waiter = directory.create_thread_in(1..THREADS).unwrap();
+        let waiter = directory.create_thread().unwrap();
         let semaphore = directory.create_semaphore(0, 1).unwrap();
         published(directory, semaphore);
         assert!(directory.hold_wait(waiter.index, &[semaphore]));
@@ -3299,7 +3202,7 @@ mod tests {
     #[test]
     fn a_wait_holds_every_object_it_names() {
         let directory = directory();
-        let waiter = directory.create_thread_in(1..THREADS).unwrap();
+        let waiter = directory.create_thread().unwrap();
         let a = directory
             .create_event(EventKind::Notification, false)
             .unwrap();
@@ -3323,7 +3226,7 @@ mod tests {
     #[test]
     fn a_wait_refuses_a_gone_object() {
         let directory = directory();
-        let waiter = directory.create_thread_in(1..THREADS).unwrap();
+        let waiter = directory.create_thread().unwrap();
         let live = directory
             .create_event(EventKind::Notification, false)
             .unwrap();
@@ -3382,20 +3285,20 @@ mod tests {
         assert_eq!(left.len(), 1, "the section's frames");
     }
 
-    /// Thread records: created threads never take the main thread's record, the pool exhausts at
-    /// its capacity, and a record's pointer resolves to its object.
+    /// Thread objects: none takes a system thread's index, the pool grows past the fixed pool's old
+    /// 128 records with each one's dispatcher record made, the lowest free index is taken first, a
+    /// record names its object, and a create that finds no page takes nothing.
     #[test]
-    fn thread_records_and_their_ranges() {
+    fn thread_objects_grow_past_the_old_cap() {
         let directory = directory();
-        let main = directory.create_thread_in(0..1).unwrap();
-        assert_eq!(main.index, 0);
-        assert_eq!(directory.create_thread_in(0..1), None, "one main thread");
         let mut created = Vec::new();
-        while let Some(id) = directory.create_thread_in(1..THREADS) {
-            assert_ne!(id.index, 0);
+        for _ in 0..300 {
+            let id = directory.create_thread().unwrap();
+            assert!(id.index >= crate::sched::database::SYSTEM_THREADS);
+            assert!(dispatcher().has_thread(ThreadId(id.index)));
             created.push(id);
         }
-        assert_eq!(created.len(), THREADS - 1);
+        assert_eq!(created[0].index, crate::sched::database::SYSTEM_THREADS);
         let last = *created.last().unwrap();
         let record = ThreadId(last.index);
         assert_eq!(directory.thread_object(record), Some(last));
@@ -3404,12 +3307,25 @@ mod tests {
             None,
             "the idle thread's record names no object"
         );
-        // A thread's own reference released: its record is free again.
+        // A thread's own reference released: its record is free again, and the lowest free.
+        let middle = created[100];
+        assert_eq!(directory.dereference(middle), None);
+        assert_eq!(directory.thread_object(ThreadId(middle.index)), None);
         assert_eq!(directory.dereference(last), None);
-        assert_eq!(directory.thread_object(record), None);
-        assert_eq!(
-            directory.create_thread_in(1..THREADS).map(|id| id.index),
-            Some(last.index)
+        let again = directory.create_thread().unwrap();
+        assert_eq!(again.index, middle.index);
+        assert_ne!(again, middle, "a new generation");
+        // No page for the next chunk of records: nothing taken.
+        page_budget(0);
+        let taken = until_refused(|| directory.create_thread());
+        assert!(
+            taken.iter().all(|id| id.index < 320),
+            "only the records already made"
+        );
+        page_budget(usize::MAX);
+        assert!(
+            directory.create_thread().is_some(),
+            "pages again: the pool grows"
         );
     }
 
@@ -3421,8 +3337,8 @@ mod tests {
         let directory = directory();
         let a = Box::leak(Box::new(SchedProcess::new(0x0090_0000, 8))) as *mut SchedProcess;
         let b = Box::leak(Box::new(SchedProcess::new(0x00A0_0000, 8))) as *mut SchedProcess;
-        // A's main thread, B's main thread, then a created thread of A's: records 0, 1, 2, client
-        // ids 12, 16, 20 from the client-id table.
+        // A's main thread, B's main thread, then a created thread of A's: records 3, 4, 5 (past
+        // the system threads'), client ids 12, 16, 20 from the client-id table.
         let threads = [a, b, a].map(|owner| {
             let id = directory.create_thread().unwrap();
             let thread = directory.renew_thread(id);
@@ -3435,7 +3351,7 @@ mod tests {
             crate::process::cid::fill(client_id, crate::process::cid::Named::Object(id));
             id
         });
-        assert_eq!(threads.map(|id| id.index), [0, 1, 2]);
+        assert_eq!(threads.map(|id| id.index), [3, 4, 5]);
         assert_eq!(directory.thread_by_client_id(a, 20), Some(threads[2]));
         assert_eq!(directory.thread_by_client_id(a, 12), Some(threads[0]));
         assert_eq!(directory.thread_by_client_id(b, 16), Some(threads[1]));
@@ -3949,7 +3865,7 @@ mod tests {
             .create_event(EventKind::Notification, true)
             .unwrap();
         directory.bind_name(&w("left"), leaked).unwrap();
-        let main = directory.create_thread_in(0..1).unwrap();
+        let main = directory.create_thread().unwrap();
         record(ThreadId(main.index)).teb_va = 0x7FFD_E000;
         assert_eq!(sweep(directory).0, 2);
         assert_eq!(directory.live_objects(), 0);
@@ -3967,7 +3883,7 @@ mod tests {
     #[test]
     fn the_sweep_renews_the_records_handed_out_since_the_last() {
         let directory = directory();
-        let first = directory.create_thread_in(0..1).unwrap();
+        let first = directory.create_thread().unwrap();
         record(ThreadId(first.index)).teb_va = 0x7FFD_E000;
         assert_eq!(directory.dereference(first), None);
         // A record no thread object was handed: written here as nothing in the kernel would.
@@ -3978,11 +3894,11 @@ mod tests {
 
         // The next sweep renews only what was handed out after this one: the first record again,
         // and none other.
-        let again = directory.create_thread_in(0..1).unwrap();
+        let again = directory.create_thread().unwrap();
         assert_eq!(again.index, first.index);
         record(ThreadId(again.index)).teb_va = 0x7FFD_C000;
         assert_eq!(directory.dereference(again), None);
-        let other = directory.create_thread_in(2..3).unwrap();
+        let other = directory.create_thread().unwrap();
         record(ThreadId(other.index)).teb_va = 0x7FFD_B000;
         assert_eq!(sweep(directory).0, 1, "the thread object still held");
         assert_eq!(record(ThreadId(again.index)).teb_va(), 0);
@@ -3997,14 +3913,13 @@ mod tests {
         process
     }
 
-    /// A thread of `process` on a pooled record in `range`, with its TEB at `teb`.
+    /// A thread of `process` on a pooled record, with its TEB at `teb`.
     fn pooled_thread(
         directory: &mut Directory,
-        range: core::ops::Range<usize>,
         process: &mut crate::sched::process::SchedProcess,
         teb: u32,
     ) -> ObjectId {
-        let id = directory.create_thread_in(range).unwrap();
+        let id = directory.create_thread().unwrap();
         let thread = directory.renew_thread(id);
         dispatcher().thread_mut(thread).teb_va = teb;
         // SAFETY: the process is leaked at its final address.
@@ -4020,9 +3935,9 @@ mod tests {
     fn a_process_end_takes_only_its_own() {
         let directory = directory();
         let (a, b) = (sched_process(0x0090_0000), sched_process(0x00A0_0000));
-        let a_main = pooled_thread(directory, 0..1, a, 0x7FFD_E000);
-        let a_child = pooled_thread(directory, 1..THREADS, a, 0x7FFD_D000);
-        let b_thread = pooled_thread(directory, 1..THREADS, b, 0x7FFD_C000);
+        let a_main = pooled_thread(directory, a, 0x7FFD_E000);
+        let a_child = pooled_thread(directory, a, 0x7FFD_D000);
+        let b_thread = pooled_thread(directory, b, 0x7FFD_C000);
         let a_event = directory
             .create_event(EventKind::Notification, false)
             .unwrap();
@@ -4070,8 +3985,8 @@ mod tests {
     fn the_sweep_at_quiescence_catches_a_leak() {
         let directory = directory();
         let (a, b) = (sched_process(0x0090_0000), sched_process(0x00A0_0000));
-        let a_main = pooled_thread(directory, 0..1, a, 0x7FFD_E000);
-        let b_thread = pooled_thread(directory, 1..THREADS, b, 0x7FFD_C000);
+        let a_main = pooled_thread(directory, a, 0x7FFD_E000);
+        let b_thread = pooled_thread(directory, b, 0x7FFD_C000);
         let leaked = directory
             .create_event(EventKind::Notification, false)
             .unwrap();

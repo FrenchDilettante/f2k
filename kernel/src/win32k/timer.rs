@@ -551,7 +551,7 @@ mod tests {
         let t = thread(m, 1, 0x100);
         m.windows.queues.take_wakes();
         let id = set(&mut m.windows, t, 0, 0, 0, 0, 0).unwrap();
-        assert_eq!(m.windows.queues.take_wakes()[0], 1 << t.0);
+        assert!(m.windows.queues.take_wakes().contains(t));
         assert_eq!(read(m, t, &all(), 0), Taken::Nothing { due: Some(MS) });
         set(&mut m.windows, t, 0, id, USER_TIMER_MAXIMUM, 0, 0).unwrap();
         assert_eq!(

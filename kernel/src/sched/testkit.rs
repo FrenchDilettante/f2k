@@ -222,27 +222,21 @@ fn root() -> *mut Dispatcher {
     super::DISPATCHER.as_ptr()
 }
 
-/// `record`, an address inside the installed dispatcher, rederived from the dispatcher's own
-/// address (a pointer a borrow gave out lives only as long as that borrow).
-fn rebased<T: Record>(record: *mut T) -> Rec<T> {
-    let root = root();
-    let offset = record as usize - root as usize;
-    let record = root.cast::<u8>().wrapping_add(offset).cast::<T>();
-    // SAFETY: a record of the installed dispatcher, no borrow of which is live.
-    let id = unsafe { &*record }.record_id();
-    Rec(record, id)
-}
-
 /// A fresh dispatcher, built in place and installed as this thread's.
 pub fn dispatcher() -> Disp {
     // SAFETY: `write_empty` writes a whole dispatcher at the address it is handed, and reaches no
     // level cell.
     let cell = Box::into_raw(unsafe { LevelCell::boxed_in_place(Dispatcher::write_empty) });
     MADE.with(|all| all.borrow_mut().0.push(cell));
-    NEXT.with(|next| next.set([0; 4]));
+    NEXT.with(|next| next.set([super::database::SYSTEM_THREADS, 0, 0, 0]));
     // SAFETY: the cell lives until the thread ends, at its address.
     let cell = unsafe { &*cell };
     super::install_host(cell);
+    // The system threads' records, as the boot makes them: their chunk holds the first threads'
+    // too.
+    installed()
+        .ensure_thread(IDLE_THREAD, &crate::slots::KERNEL_PAGES)
+        .expect("the host's pages");
     installed()
 }
 
@@ -274,18 +268,19 @@ pub fn process_on(dir: u32, base: i8) -> *mut SchedProcess {
     Box::leak(Box::new(SchedProcess::new(dir, base)))
 }
 
-/// The installed dispatcher's record `thread`.
+/// The installed dispatcher's record `thread`, made first if it is not.
 pub fn record(thread: ThreadId) -> Rec<Thread> {
-    rebased(installed().thread_address(thread))
+    installed()
+        .ensure_thread(thread, &crate::slots::KERNEL_PAGES)
+        .expect("the host's pages");
+    let address = installed().thread_address(thread);
+    side(core::ptr::NonNull::new(address))
 }
 
-/// A fresh thread of the installed dispatcher, attached to `process`.
+/// A fresh thread of the installed dispatcher, attached to `process`: past the system threads'
+/// records, as a thread object's is.
 pub fn thread(process: *mut SchedProcess) -> Rec<Thread> {
     let id = ThreadId(take(0));
-    assert!(
-        id != IDLE_THREAD,
-        "the rig's threads stay below the idle record"
-    );
     attached(id, process)
 }
 
@@ -296,6 +291,7 @@ pub fn idle_record(process: *mut SchedProcess) -> Rec<Thread> {
 
 /// The record `id`, renewed and attached to `process`.
 fn attached(id: ThreadId, process: *mut SchedProcess) -> Rec<Thread> {
+    record(id);
     let mut dispatcher = installed();
     dispatcher.renew_thread(id);
     // SAFETY: the process record is leaked at its final address.

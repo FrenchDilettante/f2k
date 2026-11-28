@@ -211,6 +211,7 @@ pub struct Inline<const N: usize>([AtomicPtr<u8>; N]);
 unsafe impl<const N: usize> ChunkDir for Inline<N> {
     const CAPACITY: u32 = N as u32;
 
+    #[inline(always)]
     fn chunk(&self, chunk: u32) -> Option<NonNull<u8>> {
         NonNull::new(self.0.get(chunk as usize)?.load(Ordering::Acquire))
     }
@@ -272,29 +273,41 @@ const HEIGHT_BITS: usize = PAGE - 1;
 
 impl<const F: usize> Paged<F> {
     /// The entries per page as a u64. At least 4, so the height stays within 16 and a
-    /// publication within [`RESERVE`] pages.
+    /// publication within [`RESERVE`] pages; a power of two, so a resolution shifts and masks
+    /// (a u64 division is a library call on x86, on the path of every thread record's look-up).
     const FAN: u64 = {
         assert!(F >= 4 && F * core::mem::size_of::<*mut u8>() <= PAGE);
+        assert!(F.is_power_of_two());
         F as u64
     };
+    /// The bits of a chunk number one level of the tree takes.
+    const SHIFT: u32 = Self::FAN.trailing_zeros();
 
     /// The chunks a tree of `height` spans.
     const fn span(height: u32) -> u64 {
-        Self::FAN.pow(height)
+        1 << (Self::SHIFT * height)
+    }
+
+    /// Whether a tree of `height` spans chunk `chunk`.
+    #[inline(always)]
+    const fn spans(chunk: u32, height: u32) -> bool {
+        let bits = Self::SHIFT * height;
+        bits >= u32::BITS || chunk >> bits == 0
     }
 
     /// The lowest height whose tree spans chunk `chunk`.
     const fn height(chunk: u32) -> u32 {
         let mut height = 0;
-        while chunk as u64 >= Self::span(height) {
+        while !Self::spans(chunk, height) {
             height += 1;
         }
         height
     }
 
     /// Chunk `chunk`'s entry in its page at `level` (1: the page of chunk pointers).
+    #[inline(always)]
     const fn digit(chunk: u32, level: u32) -> usize {
-        ((chunk as u64 / Self::span(level - 1)) % Self::FAN) as usize
+        ((chunk >> (Self::SHIFT * (level - 1))) as usize) & (F - 1)
     }
 
     /// Entry `index` of directory page `page`.
@@ -388,7 +401,7 @@ unsafe impl<const F: usize> ChunkDir for Paged<F> {
 
     fn chunk(&self, chunk: u32) -> Option<NonNull<u8>> {
         let (mut at, height) = Self::split(self.root.load(Ordering::Acquire));
-        if at.is_null() || chunk as u64 >= Self::span(height) {
+        if at.is_null() || !Self::spans(chunk, height) {
             return None;
         }
         for level in (1..=height).rev() {
@@ -1375,12 +1388,14 @@ impl<T: Record, const PER: usize, D: ChunkDir> SideTable<T, PER, D> {
     }
 
     /// Record `index`'s address; none if its chunk is unmade. Takes no lock.
+    #[inline(always)]
     pub fn address(&self, index: u32) -> Option<NonNull<T>> {
         Self::address_in(&self.chunks, index)
     }
 
     /// [`SideTable::address`] through `chunks`, the directory the table was built on
     /// ([`SideTable::on`]), for a reader that cannot borrow the table.
+    #[inline(always)]
     pub fn address_in(chunks: &impl ChunkDir, index: u32) -> Option<NonNull<T>> {
         let base = chunks.chunk(index / PER as u32)?;
         let entry = base.cast::<Entry<T>>();
@@ -1418,12 +1433,14 @@ impl<T: Record, const PER: usize, D: ChunkDir> SideTable<T, PER, D> {
     }
 
     /// Record `index`; none if its chunk is unmade.
+    #[inline(always)]
     pub fn get(&self, index: u32) -> Option<&T> {
         // SAFETY: a published chunk's record, written whole before its publication.
         self.address(index).map(|at| unsafe { &*at.as_ptr() })
     }
 
     /// [`SideTable::get`], to change.
+    #[inline(always)]
     pub fn get_mut(&mut self, index: u32) -> Option<&mut T> {
         // SAFETY: as in `get`; `&mut self` makes this the only reference.
         self.address(index).map(|at| unsafe { &mut *at.as_ptr() })
@@ -1433,6 +1450,107 @@ impl<T: Record, const PER: usize, D: ChunkDir> SideTable<T, PER, D> {
 impl<T: Record, const PER: usize, D: EmptyDir> Default for SideTable<T, PER, D> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// A [`SideTable`] read as a growable array: records `0..len()` made, `len()` one past the highest
+/// index ever made (the table keeps its peak), indexed as an array is. For an owner that hands out
+/// its own indices (the lowest record not in use, as a fixed array's did) under its own lock, and
+/// walks them all.
+pub struct Records<T: Record, const PER: usize, D: ChunkDir = Paged> {
+    table: SideTable<T, PER, D>,
+    len: u32,
+}
+
+impl<T: Record, const PER: usize, D: EmptyDir> Records<T, PER, D> {
+    /// No record made, no page held.
+    pub const fn new() -> Self {
+        Records {
+            table: SideTable::new(),
+            len: 0,
+        }
+    }
+}
+
+impl<T: Record, const PER: usize, D: ChunkDir> Records<T, PER, D> {
+    /// One past the highest record made: every index below it is made.
+    pub fn len(&self) -> usize {
+        self.len as usize
+    }
+
+    /// Whether no record is made.
+    pub fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// Make records up to and including `index` (each fresh), with any page from `pages`. On
+    /// failure the records made before stay, and `len()` covers only those.
+    pub fn ensure(&mut self, index: u32, pages: &impl Pages) -> Result<(), Exhausted> {
+        while self.len <= index {
+            self.table.ensure(self.len, pages)?;
+            // A chunk's records are all made with it.
+            self.len = (self.len / PER as u32 + 1) * PER as u32;
+        }
+        Ok(())
+    }
+
+    /// Record `index`, made; none past `len()`.
+    pub fn get(&self, index: usize) -> Option<&T> {
+        if index >= self.len() {
+            return None;
+        }
+        self.table.get(index as u32)
+    }
+
+    /// [`Records::get`], to change.
+    pub fn get_mut(&mut self, index: usize) -> Option<&mut T> {
+        if index >= self.len() {
+            return None;
+        }
+        self.table.get_mut(index as u32)
+    }
+
+    /// The address of record `index`; none past `len()`. Takes no lock: the records never move.
+    pub fn address(&self, index: usize) -> Option<NonNull<T>> {
+        if index >= self.len() {
+            return None;
+        }
+        self.table.address(index as u32)
+    }
+
+    /// The records, lowest index first.
+    pub fn iter(&self) -> impl Iterator<Item = &T> + '_ {
+        (0..self.len()).map(move |index| &self[index])
+    }
+
+    /// The records, lowest index first, to change.
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut T> + '_ {
+        let len = self.len();
+        let table = &self.table;
+        // SAFETY: each made record once, and `&mut self` makes these the only references.
+        (0..len).map(move |index| unsafe {
+            &mut *table.address(index as u32).expect("a made record").as_ptr()
+        })
+    }
+}
+
+impl<T: Record, const PER: usize, D: EmptyDir> Default for Records<T, PER, D> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T: Record, const PER: usize, D: ChunkDir> core::ops::Index<usize> for Records<T, PER, D> {
+    type Output = T;
+
+    fn index(&self, index: usize) -> &T {
+        self.get(index).expect("a made record")
+    }
+}
+
+impl<T: Record, const PER: usize, D: ChunkDir> core::ops::IndexMut<usize> for Records<T, PER, D> {
+    fn index_mut(&mut self, index: usize) -> &mut T {
+        self.get_mut(index).expect("a made record")
     }
 }
 
@@ -2268,6 +2386,28 @@ mod tests {
         pages.set_budget(0);
         assert_eq!(t.ensure(9, &pages), Err(Exhausted::NoPages));
         assert!(t.get(9).is_none());
+    }
+
+    /// Records read as a growable array: made a chunk at a time up to an index, indexed and
+    /// walked below `len()`, nothing past it; a refused growth keeps what was made.
+    #[test]
+    fn records_grow_as_an_array() {
+        let pages = HostPages::new();
+        let mut r = boxed(Records::<Rec, 4>::new());
+        assert!(r.is_empty() && r.get(0).is_none());
+        r.ensure(5, &pages).unwrap();
+        assert_eq!(r.len(), 8);
+        r[6].value = 3;
+        assert_eq!(r.get(6).map(|rec| rec.value), Some(3));
+        assert!(r.get(8).is_none());
+        assert_eq!(r.iter().map(|rec| rec.index).sum::<u32>(), (0..8).sum());
+        for rec in r.iter_mut() {
+            rec.value = 1;
+        }
+        assert!(r.iter().all(|rec| rec.value == 1));
+        pages.set_budget(0);
+        assert_eq!(r.ensure(20, &pages), Err(Exhausted::NoPages));
+        assert_eq!(r.len(), 8);
     }
 
     #[test]

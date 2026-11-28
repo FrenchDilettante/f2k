@@ -76,8 +76,9 @@ pub struct Dispatcher {
 
 // SAFETY: the dispatcher's raw pointers name pinned process records (a thread's owner and
 // address-space process) and embedded waitable headers, each kept alive and in place by its owner
-// while linked. One processor, and the dispatcher is reached only through its dispatch-level cell,
-// so whichever kernel thread holds the token is the only one reaching what they point at.
+// while linked, and its own thread records' directory and chunks (nonpaged-pool pages it holds).
+// One processor, and the dispatcher is reached only through its dispatch-level cell, so whichever
+// kernel thread holds the token is the only one reaching what they point at.
 unsafe impl Send for Dispatcher {}
 
 impl Dispatcher {
@@ -280,15 +281,20 @@ impl Dispatcher {
     /// quantum and user-copy attribution go back to its record and the selected thread's come out
     /// of its own, masked: the clock charges the slot, and no tick may land between the two
     /// halves. The Standby-to-Running state write is the swap's own effect.
-    pub fn enter(&mut self, selected: ThreadId) {
+    ///
+    /// Returns the selected thread's record's address, what the swap is handed.
+    pub fn enter(&mut self, selected: ThreadId) -> *mut Thread {
         let slots = slots();
         let _masked = crate::pcr::pcr().mask_guard();
         if let Some(running) = slots.current() {
             self.thread_mut(running).switch_out();
         }
         slots.set_current(Some(selected));
-        self.thread(selected).switch_in();
+        let record = self.thread_mut(selected);
+        record.switch_in();
+        let record: *mut Thread = record;
         self.processor_idle = Some(selected) == slots.idle() && !self.has_schedulable();
+        record
     }
 
     /// Select the highest-priority ready thread at or above `floor`, unlinking it from its queue.

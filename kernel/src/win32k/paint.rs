@@ -1346,7 +1346,7 @@ mod tests {
         let (w, h) = shown(m, atom, t, 30, 40);
         m.windows.queues.take_wakes();
         invalidate(&mut m.windows, w, None, true);
-        assert_eq!(m.windows.queues.take_wakes()[0], 1 << t.0);
+        assert!(m.windows.queues.take_wakes().contains(t));
         assert_eq!(
             update_rect(&mut m.windows, w, false),
             (Rect::new(0, 0, 320, 200), UPDATE_NOT_EMPTY)

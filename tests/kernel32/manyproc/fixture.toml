@@ -10,7 +10,7 @@ gate = true
 timeout = 180
 
 [pending]
-alive = "the thread cap (ob::THREADS, 128 threads): F2K stops at child 128 with err=8 (slot-pool slice 21); the capture's child 551 err=1450 is the VM running out of memory, which will then need a prediction or a mask"
+alive = "the capture's VM ran out of memory at child 551 (CreateProcessA err=1450, ERROR_NO_SYSTEM_RESOURCES: 550 of 600 started), where F2K's test boot starts all 600 (no process or thread cap since slot-pool slices 19 and 21; every id and end line holds): the blocks differ by the failure line and the counts, which no mask can match (a mask stands for a line, not its absence). A capture on a VM with the memory for 600 would settle it"
 
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from

@@ -143,11 +143,8 @@ fn install(
         Some(from),
         "a switch from the running thread"
     );
-    dispatcher.enter(to);
-    (
-        dispatcher.thread_address(from),
-        dispatcher.thread_address(to),
-    )
+    let from = dispatcher.thread_address(from);
+    (from, dispatcher.enter(to))
 }
 
 // Only the records' addresses cross the boundary, as opaque pointers: the asm consumes them through
