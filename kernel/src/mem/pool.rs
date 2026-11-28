@@ -402,19 +402,26 @@ mod target {
         }
         let last = blocks[..count].iter().flatten().last();
         let grown = last.is_some_and(|block| block.virtual_address() >= OLD_END);
-        crate::serial_println!(
-            "F2K: pool-smoke: {count} blocks of 1 MiB, past the old 16 MiB region: {}",
+        crate::klog!(
+            Debug,
+            "smoke",
+            "pool-smoke: {count} blocks of 1 MiB, past the old 16 MiB region: {}",
             yes(grown)
         );
         let made = paging::kernel_table_frames() - tables;
-        crate::serial_println!(
-            "F2K: pool-smoke: tables made for the growth: {}",
+        crate::klog!(
+            Debug,
+            "smoke",
+            "pool-smoke: tables made for the growth: {}",
             yes(made > 0)
         );
         let late = paging::create_address_space();
-        crate::serial_println!(
-            "F2K: pool-smoke: every directory holds the new tables: {}",
-            yes(paging::directories_in_step())
+        let in_step = paging::directories_in_step();
+        crate::klog!(
+            Debug,
+            "smoke",
+            "pool-smoke: every directory holds the new tables: {}",
+            yes(in_step)
         );
 
         // Read the last block's marker in the directory made before the growth: the processor
@@ -432,8 +439,10 @@ mod target {
             })
         });
         let expected = 0xF2C0_0000 | (count as u32).wrapping_sub(1);
-        crate::serial_println!(
-            "F2K: pool-smoke: a directory made before the growth reads the new pages: {}",
+        crate::klog!(
+            Debug,
+            "smoke",
+            "pool-smoke: a directory made before the growth reads the new pages: {}",
             yes(seen == Some(expected))
         );
 
@@ -444,10 +453,13 @@ mod target {
             paging::retire_address_space(dir);
             paging::release_frame_phys(dir);
         }
-        crate::serial_println!(
-            "F2K: pool-smoke: blocks given back, tables kept, directories retired: {}",
-            yes(paging::kernel_table_frames() == tables + made
-                && paging::live_directories() == directories)
+        let kept = paging::kernel_table_frames() == tables + made
+            && paging::live_directories() == directories;
+        crate::klog!(
+            Debug,
+            "smoke",
+            "pool-smoke: blocks given back, tables kept, directories retired: {}",
+            yes(kept)
         );
     }
 

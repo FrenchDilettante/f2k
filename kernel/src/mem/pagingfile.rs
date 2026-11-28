@@ -742,16 +742,16 @@ mod target {
             }
         };
         crate::mem::set_system_commit_limit(limit);
-        let pages = file.pages();
+        let (pages, mib) = (file.pages(), size / (1024 * 1024));
         PAGING_FILE.with(|slot| *slot = Some(file));
         // Leave the volume as the boot found it: the file's writes are all on disk, so the flush
         // counts its free clusters into FSInfo and marks it clean (nothing to do when the old file
         // was kept as it was), and a shutdown later finds nothing to write.
         let _ = with_boot_volume(|volume| volume.flush());
-        crate::serial_println!(
-            "F2K: paging file: {} pages ({} MiB), commit limit {} pages",
-            pages,
-            size / (1024 * 1024),
+        crate::klog!(
+            File,
+            "mem",
+            "paging file: {pages} pages ({mib} MiB), commit limit {} pages",
             limit / 4096
         );
     }

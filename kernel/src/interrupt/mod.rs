@@ -644,13 +644,12 @@ mod target {
                     crate::user::apc::deliver_exit();
                 }
             }
-            Outcome::Spurious => {
-                SPURIOUS.fetch_add(1, Ordering::Relaxed);
-            }
+            Outcome::Spurious => _ = SPURIOUS.fetch_add(1, Ordering::Relaxed),
             Outcome::Unexpected => {
-                crate::serial_println!(
-                    "F2K: unexpected interrupt on vector {:#04x}; halting",
-                    vector
+                crate::klog!(
+                    Screen,
+                    "interrupt",
+                    "unexpected interrupt on vector {vector:#04x}; halting"
                 );
                 crate::halt();
             }

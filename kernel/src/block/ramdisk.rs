@@ -148,8 +148,10 @@ mod target {
         let disk = crate::mem::bootmem::disk_module().and_then(|bytes| {
             let start = bytes.start;
             let disk = RamDisk::over(ScratchMemory, bytes)?;
-            crate::serial_println!(
-                "F2K: ram disk: {} sectors from the boot module at {:#010x}",
+            crate::klog!(
+                Debug,
+                "ramdisk",
+                "ram disk: {} sectors from the boot module at {:#010x}",
                 disk.sectors,
                 start
             );

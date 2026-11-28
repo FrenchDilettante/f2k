@@ -324,8 +324,10 @@ unsafe extern "C" fn fresh_thread_level() {
 /// serial line and halt. Never returns; the stub jumps here with interrupts already disabled.
 #[cfg(target_arch = "x86")]
 unsafe extern "C" fn startup_no_user_context() -> ! {
-    crate::serial_println!(
-        "F2K: BUG: a kernel thread's system routine returned with no user context"
+    crate::klog!(
+        Screen,
+        "sched",
+        "BUG: a kernel thread's system routine returned with no user context"
     );
     crate::halt()
 }

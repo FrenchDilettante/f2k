@@ -21,7 +21,6 @@ use crate::hw::ide::disk;
 use crate::hw::kbd;
 use crate::interrupt::clock;
 use crate::pcr::pcr;
-use crate::serial_println;
 
 /// How long the diagnostic waits for the harness's key, in ticks (about ten seconds).
 const KEY_TICKS: u64 = 1000;
@@ -59,12 +58,16 @@ pub fn run() {
     // and restores.
     let controller = PLATFORM;
     controller.disable_system_interrupt(kbd::VECTOR);
-    serial_println!("F2K: nest-smoke: keyboard line held at the controller; press a key");
+    crate::klog!(
+        Debug,
+        "smoke",
+        "nest-smoke: keyboard line held at the controller; press a key"
+    );
     if !halt_while(KEY_TICKS, || {
         !controller.system_interrupt_requested(kbd::VECTOR)
     }) {
         controller.enable_system_interrupt(kbd::VECTOR);
-        serial_println!("F2K: nest-smoke: FAILED (no key came)");
+        crate::klog!(Debug, "smoke", "nest-smoke: FAILED (no key came)");
         return;
     }
 
@@ -78,11 +81,19 @@ pub fn run() {
     if polls == DISK_POLLS {
         controller.enable_system_interrupt(kbd::VECTOR);
         pcr().unmask_interrupts();
-        serial_println!("F2K: nest-smoke: FAILED (the disk's interrupt never came)");
+        crate::klog!(
+            Debug,
+            "smoke",
+            "nest-smoke: FAILED (the disk's interrupt never came)"
+        );
         return;
     }
     controller.enable_system_interrupt(kbd::VECTOR);
-    serial_println!("F2K: nest-smoke: keyboard and disk interrupts pending together");
+    crate::klog!(
+        Debug,
+        "smoke",
+        "nest-smoke: keyboard and disk interrupts pending together"
+    );
 
     // Both in: the keyboard's claim, its end, then the disk's.
     let served = halt_while(SERVED_TICKS, || {
@@ -91,17 +102,28 @@ pub fn run() {
             || disk::unsolicited() == unsolicited
     });
     if !served {
-        serial_println!("F2K: nest-smoke: FAILED (the pending interrupts were not served)");
+        crate::klog!(
+            Debug,
+            "smoke",
+            "nest-smoke: FAILED (the pending interrupts were not served)"
+        );
         return;
     }
     match super::audit() {
         Ok(()) => {
-            serial_println!(
-                "F2K: nest-smoke: both served, the disk's after the keyboard's; interrupt audit: ok"
+            crate::klog!(
+                Debug,
+                "smoke",
+                "nest-smoke: both served, the disk's after the keyboard's; interrupt audit: ok"
             );
         }
         Err(why) => {
-            serial_println!("F2K: nest-smoke: interrupt audit: FAILED ({})", why);
+            crate::klog!(
+                Debug,
+                "smoke",
+                "nest-smoke: interrupt audit: FAILED ({})",
+                why
+            );
         }
     }
 }

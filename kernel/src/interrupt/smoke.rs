@@ -13,7 +13,6 @@ use crate::hal::{Hal, PLATFORM};
 use crate::interrupt::clock::{self, CLOCK_VECTOR};
 use crate::pcr::pcr;
 use crate::sched::timer::TimerId;
-use crate::serial_println;
 
 /// The ticks the diagnostic waits for before it calls the timer live.
 const LIVE_TICKS: u64 = 5;
@@ -32,34 +31,43 @@ fn wait_for_interrupt() {
 pub fn run() {
     // The controller is the kernel's own; these reads change no state.
     let (master_base, slave_base) = PLATFORM.vector_bases();
-    serial_println!(
-        "F2K: irq-smoke: PIC remapped (master {:#04x}, slave {:#04x}, IRQ0 {})",
+    let clock_line = if PLATFORM.system_interrupt_enabled(CLOCK_VECTOR) {
+        "unmasked"
+    } else {
+        "masked"
+    };
+    crate::klog!(
+        Debug,
+        "smoke",
+        "irq-smoke: PIC remapped (master {:#04x}, slave {:#04x}, IRQ0 {})",
         master_base,
         slave_base,
-        if PLATFORM.system_interrupt_enabled(CLOCK_VECTOR) {
-            "unmasked"
-        } else {
-            "masked"
-        }
+        clock_line
     );
     let (master_mask, slave_mask) = PLATFORM.line_masks();
-    serial_println!(
-        "F2K: irq-smoke: PIC line masks: master {:#04x}, slave {:#04x}",
+    crate::klog!(
+        Debug,
+        "smoke",
+        "irq-smoke: PIC line masks: master {:#04x}, slave {:#04x}",
         master_mask,
         slave_mask
     );
 
     let timer = PLATFORM.timer_programming();
-    serial_println!(
-        "F2K: irq-smoke: PIT programmed (mode {}, divisor {}, {}.{:04} ms tick)",
+    crate::klog!(
+        Debug,
+        "smoke",
+        "irq-smoke: PIT programmed (mode {}, divisor {}, {}.{:04} ms tick)",
         timer.programmed.mode,
         timer.divisor,
         timer.interval / 10_000,
         timer.interval % 10_000
     );
     let status = timer.status;
-    serial_println!(
-        "F2K: irq-smoke: PIT channel 0 read-back: mode {}, {}, {}",
+    crate::klog!(
+        Debug,
+        "smoke",
+        "irq-smoke: PIT channel 0 read-back: mode {}, {}, {}",
         status.mode,
         status.access_name(),
         if status.bcd { "BCD" } else { "binary" }
@@ -71,8 +79,10 @@ pub fn run() {
     while clock::ticks() < LIVE_TICKS {
         wait_for_interrupt();
     }
-    serial_println!(
-        "F2K: irq-smoke: timer live (>= {} ticks observed)",
+    crate::klog!(
+        Debug,
+        "smoke",
+        "irq-smoke: timer live (>= {} ticks observed)",
         LIVE_TICKS
     );
 
@@ -109,17 +119,22 @@ pub fn run() {
     while !signaled() {
         wait_for_interrupt();
     }
-    serial_println!("F2K: irq-smoke: clock DPC fired");
+    crate::klog!(Debug, "smoke", "irq-smoke: clock DPC fired");
     // The timer goes with its creator's reference: no process holds it, and nothing outlives the
     // diagnostic.
     crate::ob::release(timer);
 
     match super::audit() {
         Ok(()) => {
-            serial_println!("F2K: irq-smoke: interrupt audit: ok");
+            crate::klog!(Debug, "smoke", "irq-smoke: interrupt audit: ok");
         }
         Err(why) => {
-            serial_println!("F2K: irq-smoke: interrupt audit: FAILED ({})", why);
+            crate::klog!(
+                Debug,
+                "smoke",
+                "irq-smoke: interrupt audit: FAILED ({})",
+                why
+            );
         }
     }
 }

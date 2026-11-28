@@ -470,18 +470,26 @@ pub fn smoke() {
     with_database(|database| database.stacks.slots.fence_below(past));
     let tables = paging::kernel_table_frames();
     let stack = create().expect("the diagnostic's stack");
-    crate::serial_println!(
-        "F2K: pool-smoke: a kernel stack past the old 16 MiB region (slot {}): {}",
+    crate::klog!(
+        Debug,
+        "smoke",
+        "pool-smoke: a kernel stack past the old 16 MiB region (slot {}): {}",
         stack.slot,
         yes(stack.slot == past && stack.limit() >= OLD_END)
     );
-    crate::serial_println!(
-        "F2K: pool-smoke: a table made for the stack: {}",
-        yes(paging::kernel_table_frames() == tables + 1)
+    let made_one = paging::kernel_table_frames() == tables + 1;
+    crate::klog!(
+        Debug,
+        "smoke",
+        "pool-smoke: a table made for the stack: {}",
+        yes(made_one)
     );
-    crate::serial_println!(
-        "F2K: pool-smoke: every directory holds the stack's table: {}",
-        yes(paging::directories_in_step())
+    let in_step = paging::directories_in_step();
+    crate::klog!(
+        Debug,
+        "smoke",
+        "pool-smoke: every directory holds the stack's table: {}",
+        yes(in_step)
     );
 
     // Write the stack's lowest and highest words here, read them in the directory made before the
@@ -501,8 +509,10 @@ pub fn smoke() {
             (words, high.read_volatile())
         }
     });
-    crate::serial_println!(
-        "F2K: pool-smoke: a directory made before the table runs the stack's pages: {}",
+    crate::klog!(
+        Debug,
+        "smoke",
+        "pool-smoke: a directory made before the table runs the stack's pages: {}",
         yes(seen == ((0xF2C5_0000, 0xF2C5_FFFF), 0xF2C5_1111))
     );
 
@@ -511,9 +521,12 @@ pub fn smoke() {
     paging::release_frame_phys(early);
     let straddling = first_slot_into_window(5);
     with_database(|database| database.stacks.slots.fence_below(straddling));
-    crate::serial_println!(
-        "F2K: pool-smoke: stack released, table kept, slots fenced below {straddling}: {}",
-        yes(paging::kernel_table_frames() == tables + 1)
+    let kept = paging::kernel_table_frames() == tables + 1;
+    crate::klog!(
+        Debug,
+        "smoke",
+        "pool-smoke: stack released, table kept, slots fenced below {straddling}: {}",
+        yes(kept)
     );
     SMOKE_WINDOW.store(6, core::sync::atomic::Ordering::Relaxed);
 }
@@ -528,10 +541,13 @@ fn smoke_report(stack: GateStack, made: u32) {
     if made == 0 || window == 0 {
         return;
     }
-    crate::serial_println!(
-        "F2K: pool-smoke: a thread's stack at slot {} made {made} table(s), {} directories live",
+    let live = paging::live_directories();
+    crate::klog!(
+        Debug,
+        "smoke",
+        "pool-smoke: a thread's stack at slot {} made {made} table(s), {} directories live",
         stack.slot,
-        paging::live_directories()
+        live
     );
     if window > SMOKE_LAST_WINDOW {
         SMOKE_WINDOW.store(0, Ordering::Relaxed);
