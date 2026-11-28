@@ -18,7 +18,7 @@ use core::ffi::CStr;
 
 use rtl::gdi::{Abc, FontEnumRecord, FontSignature, LogFontW, Point, Size, TextMetricW};
 use rtl::heap::HEAP_ZERO_MEMORY;
-use rtl::status::{checked, NtStatus};
+use rtl::status::{checked, written, NtStatus};
 
 #[cfg(all(target_arch = "x86", not(test)))]
 mod raw {
@@ -461,12 +461,12 @@ impl Caller {
 
     /// This DLL's own `value`, lent to the service for the call.
     pub fn of<T>(value: &T) -> Caller {
-        Caller(value as *const T as usize)
+        Caller(core::ptr::from_ref(value) as usize)
     }
 
     /// This DLL's own `value`, lent to the service to write.
     pub fn of_mut<T>(value: &mut T) -> Caller {
-        Caller(value as *mut T as usize)
+        Caller(core::ptr::from_mut(value) as usize)
     }
 }
 
@@ -536,11 +536,9 @@ pub fn multi_byte_to_unicode(destination: &mut [u16], source: &[u8]) -> usize {
 /// NtGdiOpenDCW: a DC of the display the NUL-terminated UTF-16 name at `device` names (none for
 /// the primary display).
 pub fn open_dc(device: Caller) -> Result<u32, NtStatus> {
-    let mut dc = 0u32;
     // SAFETY: the kernel reads the name to its terminator through its fault-tolerant copies, and
     // writes the handle into the local.
-    checked(unsafe { raw::NtGdiOpenDCW(device.0 as *const u16, &mut dc) })?;
-    Ok(dc)
+    written(|dc| unsafe { raw::NtGdiOpenDCW(device.0 as *const u16, dc) })
 }
 
 /// NtGdiDeleteObjectApp: `object` deleted (a DC's handle closed; a stock object stays).
@@ -551,10 +549,8 @@ pub fn delete_object(object: usize) -> Result<(), NtStatus> {
 
 /// NtGdiGetStockObject: stock object `index`'s handle.
 pub fn stock_object(index: u32) -> Result<u32, NtStatus> {
-    let mut object = 0u32;
     // SAFETY: the service writes the handle into the local.
-    checked(unsafe { raw::NtGdiGetStockObject(index, &mut object) })?;
-    Ok(object)
+    written(|object| unsafe { raw::NtGdiGetStockObject(index, object) })
 }
 
 /// The kinds of objects a DC selects, each through its own service.
@@ -573,34 +569,26 @@ pub fn select(kind: Selected, dc: usize, object: usize) -> Result<u32, NtStatus>
         Selected::Pen => raw::NtGdiSelectPen,
         Selected::Font => raw::NtGdiSelectFont,
     };
-    let mut previous = 0u32;
     // SAFETY: the service writes the previous object into the local.
-    checked(unsafe { service(dc, object, &mut previous) })?;
-    Ok(previous)
+    written(|previous| unsafe { service(dc, object, previous) })
 }
 
 /// NtGdiGetDCObject: the object of `kind` (OBJ_BRUSH, OBJ_PEN, OBJ_FONT) selected into `dc`.
 pub fn dc_object(dc: usize, kind: u32) -> Result<u32, NtStatus> {
-    let mut object = 0u32;
     // SAFETY: the service writes the handle into the local.
-    checked(unsafe { raw::NtGdiGetDCObject(dc, kind, &mut object) })?;
-    Ok(object)
+    written(|object| unsafe { raw::NtGdiGetDCObject(dc, kind, object) })
 }
 
 /// NtGdiGetDCDword: `dc`'s attribute `index` (rtl::gdi's DC_ indexes).
 pub fn dc_dword(dc: usize, index: u32) -> Result<u32, NtStatus> {
-    let mut value = 0u32;
     // SAFETY: the service writes the value into the local.
-    checked(unsafe { raw::NtGdiGetDCDword(dc, index, &mut value) })?;
-    Ok(value)
+    written(|value| unsafe { raw::NtGdiGetDCDword(dc, index, value) })
 }
 
 /// NtGdiGetAndSetDCDword: `dc`'s attribute `index` set to `value`, the value it had answered.
 pub fn set_dc_dword(dc: usize, index: u32, value: u32) -> Result<u32, NtStatus> {
-    let mut previous = 0u32;
     // SAFETY: the service writes the previous value into the local.
-    checked(unsafe { raw::NtGdiGetAndSetDCDword(dc, index, value, &mut previous) })?;
-    Ok(previous)
+    written(|previous| unsafe { raw::NtGdiGetAndSetDCDword(dc, index, value, previous) })
 }
 
 /// NtGdiExtTextOutW: `count` UTF-16 units at `string` drawn into `dc` at (`x`, `y`), with
@@ -688,58 +676,48 @@ pub fn glyph_indices(
     glyphs: Caller,
     flags: u32,
 ) -> Result<u32, NtStatus> {
-    let mut converted = 0u32;
     // SAFETY: the kernel reads the string and writes the glyphs through its fault-tolerant
     // copies; the count into the local.
-    checked(unsafe {
+    written(|converted| unsafe {
         raw::NtGdiGetGlyphIndicesW(
             dc,
             string.0 as *const u16,
             count,
             glyphs.0 as *mut u16,
             flags,
-            &mut converted,
+            converted,
         )
-    })?;
-    Ok(converted)
+    })
 }
 
 /// NtGdiGetTextCharsetInfo: `dc`'s font's character set, its FONTSIGNATURE into the structure at
 /// `signature` (null for none).
 pub fn text_charset_info(dc: usize, signature: Caller, flags: u32) -> Result<u32, NtStatus> {
-    let mut char_set = 0u32;
     // SAFETY: the kernel writes the signature through its fault-tolerant copies, the character
     // set into the local.
-    checked(unsafe {
-        raw::NtGdiGetTextCharsetInfo(dc, signature.0 as *mut FontSignature, flags, &mut char_set)
-    })?;
-    Ok(char_set)
+    written(|char_set| unsafe {
+        raw::NtGdiGetTextCharsetInfo(dc, signature.0 as *mut FontSignature, flags, char_set)
+    })
 }
 
 /// NtGdiSetPixel: the pixel at (`x`, `y`) of `dc` set to `color`, the color set answered
 /// (CLR_INVALID outside the DC's clipping region).
 pub fn set_pixel(dc: usize, x: i32, y: i32, color: u32) -> Result<u32, NtStatus> {
-    let mut set = 0u32;
     // SAFETY: the service writes the color into the local.
-    checked(unsafe { raw::NtGdiSetPixel(dc, x, y, color, &mut set) })?;
-    Ok(set)
+    written(|set| unsafe { raw::NtGdiSetPixel(dc, x, y, color, set) })
 }
 
 /// NtGdiGetPixel: the color of the pixel at (`x`, `y`) of `dc` (CLR_INVALID outside the DC's
 /// clipping region).
 pub fn get_pixel(dc: usize, x: i32, y: i32) -> Result<u32, NtStatus> {
-    let mut color = 0u32;
     // SAFETY: the service writes the color into the local.
-    checked(unsafe { raw::NtGdiGetPixel(dc, x, y, &mut color) })?;
-    Ok(color)
+    written(|color| unsafe { raw::NtGdiGetPixel(dc, x, y, color) })
 }
 
 /// NtGdiCreateSolidBrush: a brush object of `color`, its handle.
 pub fn create_solid_brush(color: u32) -> Result<u32, NtStatus> {
-    let mut brush = 0u32;
     // SAFETY: the service writes the handle into the local.
-    checked(unsafe { raw::NtGdiCreateSolidBrush(color, &mut brush) })?;
-    Ok(brush)
+    written(|brush| unsafe { raw::NtGdiCreateSolidBrush(color, brush) })
 }
 
 /// NtGdiPatBlt: the rectangle at (`x`, `y`), `width` by `height`, of `dc` painted with its brush
@@ -760,10 +738,8 @@ pub fn pat_blt(
 
 /// NtGdiCreatePen: a pen of `style`, `width` and `color`, its handle.
 pub fn create_pen(style: i32, width: i32, color: u32) -> Result<u32, NtStatus> {
-    let mut pen = 0u32;
     // SAFETY: the service writes the handle into the local.
-    checked(unsafe { raw::NtGdiCreatePen(style, width, color, &mut pen) })?;
-    Ok(pen)
+    written(|pen| unsafe { raw::NtGdiCreatePen(style, width, color, pen) })
 }
 
 /// NtGdiExtCreatePen: an extended pen of `style` and `width`, its brush's fields, and `count` user
@@ -775,10 +751,9 @@ pub fn ext_create_pen(
     count: u32,
     entries: Caller,
 ) -> Result<u32, NtStatus> {
-    let mut pen = 0u32;
     // SAFETY: the kernel reads the entries through its fault-tolerant copies, and writes the
     // handle into the local.
-    checked(unsafe {
+    written(|pen| unsafe {
         raw::NtGdiExtCreatePen(
             style,
             width,
@@ -787,10 +762,9 @@ pub fn ext_create_pen(
             brush.hatch,
             count,
             entries.0 as *const u32,
-            &mut pen,
+            pen,
         )
-    })?;
-    Ok(pen)
+    })
 }
 
 /// NtGdiMoveTo: `dc`'s current position moved to (`x`, `y`), the one it had into the POINT at
@@ -808,10 +782,8 @@ pub fn dc_point(dc: usize, which: u32, point: Caller) -> Result<(), NtStatus> {
 
 /// NtGdiSaveDC: `dc`'s state saved, its level answered.
 pub fn save_dc(dc: usize) -> Result<u32, NtStatus> {
-    let mut level = 0u32;
     // SAFETY: the service writes the level into the local.
-    checked(unsafe { raw::NtGdiSaveDC(dc, &mut level) })?;
-    Ok(level)
+    written(|level| unsafe { raw::NtGdiSaveDC(dc, level) })
 }
 
 /// NtGdiRestoreDC: `dc`'s saved state `level` (negative: from the last) restored.
@@ -836,18 +808,16 @@ pub fn scale_ext(
     y: (i32, i32),
     previous: Caller,
 ) -> Result<bool, NtStatus> {
-    let mut result = 0u32;
     let previous = previous.0 as *mut Size;
+    let call = if window {
+        raw::NtGdiScaleWindowExtEx
+    } else {
+        raw::NtGdiScaleViewportExtEx
+    };
     // SAFETY: the kernel writes the SIZE through its fault-tolerant copies, the result into the
     // local.
-    checked(unsafe {
-        if window {
-            raw::NtGdiScaleWindowExtEx(dc, x.0, x.1, y.0, y.1, previous, &mut result)
-        } else {
-            raw::NtGdiScaleViewportExtEx(dc, x.0, x.1, y.0, y.1, previous, &mut result)
-        }
-    })?;
-    Ok(result != 0)
+    written(|result| unsafe { call(dc, x.0, x.1, y.0, y.1, previous, result) })
+        .map(|result: u32| result != 0)
 }
 
 /// NtGdiTransformPoints: the `count` POINTs at `points` taken through `dc`'s mapping in place, in
@@ -881,16 +851,17 @@ pub fn shape(
     right: i32,
     bottom: i32,
 ) -> Result<(), NtStatus> {
-    // SAFETY: no pointers.
-    checked(unsafe {
-        match kind {
-            ShapeKind::Rectangle => raw::NtGdiRectangle(dc, left, top, right, bottom),
-            ShapeKind::Ellipse => raw::NtGdiEllipse(dc, left, top, right, bottom),
-            ShapeKind::RoundRect(width, height) => {
-                raw::NtGdiRoundRect(dc, left, top, right, bottom, width, height)
-            }
-        }
-    })
+    let status = match kind {
+        // SAFETY: no pointers.
+        ShapeKind::Rectangle => unsafe { raw::NtGdiRectangle(dc, left, top, right, bottom) },
+        // SAFETY: no pointers.
+        ShapeKind::Ellipse => unsafe { raw::NtGdiEllipse(dc, left, top, right, bottom) },
+        // SAFETY: no pointers.
+        ShapeKind::RoundRect(width, height) => unsafe {
+            raw::NtGdiRoundRect(dc, left, top, right, bottom, width, height)
+        },
+    };
+    checked(status)
 }
 
 /// The shapes a box makes, as [`shape`] draws them.
@@ -919,7 +890,7 @@ pub fn poly_poly_draw(
             counts.as_ptr(),
             counts.len() as u32,
             function,
-            &mut result,
+            &raw mut result,
         )
     })
 }
@@ -928,10 +899,8 @@ pub fn poly_poly_draw(
 
 /// NtGdiCreateRectRgn: a region of the rectangle, its handle.
 pub fn create_rect_rgn(left: i32, top: i32, right: i32, bottom: i32) -> Result<u32, NtStatus> {
-    let mut region = 0u32;
     // SAFETY: the service writes the handle into the local.
-    checked(unsafe { raw::NtGdiCreateRectRgn(left, top, right, bottom, &mut region) })?;
-    Ok(region)
+    written(|region| unsafe { raw::NtGdiCreateRectRgn(left, top, right, bottom, region) })
 }
 
 /// NtGdiPolyPolyDraw's I_POLYPOLYRGN: a region of the polygons whose point counts are at
@@ -939,20 +908,18 @@ pub fn create_rect_rgn(left: i32, top: i32, right: i32, bottom: i32) -> Result<u
 pub fn create_poly_polygon_rgn(points: Caller, counts: &[u32], mode: u32) -> Result<u32, NtStatus> {
     /// NtGdiPolyPolyDraw's function that makes a region.
     const I_POLYPOLYRGN: u32 = 6;
-    let mut region = 0u32;
     // SAFETY: the kernel reads the points through its fault-tolerant copies, the counts from the
     // slice, and writes the handle into the local.
-    checked(unsafe {
+    written(|region| unsafe {
         raw::NtGdiPolyPolyDraw(
             mode,
             points.0 as *const u8,
             counts.as_ptr(),
             counts.len() as u32,
             I_POLYPOLYRGN,
-            &mut region,
+            region,
         )
-    })?;
-    Ok(region)
+    })
 }
 
 /// NtGdiSetRectRgn: `region` made the rectangle.
@@ -969,61 +936,54 @@ pub fn set_rect_rgn(
 
 /// NtGdiCombineRgn: `dest` made `mode`'s combination of `first` and `second`; its complexity.
 pub fn combine_rgn(dest: usize, first: usize, second: usize, mode: u32) -> Result<i32, NtStatus> {
-    let mut complexity = 0u32;
     // SAFETY: the service writes the complexity into the local.
-    checked(unsafe { raw::NtGdiCombineRgn(dest, first, second, mode, &mut complexity) })?;
-    Ok(complexity as i32)
+    written(|complexity| unsafe { raw::NtGdiCombineRgn(dest, first, second, mode, complexity) })
+        .map(|complexity: u32| complexity as i32)
 }
 
 /// NtGdiOffsetRgn: `region` moved; its complexity.
 pub fn offset_rgn(region: usize, x: i32, y: i32) -> Result<i32, NtStatus> {
-    let mut complexity = 0u32;
     // SAFETY: the service writes the complexity into the local.
-    checked(unsafe { raw::NtGdiOffsetRgn(region, x, y, &mut complexity) })?;
-    Ok(complexity as i32)
+    written(|complexity| unsafe { raw::NtGdiOffsetRgn(region, x, y, complexity) })
+        .map(|complexity: u32| complexity as i32)
 }
 
 /// NtGdiGetRgnBox: `region`'s complexity and box.
 pub fn rgn_box(region: usize) -> Result<(i32, rtl::gdi::Rect), NtStatus> {
     let (mut complexity, mut rect) = (0u32, rtl::gdi::Rect::EMPTY);
     // SAFETY: the service writes the locals.
-    checked(unsafe { raw::NtGdiGetRgnBox(region, &mut rect, &mut complexity) })?;
+    checked(unsafe { raw::NtGdiGetRgnBox(region, &raw mut rect, &raw mut complexity) })?;
     Ok((complexity as i32, rect))
 }
 
 /// NtGdiEqualRgn: whether the two regions hold the same rectangles.
 pub fn equal_rgn(first: usize, second: usize) -> Result<bool, NtStatus> {
-    let mut equal = 0u32;
     // SAFETY: the service writes the local.
-    checked(unsafe { raw::NtGdiEqualRgn(first, second, &mut equal) })?;
-    Ok(equal != 0)
+    written(|equal| unsafe { raw::NtGdiEqualRgn(first, second, equal) })
+        .map(|equal: u32| equal != 0)
 }
 
 /// NtGdiPtInRegion: whether the point lies in `region`.
 pub fn pt_in_region(region: usize, x: i32, y: i32) -> Result<bool, NtStatus> {
-    let mut inside = 0u32;
     // SAFETY: the service writes the local.
-    checked(unsafe { raw::NtGdiPtInRegion(region, x, y, &mut inside) })?;
-    Ok(inside != 0)
+    written(|inside| unsafe { raw::NtGdiPtInRegion(region, x, y, inside) })
+        .map(|inside: u32| inside != 0)
 }
 
 /// NtGdiGetRegionData: `region`'s RGNDATA into the `count` bytes at `buffer` (none: its size
 /// alone); its size.
 pub fn region_data(region: usize, count: u32, buffer: Caller) -> Result<u32, NtStatus> {
-    let mut size = 0u32;
     // SAFETY: the kernel writes at most `count` bytes at `buffer` through its fault-tolerant
     // copies, and the size into the local.
-    checked(unsafe { raw::NtGdiGetRegionData(region, count, buffer.0 as *mut u8, &mut size) })?;
-    Ok(size)
+    written(|size| unsafe { raw::NtGdiGetRegionData(region, count, buffer.0 as *mut u8, size) })
 }
 
 /// NtGdiFillRgn: `region` painted with `brush` on `dc`; whether it painted (the null brush does
 /// not).
 pub fn fill_rgn(dc: usize, region: usize, brush: usize) -> Result<bool, NtStatus> {
-    let mut painted = 0u32;
     // SAFETY: the service writes the local.
-    checked(unsafe { raw::NtGdiFillRgn(dc, region, brush, &mut painted) })?;
-    Ok(painted != 0)
+    written(|painted| unsafe { raw::NtGdiFillRgn(dc, region, brush, painted) })
+        .map(|painted: u32| painted != 0)
 }
 
 /// NtGdiFlush: nothing but the win32k service the dispatcher runs the GDI batch before.
@@ -1035,115 +995,90 @@ pub fn flush() {
 /// NtGdiExtSelectClipRgn: `dc`'s clipping region made `mode`'s combination of it and `region`
 /// (zero: none); the final region's complexity.
 pub fn ext_select_clip_rgn(dc: usize, region: usize, mode: u32) -> Result<i32, NtStatus> {
-    let mut complexity = 0u32;
     // SAFETY: the service writes the local.
-    checked(unsafe { raw::NtGdiExtSelectClipRgn(dc, region, mode, &mut complexity) })?;
-    Ok(complexity as i32)
+    written(|complexity| unsafe { raw::NtGdiExtSelectClipRgn(dc, region, mode, complexity) })
+        .map(|complexity: u32| complexity as i32)
 }
 
 /// NtGdiIntersectClipRect: `dc`'s clipping region cut to the logical rectangle; its complexity.
 pub fn intersect_clip_rect(dc: usize, rect: rtl::gdi::Rect) -> Result<i32, NtStatus> {
-    let mut complexity = 0u32;
+    let (left, top, right, bottom) = (rect.left, rect.top, rect.right, rect.bottom);
     // SAFETY: the service writes the local.
-    checked(unsafe {
-        raw::NtGdiIntersectClipRect(
-            dc,
-            rect.left,
-            rect.top,
-            rect.right,
-            rect.bottom,
-            &mut complexity,
-        )
-    })?;
-    Ok(complexity as i32)
+    written(|complexity| unsafe {
+        raw::NtGdiIntersectClipRect(dc, left, top, right, bottom, complexity)
+    })
+    .map(|complexity: u32| complexity as i32)
 }
 
 /// NtGdiExcludeClipRect: the logical rectangle taken out of `dc`'s clipping region; the final
 /// region's complexity.
 pub fn exclude_clip_rect(dc: usize, rect: rtl::gdi::Rect) -> Result<i32, NtStatus> {
-    let mut complexity = 0u32;
+    let (left, top, right, bottom) = (rect.left, rect.top, rect.right, rect.bottom);
     // SAFETY: the service writes the local.
-    checked(unsafe {
-        raw::NtGdiExcludeClipRect(
-            dc,
-            rect.left,
-            rect.top,
-            rect.right,
-            rect.bottom,
-            &mut complexity,
-        )
-    })?;
-    Ok(complexity as i32)
+    written(|complexity| unsafe {
+        raw::NtGdiExcludeClipRect(dc, left, top, right, bottom, complexity)
+    })
+    .map(|complexity: u32| complexity as i32)
 }
 
 /// NtGdiOffsetClipRgn: `dc`'s clipping region moved; the final region's complexity.
 pub fn offset_clip_rgn(dc: usize, x: i32, y: i32) -> Result<i32, NtStatus> {
-    let mut complexity = 0u32;
     // SAFETY: the service writes the local.
-    checked(unsafe { raw::NtGdiOffsetClipRgn(dc, x, y, &mut complexity) })?;
-    Ok(complexity as i32)
+    written(|complexity| unsafe { raw::NtGdiOffsetClipRgn(dc, x, y, complexity) })
+        .map(|complexity: u32| complexity as i32)
 }
 
 /// NtGdiGetAppClipBox: `dc`'s final region's complexity and box (logical coordinates).
 pub fn clip_box(dc: usize) -> Result<(i32, rtl::gdi::Rect), NtStatus> {
     let (mut complexity, mut rect) = (0u32, rtl::gdi::Rect::EMPTY);
     // SAFETY: the service writes the locals.
-    checked(unsafe { raw::NtGdiGetAppClipBox(dc, &mut rect, &mut complexity) })?;
+    checked(unsafe { raw::NtGdiGetAppClipBox(dc, &raw mut rect, &raw mut complexity) })?;
     Ok((complexity as i32, rect))
 }
 
 /// NtGdiGetRandomRgn: `region` made a copy of `dc`'s region of kind `which`; 1, or 0 when the DC
 /// has none.
 pub fn random_rgn(dc: usize, region: usize, which: u32) -> Result<i32, NtStatus> {
-    let mut result = 0u32;
     // SAFETY: the service writes the local.
-    checked(unsafe { raw::NtGdiGetRandomRgn(dc, region, which, &mut result) })?;
-    Ok(result as i32)
+    written(|result| unsafe { raw::NtGdiGetRandomRgn(dc, region, which, result) })
+        .map(|result: u32| result as i32)
 }
 
 /// NtGdiPtVisible: whether the logical point is inside `dc`'s final region.
 pub fn pt_visible(dc: usize, x: i32, y: i32) -> Result<bool, NtStatus> {
-    let mut visible = 0u32;
     // SAFETY: the service writes the local.
-    checked(unsafe { raw::NtGdiPtVisible(dc, x, y, &mut visible) })?;
-    Ok(visible != 0)
+    written(|visible| unsafe { raw::NtGdiPtVisible(dc, x, y, visible) })
+        .map(|visible: u32| visible != 0)
 }
 
 /// NtGdiRectVisible: whether any of the logical rectangle is inside `dc`'s final region.
 pub fn rect_visible(dc: usize, rect: &rtl::gdi::Rect) -> Result<bool, NtStatus> {
-    let mut visible = 0u32;
     // SAFETY: the service reads the caller's rectangle and writes the local.
-    checked(unsafe { raw::NtGdiRectVisible(dc, rect, &mut visible) })?;
-    Ok(visible != 0)
+    written(|visible| unsafe { raw::NtGdiRectVisible(dc, rect, visible) })
+        .map(|visible: u32| visible != 0)
 }
 
 // --- win32k's bitmaps ----------------------------------------------------------------------------
 
 /// NtGdiCreateCompatibleDC: a memory DC compatible with `dc` (0: the screen), its handle.
 pub fn create_compatible_dc(dc: usize) -> Result<u32, NtStatus> {
-    let mut memory_dc = 0u32;
     // SAFETY: the service writes the handle into the local.
-    checked(unsafe { raw::NtGdiCreateCompatibleDC(dc, &mut memory_dc) })?;
-    Ok(memory_dc)
+    written(|memory_dc| unsafe { raw::NtGdiCreateCompatibleDC(dc, memory_dc) })
 }
 
 /// NtGdiCreateBitmap: a bitmap object `desc` describes (its pixels in this process's memory), its
 /// handle.
 pub fn create_bitmap(desc: &rtl::dib::BitmapDesc) -> Result<u32, NtStatus> {
-    let mut bitmap = 0u32;
     // SAFETY: the kernel reads the local description through its fault-tolerant copies, and writes
     // the handle into the local.
-    checked(unsafe { raw::NtGdiCreateBitmap(desc, &mut bitmap) })?;
-    Ok(bitmap)
+    written(|bitmap| unsafe { raw::NtGdiCreateBitmap(desc, bitmap) })
 }
 
 /// NtGdiSelectBitmap: `bitmap` selected into the memory DC `dc`, the bitmap it replaces answered
 /// (0: another DC holds it).
 pub fn select_bitmap(dc: usize, bitmap: usize) -> Result<u32, NtStatus> {
-    let mut previous = 0u32;
     // SAFETY: the service writes the previous bitmap into the local.
-    checked(unsafe { raw::NtGdiSelectBitmap(dc, bitmap, &mut previous) })?;
-    Ok(previous)
+    written(|previous| unsafe { raw::NtGdiSelectBitmap(dc, bitmap, previous) })
 }
 
 /// NtGdiBitBlt: the rectangle at (`x`, `y`), `width` by `height`, of `dc` combined with the one
@@ -1191,10 +1126,8 @@ pub fn stretch_blt(
 
 /// NtGdiCreatePatternBrushInternal: a pattern brush of `bitmap`'s pixels, its handle.
 pub fn create_pattern_brush(bitmap: usize) -> Result<u32, NtStatus> {
-    let mut brush = 0u32;
     // SAFETY: the service writes the handle into the local.
-    checked(unsafe { raw::NtGdiCreatePatternBrushInternal(bitmap, &mut brush) })?;
-    Ok(brush)
+    written(|brush| unsafe { raw::NtGdiCreatePatternBrushInternal(bitmap, brush) })
 }
 
 /// A zeroed block of `size` bytes of the process heap, kept until [`heap_free`]: its address; none
@@ -1267,7 +1200,7 @@ impl OpenFile {
         let converted = unsafe {
             raw::RtlDosPathNameToNtPathName_U(
                 path.as_ptr(),
-                &mut name,
+                &raw mut name,
                 core::ptr::null_mut(),
                 core::ptr::null_mut(),
             )
@@ -1278,7 +1211,7 @@ impl OpenFile {
         let attributes = ObjectAttributes {
             length: core::mem::size_of::<ObjectAttributes>() as u32,
             root_directory: 0,
-            object_name: &name,
+            object_name: &raw const name,
             attributes: OBJ_CASE_INSENSITIVE,
             security_descriptor: core::ptr::null(),
             security_quality_of_service: core::ptr::null(),
@@ -1289,10 +1222,10 @@ impl OpenFile {
         // handle and the status block, both ours.
         let status = unsafe {
             raw::NtOpenFile(
-                &mut handle,
+                &raw mut handle,
                 FILE_READ_DATA | SYNCHRONIZE,
-                &attributes,
-                &mut io_status,
+                &raw const attributes,
+                &raw mut io_status,
                 FILE_SHARE_READ,
                 FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE,
             )
@@ -1334,58 +1267,47 @@ pub fn system_windows_directory(buffer: &mut [u16]) -> usize {
 /// NtGdiAddFontResourceW: a load of the open font file `file` (FR_PRIVATE in `flags`: the
 /// process's alone), the faces it holds.
 pub fn add_font_resource(file: &OpenFile, flags: u32) -> Result<u32, NtStatus> {
-    let mut faces = 0u32;
     // SAFETY: the service writes the count into the local.
-    checked(unsafe { raw::NtGdiAddFontResourceW(file.handle(), flags, &mut faces) })?;
-    Ok(faces)
+    written(|faces| unsafe { raw::NtGdiAddFontResourceW(file.handle(), flags, faces) })
 }
 
 /// NtGdiRemoveFontResourceW: a load of the open font file `file` removed; whether there was one.
 pub fn remove_font_resource(file: &OpenFile, flags: u32) -> Result<bool, NtStatus> {
-    let mut removed = 0u32;
     // SAFETY: the service writes the answer into the local.
-    checked(unsafe { raw::NtGdiRemoveFontResourceW(file.handle(), flags, &mut removed) })?;
-    Ok(removed != 0)
+    written(|removed| unsafe { raw::NtGdiRemoveFontResourceW(file.handle(), flags, removed) })
+        .map(|removed: u32| removed != 0)
 }
 
 /// NtGdiHfontCreate: a font object of the LOGFONTW at `log_font`, its handle.
 pub fn create_font(log_font: Caller) -> Result<u32, NtStatus> {
-    let mut font = 0u32;
     // SAFETY: the kernel reads the LOGFONTW through its fault-tolerant copies, and writes the
     // handle into the local.
-    checked(unsafe { raw::NtGdiHfontCreate(log_font.0 as *const LogFontW, &mut font) })?;
-    Ok(font)
+    written(|font| unsafe { raw::NtGdiHfontCreate(log_font.0 as *const LogFontW, font) })
 }
 
 /// NtGdiExtGetObjectW: the first `count` bytes of the font object `object`'s LOGFONTW into
 /// `buffer` (none: its size alone), the bytes answered.
 pub fn object(object: usize, count: u32, buffer: Caller) -> Result<u32, NtStatus> {
-    let mut size = 0u32;
     // SAFETY: the kernel writes at most `count` bytes at `buffer` through its fault-tolerant
     // copies, and the size into the local.
-    checked(unsafe { raw::NtGdiExtGetObjectW(object, count, buffer.0 as *mut u8, &mut size) })?;
-    Ok(size)
+    written(|size| unsafe { raw::NtGdiExtGetObjectW(object, count, buffer.0 as *mut u8, size) })
 }
 
 /// NtGdiGetTextFaceW: `dc`'s font's face name, at most `count` units with its terminator, into
 /// `buffer` (none: its length alone); the units answered.
 pub fn text_face(dc: usize, count: u32, buffer: Caller) -> Result<u32, NtStatus> {
-    let mut length = 0u32;
     // SAFETY: the kernel writes at most `count` units at `buffer`, and the length into the local.
-    checked(unsafe { raw::NtGdiGetTextFaceW(dc, count, buffer.0 as *mut u16, &mut length) })?;
-    Ok(length)
+    written(|length| unsafe { raw::NtGdiGetTextFaceW(dc, count, buffer.0 as *mut u16, length) })
 }
 
 /// NtGdiGetOutlineTextMetricsInternalW: `dc`'s font's OUTLINETEXTMETRICW and its names, at most
 /// `size` bytes of them into `buffer` (none: their size alone); the bytes answered (0: no
 /// outline font).
 pub fn outline_text_metrics(dc: usize, size: u32, buffer: Caller) -> Result<u32, NtStatus> {
-    let mut needed = 0u32;
     // SAFETY: the kernel writes at most `size` bytes at `buffer`, and the size into the local.
-    checked(unsafe {
-        raw::NtGdiGetOutlineTextMetricsInternalW(dc, size, buffer.0 as *mut u8, &mut needed)
-    })?;
-    Ok(needed)
+    written(|needed| unsafe {
+        raw::NtGdiGetOutlineTextMetricsInternalW(dc, size, buffer.0 as *mut u8, needed)
+    })
 }
 
 /// NtGdiGetCharWidthW: `count` characters' advances (from `first`, or the units at `characters`)
@@ -1439,12 +1361,10 @@ pub fn font_data(
     buffer: Caller,
     count: u32,
 ) -> Result<u32, NtStatus> {
-    let mut answer = 0u32;
     // SAFETY: the kernel writes at most `count` bytes at `buffer`, and the answer into the local.
-    checked(unsafe {
-        raw::NtGdiGetFontData(dc, table, offset, buffer.0 as *mut u8, count, &mut answer)
-    })?;
-    Ok(answer)
+    written(|answer| unsafe {
+        raw::NtGdiGetFontData(dc, table, offset, buffer.0 as *mut u8, count, answer)
+    })
 }
 
 /// NtGdiGetGlyphOutline: GetGlyphOutlineW's answer (GDI_ERROR included), the GLYPHMETRICS into
@@ -1457,10 +1377,9 @@ pub fn glyph_outline(
     size: u32,
     buffer: Caller,
 ) -> Result<u32, NtStatus> {
-    let mut answer = 0u32;
     // SAFETY: the kernel writes the metrics and at most `size` bytes at `buffer` through its
     // fault-tolerant copies, and the answer into the local.
-    checked(unsafe {
+    written(|answer| unsafe {
         raw::NtGdiGetGlyphOutline(
             dc,
             character,
@@ -1468,10 +1387,9 @@ pub fn glyph_outline(
             metrics.0 as *mut u8,
             size,
             buffer.0 as *mut u8,
-            &mut answer,
+            answer,
         )
-    })?;
-    Ok(answer)
+    })
 }
 
 /// NtGdiEnumFontChunk: the enumeration's `index`th face (of those named by the face name at
@@ -1950,15 +1868,14 @@ pub mod host {
             let sign = if mode == XFP_LPTODP { 1 } else { -1 };
             for index in 0..count as usize {
                 // SAFETY: the tests' own POINTs.
-                unsafe {
-                    let point = points_in.add(index).read();
-                    let offset =
-                        |at: i32, window: i32, viewport: i32| at + sign * (viewport - window);
-                    points_out.add(index).write(Point {
-                        x: offset(point.x, state.window_org.0, state.viewport_org.0),
-                        y: offset(point.y, state.window_org.1, state.viewport_org.1),
-                    });
-                }
+                let point = unsafe { points_in.wrapping_add(index).read() };
+                let offset = |at: i32, window: i32, viewport: i32| at + sign * (viewport - window);
+                let point = Point {
+                    x: offset(point.x, state.window_org.0, state.viewport_org.0),
+                    y: offset(point.y, state.window_org.1, state.viewport_org.1),
+                };
+                // SAFETY: as above.
+                unsafe { points_out.wrapping_add(index).write(point) };
             }
             0
         })
@@ -2224,16 +2141,19 @@ pub mod host {
     ) -> u32 {
         with_dc(dc, |_| {
             // SAFETY: the tests' own rectangle, string and advances, of the lengths given.
-            let call = unsafe {
-                TextCall {
-                    dc,
-                    x,
-                    y,
-                    options,
-                    rect: (!rect.is_null()).then(|| rect.read()),
-                    units: items(string, count as usize).to_vec(),
-                    dx: (!dx.is_null()).then(|| items(dx, count as usize).to_vec()),
-                }
+            let rect = (!rect.is_null()).then(|| unsafe { rect.read() });
+            // SAFETY: as above.
+            let units = unsafe { items(string, count as usize) }.to_vec();
+            // SAFETY: as above.
+            let dx = (!dx.is_null()).then(|| unsafe { items(dx, count as usize) }.to_vec());
+            let call = TextCall {
+                dc,
+                x,
+                y,
+                options,
+                rect,
+                units,
+                dx,
             };
             TEXT.with(|text| text.borrow_mut().push(call));
             0
@@ -2264,24 +2184,24 @@ pub mod host {
     ) -> u32 {
         with_dc(dc, |_| {
             // SAFETY: the tests' own string and SIZE.
-            unsafe {
-                let units = items(string, count as usize).to_vec();
-                TEXT.with(|text| {
-                    text.borrow_mut().push(TextCall {
-                        dc,
-                        x: 0,
-                        y: 0,
-                        options: 0,
-                        rect: None,
-                        units,
-                        dx: None,
-                    })
-                });
-                size.write(Size {
-                    cx: 8 * count as i32,
-                    cy: 16,
-                });
-            }
+            let units = unsafe { items(string, count as usize) }.to_vec();
+            TEXT.with(|text| {
+                text.borrow_mut().push(TextCall {
+                    dc,
+                    x: 0,
+                    y: 0,
+                    options: 0,
+                    rect: None,
+                    units,
+                    dx: None,
+                })
+            });
+            let extent = Size {
+                cx: 8 * count as i32,
+                cy: 16,
+            };
+            // SAFETY: as above.
+            unsafe { size.write(extent) };
             0
         })
     }
@@ -2322,19 +2242,19 @@ pub mod host {
                 }
                 if !dx.is_null() {
                     // SAFETY: the tests' own array, `count` long.
-                    unsafe { dx.add(index).write(width) };
+                    unsafe { dx.wrapping_add(index).write(width) };
                 }
             }
-            // SAFETY: the tests' own fit and SIZE.
-            unsafe {
-                if !fit.is_null() {
-                    fit.write(fitted);
-                }
-                size.write(Size {
-                    cx: width,
-                    cy: if count == 0 { 0 } else { 16 },
-                });
+            if !fit.is_null() {
+                // SAFETY: the tests' own fit.
+                unsafe { fit.write(fitted) };
             }
+            let extent = Size {
+                cx: width,
+                cy: if count == 0 { 0 } else { 16 },
+            };
+            // SAFETY: the tests' own SIZE.
+            unsafe { size.write(extent) };
             0
         })
     }
@@ -2349,10 +2269,9 @@ pub mod host {
     ) -> u32 {
         with_dc(dc, |_| {
             // SAFETY: the tests' own string and array, `count` long.
-            unsafe {
-                for (index, &unit) in items(string, count as usize).iter().enumerate() {
-                    glyphs.add(index).write(unit.saturating_sub(0x1D));
-                }
+            for (index, &unit) in unsafe { items(string, count as usize) }.iter().enumerate() {
+                // SAFETY: as above.
+                unsafe { glyphs.wrapping_add(index).write(unit.saturating_sub(0x1D)) };
             }
             answer(converted, count)
         })
@@ -2456,13 +2375,10 @@ pub mod host {
         _file_part: *mut *mut u16,
     ) -> u32 {
         // SAFETY: the caller's NUL-terminated names.
-        let (directory, name) = unsafe {
-            (
-                (!path.is_null())
-                    .then(|| String::from_utf16_lossy(rtl::cstr::units_until_nul(path))),
-                String::from_utf16_lossy(rtl::cstr::units_until_nul(file)),
-            )
-        };
+        let directory = (!path.is_null())
+            .then(|| String::from_utf16_lossy(unsafe { rtl::cstr::units_until_nul(path) }));
+        // SAFETY: as above.
+        let name = String::from_utf16_lossy(unsafe { rtl::cstr::units_until_nul(file) });
         fonts(|fonts| {
             let searched = format!("{}|{name}", directory.clone().unwrap_or_default());
             fonts.opened.push(searched)
@@ -2493,17 +2409,18 @@ pub mod host {
             .encode_utf16()
             .chain(path.iter().copied())
             .collect();
-        // SAFETY: a fresh block of the stand-ins' heap, as large as the units; the caller's
-        // UNICODE_STRING.
-        unsafe {
-            let buffer = RtlAllocateHeap(0, 0, 2 * units.len()) as *mut u16;
-            buffer.copy_from_nonoverlapping(units.as_ptr(), units.len());
-            nt.write(super::UnicodeString {
-                length: 2 * units.len() as u16,
-                maximum_length: 2 * units.len() as u16,
-                buffer,
-            });
-        }
+        // SAFETY: a plain allocation.
+        let buffer = unsafe { RtlAllocateHeap(0, 0, 2 * units.len()) }.cast::<u16>();
+        // SAFETY: a fresh block of the stand-ins' heap, as large as the units.
+        unsafe { buffer.copy_from_nonoverlapping(units.as_ptr(), units.len()) };
+        let length = 2 * units.len() as u16;
+        let name = super::UnicodeString {
+            length,
+            maximum_length: length,
+            buffer,
+        };
+        // SAFETY: the caller's UNICODE_STRING.
+        unsafe { nt.write(name) };
         1
     }
 
@@ -2518,13 +2435,12 @@ pub mod host {
         _options: u32,
     ) -> u32 {
         // SAFETY: the caller's attributes and name.
-        let name = unsafe {
-            let name = (*attributes).object_name.read();
-            String::from_utf16_lossy(std::slice::from_raw_parts(
-                name.buffer,
-                name.length as usize / 2,
-            ))
-        };
+        let name = unsafe { &*attributes }.object_name;
+        // SAFETY: as above.
+        let name = unsafe { name.read() };
+        // SAFETY: as above.
+        let name = unsafe { items(name.buffer, name.length as usize / 2) };
+        let name = String::from_utf16_lossy(name);
         if name != format!("\\??\\{FONT_PATH}") {
             return 0xC000_0034;
         }
@@ -2545,10 +2461,9 @@ pub mod host {
             return root.len() as u32 + 1;
         }
         // SAFETY: the caller's buffer of `size` units.
-        unsafe {
-            buffer.copy_from_nonoverlapping(root.as_ptr(), root.len());
-            buffer.add(root.len()).write(0);
-        }
+        unsafe { buffer.copy_from_nonoverlapping(root.as_ptr(), root.len()) };
+        // SAFETY: as above.
+        unsafe { buffer.wrapping_add(root.len()).write(0) };
         root.len() as u32
     }
 
@@ -2763,7 +2678,7 @@ pub mod host {
         with_dc(dc, |_| {
             for (index, unit) in characters(first, count, units).into_iter().enumerate() {
                 // SAFETY: the caller's `count` widths.
-                unsafe { widths.add(index).write(width_of(unit)) };
+                unsafe { widths.wrapping_add(index).write(width_of(unit)) };
             }
             0
         })
@@ -2784,7 +2699,7 @@ pub mod host {
                     c: -1,
                 };
                 // SAFETY: the caller's `count` ABCs.
-                unsafe { abc.add(index).write(spacing) };
+                unsafe { abc.wrapping_add(index).write(spacing) };
             }
             0
         })
@@ -2921,7 +2836,7 @@ mod tests {
             host::RtlMultiByteToUnicodeN(
                 core::ptr::null_mut(),
                 0,
-                &mut written,
+                &raw mut written,
                 core::ptr::null(),
                 0,
             )
@@ -2933,7 +2848,7 @@ mod tests {
             host::RtlUnicodeToMultiByteN(
                 core::ptr::null_mut(),
                 0,
-                &mut written,
+                &raw mut written,
                 core::ptr::null(),
                 0,
             )
