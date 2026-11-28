@@ -23,9 +23,9 @@ resolver = "2"
 opt-level = 2
 lto = true
 
-# Optimized, with the debug checks kept: what `make test` boots.
-[profile.dev-opt]
-inherits = "dev"
-opt-level = 2
+# Release with the debug assertions and overflow checks on: what `make test` boots. Not `test`,
+# cargo's own profile for the host tests (`make run-tests`), which a release base would slow.
+[profile.checked]
+inherits = "release"
 debug-assertions = true
 overflow-checks = true

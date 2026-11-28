@@ -10,8 +10,8 @@ TARGET ?= x86-f2k
 RUST_HOST_TARGET ?= $(shell rustc -vV | sed -n 's/^host: //p')
 # Build options (target spec, build-std, linker) live in .cargo/config.toml,
 # so cargo and rust-analyzer use the same settings as make.
-# The cargo profile the kernel builds with: release (the default), dev-opt (optimized like release,
-# the debug assertions and overflow checks kept), or dev (unoptimized; its image no longer fits the
+# The cargo profile the kernel builds with: release (the default), checked (release with the
+# debug assertions and overflow checks on), or dev (unoptimized; its image no longer fits the
 # 16 MiB kernel image window on x86_64 hosts). Each builds in its own directory (dev's is debug/).
 # The on-target suite boots its own default profile, TEST_PROFILE below.
 KERNEL_PROFILE ?= release
@@ -169,8 +169,8 @@ help:
 	@echo "  DISK_IMG=...         - Disk image path"
 	@echo "  CMDLINE='...'        - What make run and make vbox-image boot into: the program's path"
 	@echo "                         on the volume and its arguments (default: F2K's cmd.exe)"
-	@echo "  KERNEL_PROFILE=release - Kernel cargo profile: release (the default), dev-opt (optimized, checks kept), or dev"
-	@echo "  TEST_PROFILE=dev-opt   - Profile make test builds and boots: dev-opt (the default), release, or dev"
+	@echo "  KERNEL_PROFILE=release - Kernel cargo profile: release (the default), checked (release, checks on), or dev"
+	@echo "  TEST_PROFILE=checked   - Profile make test builds and boots: checked (the default), release, or dev"
 
 .PHONY: all
 all: disk
@@ -319,11 +319,11 @@ clobber: clean
 UV ?= uv
 PYTEST = $(UV) run pytest
 PYTEST_FLAGS ?= -n 4
-# The profile the on-target suite builds and boots by default: dev-opt, optimized as release is but
-# with the debug assertions and overflow checks kept (the dev-profile kernel image outgrows the
-# 16 MiB kernel image window on x86_64 hosts). The host cargo tests (run-tests) and `make check`
-# are unaffected: they run under cargo's own default profile, dev.
-TEST_PROFILE ?= dev-opt
+# The profile the on-target suite builds and boots by default: checked, release with the debug
+# assertions and overflow checks on (the dev-profile kernel image outgrows the 16 MiB kernel image
+# window on x86_64 hosts). The host cargo tests (run-tests) and `make check` are unaffected: they
+# run under cargo's own default profile, dev.
+TEST_PROFILE ?= checked
 
 .PHONY: test
 test:

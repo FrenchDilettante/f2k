@@ -64,8 +64,8 @@ TESTS = REPO_ROOT / "tests"
 QEMU = os.environ.get("QEMU", "qemu-system-i386")
 WORK = REPO_ROOT / "target" / "qemu"
 # The kernel's cargo profile the suite builds and boots (the Makefile's TEST_PROFILE, which
-# `make test` passes on): dev-opt, the default, or release / dev. Each builds in its own directory.
-PROFILE = os.environ.get("F2K_KERNEL_PROFILE") or "dev-opt"
+# `make test` passes on): checked, the default, or release / dev. Each builds in its own directory.
+PROFILE = os.environ.get("F2K_KERNEL_PROFILE") or "checked"
 BUILT = REPO_ROOT / "target" / "x86-f2k" / ("debug" if PROFILE == "dev" else PROFILE)
 BUILT_KERNEL = BUILT / "f2k-kernel"
 BUILT_NTOSKRNL = BUILT / "ntoskrnl.exe"

@@ -1391,10 +1391,10 @@ def test_a_failed_plain_build_fails_the_feature_builds_on_its_disk(fake_make):
 def test_a_build_of_another_profile_is_refused(tmp_path):
     build = built(tmp_path, "", "")
     for path in (build.kernel, build.disk):
-        f2kboot.stamp_path(path).write_text("features=\nprofile=dev-opt\n")
-    assert f2kboot.build_mismatch(build, [], profile="dev-opt") is None
+        f2kboot.stamp_path(path).write_text("features=\nprofile=checked\n")
+    assert f2kboot.build_mismatch(build, [], profile="checked") is None
     why = f2kboot.build_mismatch(build, [], profile="dev")
-    assert why is not None and "dev-opt" in why
+    assert why is not None and "checked" in why
 
 
 # --- The text screen's read ---------------------------------------------------------------------
