@@ -102,7 +102,8 @@ pub fn start_on_demand(needs: u32) -> Result<(), u32> {
         return Err(left_out);
     }
     let started = crate::process::threads::critical_region(|| {
-        DEMAND_LOCK.with(|()| state.start_on_demand(&subsys::SUBSYSTEMS, needs, &mut init))
+        DEMAND_LOCK
+            .with(|()| state.start_on_demand(&subsys::SUBSYSTEMS, needs, &mut init_on_demand))
     })?;
     if started != 0 {
         crate::serial_println!(
@@ -153,8 +154,33 @@ fn report_subsystems(started: u32, on_demand: u32) {
     }
 }
 
+/// Start one Demand row at its first use ([`start_on_demand`]): its own start, as [`init`]'s arm
+/// for it, and nothing else. It runs on the calling thread's kernel stack, which [`init`]'s frame
+/// would not fit: [`init`] holds every boot row's start, its callees inlined into it (about
+/// 32 KiB under the release profile, a kernel stack's whole size), so this path never reaches
+/// it, whatever the optimizer inlines. Only a Demand row reaches here: the boot started every
+/// other selected row, a selection holds what its rows depend on, and no row the boot starts
+/// depends on a Demand row (the table's host tests pin the Demand rows to these two).
+#[cfg(target_arch = "x86")]
+#[inline(never)]
+fn init_on_demand(id: subsys::Subsystem) {
+    use subsys::Subsystem as S;
+    match id {
+        // The interactive window station, WinSta0, and its Default desktop: win32k's objects,
+        // which every process connects to at its first win32k service. Made under the object
+        // directory's lock, whose raise enables interrupts, so it waits for the interrupt
+        // subsystem too.
+        S::WinSta => crate::win32k::winsta::init(),
+        // The fonts the system loads at its start (win32k's built-in list standing in for the
+        // registry's), from the boot volume: silent when it carries none.
+        S::Fonts => crate::win32k::fonts::load_boot_fonts(),
+        other => panic!("subsystem {other:?}: not a Demand row, yet started on demand"),
+    }
+}
+
 /// Start one subsystem: the descriptor's init. [`subsys::State::start`] calls it once, its
-/// dependencies started.
+/// dependencies started. The boot's own, on the boot stack: a start on demand goes through
+/// [`init_on_demand`] instead.
 #[cfg(target_arch = "x86")]
 fn init(id: subsys::Subsystem) {
     use subsys::Subsystem as S;
@@ -190,11 +216,8 @@ fn init(id: subsys::Subsystem) {
         // dispatcher's level, which enables interrupts, so it waits for the interrupt subsystem: an
         // interrupt taken before the controllers are remapped would land on an exception's vector.
         S::Scheduler => crate::sched::idle::boot(),
-        // The interactive window station, WinSta0, and its Default desktop: win32k's objects,
-        // which every process connects to at its first win32k service. Made under the object
-        // directory's lock, whose raise enables interrupts, so it waits for the interrupt
-        // subsystem too.
-        S::WinSta => crate::win32k::winsta::init(),
+        // win32k's Demand rows: their own start (the boot leaves them for their first use).
+        S::WinSta | S::Fonts => init_on_demand(id),
         // The PCI bus: enumerate every reachable function through the config address/data ports,
         // keep the device table and the PIRQ routes for the driver slices that claim these nodes,
         // and report the enumeration on COM1. The scan needs no interrupts, so it comes first.
@@ -228,9 +251,6 @@ fn init(id: subsys::Subsystem) {
         // there is none), with the system's commit limit set to physical memory plus the file's
         // size.
         S::PagingFile => crate::mem::pagingfile::boot_create(),
-        // The fonts the system loads at its start (win32k's built-in list standing in for the
-        // registry's), from the boot volume: silent when it carries none.
-        S::Fonts => crate::win32k::fonts::load_boot_fonts(),
         // ntdll's pages: the kernel's for the boot's life, every process one more holder of them —
         // made before the teardown audit's baseline, as the boot's other permanent pages are.
         S::SystemDlls => crate::exec::loader::prepare_system_dlls(),
