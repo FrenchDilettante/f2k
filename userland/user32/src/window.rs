@@ -313,9 +313,26 @@ pub extern "system" fn get_desktop_window() -> usize {
     let found = (1..=BOOT_HANDLES).map(|index| index << 2).find(|&handle| {
         window_info(handle as usize).is_ok_and(|info| info.atom_window_type == DESKTOP_CLASS_ATOM)
     });
-    let found = found.unwrap_or(0);
-    DESKTOP_WINDOW.store(found, Ordering::Relaxed);
-    found as usize
+    let Some(found) = found else {
+        return 0;
+    };
+    // The table's index alone names the window, but the handle the window manager hands out (a
+    // top-level window's parent, GetParent of a child of the desktop) carries its uniqueness in
+    // the high word too: the desktop's full handle is its first child's parent, kept once known.
+    let full = links(found as usize)
+        .ok()
+        .map(|own| own.child)
+        .filter(|&child| child != 0)
+        .and_then(|child| links(child as usize).ok())
+        .map(|child| child.parent)
+        .filter(|&parent| parent != 0);
+    match full {
+        Some(full) => {
+            DESKTOP_WINDOW.store(full, Ordering::Relaxed);
+            full as usize
+        }
+        None => found as usize,
+    }
 }
 
 /// The window's WINDOWINFO.
@@ -1698,7 +1715,7 @@ mod tests {
         let narrow = unsafe {
             create_window_ex_a(
                 0,
-                c"ComboBox".as_ptr().cast(),
+                c"MDIClient".as_ptr().cast(),
                 core::ptr::null(),
                 0,
                 0,
@@ -1716,7 +1733,7 @@ mod tests {
         assert!(
             line.len() == 1
                 && line[0].starts_with("stub user32.CreateWindowExA(")
-                && line[0].ends_with(": the ComboBox control class is not yet implemented\n"),
+                && line[0].ends_with(": the MDIClient class is not yet implemented\n"),
             "{line:?}"
         );
     }

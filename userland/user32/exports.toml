@@ -4273,17 +4273,19 @@ note = "DlgDirListW's over the narrow path, the file part written back narrow"
 name = "DlgDirListComboBoxA"
 group = "dialog"
 args = ["handle hDlg", "ptr lpPathSpec", "i32 nIDComboBox", "i32 nIDStaticPath", "u32 uFiletype"]
-impl = { stub = "not yet implemented" }
+impl = { native = "DlgDirListComboBoxA" }
 ordinal = 155
 fails = "0"
+note = "DlgDirListComboBoxW's over the narrow path, the file part written back narrow"
 
 [[export]]
 name = "DlgDirListComboBoxW"
 group = "dialog"
 args = ["handle hDlg", "ptr lpPathSpec", "i32 nIDComboBox", "i32 nIDStaticPath", "u32 uFiletype"]
-impl = { stub = "not yet implemented" }
+impl = { native = "DlgDirListComboBoxW" }
 ordinal = 156
 fails = "0"
+note = "DlgDirListW's over the combo box: CB_RESETCONTENT, then CB_DIR (files, then directories and drives)"
 
 [[export]]
 name = "DlgDirListW"
@@ -4298,17 +4300,19 @@ note = "the current directory changed to the path's directory, the list box fill
 name = "DlgDirSelectComboBoxExA"
 group = "dialog"
 args = ["handle hDlg", "ptr lpString", "i32 nCount", "i32 nIDComboBox"]
-impl = { stub = "not yet implemented" }
+impl = { native = "DlgDirSelectComboBoxExA" }
 ordinal = 158
 fails = "FALSE"
+note = "DlgDirSelectComboBoxExW's into a wide buffer of its own, written back narrow"
 
 [[export]]
 name = "DlgDirSelectComboBoxExW"
 group = "dialog"
 args = ["handle hDlg", "ptr lpString", "i32 nCount", "i32 nIDComboBox"]
-impl = { stub = "not yet implemented" }
+impl = { native = "DlgDirSelectComboBoxExW" }
 ordinal = 159
 fails = "FALSE"
+note = "DlgDirSelectExW's over the combo box's selection (CB_GETCURSEL, CB_GETLBTEXT)"
 
 [[export]]
 name = "DlgDirSelectExA"
@@ -4551,7 +4555,12 @@ ordinal = 251
 
 [[export]]
 name = "GetComboBoxInfo"
+group = "dialog"
+args = ["handle hwndCombo", "ptr pcbi"]
+impl = { native = "GetComboBoxInfo" }
 ordinal = 252
+fails = "FALSE"
+note = "the field's and the button's rectangles, the button's state, the edit and the list; 87 for a wrong cbSize, ERROR_WINDOW_NOT_COMBOBOX for another window"
 
 [[export]]
 name = "GetCursorFrameInfo"

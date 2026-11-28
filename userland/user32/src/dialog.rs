@@ -2608,7 +2608,8 @@ mod tests {
             words.push(value as u16);
             words.push((value >> 16) as u16);
         };
-        // DIALOG: WS_POPUP, no font, menu or title, the class above; one ComboBox control, id 7.
+        // DIALOG: WS_POPUP, no font, menu or title, the class above; one MDIClient control (a
+        // class F2K lacks, by name), id 7.
         dword(&mut words, WS_POPUP);
         dword(&mut words, 0);
         words.extend([1, 0, 0, 100, 50, 0]);
@@ -2619,7 +2620,9 @@ mod tests {
         }
         dword(&mut words, WS_CHILD | WS_VISIBLE);
         dword(&mut words, 0);
-        words.extend([0, 0, 50, 14, 7, 0xFFFF, 0x85, 0, 0]);
+        words.extend([0, 0, 50, 14, 7]);
+        words.extend("MDIClient\0".encode_utf16());
+        words.extend([0, 0]);
         // DWORD-aligned, as a template is.
         let template: std::vec::Vec<u32> = words
             .chunks(2)
@@ -2634,8 +2637,8 @@ mod tests {
         let expected = std::format!(
             "stub user32.CreateDialogIndirectParamW(hInstance=0x400000, lpTemplate=0x{:08X}, \
              hWndParent=0, lpDialogFunc=NULL, dwInitParam=0): the dialog's control 7 of class \
-             ComboBox could not be made, so the dialog fails: the ComboBox control class is not \
-             yet implemented\n",
+             MDIClient could not be made, so the dialog fails: the MDIClient class is not yet \
+             implemented\n",
             template.as_ptr() as usize
         );
         assert_eq!(printed, [expected]);
@@ -2682,7 +2685,8 @@ mod tests {
     }
 
     /// A template of `style` with no font, menu or title, the dialog class, and the controls
-    /// (each its style, id and class ordinal), DWORD-aligned as a template is.
+    /// (each its style, id and class ordinal, 0 for MDIClient by name), DWORD-aligned as a template
+    /// is.
     fn button_template(style: u32, controls: &[(u32, u16, u16)]) -> std::vec::Vec<u32> {
         let mut words: std::vec::Vec<u16> = std::vec::Vec::new();
         let dword = |words: &mut std::vec::Vec<u16>, value: u32| {
@@ -2698,7 +2702,14 @@ mod tests {
             }
             dword(&mut words, style);
             dword(&mut words, 0);
-            words.extend([4, 4, 40, 14, id, 0xFFFF, class, 0, 0]);
+            words.extend([4, 4, 40, 14, id]);
+            if class == 0 {
+                // The class 0: MDIClient by name, a class F2K lacks.
+                words.extend("MDIClient\0".encode_utf16());
+            } else {
+                words.extend([0xFFFF, class]);
+            }
+            words.extend([0, 0]);
         }
         words
             .chunks(2)
@@ -2774,11 +2785,11 @@ mod tests {
     fn a_no_fail_dialog_is_made_without_its_missing_control() {
         use crate::imports::host::DEBUG_PRINTS;
         crate::class::SYSTEM_CLASSES_WANTED.with(|wanted| wanted.set(true));
-        // A ComboBox (class ordinal 0x85), then a Button (0x80).
+        // An MDIClient (a class F2K lacks, by name: the class 0 below), then a Button (0x80).
         let template = button_template(
             WS_POPUP | DS_NOFAILCREATE,
             &[
-                (WS_CHILD | WS_VISIBLE, 1, 0x85),
+                (WS_CHILD | WS_VISIBLE, 1, 0),
                 (WS_CHILD | WS_VISIBLE, 2, 0x80),
             ],
         );
@@ -2793,7 +2804,7 @@ mod tests {
         assert!(
             printed.iter().any(|line| {
                 line.contains(
-                "the dialog's control 1 of class ComboBox could not be made, so the dialog is made \
+                "the dialog's control 1 of class MDIClient could not be made, so the dialog is made \
                  without it (DS_NOFAILCREATE)"
             )
             }),

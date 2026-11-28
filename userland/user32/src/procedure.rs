@@ -45,7 +45,10 @@
 //! LB_INSERTSTRING, LB_FINDSTRING, LB_FINDSTRINGEXACT, LB_SELECTSTRING, LB_ADDFILE and LB_DIR read;
 //! LB_GETTEXT's item read whole (its LB_GETTEXTLEN first) and written converted, terminated, its
 //! length in the caller's form answered; LB_GETTEXTLEN measured in the caller's form for a narrow
-//! caller (a wide caller's is the narrow procedure's answer, which is no less).
+//! caller (a wide caller's is the narrow procedure's answer, which is no less). A combo box's
+//! twins of them are translated the same way when it holds strings: CB_ADDSTRING, CB_INSERTSTRING,
+//! CB_FINDSTRING, CB_FINDSTRINGEXACT, CB_SELECTSTRING and CB_DIR, CB_GETLBTEXT (CB_GETLBTEXTLEN
+//! first) and CB_GETLBTEXTLEN.
 //!
 //! The character messages' character is converted too ([`char_message`]), through the ANSI code
 //! page (code page 1252's 0x80 is U+20AC): WM_CHAR, WM_SYSCHAR, WM_DEADCHAR, WM_SYSDEADCHAR and
@@ -80,6 +83,16 @@ use rtl::user::{
     WM_SYSDEADCHAR,
 };
 
+use crate::combobox::{
+    CB_ADDSTRING,
+    CB_DIR,
+    CB_FINDSTRING,
+    CB_FINDSTRINGEXACT,
+    CB_GETLBTEXT,
+    CB_GETLBTEXTLEN,
+    CB_INSERTSTRING,
+    CB_SELECTSTRING,
+};
 use crate::edit::{EM_GETLINE, EM_REPLACESEL, EM_SETPASSWORDCHAR};
 use crate::imports;
 use crate::listbox::{
@@ -177,6 +190,14 @@ fn own_pair(address: u32) -> Option<OwnPair> {
             crate::listbox::list_box_proc_w as *const () as usize,
             crate::listbox::list_box_proc_a as *const () as usize,
         ),
+        pair(
+            crate::combobox::combo_box_proc_w as *const () as usize,
+            crate::combobox::combo_box_proc_a as *const () as usize,
+        ),
+        pair(
+            crate::combobox::combo_list_proc_w as *const () as usize,
+            crate::combobox::combo_list_proc_a as *const () as usize,
+        ),
     ]
     .into_iter()
     .find(|pair| pair.wide == address || pair.narrow == address)
@@ -249,16 +270,55 @@ pub fn translates_to(window: u32, message: u32) -> bool {
         || (list_box_string_message(message)
             && crate::listbox::is_list_box(window as usize)
             && (message == LB_DIR || crate::listbox::holds_strings(window as usize)))
+        || (combo_box_string_message(message)
+            && crate::combobox::is_combo_box(window as usize)
+            && (message == CB_DIR || crate::combobox::holds_strings(window as usize)))
+}
+
+/// Whether `message` is a combo box message that carries a string, in or out, or the length of
+/// one: the list box's twins.
+fn combo_box_string_message(message: u32) -> bool {
+    matches!(
+        message,
+        CB_ADDSTRING
+            | CB_INSERTSTRING
+            | CB_FINDSTRING
+            | CB_FINDSTRINGEXACT
+            | CB_SELECTSTRING
+            | CB_DIR
+            | CB_GETLBTEXT
+            | CB_GETLBTEXTLEN
+    )
+}
+
+/// The message that measures the item text `message` (LB_GETTEXT, CB_GETLBTEXT, or their lengths')
+/// reads.
+fn text_length_message(message: u32) -> u32 {
+    match message {
+        CB_GETLBTEXT | CB_GETLBTEXTLEN => CB_GETLBTEXTLEN,
+        _ => LB_GETTEXTLEN,
+    }
+}
+
+/// The message that reads the item text `message` (LB_GETTEXT, CB_GETLBTEXT, or their lengths')
+/// measures.
+fn text_message(message: u32) -> u32 {
+    match message {
+        CB_GETLBTEXT | CB_GETLBTEXTLEN => CB_GETLBTEXT,
+        _ => LB_GETTEXT,
+    }
 }
 
 /// Whether `message` is a list box message that carries a string: one in (LB_ADDSTRING,
 /// LB_INSERTSTRING, LB_FINDSTRING, LB_FINDSTRINGEXACT, LB_SELECTSTRING, LB_DIR, LB_ADDFILE) or one
 /// out (LB_GETTEXT), or the length of one (LB_GETTEXTLEN).
 fn list_box_string_message(message: u32) -> bool {
-    list_box_string_in(message) || matches!(message, LB_GETTEXT | LB_GETTEXTLEN)
+    // The list box's own (its range, past the combo box's).
+    (list_box_string_in(message) && message >= LB_ADDSTRING)
+        || matches!(message, LB_GETTEXT | LB_GETTEXTLEN)
 }
 
-/// Whether `message` is a list box message whose lParam is a string it reads.
+/// Whether `message` is a list box (or combo box) message whose lParam is a string it reads.
 fn list_box_string_in(message: u32) -> bool {
     matches!(
         message,
@@ -269,6 +329,12 @@ fn list_box_string_in(message: u32) -> bool {
             | LB_SELECTSTRING
             | LB_DIR
             | LB_ADDFILE
+            | CB_ADDSTRING
+            | CB_INSERTSTRING
+            | CB_FINDSTRING
+            | CB_FINDSTRINGEXACT
+            | CB_SELECTSTRING
+            | CB_DIR
     )
 }
 
@@ -382,13 +448,13 @@ fn to_narrow(proc: u32, window: u32, message: u32, wparam: u32, lparam: i32) -> 
             let text = unsafe { InWStr::new(lparam as usize as *const u16) };
             with_narrow(text, |bytes| call(message, wparam, bytes.as_ptr() as i32)).unwrap_or(-1)
         }
-        LB_GETTEXT if lparam != 0 => {
-            let length = call(LB_GETTEXTLEN, wparam, 0);
+        LB_GETTEXT | CB_GETLBTEXT if lparam != 0 => {
+            let length = call(text_length_message(message), wparam, 0);
             if length < 0 {
                 return length;
             }
             with_bytes(length as usize + 1, |bytes| {
-                let got = call(LB_GETTEXT, wparam, bytes.as_mut_ptr() as i32);
+                let got = call(message, wparam, bytes.as_mut_ptr() as i32);
                 if got < 0 {
                     return got;
                 }
@@ -528,18 +594,18 @@ pub fn narrow_to_wide(
             })
             .unwrap_or(-1)
         }
-        LB_GETTEXT | LB_GETTEXTLEN => {
-            let length = call(LB_GETTEXTLEN, wparam, 0);
+        LB_GETTEXT | LB_GETTEXTLEN | CB_GETLBTEXT | CB_GETLBTEXTLEN => {
+            let length = call(text_length_message(message), wparam, 0);
             if length < 0 {
                 return length;
             }
             with_units(length as usize + 1, |units| {
-                let got = call(LB_GETTEXT, wparam, units.as_mut_ptr() as i32);
+                let got = call(text_message(message), wparam, units.as_mut_ptr() as i32);
                 if got < 0 {
                     return got;
                 }
                 let text = got_text(units, got);
-                if message == LB_GETTEXTLEN {
+                if message == LB_GETTEXTLEN || message == CB_GETLBTEXTLEN {
                     return narrow_length(text) as i32;
                 }
                 if lparam == 0 {

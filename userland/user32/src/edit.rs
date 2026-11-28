@@ -133,6 +133,7 @@ use rtl::user::{
     WM_SETFONT,
     WM_SETTEXT,
     WM_SIZE,
+    WM_SYSKEYDOWN,
     WM_UNDO,
     WS_BORDER,
     WS_CHILD,
@@ -1890,7 +1891,7 @@ fn edit_control(window: usize, message: u32, wparam: u32, lparam: i32, ansi: boo
                 s.flags |= IN_DIALOG;
                 store(window, &s);
             }
-            dialog_code(state, lp) as i32
+            (dialog_code(state, lp) | crate::combobox::edit_dialog_code(window)) as i32
         }
         WM_SETTEXT => {
             with_param_text(lp, ansi, |units| set_text(window, units)).unwrap_or(false) as i32
@@ -1944,12 +1945,18 @@ fn edit_control(window: usize, message: u32, wparam: u32, lparam: i32, ansi: boo
             1
         }
         WM_KEYDOWN => {
+            // A combo box's edit hands the combo box its keys (F4, the arrows, Enter and Esc while
+            // its list is down).
+            if let Some(answer) = crate::combobox::edit_key(window, wparam, lparam) {
+                return answer;
+            }
             if key(window, wparam) {
                 0
             } else {
                 message::default_procedure(window, message, wparam, lparam, ansi)
             }
         }
+        WM_SYSKEYDOWN if crate::combobox::edit_sys_key(window, wparam) => 0,
         WM_SIZE => {
             if state.is_some_and(|s| s.focused()) {
                 update_view(window);

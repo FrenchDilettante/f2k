@@ -6,18 +6,18 @@
 //! their focus, enabling and activation, [`focus`]; the message loop and the default window
 //! procedure, [`message`]; the procedures' narrow and wide forms and CallWindowProc,
 //! [`procedure`]; the painting, [`paint`]; the GetDC family, [`dc`]; the drawing calls, [`draw`];
-//! the string tables, [`resource`]; the dialog manager, [`dialog`]; the Button, Static, Edit and
-//! ListBox controls, [`button`], [`static_control`], [`edit`] and [`listbox`]; the scroll bars and
-//! the ScrollBar control, [`scrollbar`]; MessageBox, [`msgbox`]; the menus,
-//! [`menu`], and their MENUITEMINFO calls, [`menuinfo`]; the menu bar, its popups and the keyboard
-//! menu loop, [`menubar`]; the non-client area, [`nonclient`]; the caret, [`caret`]; the keyboard
-//! accelerators, [`accel`]; the icons, [`icon`]; the bitmaps, [`bitmap`]; the clipboard,
-//! [`clipboard`]; the keyboard layout, [`keyboard`]; the rectangles, [`rect`]; the records kept per
-//! window, [`records`]; the character walks, case and types, [`string`]; wsprintf, [`wsprintf`];
-//! WinHelp, [`help`]), as Windows 2000's user32 runs them, over ntdll's, kernel32's and gdi32's
-//! exports and win32k's services ([`imports`]: as Windows 2000's user32 imports the first and
-//! enters the kernel itself for the others, through its own stubs), and csrss's user server (the
-//! kernel's stand-in, through ntdll's CsrClientCallServer).
+//! the string tables, [`resource`]; the dialog manager, [`dialog`]; the Button, Static, Edit,
+//! ListBox and ComboBox controls, [`button`], [`static_control`], [`edit`], [`listbox`] and
+//! [`combobox`]; the scroll bars and the ScrollBar control, [`scrollbar`]; MessageBox, [`msgbox`];
+//! the menus, [`menu`], and their MENUITEMINFO calls, [`menuinfo`]; the menu bar, its popups and
+//! the keyboard menu loop, [`menubar`]; the non-client area, [`nonclient`]; the caret, [`caret`];
+//! the keyboard accelerators, [`accel`]; the icons, [`icon`]; the bitmaps, [`bitmap`]; the
+//! clipboard, [`clipboard`]; the keyboard layout, [`keyboard`]; the rectangles, [`rect`]; the
+//! records kept per window, [`records`]; the character walks, case and types, [`string`]; wsprintf,
+//! [`wsprintf`]; WinHelp, [`help`]), as Windows 2000's user32 runs them, over ntdll's, kernel32's
+//! and gdi32's exports and win32k's services ([`imports`]: as Windows 2000's user32 imports the
+//! first and enters the kernel itself for the others, through its own stubs), and csrss's user
+//! server (the kernel's stand-in, through ntdll's CsrClientCallServer).
 //!
 //! An export here is an `extern "system"` function named `f2k_export_<Name>`, which the DLL's
 //! module-definition file exports under its name (build-support/stubs.rs finds them; the export
@@ -45,6 +45,7 @@ pub mod callback;
 pub mod caret;
 pub mod class;
 pub mod clipboard;
+pub mod combobox;
 pub mod dc;
 pub mod dialog;
 pub mod display;

@@ -73,6 +73,16 @@ pub const LB_ADDSTRING: u32 = 0x0180;
 pub const LB_SETSEL: u32 = 0x0185;
 pub const LB_SETCURSEL: u32 = 0x0186;
 
+// --- The combo boxes (CBS_*, CB_*) ---------------------------------------------------------------
+
+pub const CBS_SIMPLE: u32 = 0x0001;
+pub const CBS_DROPDOWN: u32 = 0x0002;
+pub const CBS_DROPDOWNLIST: u32 = 0x0003;
+
+pub const CB_ADDSTRING: u32 = 0x0143;
+pub const CB_SETCURSEL: u32 = 0x014E;
+pub const CB_SHOWDROPDOWN: u32 = 0x014F;
+
 // --- ShowWindow, the system metrics and colours (SW_*, SM_*, COLOR_*)
 // -----------------------------
 

@@ -83,8 +83,9 @@
 //! WM_MOUSEWHEEL scroll. Without LBS_NOINTEGRALHEIGHT a list box whose items are one height is cut
 //! to show whole items.
 //!
-//! A combo box's list (LBS_COMBOBOX) is a list box whose notifications go to its combo box, which
-//! tells it so ([`set_owner`]); the combo box itself is not served yet. What is not served is
+//! A combo box's list (LBS_COMBOBOX, the ComboLBox class: [`crate::combobox`]) is a list box whose
+//! notifications and owner-draw messages go to its combo box, which its creation's lpCreateParams
+//! names (or [`set_owner`]); its WS_BORDER stays a border. What is not served is
 //! logged once: LB_SETTABSTOPS' own stops (LBS_USETABSTOPS expands tabs at the default stops),
 //! LB_SETHORIZONTALEXTENT's sideways scroll, a mouse drag past the list's edge (no autoscroll).
 
@@ -519,6 +520,11 @@ pub fn set_owner(window: usize, owner: usize) {
         s.owner = owner;
         store(window, &s);
     }
+}
+
+/// The window the list box `window`'s notifications go to (0 for none, or no list box).
+pub fn owner_of(window: usize) -> usize {
+    load(window).map_or(0, |s| s.owner)
 }
 
 /// A case the control does not serve, logged once for the message it came with.
@@ -2051,9 +2057,10 @@ fn scroll(window: usize, request: u32, position: u32) {
 // --- Creation, size and font
 // -------------------------------------------------------------------------
 
-/// WM_NCCREATE: the list box's state made, WS_BORDER turned into WS_EX_CLIENTEDGE; false when there
-/// was no room for it.
-fn create(window: usize) -> bool {
+/// WM_NCCREATE: the list box's state made, WS_BORDER turned into WS_EX_CLIENTEDGE (a combo box's
+/// list keeps it, its owner the combo box its CREATESTRUCT's lpCreateParams names); false when
+/// there was no room for it.
+fn create(window: usize, lparam: i32) -> bool {
     let Ok(data) = window::window_data(window) else {
         return false;
     };
@@ -2066,8 +2073,19 @@ fn create(window: usize) -> bool {
         imports::local_free(block);
         return false;
     }
+    let combo = data.style & LBS_COMBOBOX != 0;
+    let mut owner = data.parent as usize;
+    if combo && lparam != 0 {
+        // SAFETY: WM_NCCREATE's lParam as the window manager hands it over: a CREATESTRUCT (its
+        // first field lpCreateParams in either form).
+        let params =
+            unsafe { rtl::edge::In::new(lparam as u32 as usize as *const u32) }.read() as usize;
+        if crate::combobox::is_combo_box(params) {
+            owner = params;
+        }
+    }
     let s = State {
-        owner: data.parent as usize,
+        owner,
         selection: -1,
         anchor: -1,
         item_height: 16,
@@ -2082,7 +2100,7 @@ fn create(window: usize) -> bool {
         ..State::default()
     };
     store(window, &s);
-    if data.style & WS_BORDER != 0 {
+    if data.style & WS_BORDER != 0 && !combo {
         let _ = imports::set_window_long(window, GWL_STYLE, data.style & !WS_BORDER, false);
         let _ =
             imports::set_window_long(window, GWL_EXSTYLE, data.ex_style | WS_EX_CLIENTEDGE, false);
@@ -2597,11 +2615,18 @@ fn list_message(window: usize, message: u32, wparam: u32, lparam: i32, ansi: boo
     }
 }
 
-/// The list box's procedure, for a message of the narrow (`ansi`) or wide form.
-fn list_box(window: usize, message: u32, wparam: u32, lparam: i32, ansi: bool) -> i32 {
+/// The list box's procedure, for a message of the narrow (`ansi`) or wide form (the ComboLBox
+/// class's too, for what it does not take itself).
+pub fn list_box_procedure(
+    window: usize,
+    message: u32,
+    wparam: u32,
+    lparam: i32,
+    ansi: bool,
+) -> i32 {
     match message {
         WM_NCCREATE => {
-            if !create(window) {
+            if !create(window, lparam) {
                 return 0;
             }
             return message::default_procedure(window, message, wparam, lparam, ansi);
@@ -2768,7 +2793,7 @@ pub extern "system" fn list_box_proc_w(
     wparam: u32,
     lparam: i32,
 ) -> i32 {
-    list_box(window, message, wparam, lparam, false)
+    list_box_procedure(window, message, wparam, lparam, false)
 }
 
 /// ListBoxWndProcA: the ListBox class's procedure for a narrow message.
@@ -2778,7 +2803,7 @@ pub extern "system" fn list_box_proc_a(
     wparam: u32,
     lparam: i32,
 ) -> i32 {
-    list_box(window, message, wparam, lparam, true)
+    list_box_procedure(window, message, wparam, lparam, true)
 }
 
 // --- LB_DIR
@@ -2918,6 +2943,34 @@ fn has_wildcard(units: &[u16]) -> bool {
         .any(|&unit| unit == u16::from(b'*') || unit == u16::from(b'?'))
 }
 
+/// The messages DlgDirList and DlgDirSelectEx send their control: a list box's, or a combo box's
+/// (DlgDirListComboBox, DlgDirSelectComboBoxEx).
+pub struct DirMessages {
+    reset: u32,
+    dir: u32,
+    get_selection: u32,
+    get_text_length: u32,
+    get_text: u32,
+}
+
+/// A list box's: LB_RESETCONTENT, LB_DIR, LB_GETCURSEL, LB_GETTEXTLEN, LB_GETTEXT.
+pub const LIST_DIR_MESSAGES: DirMessages = DirMessages {
+    reset: LB_RESETCONTENT,
+    dir: LB_DIR,
+    get_selection: LB_GETCURSEL,
+    get_text_length: LB_GETTEXTLEN,
+    get_text: LB_GETTEXT,
+};
+
+/// A combo box's: CB_RESETCONTENT, CB_DIR, CB_GETCURSEL, CB_GETLBTEXTLEN, CB_GETLBTEXT.
+pub const COMBO_DIR_MESSAGES: DirMessages = DirMessages {
+    reset: crate::combobox::CB_RESETCONTENT,
+    dir: crate::combobox::CB_DIR,
+    get_selection: crate::combobox::CB_GETCURSEL,
+    get_text_length: crate::combobox::CB_GETLBTEXTLEN,
+    get_text: crate::combobox::CB_GETLBTEXT,
+};
+
 /// DlgDirList's core over the wide path `path` (the caller's, read): the current directory changed
 /// to its directory part, the list box `list_id` of `dialog` filled (LB_DIR of the file part as
 /// `attributes` asks for files, then the directories and the drives), the static `static_id` given
@@ -2925,6 +2978,7 @@ fn has_wildcard(units: &[u16]) -> bool {
 /// (uppercased; "*.*" for none), none when the directory could not be entered (the answer 0 then,
 /// SetCurrentDirectory's error left).
 fn dlg_dir_list(
+    messages: &DirMessages,
     dialog: usize,
     path: &[u16],
     list_id: i32,
@@ -2983,12 +3037,12 @@ fn dlg_dir_list(
         let send = |message: u32, wparam: u32, lparam: i32| {
             message::send(list, message, wparam, lparam).unwrap_or(0)
         };
-        send(LB_RESETCONTENT, 0, 0);
+        send(messages.reset, 0, 0);
         send(WM_SETREDRAW, 0, 0);
         let exclusive = attributes & DDL_EXCLUSIVE != 0;
         if !exclusive || attributes & FILE_BITS != 0 {
             send(
-                LB_DIR,
+                messages.dir,
                 attributes & !(DDL_DIRECTORY | DDL_DRIVES | DDL_POSTMSGS),
                 file_part.as_ptr() as usize as i32,
             );
@@ -2996,14 +3050,14 @@ fn dlg_dir_list(
         let star = terminated::<4>(&star_dot_star).unwrap_or_default();
         if attributes & DDL_DIRECTORY != 0 {
             send(
-                LB_DIR,
+                messages.dir,
                 DDL_DIRECTORY | DDL_EXCLUSIVE,
                 star.as_ptr() as usize as i32,
             );
         }
         if attributes & DDL_DRIVES != 0 {
             send(
-                LB_DIR,
+                messages.dir,
                 DDL_DRIVES | DDL_EXCLUSIVE,
                 star.as_ptr() as usize as i32,
             );
@@ -3036,8 +3090,34 @@ pub unsafe extern "system" fn dlg_dir_list_w(
     static_id: i32,
     attributes: u32,
 ) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        dlg_dir_list_with_w(
+            &LIST_DIR_MESSAGES,
+            dialog,
+            path,
+            list_id,
+            static_id,
+            attributes,
+        )
+    }
+}
+
+/// DlgDirListW's (or DlgDirListComboBoxW's, by `messages`) core over the caller's wide path.
+///
+/// # Safety
+///
+/// As DlgDirListW's.
+pub unsafe fn dlg_dir_list_with_w(
+    messages: &DirMessages,
+    dialog: usize,
+    path: *mut u16,
+    list_id: i32,
+    static_id: i32,
+    attributes: u32,
+) -> i32 {
     if path.is_null() {
-        return dlg_dir_list(dialog, &[], list_id, static_id, attributes).0;
+        return dlg_dir_list(messages, dialog, &[], list_id, static_id, attributes).0;
     }
     // SAFETY: the caller's terminated buffer (the contract).
     let text = unsafe { InWStr::new(path) }.units();
@@ -3047,8 +3127,14 @@ pub unsafe extern "system" fn dlg_dir_list_w(
         return 0;
     }
     text.copy_to(&mut whole[..text.len()]);
-    let (answer, written) =
-        dlg_dir_list(dialog, &whole[..text.len()], list_id, static_id, attributes);
+    let (answer, written) = dlg_dir_list(
+        messages,
+        dialog,
+        &whole[..text.len()],
+        list_id,
+        static_id,
+        attributes,
+    );
     if let Some(file) = written {
         let file = until_nul(&file);
         let room = file.len().min(text.len());
@@ -3073,14 +3159,40 @@ pub unsafe extern "system" fn dlg_dir_list_a(
     static_id: i32,
     attributes: u32,
 ) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe {
+        dlg_dir_list_with_a(
+            &LIST_DIR_MESSAGES,
+            dialog,
+            path,
+            list_id,
+            static_id,
+            attributes,
+        )
+    }
+}
+
+/// DlgDirListA's (or DlgDirListComboBoxA's, by `messages`) core over the caller's narrow path.
+///
+/// # Safety
+///
+/// As DlgDirListA's.
+pub unsafe fn dlg_dir_list_with_a(
+    messages: &DirMessages,
+    dialog: usize,
+    path: *mut u8,
+    list_id: i32,
+    static_id: i32,
+    attributes: u32,
+) -> i32 {
     if path.is_null() {
-        return dlg_dir_list(dialog, &[], list_id, static_id, attributes).0;
+        return dlg_dir_list(messages, dialog, &[], list_id, static_id, attributes).0;
     }
     // SAFETY: the caller's terminated buffer (the contract).
     let text = unsafe { InStr::new(path) };
     let room = text.bytes().len();
     let Some((answer, written)) = crate::with_wide(text.bytes(), |units| {
-        dlg_dir_list(dialog, units, list_id, static_id, attributes)
+        dlg_dir_list(messages, dialog, units, list_id, static_id, attributes)
     }) else {
         return 0;
     };
@@ -3096,23 +3208,24 @@ pub unsafe extern "system" fn dlg_dir_list_a(
 /// `out` (a directory's "[name]" as "name\", a drive's "[-x-]" as "x:", a file without an extension
 /// with a dot after it), cut to the buffer; whether it is a directory or a drive. Nothing selected
 /// leaves the buffer as it was and answers FALSE.
-fn dlg_dir_select(dialog: usize, out: &mut [u16], list_id: i32) -> i32 {
+fn dlg_dir_select(messages: &DirMessages, dialog: usize, out: &mut [u16], list_id: i32) -> i32 {
     let list = crate::dialog::get_dlg_item(dialog, list_id);
     if list == 0 || out.is_empty() {
         return 0;
     }
-    let selected = message::send(list, LB_GETCURSEL, 0, 0).unwrap_or(LB_ERR);
+    let selected = message::send(list, messages.get_selection, 0, 0).unwrap_or(LB_ERR);
     if selected < 0 {
         return 0;
     }
-    let length = message::send(list, LB_GETTEXTLEN, selected as u32, 0).unwrap_or(LB_ERR);
+    let length =
+        message::send(list, messages.get_text_length, selected as u32, 0).unwrap_or(LB_ERR);
     if !(0..260).contains(&length) {
         return 0;
     }
     let mut text = [0u16; 264];
     message::send(
         list,
-        LB_GETTEXT,
+        messages.get_text,
         selected as u32,
         text.as_mut_ptr() as usize as i32,
     );
@@ -3157,13 +3270,29 @@ pub unsafe extern "system" fn dlg_dir_select_ex_w(
     count: i32,
     list_id: i32,
 ) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { dlg_dir_select_with_w(&LIST_DIR_MESSAGES, dialog, buffer, count, list_id) }
+}
+
+/// DlgDirSelectExW's (or DlgDirSelectComboBoxExW's, by `messages`) core.
+///
+/// # Safety
+///
+/// As DlgDirSelectExW's.
+pub unsafe fn dlg_dir_select_with_w(
+    messages: &DirMessages,
+    dialog: usize,
+    buffer: *mut u16,
+    count: i32,
+    list_id: i32,
+) -> i32 {
     if buffer.is_null() || count <= 0 {
         return 0;
     }
     let mut path = [0u16; 266];
     let room = (count as usize).min(path.len());
     // A copy of the caller's buffer: nothing selected leaves it as it was.
-    let answer = dlg_dir_select(dialog, &mut path[..room], list_id);
+    let answer = dlg_dir_select(messages, dialog, &mut path[..room], list_id);
     let length = until_nul(&path[..room]).len();
     if length > 0 || answer != 0 {
         // SAFETY: the caller's buffer of `count` units (the contract).
@@ -3187,12 +3316,28 @@ pub unsafe extern "system" fn dlg_dir_select_ex_a(
     count: i32,
     list_id: i32,
 ) -> i32 {
+    // SAFETY: the caller's contract.
+    unsafe { dlg_dir_select_with_a(&LIST_DIR_MESSAGES, dialog, buffer, count, list_id) }
+}
+
+/// DlgDirSelectExA's (or DlgDirSelectComboBoxExA's, by `messages`) core.
+///
+/// # Safety
+///
+/// As DlgDirSelectExA's.
+pub unsafe fn dlg_dir_select_with_a(
+    messages: &DirMessages,
+    dialog: usize,
+    buffer: *mut u8,
+    count: i32,
+    list_id: i32,
+) -> i32 {
     if buffer.is_null() || count <= 0 {
         return 0;
     }
     let mut path = [0u16; 266];
     let room = (count as usize).min(path.len());
-    let answer = dlg_dir_select(dialog, &mut path[..room], list_id);
+    let answer = dlg_dir_select(messages, dialog, &mut path[..room], list_id);
     // SAFETY: the caller's buffer of `count` bytes (the contract).
     let mut out = unsafe { OutBuf::new(buffer, count as usize) };
     procedure::put_narrow(&mut out, until_nul(&path[..room]));

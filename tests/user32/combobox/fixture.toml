@@ -8,18 +8,6 @@ description = "combobox - user32's ComboBox control driven by messages and keys:
 kind = "sectioned"
 gate = true
 
-[pending]
-# F2K registers no ComboBox or ComboLBox class yet (user32's MISSING_SYSTEM_CLASSES,
-# userland/user32/src/class.rs): every block waits for the control (gui-H). Drop each entry once its
-# block passes.
-create = "F2K has no ComboBox or ComboLBox class (user32's MISSING_SYSTEM_CLASSES), and no GetComboBoxInfo"
-items = "F2K has no ComboBox class (user32's MISSING_SYSTEM_CLASSES): CreateWindowExW(\"ComboBox\") fails"
-drop = "F2K has no ComboBox or ComboLBox class (user32's MISSING_SYSTEM_CLASSES): no drop-down list"
-edit = "F2K has no ComboBox class (user32's MISSING_SYSTEM_CLASSES): CreateWindowExW(\"ComboBox\") fails"
-notify = "F2K has no ComboBox class (user32's MISSING_SYSTEM_CLASSES): no CBN_* notifications"
-dir = "F2K has no ComboBox class (user32's MISSING_SYSTEM_CLASSES), and user32's DlgDirListComboBoxA/W and DlgDirSelectComboBoxExA/W are not implemented"
-dialog = "F2K has no ComboBox class (user32's MISSING_SYSTEM_CLASSES): a dialog template's ComboBox item fails the dialog's creation"
-
 [pins]
 # The exports each block pins, as dll.Export; scripts/compat.py derives each export's coverage from
 # them. The control is reached through messages, its procedure being no export: only the creation,

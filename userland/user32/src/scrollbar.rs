@@ -488,6 +488,33 @@ fn draw_arrow(dc: usize, rect: Rect, arrow: Arrow, disabled: bool) {
         return;
     }
     let (inner, _) = draw::draw_edge_in(dc, rect, EDGE_RAISED, BF_RECT | BF_MIDDLE);
+    draw_glyph(dc, inner, arrow, disabled);
+}
+
+/// A combo box's button (DrawFrameControl's DFCS_SCROLLCOMBOBOX): a down arrow's button, pushed
+/// (a flat edge in COLOR_3DSHADOW, the arrow a pixel down and to the right) or not, its arrow
+/// grayed when `disabled`.
+pub fn draw_combo_button(dc: usize, rect: Rect, pushed: bool, disabled: bool) {
+    if rect.is_empty() {
+        return;
+    }
+    if !pushed {
+        draw_arrow(dc, rect, Arrow::Down, disabled);
+        return;
+    }
+    draw::frame_in(dc, rect, color(COLOR_3DSHADOW));
+    let inner = rect.inflate(-1, -1);
+    draw::fill(dc, inner, color(COLOR_3DFACE));
+    draw_glyph(
+        dc,
+        inner.inflate(-1, -1).offset(1, 1),
+        Arrow::Down,
+        disabled,
+    );
+}
+
+/// An arrow's triangle in the middle of a button's face `inner`, grayed (embossed) when `disabled`.
+fn draw_glyph(dc: usize, inner: Rect, arrow: Arrow, disabled: bool) {
     // A triangle of `size` rows, the widest 2 * size - 1 pixels, centred in the face.
     let size = (inner.width().min(inner.height()) / 3).max(1);
     let cx = inner.left + inner.width() / 2;
