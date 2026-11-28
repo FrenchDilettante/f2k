@@ -4,10 +4,14 @@
 //! Target only: host builds (the unit tests) link the host's C library, whose routines these must
 //! not replace.
 
-// The string instructions, one `rep` each. They must not be Rust loops: the kernel crate builds
-// unoptimized under the dev profile (see Cargo.toml), where a `for` over `ptr::add` costs a
-// range step and two precondition checks per byte — every struct move goes through these symbols,
-// so a byte loop makes a thread's creation take milliseconds.
+// The string instructions. They must not be Rust loops: the kernel crate builds unoptimized under
+// the dev profile (see Cargo.toml), where a `for` over `ptr::add` costs a range step and two
+// precondition checks per byte — every struct move goes through these symbols, so a byte loop
+// makes a thread's creation take milliseconds. memset, memcpy and a forward memmove move whole
+// dwords (`rep stosd`, `rep movsd`) and then the last 0-3 bytes, as Windows 2000's own
+// RtlCopyMemory and RtlFillMemory do: an emulator steps a `rep` one element at a time, so a page's
+// fill or copy (a fresh frame zeroed, a page-in's copy, a write-out's copy) takes a quarter of the
+// steps a byte at a time would.
 core::arch::global_asm!(
     // memcmp: `repe cmpsb` runs to the first differing byte or the end. On a difference the two
     // pointers stand one past it, and the result is the first block's byte less the second's,
@@ -42,9 +46,15 @@ core::arch::global_asm!(
     "memset:",
     "    push edi",
     "    mov edi, [esp + 8]",
-    "    mov eax, [esp + 12]",
-    "    mov ecx, [esp + 16]",
+    "    movzx eax, byte ptr [esp + 12]",
+    "    imul eax, eax, 0x01010101",
+    "    mov edx, [esp + 16]",
+    "    mov ecx, edx",
+    "    shr ecx, 2",
     "    cld",
+    "    rep stosd",
+    "    mov ecx, edx",
+    "    and ecx, 3",
     "    rep stosb",
     "    mov eax, [esp + 8]",
     "    pop edi",
@@ -58,8 +68,13 @@ core::arch::global_asm!(
     "    push edi",
     "    mov edi, [esp + 12]",
     "    mov esi, [esp + 16]",
-    "    mov ecx, [esp + 20]",
+    "    mov edx, [esp + 20]",
+    "    mov ecx, edx",
+    "    shr ecx, 2",
     "    cld",
+    "    rep movsd",
+    "    mov ecx, edx",
+    "    and ecx, 3",
     "    rep movsb",
     "    mov eax, [esp + 12]",
     "    pop edi",
@@ -82,7 +97,12 @@ core::arch::global_asm!(
     "    sub eax, esi",
     "    cmp eax, ecx",
     "    jb 2f",
+    "    mov edx, ecx",
+    "    shr ecx, 2",
     "    cld",
+    "    rep movsd",
+    "    mov ecx, edx",
+    "    and ecx, 3",
     "    rep movsb",
     "    jmp 3f",
     "2:",
