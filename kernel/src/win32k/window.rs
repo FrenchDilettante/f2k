@@ -1077,6 +1077,9 @@ struct Window {
     /// The window's own scroll bars (Windows 2000's pSBInfo), once a call made them
     /// ([`super::scroll`]).
     scroll: Option<ScrollBars>,
+    /// The window's copy of the system menu, once GetSystemMenu made one (Windows 2000's
+    /// spmenuSys); a destroyed menu's id names nothing.
+    system_menu: Option<super::menu::MenuId>,
 }
 
 /// What the destroy cascade keeps in a window's record while it visits the window. The cascade
@@ -1167,6 +1170,7 @@ impl Window {
         locks: 0,
         walk: Walk::NONE,
         scroll: None,
+        system_menu: None,
     };
 
     /// The window's kind, from the style's type bits.
@@ -1881,6 +1885,16 @@ impl Windows {
     /// 0 for none.
     pub fn window_menu(&self, id: WindowId) -> u32 {
         self.at(id).menu.raw()
+    }
+
+    /// The window `id`'s copy of the system menu, as GetSystemMenu last attached it.
+    pub fn window_system_menu(&self, id: WindowId) -> Option<super::menu::MenuId> {
+        self.at(id).system_menu
+    }
+
+    /// Attach `menu` to the window `id` as its copy of the system menu (none: no copy).
+    pub fn set_window_system_menu(&mut self, id: WindowId, menu: Option<super::menu::MenuId>) {
+        self.at_mut(id).system_menu = menu;
     }
 
     /// Set a top-level window's menu handle (0: none).
@@ -3493,7 +3507,7 @@ impl Windows {
         }
         let windows = s.windows();
         // And its copy of the system menu (GetSystemMenu's).
-        windows.destroy_system_menu(handle);
+        windows.destroy_system_menu(window);
 
         // The properties, the texts and the extra bytes go with the record.
         s.delete_properties(window);
@@ -8624,6 +8638,43 @@ mod tests {
         assert_eq!(w.subtree_depth(a, 1), 3);
         assert_eq!(w.subtree_depth(b, 1), 6);
         assert_eq!(w.subtree_depth(a21, 4), 4);
+    }
+
+    /// A window's copy of the system menu is the menu GetSystemMenu attached to it, until the
+    /// menu goes or the window does, which takes the menu with it; bRevert destroys it.
+    #[test]
+    fn the_system_menu_copy_is_the_windows() {
+        let (w, _, t, _, _, _) = setup();
+        let a = raw_window(w, t, WS_OVERLAPPED, None);
+        let b = raw_window(w, t, WS_OVERLAPPED, None);
+        let (ha, hb) = (w.handle_of(a), w.handle_of(b));
+        assert_eq!(w.system_menu_handle(ha, false, 0), Ok(0), "no copy yet");
+        let copy = w.menus.create(&mut w.handles, OWNER).unwrap();
+        assert_eq!(w.system_menu_handle(ha, false, copy), Ok(copy));
+        assert_eq!(w.system_menu_handle(ha, false, 0), Ok(copy));
+        assert_eq!(
+            w.system_menu_handle(hb, false, 0),
+            Ok(0),
+            "another window's"
+        );
+        w.destroy_menu_handle(copy).unwrap();
+        assert_eq!(
+            w.system_menu_handle(ha, false, 0),
+            Ok(0),
+            "a destroyed copy"
+        );
+        let copy = w.menus.create(&mut w.handles, OWNER).unwrap();
+        assert_eq!(w.system_menu_handle(ha, false, copy), Ok(copy));
+        assert_eq!(w.system_menu_handle(ha, true, 0), Ok(0));
+        assert!(w.menu_of(copy).is_err(), "bRevert destroys the copy");
+        assert_eq!(w.system_menu_handle(ha, false, 0), Ok(0));
+        let copy = w.menus.create(&mut w.handles, OWNER).unwrap();
+        assert_eq!(w.system_menu_handle(hb, false, copy), Ok(copy));
+        w.destroy_system_menu(b);
+        assert!(
+            w.menu_of(copy).is_err(),
+            "the window's end destroys its copy"
+        );
     }
 
     /// DestroyMenu leaves a top-level window holding the menu without one; a menu no window was

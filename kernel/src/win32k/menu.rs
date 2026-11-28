@@ -94,7 +94,7 @@ use rtl::winerror::{
 
 use super::class::Owner;
 use super::handle::{Refusal, UserHandles, UserObject};
-use super::window::Windows;
+use super::window::{WindowId, Windows};
 use crate::slots::{Id, KernelId, Record, Slots, KERNEL_PAGES, PAGE};
 use crate::status::*;
 
@@ -238,8 +238,6 @@ struct MenuRecord {
     /// `spmenu` takes on the menu object): only then can a window still hold it at its
     /// destruction, so a menu never given to a window is destroyed without walking the windows.
     held: bool,
-    /// The window whose system menu this menu is (its handle; 0 for none).
-    system_of: u32,
     count: u16,
     /// The items, by position: ids into the item pool.
     items: [ItemId; MAX_MENU_ITEMS],
@@ -251,7 +249,6 @@ impl MenuRecord {
         owner: 0,
         destroying: false,
         held: false,
-        system_of: 0,
         count: 0,
         items: [Id::new(0, 0); MAX_MENU_ITEMS],
     };
@@ -344,7 +341,7 @@ impl Menus {
         self.at(id).ok_or(Failure::InvalidMenuHandle)
     }
 
-    fn is_live(&self, id: MenuId) -> bool {
+    pub fn is_live(&self, id: MenuId) -> bool {
         self.at(id).is_some()
     }
 
@@ -385,7 +382,6 @@ impl Menus {
         record.owner = owner;
         record.destroying = false;
         record.held = false;
-        record.system_of = 0;
         record.count = 0;
         Ok(handle)
     }
@@ -595,17 +591,6 @@ impl Menus {
             }
         }
         Ok(())
-    }
-
-    /// The system menu of the window `window` (its handle), when it has one.
-    pub fn system_menu_of(&self, window: u32) -> Option<MenuId> {
-        if window == 0 {
-            return None;
-        }
-        self.menus
-            .iter()
-            .find(|(_, record)| record.system_of == window)
-            .map(|(id, _)| id)
     }
 
     /// The popup an insertion or a change names, when its mask names one: a live menu, or none.
@@ -844,12 +829,14 @@ impl Windows {
         let id = self
             .window_from_handle(window)
             .ok_or(Failure::InvalidWindowHandle)?;
-        let window = self.handle_of(id);
-        let copy = self.menus.system_menu_of(window);
+        let copy = self
+            .window_system_menu(id)
+            .filter(|&copy| self.menus.is_live(copy));
         if revert {
             if let Some(copy) = copy {
                 self.destroy_menu_id(copy);
             }
+            self.set_window_system_menu(id, None);
             return Ok(0);
         }
         if let Some(copy) = copy {
@@ -859,15 +846,16 @@ impl Windows {
             return Ok(0);
         }
         let menu = self.menu_of(made)?;
-        if let Some(record) = self.menus.at_mut(menu) {
-            record.system_of = window;
-        }
+        self.set_window_system_menu(id, Some(menu));
         Ok(self.menus.handle_of(menu))
     }
 
-    /// The window `window`'s copy of the system menu destroyed, at the window's end.
-    pub fn destroy_system_menu(&mut self, window: u32) {
-        if let Some(copy) = self.menus.system_menu_of(window) {
+    /// The window `window`'s copy of the system menu destroyed, at the window's end: the menu
+    /// the window's record names, not a walk over the menus (`manywin`'s `windows`: 2,000
+    /// DestroyWindow calls after `quota` left 10,000 menu slots).
+    pub fn destroy_system_menu(&mut self, window: WindowId) {
+        if let Some(copy) = self.window_system_menu(window) {
+            self.set_window_system_menu(window, None);
             self.destroy_menu_id(copy);
         }
     }
@@ -1581,20 +1569,6 @@ mod tests {
         assert_eq!(m.set_default(bar, 201, false), Err(Failure::ItemNotFound));
         assert_eq!(m.set_default(file, u32::MAX, false), Ok(()));
         assert_eq!(state(&m, 1), 0);
-    }
-
-    /// A window's system menu is the menu marked as its, until the menu goes.
-    #[test]
-    fn system_menus_belong_to_their_window() {
-        let mut m = menus();
-        let menu = m.create(OWNER).unwrap();
-        let id = m.menu_of(menu).unwrap();
-        assert_eq!(m.system_menu_of(0x1234), None);
-        m.at_mut(id).unwrap().system_of = 0x1234;
-        assert_eq!(m.system_menu_of(0x1234), Some(id));
-        assert_eq!(m.system_menu_of(0), None);
-        m.destroy(id);
-        assert_eq!(m.system_menu_of(0x1234), None);
     }
 
     /// DestroyMenu takes the popups with the menu; a destroyed handle names nothing, and the
