@@ -2,9 +2,10 @@
 //! for the states the address-space manager keeps in a user page's entry.
 //!
 //! **The hardware's bits** (32-bit paging, one word per entry): bit 0 present, bit 1 writable, bit
-//! 2 user, bit 3 [`CACHE_DISABLE`], bit 5 accessed, bit 6 dirty, bit 8 global, bits 12-31 the
-//! frame's physical address ([`FRAME_MASK`]). [`Pte`] builds and reads the kernel's own directory
-//! and table entries from them; every other reader and writer of an entry takes its bits from here.
+//! 2 user, bit 3 [`WRITE_THROUGH`], bit 4 [`CACHE_DISABLE`], bit 5 accessed, bit 6 dirty, bit 8
+//! global, bits 12-31 the frame's physical address ([`FRAME_MASK`]). [`Pte`] builds and reads the
+//! kernel's own directory and table entries from them; every other reader and writer of an entry
+//! takes its bits from here.
 //!
 //! **A user page's entry** ([`classify`], [`encode`], [`decode`]): bit 0 is present; bit 1 is the
 //! write bit on a present entry and the committed marker ([`COMMITTED`]) on a non-present one; bit
@@ -57,10 +58,15 @@ pub const PRESENT: u32 = 1 << 0;
 pub const WRITE: u32 = 1 << 1;
 /// Bit 2: ring 3 may reach the page (supervisor-only when clear).
 pub const USER: u32 = 1 << 2;
-/// Bit 3, set on device memory (the display's framebuffer, an uncached MMIO range) so its writes
-/// reach the device. The processor's manual names bit 3 PWT (write-through) and bit 4 PCD (cache
-/// disable); F2K sets bit 3 alone, as it always has.
-pub const CACHE_DISABLE: u32 = 1 << 3;
+/// Bit 3, PWT: writes through the page go straight to memory as well as the cache. Set with
+/// [`CACHE_DISABLE`] on device memory, as Windows 2000's `MI_DISABLE_CACHING` sets both.
+pub const WRITE_THROUGH: u32 = 1 << 3;
+/// Bit 4, PCD: the processor does not cache the page. Set (with [`WRITE_THROUGH`]) on device
+/// memory, the display's framebuffer and uncached MMIO ranges, so reads and writes reach the
+/// device.
+pub const CACHE_DISABLE: u32 = 1 << 4;
+/// Both caching bits, as an uncached mapping carries them ([`Pte::kernel_rw_uncached`]).
+pub const UNCACHED: u32 = WRITE_THROUGH | CACHE_DISABLE;
 /// Bit 5: the processor has read through the entry.
 pub const ACCESSED: u32 = 1 << 5;
 /// Bit 6: the processor has written the page (a table entry's; a directory entry's is ignored).
@@ -119,6 +125,11 @@ impl Pte {
         self.0 & USER != 0
     }
 
+    /// Whether writes through the page go straight to memory ([`WRITE_THROUGH`]).
+    pub const fn write_through(self) -> bool {
+        self.0 & WRITE_THROUGH != 0
+    }
+
     /// Whether the page's caches are disabled ([`CACHE_DISABLE`]).
     pub const fn cache_disabled(self) -> bool {
         self.0 & CACHE_DISABLE != 0
@@ -151,9 +162,9 @@ impl Pte {
     }
 
     /// A present, writable, supervisor-only, uncached entry for `frame`: device memory such as the
-    /// display's framebuffer (see [`CACHE_DISABLE`]).
+    /// display's framebuffer ([`UNCACHED`]: both caching bits, as Windows 2000 sets them).
     pub const fn kernel_rw_uncached(frame: PhysAddr) -> Pte {
-        Pte(frame.get() | PRESENT | WRITE | CACHE_DISABLE)
+        Pte(frame.get() | PRESENT | WRITE | UNCACHED)
     }
 
     /// A present entry ring 3 can reach for `frame`, with the further `flags` ([`WRITE`] for a
@@ -414,11 +425,8 @@ mod tests {
         assert_eq!(PRESENT, 1);
         assert_eq!(WRITE, 1 << 1);
         assert_eq!(USER, 1 << 2);
-        assert_eq!(
-            CACHE_DISABLE,
-            1 << 3,
-            "set as F2K always has: the manual's PWT"
-        );
+        assert_eq!(WRITE_THROUGH, 1 << 3, "the manual's PWT");
+        assert_eq!(CACHE_DISABLE, 1 << 4, "the manual's PCD");
         assert_eq!(ACCESSED, 1 << 5);
         assert_eq!(DIRTY, 1 << 6);
         assert_eq!(GLOBAL, 1 << 8);
@@ -437,10 +445,11 @@ mod tests {
     #[test]
     fn every_field_of_an_entry_round_trips() {
         type Read = fn(Pte) -> bool;
-        let fields: [(u32, Read); 7] = [
+        let fields: [(u32, Read); 8] = [
             (PRESENT, Pte::present),
             (WRITE, Pte::writable),
             (USER, Pte::user),
+            (WRITE_THROUGH, Pte::write_through),
             (CACHE_DISABLE, Pte::cache_disabled),
             (ACCESSED, Pte::accessed),
             (DIRTY, Pte::dirty),
@@ -468,8 +477,10 @@ mod tests {
         assert_eq!(Pte::kernel_rw(frame), Pte::new(frame, PRESENT | WRITE));
         assert_eq!(
             Pte::kernel_rw_uncached(frame),
-            Pte::new(frame, PRESENT | WRITE | CACHE_DISABLE)
+            Pte::new(frame, PRESENT | WRITE | WRITE_THROUGH | CACHE_DISABLE)
         );
+        assert!(Pte::kernel_rw_uncached(frame).cache_disabled());
+        assert!(Pte::kernel_rw_uncached(frame).write_through());
         assert_eq!(Pte::user_page(frame, 0), Pte::new(frame, PRESENT | USER));
         assert_eq!(
             Pte::user_page(frame, WRITE),
@@ -507,7 +518,7 @@ mod tests {
                 }
             }
         }
-        assert_eq!(backing_tag(PRESENT | ACCESSED | CACHE_DISABLE), 0);
+        assert_eq!(backing_tag(PRESENT | ACCESSED | UNCACHED), 0);
         assert_eq!(backing_tag(COMMITTED), 0);
     }
 
